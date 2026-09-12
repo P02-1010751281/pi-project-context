@@ -7,8 +7,10 @@
 作为 pi 包：
 
 ```bash
-pi install git:github.com/P02-1010751281/pi-project-context@v0.1.0
+pi install git:github.com/P02-1010751281/pi-project-context@v0.1.1
 ```
+
+> 本包没有 `package.json`：pi 按约定目录 `extensions/` 自动发现入口，git 安装因此不需要 npm（本扩展无运行时依赖，pi 核心包由宿主提供）。不要再加回 `package.json`——含 manifest 的 git 包在安装/对齐 checkout 时会执行 `npm install`，在未装 npm 的机器上会让 `pi` 启动失败。
 
 本机自用部署：本仓库是唯一来源，`~/.pi/agent/extensions` 是部署副本（外置盘未挂载也不会让 pi 丢扩展）：
 
