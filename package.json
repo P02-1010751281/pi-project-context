@@ -1,0 +1,16 @@
+{
+  "name": "pi-project-context",
+  "version": "0.1.0",
+  "description": "pi extension: project memory and session context (archive, MEMORY/CONTEXT consolidation, autolearn, handoff)",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/project-context"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
