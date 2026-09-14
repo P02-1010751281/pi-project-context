@@ -35,13 +35,23 @@ export type HandoffSettings = {
 	guard: "wait" | "draft" | "send" | "skip";
 };
 
+export type AutolearnSettings = {
+	/** Last completed automatic pass (epoch ms); persisted so a restart does not re-run on old material. */
+	at: number;
+	/** Accumulated user turns before an automatic pass. */
+	turns: number;
+	/** Minimum wall-clock gap between automatic passes. */
+	intervalMs: number;
+};
+
 export type ProjectContextConfig = {
 	features: Features;
-	autolearn: { at: number };
+	autolearn: AutolearnSettings;
 	handoff: HandoffSettings;
 };
 
 export const DEFAULT_FEATURES: Features = { archive: true, memory: true, autolearn: true, handoff: true };
+export const DEFAULT_AUTOLEARN: AutolearnSettings = { at: 0, turns: 20, intervalMs: 30 * 60 * 1000 };
 
 export const DEFAULT_HANDOFF: HandoffSettings = {
 	threshold: "auto",
@@ -87,6 +97,10 @@ async function readJson(file: string): Promise<Record<string, unknown> | undefin
 
 function bool(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
+}
+
+function positive(value: unknown, fallback: number, min: number): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= min ? Math.round(value) : fallback;
 }
 
 function normalizeHandoff(raw: unknown): HandoffSettings | undefined {
@@ -148,7 +162,11 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 			autolearn: bool(rawFeatures.autolearn) ?? legacy.autolearnEnabled ?? DEFAULT_FEATURES.autolearn,
 			handoff: bool(rawFeatures.handoff) ?? legacy.handoffEnabled ?? DEFAULT_FEATURES.handoff,
 		},
-		autolearn: { at: typeof rawAutolearn.at === "number" ? rawAutolearn.at : (legacy.autolearnAt ?? 0) },
+		autolearn: {
+			at: typeof rawAutolearn.at === "number" ? rawAutolearn.at : (legacy.autolearnAt ?? 0),
+			turns: positive(rawAutolearn.turns, DEFAULT_AUTOLEARN.turns, 1),
+			intervalMs: positive(rawAutolearn.intervalMs, DEFAULT_AUTOLEARN.intervalMs, 1000),
+		},
 		handoff: normalizeHandoff(raw.handoff) ?? legacy.handoff ?? { ...DEFAULT_HANDOFF },
 	};
 	cache.set(projectRoot, config);

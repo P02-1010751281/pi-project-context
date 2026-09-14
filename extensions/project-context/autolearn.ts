@@ -7,12 +7,14 @@ import { completeText, parseJsonObject } from "./llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
 	contextFile,
+	fileMtimeMs,
 	getProjectRoot,
 	globalSkillsDir,
 	loadMemory,
 	logError,
 	logsDir,
 	memoryDir,
+	memoryFile,
 	notify,
 	readOptional,
 	sessionIndexFile,
@@ -36,12 +38,13 @@ import {
  *   4. Low confidence is not auto-activated: it is stored under
  *      `.agents/memory/skill-candidates/` and waits for `/autolearn approve <name>`.
  *
- * Runs rarely (default: at most once per six hours); failures never affect
- * memory/context or the session archive. The `autolearn` feature switch gates the
- * automatic pass; `/autolearn` keeps working as an explicit request.
+ * Runs rarely: an automatic pass requires new MEMORY/CONTEXT material and either
+ * `autolearn.turns` accumulated user turns or `autolearn.intervalMs` since the last
+ * pass. Failures never affect memory/context or the session archive. The `autolearn`
+ * feature switch gates the automatic pass; `/autolearn` keeps working as an explicit
+ * request.
  */
 
-const AUTOLEARN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const AUTOLEARN_MIN_SESSIONS = 2;
 const AUTOLEARN_CANDIDATE_MIN_SESSIONS = 1;
 const AUTOLEARN_INSPECT_SESSIONS = 4;
@@ -69,9 +72,13 @@ function candidateFile(projectRoot: string, name: string): string {
 	return path.join(candidatesDir(projectRoot), `${name}.md`);
 }
 
-async function readState(projectRoot: string): Promise<{ at: number; enabled: boolean }> {
-	const config = await getConfig(projectRoot);
-	return { at: config.autolearn.at, enabled: config.features.autolearn };
+/** User messages seen in this session; feeds the accumulated autolearn turn counter. */
+function countUserTurns(ctx: ExtensionContext): number {
+	try {
+		return ctx.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "user").length;
+	} catch {
+		return 0;
+	}
 }
 
 function skillDescription(raw: string, limit = 200): string {
@@ -365,16 +372,35 @@ async function rejectCandidate(pi: ExtensionAPI, ctx: ExtensionContext, name: st
 export function registerAutolearn(pi: ExtensionAPI): void {
 	/** Single-flight guard: session_start and agent_settled can both schedule a pass. */
 	let active: Promise<void> | undefined;
+	/** dsh-compatible throttle: accumulated turns since the last pass, per project. */
+	const throttle = new Map<string, { session: string; sessionTurns: number; turns: number }>();
 
 	async function run(ctx: ExtensionContext, options: { force?: boolean; silent?: boolean } = {}): Promise<void> {
 		const force = options.force ?? false;
 		let projectRoot: string | undefined;
 		try {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
-			const state = await readState(projectRoot);
+			const config = await getConfig(projectRoot);
 			if (runIsDisabled() && !force) return;
-			if (!state.enabled && !force) return;
-			if (!force && Date.now() - state.at < AUTOLEARN_INTERVAL_MS) return;
+			if (!config.features.autolearn && !force) return;
+
+			const sessionId = ctx.sessionManager.getSessionId();
+			const turns = countUserTurns(ctx);
+			const previous = throttle.get(projectRoot);
+			const baseline = previous?.session === sessionId ? previous.sessionTurns : 0;
+			const totalTurns = (previous?.turns ?? 0) + Math.max(0, turns - baseline);
+			if (!force) {
+				// Same gate as the dsh plugin: new material is required, then either the
+				// accumulated turn count or the interval makes the pass due. `at` is
+				// persisted, so a restart does not re-run on material already distilled.
+				const stamp = Math.max(await fileMtimeMs(memoryFile(projectRoot)), await fileMtimeMs(contextFile(projectRoot)));
+				const changed = stamp > config.autolearn.at;
+				const due = totalTurns >= config.autolearn.turns || Date.now() - config.autolearn.at >= config.autolearn.intervalMs;
+				if (!changed || !due) {
+					throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: totalTurns });
+					return;
+				}
+			}
 
 			const archived = await archivedSessionIds(projectRoot);
 			if (archived.size === 0 && !force) return;
@@ -397,6 +423,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				maxTokens: AUTOLEARN_MAX_TOKENS,
 			}));
 			await setAutolearnAt(projectRoot, Date.now());
+			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
 			if (!decision) {
 				if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");
 				return;

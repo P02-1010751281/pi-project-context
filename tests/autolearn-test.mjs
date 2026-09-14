@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, makeCtx, makePi, messageEntry, PC } from "./harness.mjs";
+import { loadDefault, makeCtx, makePi, messageEntry, PC, runHandlers } from "./harness.mjs";
 
 /**
  * Autolearn tests against a temp project with synthetic archived sessions:
@@ -134,6 +134,25 @@ try {
 	await command.handler("", ctx);
 	check("injection body rejected", !(await exists(path.join(tmp, ".agents/skills/evil-workflow/SKILL.md"))));
 	check("rejection notified", String(ctx.notifications.at(-1)?.[0] ?? "").includes("evil-workflow"));
+	console.log("\n=== H. automatic pass needs new material and a due interval ===");
+	await command.handler("on", ctx);
+	let automaticCalls = 0;
+	ctx.modelRegistry.complete = async () => {
+		automaticCalls += 1;
+		return { content: [{ type: "text", text: JSON.stringify({ skill: null, inspect: [] }) }] };
+	};
+	const settle = async () => {
+		await runHandlers(pi, "agent_settled", ctx);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	};
+	await settle();
+	check("no automatic call without new material", automaticCalls === 0);
+	// New material alone is not enough: the interval (30 min) and the turn count (20) still hold.
+	await writeFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\n\nTouched.\n");
+	await settle();
+	check("new material alone does not skip the interval", automaticCalls === 0);
+	const tuned = JSON.parse(await readFile(configFile, "utf8"));
+	check("dsh-compatible turn/interval defaults", tuned.autolearn.turns === 20 && tuned.autolearn.intervalMs === 1_800_000);
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }

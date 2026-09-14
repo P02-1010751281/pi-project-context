@@ -32,7 +32,7 @@ extensions/
 │   ├── archive.ts        # 会话存档（无 LLM）：jsonl / md / session-index，注入 CONTEXT.md
 │   ├── session-log.ts    # session.jsonl 与 session.md 渲染
 │   ├── consolidate.ts    # consolidation pass（一次 LLM）→ MEMORY.md + CONTEXT.md
-│   ├── autolearn.ts      # 低频（≥6h）技能 pass
+│   ├── autolearn.ts      # 低频（新材料 + 20 轮 / 30min）技能 pass
 │   ├── handoff.ts        # 上下文窗口阀门
 │   ├── context-doc.ts    # 索引与 CONTEXT.md 渲染
 │   ├── llm.ts            # 模型 JSON 调用
@@ -47,7 +47,7 @@ session.jsonl（原始，唯一权威）
  │                        settle/shutdown 渲染 md 并维护 session-logs/INDEX.md；只读注入 CONTEXT.md
  ├─ memory       （1 次 LLM，6 轮 / 5min 节流）consolidation →
  │                        MEMORY.md（长期）+ CONTEXT.md（工作态），两者每轮注入
- ├─ autolearn    （1 次 LLM，≥6h）读 MEMORY/CONTEXT + 会话索引判断；
+ ├─ autolearn    （1 次 LLM，新材料 + 20 轮 / 30min）读 MEMORY/CONTEXT + 会话索引判断；
  │                        缺证据时按索引回溯存档摘录；≥2 个已存档会话才直接写
  │                        .agents/skills/<name>/SKILL.md，低置信度写 candidate 等确认；
  │                        拒绝含提示注入话术的 body
@@ -65,7 +65,7 @@ session.jsonl（原始，唯一权威）
 ```json
 {
   "features": { "archive": true, "memory": true, "autolearn": true, "handoff": true },
-  "autolearn": { "at": 0 },
+  "autolearn": { "at": 0, "turns": 20, "intervalMs": 1800000 },
   "handoff": {
     "threshold": "auto",
     "autoTargetTokens": 64000,
@@ -78,6 +78,7 @@ session.jsonl（原始，唯一权威）
 ```
 
 - 每个功能独立开关，默认全开；`/project-context on|off archive|memory|autolearn|handoff|all`。
+- autolearn 自动 pass 与 dsh 同门禁：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮数 ≥ `autolearn.turns` 或距上次 pass ≥ `autolearn.intervalMs`）；`autolearn.at` 持久化，重启不会重复跑已消化的材料。
 - 开关管**自动行为**（写盘 / LLM 调用 / 换会话；`memory` 开关同时管 MEMORY、CONTEXT 的注入）；显式命令不受开关限制。
 - `--no-project-context` 本轮全关（不写盘、不注入、不跑 pass、不换会话），不改配置。
 - 旧配置兼容：`<project>/.agents/memory/autolearn.json` 的 `enabled`/`at` 与全局 `~/.pi/agent/auto-handoff.json` 仅作为默认值读取，之后统一写 `project-context.json`。
@@ -112,7 +113,7 @@ Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-han
     ├── skill-candidates/<name>.md      # 待确认候选技能
     ├── errors.log                      # 被吞掉的异常（诊断用；单条截断到 8000 字符，超 1MB 轮换保留最新）
     └── session-logs/
-        ├── INDEX.md                    # 机械会话索引（无 LLM 维护，链接相对本目录）
+        ├── INDEX.md                    # 机械会话索引（无 LLM 维护，按 id 去重、只留最新 200 行，链接相对本目录）
         ├── .gitignore                  # 首次写出时自动生成，忽略整个目录
         └── <session-id>/{session.jsonl,session.md}
 ```

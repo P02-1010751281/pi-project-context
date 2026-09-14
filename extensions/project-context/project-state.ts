@@ -157,6 +157,15 @@ export async function readOptional(file: string): Promise<string> {
 	}
 }
 
+/** Last-modification time in epoch ms; 0 when the file is missing (used by the autolearn gate). */
+export async function fileMtimeMs(file: string): Promise<number> {
+	try {
+		return (await stat(file)).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
 export async function pathExists(target: string): Promise<boolean> {
 	try {
 		await stat(target);
