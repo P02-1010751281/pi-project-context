@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
 
 /**
  * End-to-end test of the settle/shutdown path in one extension:
@@ -69,6 +69,55 @@ try {
 	check("prompt has both artifacts", prompt.includes("<existing-memory>") && prompt.includes("<existing-context>"));
 
 	console.log("\nnotifications:", JSON.stringify(ctx.notifications.map(([message]) => message)));
+
+	console.log("\n=== malformed consolidation replies ===");
+	{
+		const { parseConsolidated } = await loadNamespace(`${PC}/consolidate.ts`);
+		// The reply that used to poison MEMORY.md: a stray member made JSON.parse fail and the
+		// raw object was stored as memory.
+		const corrupted = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- kept.","context":"# Project Context","stray\\n\\n- tail"}';
+		check("malformed JSON: the memory field is recovered", parseConsolidated(corrupted)?.memory === "# Project Memory\n\n## Project\n- kept.");
+		check("truncated JSON: no memory is invented", parseConsolidated('{"memory_markdown":"# Project Memory\\n\\n- cut') === undefined);
+		check("unusable JSON: the pass fails instead of storing raw JSON", parseConsolidated('{"memory_markdown": 17, "context": {') === undefined);
+		check("plain markdown still becomes memory", parseConsolidated("still plain markdown")?.memory === "still plain markdown");
+	}
+
+	console.log("\n=== a reply that cannot be read never reaches MEMORY.md ===");
+	{
+		const jsonTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-json-"));
+		try {
+			await mkdir(path.join(jsonTmp, ".agents/memory"), { recursive: true });
+			const previous = "# Project Memory\n\n## Project\n- Previous memory.\n";
+			await writeFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), previous);
+			let reply = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- recovered.","context":"# Project Context","stray\\n\\n- tail"}';
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: jsonTmp });
+			await factory(pi);
+			const ctx = makeCtx(jsonTmp, {
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "json-session"),
+				modelRegistry: { hasConfiguredAuth: () => true, complete: async () => ({ content: [{ type: "text", text: reply }] }) },
+			});
+			await runHandlers(pi, "session_shutdown", ctx);
+			const recovered = await readFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), "utf8");
+			check("a malformed reply stores the recovered memory", recovered.includes("- recovered.") && !recovered.includes("memory_markdown"));
+
+			// Second pass: nothing readable at all; the file must stay exactly as it is.
+			reply = '{"memory_markdown": 17, "context": {';
+			const realNow = Date.now;
+			Date.now = () => realNow() + 60 * 1000;
+			try {
+				await runHandlers(pi, "session_shutdown", ctx);
+			} finally {
+				Date.now = realNow;
+			}
+			const untouched = await readFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const errors = await readFile(path.join(jsonTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("an unusable reply leaves MEMORY.md untouched", untouched === recovered);
+			check("the failed pass is logged to errors.log", errors.includes("consolidation reply was not a usable JSON object"));
+		} finally {
+			await rm(jsonTmp, { recursive: true, force: true });
+		}
+	}
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }
