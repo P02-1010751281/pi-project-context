@@ -144,3 +144,7 @@ node tests/run-all.mjs
 ```
 
 用 pi 自带的 jiti loader 加载本仓库的扩展（与运行时同一套 alias，不触碰 `~/.pi`），全部跑在临时项目目录上：loader 完整性、注册项、会话投影、索引渲染、autolearn 取证与门禁（含注入体拒绝）、consolidation 端到端与会话级节流、功能开关、日志轮换/迁移冲突/原子写卫生。若 pi 不在全局 npm root，用 `PI_PKG=/path/to/@earendil-works/pi-coding-agent` 指定。
+
+## 许可证
+
+MIT © 2026 呼啸山庄 (P02-1010751281)，见 [LICENSE](./LICENSE)。
