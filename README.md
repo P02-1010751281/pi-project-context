@@ -20,7 +20,7 @@ pi install git:github.com/P02-1010751281/pi-project-context@v0.1.1
 
 然后在 pi 里 `/reload`（或重启 pi）。目标目录可用 `PI_EXTENSIONS_DIR=... ./install.sh` 覆盖。
 
-`install.sh` 只管理本仓库 `extensions/` 下的目录，同步时会移除 5 个旧扩展目录（`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`），其他文件一律不碰。
+`install.sh` 只管理本仓库 `extensions/` 下的目录，同步时会移除 5 个旧扩展目录（`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`），其他文件一律不碰；若 `~/.pi/agent/settings.json`（或项目 `.pi/settings.json`）里同时装了本仓库的 pi package，会打印警告——两份实例会让所有同名命令被 pi 改名为 `auto-handoff:1`/`:2`（原名失效），hook 也会双跑；此时执行 `pi remove <该 package>` 后 `/reload`。
 
 ## 结构
 
