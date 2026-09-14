@@ -60,28 +60,38 @@ session.jsonl（原始，唯一权威）
 
 ## 开关
 
-配置在 `<project>/.agents/memory/project-context.json`，首次使用或旧配置存在时自动生成/兼容：
+配置在 `<project>/.agents/memory/project-context.json`，字段名与 dsh 插件的 settings 键一致（只有存储方式和 pi 独有的 `handoffMode`/`handoffGuard` 不同）：
 
 ```json
 {
-  "features": { "archive": true, "memory": true, "autolearn": true, "handoff": true },
-  "autolearn": { "at": 0, "turns": 20, "intervalMs": 1800000 },
-  "handoff": {
-    "threshold": "auto",
-    "autoTargetTokens": 64000,
-    "keepRecentTokens": 20000,
-    "summaryThinking": "off",
-    "mode": "send",
-    "guard": "wait"
-  }
+  "archiveEnabled": true,
+  "autoConsolidate": true,
+  "autoLearn": true,
+  "handoffEnabled": true,
+  "autolearnAt": 0,
+  "autolearnTurns": 20,
+  "autolearnIntervalMs": 1800000,
+  "consolidateTurns": 6,
+  "consolidateIntervalMs": 300000,
+  "forceDedupeMs": 15000,
+  "handoffAdaptive": true,
+  "handoffThresholdRatio": 0.4,
+  "handoffTargetTokens": 64000,
+  "handoffKeepTokens": 20000,
+  "handoffSummaryThinking": "off",
+  "handoffMode": "send",
+  "handoffGuard": "wait"
 }
 ```
 
-- 每个功能独立开关，默认全开；`/project-context on|off archive|memory|autolearn|handoff|all`。
-- autolearn 自动 pass 与 dsh 同门禁：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮数 ≥ `autolearn.turns` 或距上次 pass ≥ `autolearn.intervalMs`）；`autolearn.at` 持久化，重启不会重复跑已消化的材料。
+- 每个功能独立开关，默认全开；命令动词仍是 pi 侧的 `archive|memory|autolearn|handoff`（`FEATURE_FIELDS` 映射到上表字段）：`/project-context on|off archive|memory|autolearn|handoff|all`。
+- autolearn 自动 pass 与 dsh 同门禁：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮数 ≥ `autolearnTurns` 或距上次 pass ≥ `autolearnIntervalMs`）；`autolearnAt` 持久化，重启不会重复跑已消化的材料。
+- consolidation 自动节奏与 dsh 同名：`consolidateTurns`（默认 6 轮）/`consolidateIntervalMs`（默认 5min）控制自动整理，`forceDedupeMs`（默认 15s）抑制紧邻的强制重复调用。
+- `handoffAdaptive=true` 用自适应阈值；置 false 时用 `handoffThresholdRatio`（窗口占比 0.1–0.95）；`handoffMode`（send/draft）与 `handoffGuard`（wait/draft/send/skip）是 pi 独有（dsh 无编辑器，改用 `handoffPendingQuestion: defer|wait`）。
+- dsh 还有 `maxTokens`/`provider`/`model` 三个辅助调用旋钮；pi 的辅助调用固定用会话模型（8192 输出上限），尚未对齐。
 - 开关管**自动行为**（写盘 / LLM 调用 / 换会话；`memory` 开关同时管 MEMORY、CONTEXT 的注入）；显式命令不受开关限制。
 - `--no-project-context` 本轮全关（不写盘、不注入、不跑 pass、不换会话），不改配置。
-- 旧配置兼容：`<project>/.agents/memory/autolearn.json` 的 `enabled`/`at` 与全局 `~/.pi/agent/auto-handoff.json` 仅作为默认值读取，之后统一写 `project-context.json`。
+- 旧配置兼容（只读）：嵌套布局（`features.*`/`autolearn.*`/`handoff.*`）、`<project>/.agents/memory/autolearn.json` 的 `enabled`/`at` 与全局 `~/.pi/agent/auto-handoff.json` 均作为默认值读取；下次保存时同一文件重写为扁平布局。
 
 ## 命令与 flags
 

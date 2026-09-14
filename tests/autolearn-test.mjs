@@ -120,11 +120,11 @@ try {
 	console.log("\n=== F. switch lives in project-context.json ===");
 	const configFile = path.join(tmp, ".agents/memory/project-context.json");
 	const config = JSON.parse(await readFile(configFile, "utf8"));
-	check("autolearn enabled by default", config.features.autolearn === true);
-	check("throttle timestamp recorded", typeof config.autolearn.at === "number" && config.autolearn.at > 0);
+	check("autolearn enabled by default", config.autoLearn === true);
+	check("throttle timestamp recorded", typeof config.autolearnAt === "number" && config.autolearnAt > 0);
 	await command.handler("off", ctx);
 	const off = JSON.parse(await readFile(configFile, "utf8"));
-	check("off persisted", off.features.autolearn === false);
+	check("off persisted", off.autoLearn === false);
 	await pi.commands.get("project-context").handler("status", ctx);
 	check("status shows autolearn=off", String(ctx.notifications.at(-1)?.[0] ?? "").includes("autolearn=off"));
 
@@ -152,7 +152,7 @@ try {
 	await settle();
 	check("new material alone does not skip the interval", automaticCalls === 0);
 	const tuned = JSON.parse(await readFile(configFile, "utf8"));
-	check("dsh-compatible turn/interval defaults", tuned.autolearn.turns === 20 && tuned.autolearn.intervalMs === 1_800_000);
+	check("dsh-compatible turn/interval defaults", tuned.autolearnTurns === 20 && tuned.autolearnIntervalMs === 1_800_000);
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }

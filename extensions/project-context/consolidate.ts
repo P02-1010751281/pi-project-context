@@ -26,11 +26,10 @@ import {
  * All hooks and the throttle/single-flight state live in this one module, so a pass
  * cannot be duplicated by pi's per-extension module registries. The `memory` feature
  * switch gates the automatic pass and the injection; explicit commands always run.
+ *
+ * Cadence (`consolidateTurns` / `consolidateIntervalMs` / `forceDedupeMs`) lives in
+ * project-context.json and matches the dsh plugin's defaults.
  */
-
-export const CONSOLIDATE_TURNS = 6;
-export const CONSOLIDATE_INTERVAL_MS = 5 * 60 * 1000;
-const FORCE_DEDUPE_MS = 15 * 1000;
 
 export type ContextUpdate = {
 	title: string;
@@ -144,7 +143,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		if (runIsDisabled()) return { enabled: false };
 		try {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			return { enabled: (await getConfig(projectRoot)).features.memory, root: projectRoot };
+			return { enabled: (await getConfig(projectRoot)).autoConsolidate, root: projectRoot };
 		} catch {
 			return { enabled: false };
 		}
@@ -274,12 +273,13 @@ export async function consolidateProjectState(
 		const sessionId = ctx.sessionManager.getSessionId();
 		const previous = throttle.get(projectRoot);
 		// The turn counter is session-local: after a session change, count from zero again.
-		// Otherwise a fresh session would need `previous session turns + CONSOLIDATE_TURNS` before learning.
+		// Otherwise a fresh session would need `previous session turns + consolidateTurns` before learning.
 		const baseline = previous?.session === sessionId ? previous.turns : 0;
 		const cached = lastOutcome.get(projectRoot);
-		const throttled = !force && (turns - baseline < CONSOLIDATE_TURNS || Date.now() - (previous?.at ?? 0) < CONSOLIDATE_INTERVAL_MS);
+		const config = await getConfig(projectRoot);
+		const throttled = !force && (turns - baseline < config.consolidateTurns || Date.now() - (previous?.at ?? 0) < config.consolidateIntervalMs);
 		if (throttled) return cached?.outcome;
-		if (force && cached && Date.now() - cached.at < FORCE_DEDUPE_MS) return cached.outcome;
+		if (force && cached && Date.now() - cached.at < config.forceDedupeMs) return cached.outcome;
 		if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
 			notify(ctx, "Project state update skipped: current model is not authenticated", "warning");
 			return undefined;

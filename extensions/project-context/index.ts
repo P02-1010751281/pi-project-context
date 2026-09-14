@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerArchive } from "./archive.ts";
 import { registerAutolearn } from "./autolearn.ts";
-import { configFile, FEATURE_NAMES, getConfig, runIsDisabled, setFeature, setRunDisabled } from "./config.ts";
+import { configFile, FEATURE_FIELDS, FEATURE_NAMES, getConfig, runIsDisabled, setFeature, setRunDisabled } from "./config.ts";
 import { registerConsolidation } from "./consolidate.ts";
 import { registerHandoff } from "./handoff.ts";
 import { getProjectRoot, notify } from "./project-state.ts";
@@ -50,7 +50,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 	registerHandoff(pi);
 
 	function featuresText(config: Awaited<ReturnType<typeof getConfig>>): string {
-		return FEATURE_NAMES.map((name) => `${name}=${config.features[name] ? "on" : "off"}`).join("  ");
+		return FEATURE_NAMES.map((name) => `${name}=${config[FEATURE_FIELDS[name]] ? "on" : "off"}`).join("  ");
 	}
 
 	pi.registerCommand("project-context", {

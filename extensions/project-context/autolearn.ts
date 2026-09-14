@@ -2,7 +2,7 @@ import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getConfig, runIsDisabled, setAutolearnAt, setFeature } from "./config.ts";
+import { getConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
 import { completeText, parseJsonObject } from "./llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
@@ -39,7 +39,7 @@ import {
  *      `.agents/memory/skill-candidates/` and waits for `/autolearn approve <name>`.
  *
  * Runs rarely: an automatic pass requires new MEMORY/CONTEXT material and either
- * `autolearn.turns` accumulated user turns or `autolearn.intervalMs` since the last
+ * `autolearnTurns` accumulated user turns or `autolearnIntervalMs` since the last
  * pass. Failures never affect memory/context or the session archive. The `autolearn`
  * feature switch gates the automatic pass; `/autolearn` keeps working as an explicit
  * request.
@@ -382,7 +382,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const config = await getConfig(projectRoot);
 			if (runIsDisabled() && !force) return;
-			if (!config.features.autolearn && !force) return;
+			if (!config.autoLearn && !force) return;
 
 			const sessionId = ctx.sessionManager.getSessionId();
 			const turns = countUserTurns(ctx);
@@ -394,8 +394,8 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				// accumulated turn count or the interval makes the pass due. `at` is
 				// persisted, so a restart does not re-run on material already distilled.
 				const stamp = Math.max(await fileMtimeMs(memoryFile(projectRoot)), await fileMtimeMs(contextFile(projectRoot)));
-				const changed = stamp > config.autolearn.at;
-				const due = totalTurns >= config.autolearn.turns || Date.now() - config.autolearn.at >= config.autolearn.intervalMs;
+				const changed = stamp > config.autolearnAt;
+				const due = totalTurns >= config.autolearnTurns || Date.now() - config.autolearnAt >= config.autolearnIntervalMs;
 				if (!changed || !due) {
 					throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: totalTurns });
 					return;
@@ -422,7 +422,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			let decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions), {
 				maxTokens: AUTOLEARN_MAX_TOKENS,
 			}));
-			await setAutolearnAt(projectRoot, Date.now());
+			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
 			if (!decision) {
 				if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");

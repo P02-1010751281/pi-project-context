@@ -5,66 +5,94 @@ import { memoryDir, readOptional, writeAtomic } from "./project-state.ts";
 /**
  * Project-scoped configuration for the project-context extension.
  *
- * One file holds everything: the four feature switches, the autolearn throttle
- * timestamp and the handoff settings. The file lives next to the artifacts it
- * controls (`<project>/.agents/memory/project-context.json`) so a project can be
- * paused or tuned without touching global config.
+ * One file holds everything, next to the artifacts it controls
+ * (`<project>/.agents/memory/project-context.json`), so a project can be paused or
+ * tuned without touching global config.
  *
- * Backward compatibility: the previous layout stored the autolearn switch in
- * `<project>/.agents/memory/autolearn.json` and the handoff settings in the global
- * agent dir (`~/.pi/agent/auto-handoff.json`). Both are read once as defaults;
- * nothing is written back to them.
+ * Field names are shared with the dsh plugin (the two repos keep the same config
+ * surface; only the storage and the pi-only `handoffMode`/`handoffGuard` differ).
+ *
+ * Backward compatibility, read-only until the next save:
+ *   - the pre-unification nested layout (`features.*`, `autolearn.*`, `handoff.*`)
+ *   - `<project>/.agents/memory/autolearn.json` (enabled/at)
+ *   - the global handoff settings (`~/.pi/agent/auto-handoff.json`)
+ * The file is rewritten in the flat layout on the next save.
  */
 
 export type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
 export const FEATURE_NAMES: FeatureName[] = ["archive", "memory", "autolearn", "handoff"];
 
-export type Features = Record<FeatureName, boolean>;
+/** Command verb → config field. The verbs are pi-side copy; the fields are shared with dsh. */
+export const FEATURE_FIELDS: Record<FeatureName, "archiveEnabled" | "autoConsolidate" | "autoLearn" | "handoffEnabled"> = {
+	archive: "archiveEnabled",
+	memory: "autoConsolidate",
+	autolearn: "autoLearn",
+	handoff: "handoffEnabled",
+};
 
 export type HandoffSettings = {
-	/** Fixed fraction of the context window, or "auto" for the derived threshold. */
-	threshold: number | "auto";
-	/** Auto mode: conversation tokens to summarize per handoff. */
-	autoTargetTokens: number;
+	/** Adaptive threshold (dsh `handoffAdaptive`); false uses `handoffThresholdRatio`. */
+	handoffAdaptive: boolean;
+	/** Context-window fraction (0.1–0.95) used when `handoffAdaptive` is false. */
+	handoffThresholdRatio: number;
+	/** Adaptive mode: conversation tokens to summarize per handoff. */
+	handoffTargetTokens: number;
 	/** Recent raw tokens replayed into the new session; 0 = summary only. */
-	keepRecentTokens: number;
+	handoffKeepTokens: number;
 	/** Thinking for the summary call: "off" (fast) or the session level. */
-	summaryThinking: "off" | "session";
-	mode: "send" | "draft";
-	/** Behavior when the last assistant message asks the user a question. */
-	guard: "wait" | "draft" | "send" | "skip";
+	handoffSummaryThinking: "off" | "session";
+	/** pi-only: "send" dismisses the handoff into a new session, "draft" leaves it in the editor. */
+	handoffMode: "send" | "draft";
+	/** pi-only: behavior when the last assistant message asks the user a question. */
+	handoffGuard: "wait" | "draft" | "send" | "skip";
 };
 
-export type AutolearnSettings = {
-	/** Last completed automatic pass (epoch ms); persisted so a restart does not re-run on old material. */
-	at: number;
-	/** Accumulated user turns before an automatic pass. */
-	turns: number;
-	/** Minimum wall-clock gap between automatic passes. */
-	intervalMs: number;
+export type ProjectContextConfig = HandoffSettings & {
+	archiveEnabled: boolean;
+	autoConsolidate: boolean;
+	autoLearn: boolean;
+	handoffEnabled: boolean;
+	/** Last completed automatic autolearn pass (epoch ms); persisted so a restart does not re-run. */
+	autolearnAt: number;
+	/** Accumulated user turns before an automatic autolearn pass. */
+	autolearnTurns: number;
+	/** Minimum wall-clock gap between automatic autolearn passes. */
+	autolearnIntervalMs: number;
+	/** User turns accumulated before an automatic consolidation pass. */
+	consolidateTurns: number;
+	/** Minimum wall-clock gap between automatic consolidation passes. */
+	consolidateIntervalMs: number;
+	/** Suppress an almost-immediate duplicate forced pass. */
+	forceDedupeMs: number;
 };
 
-export type ProjectContextConfig = {
-	features: Features;
-	autolearn: AutolearnSettings;
-	handoff: HandoffSettings;
-};
-
-export const DEFAULT_FEATURES: Features = { archive: true, memory: true, autolearn: true, handoff: true };
-export const DEFAULT_AUTOLEARN: AutolearnSettings = { at: 0, turns: 20, intervalMs: 30 * 60 * 1000 };
-
-export const DEFAULT_HANDOFF: HandoffSettings = {
-	threshold: "auto",
-	autoTargetTokens: 64_000,
-	keepRecentTokens: 20_000,
-	summaryThinking: "off",
-	mode: "send",
-	guard: "wait",
+/** Defaults match the dsh plugin's `DEFAULT_CONFIG`. */
+export const DEFAULT_CONFIG: ProjectContextConfig = {
+	archiveEnabled: true,
+	autoConsolidate: true,
+	autoLearn: true,
+	handoffEnabled: true,
+	autolearnAt: 0,
+	autolearnTurns: 20,
+	autolearnIntervalMs: 30 * 60 * 1000,
+	consolidateTurns: 6,
+	consolidateIntervalMs: 5 * 60 * 1000,
+	forceDedupeMs: 15 * 1000,
+	handoffAdaptive: true,
+	handoffThresholdRatio: 0.4,
+	handoffTargetTokens: 64_000,
+	handoffKeepTokens: 20_000,
+	handoffSummaryThinking: "off",
+	handoffMode: "send",
+	handoffGuard: "wait",
 };
 
 /** Don't hand off unless at least this much context is actually replaced by the summary. */
 export const MIN_SUMMARIZE_TOKENS = 8_000;
 export const MAX_KEEP_RECENT_TOKENS = 200_000;
+/** dsh's accepted range for `handoffThresholdRatio`. */
+const MIN_RATIO = 0.1;
+const MAX_RATIO = 0.95;
 
 export function configFile(projectRoot: string): string {
 	return join(memoryDir(projectRoot), "project-context.json");
@@ -89,50 +117,52 @@ async function readJson(file: string): Promise<Record<string, unknown> | undefin
 	if (!raw) return undefined;
 	try {
 		const parsed = JSON.parse(raw) as unknown;
-		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
 	} catch {
 		return undefined;
 	}
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function bool(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
-function positive(value: unknown, fallback: number, min: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= min ? Math.round(value) : fallback;
+function positive(value: unknown, min: number): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= min ? Math.round(value) : undefined;
 }
 
-function normalizeHandoff(raw: unknown): HandoffSettings | undefined {
-	if (!raw || typeof raw !== "object") return undefined;
-	const parsed = raw as Record<string, unknown>;
-	// "ratio" is the pre-auto config key; keep reading it for compatibility.
-	const rawThreshold = parsed.threshold ?? parsed.ratio;
-	const target = typeof parsed.autoTargetTokens === "number" ? parsed.autoTargetTokens : Number.NaN;
-	const keep = typeof parsed.keepRecentTokens === "number" ? parsed.keepRecentTokens : Number.NaN;
-	return {
-		threshold: rawThreshold === "auto"
-			? "auto"
-			: typeof rawThreshold === "number" && rawThreshold > 0.05 && rawThreshold < 0.98
-				? rawThreshold
-				: DEFAULT_HANDOFF.threshold,
-		autoTargetTokens: Number.isFinite(target) && target >= MIN_SUMMARIZE_TOKENS && target <= MAX_KEEP_RECENT_TOKENS
-			? Math.round(target)
-			: DEFAULT_HANDOFF.autoTargetTokens,
-		keepRecentTokens: Number.isFinite(keep) && keep >= 0 && keep <= MAX_KEEP_RECENT_TOKENS
-			? Math.round(keep)
-			: DEFAULT_HANDOFF.keepRecentTokens,
-		summaryThinking: parsed.summaryThinking === "session" ? "session" : "off",
-		mode: parsed.mode === "draft" ? "draft" : "send",
-		guard: parsed.guard === "draft" || parsed.guard === "send" || parsed.guard === "skip" ? parsed.guard : DEFAULT_HANDOFF.guard,
-	};
+function bounded(value: unknown, min: number, max: number): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? Math.round(value) : undefined;
 }
 
-/** Defaults from the previous, split configuration files. */
+function ratio(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_RATIO && value <= MAX_RATIO ? value : undefined;
+}
+
+/** "auto" → adaptive, number → fixed ratio; anything else → undefined. */
+function adaptiveOf(threshold: unknown): boolean | undefined {
+	if (threshold === "auto") return true;
+	if (typeof threshold === "number" && Number.isFinite(threshold)) return false;
+	return undefined;
+}
+
+function modeOf(value: unknown): HandoffSettings["handoffMode"] | undefined {
+	return value === "draft" || value === "send" ? value : undefined;
+}
+
+function guardOf(value: unknown): HandoffSettings["handoffGuard"] | undefined {
+	return value === "wait" || value === "draft" || value === "send" || value === "skip" ? value : undefined;
+}
+
+/** Defaults from the previous, split configuration files (read once, never written back). */
 async function legacyDefaults(projectRoot: string): Promise<{
 	autolearnEnabled?: boolean;
 	autolearnAt?: number;
-	handoff?: HandoffSettings;
+	handoff?: Record<string, unknown>;
 	handoffEnabled?: boolean;
 }> {
 	const autolearn = await readJson(join(memoryDir(projectRoot), "autolearn.json"));
@@ -140,7 +170,7 @@ async function legacyDefaults(projectRoot: string): Promise<{
 	return {
 		autolearnEnabled: autolearn ? bool(autolearn.enabled) : undefined,
 		autolearnAt: autolearn && typeof autolearn.at === "number" ? autolearn.at : undefined,
-		handoff: normalizeHandoff(globalHandoff),
+		handoff: globalHandoff,
 		handoffEnabled: globalHandoff ? bool(globalHandoff.enabled) : undefined,
 	};
 }
@@ -152,22 +182,48 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 
 	const raw = (await readJson(configFile(projectRoot))) ?? {};
 	const legacy = await legacyDefaults(projectRoot);
-	const rawFeatures = (raw.features && typeof raw.features === "object" ? raw.features : {}) as Record<string, unknown>;
-	const rawAutolearn = (raw.autolearn && typeof raw.autolearn === "object" ? raw.autolearn : {}) as Record<string, unknown>;
+	const features = asRecord(raw.features);
+	const autolearn = asRecord(raw.autolearn);
+	const handoff = asRecord(raw.handoff);
+	const global = legacy.handoff ?? {};
+	// Pre-unification threshold keys: nested `handoff.threshold`/`ratio`, then the global file.
+	const nestedThreshold = handoff.threshold ?? handoff.ratio;
+	const legacyThreshold = global.threshold ?? global.ratio;
 
 	const config: ProjectContextConfig = {
-		features: {
-			archive: bool(rawFeatures.archive) ?? DEFAULT_FEATURES.archive,
-			memory: bool(rawFeatures.memory) ?? DEFAULT_FEATURES.memory,
-			autolearn: bool(rawFeatures.autolearn) ?? legacy.autolearnEnabled ?? DEFAULT_FEATURES.autolearn,
-			handoff: bool(rawFeatures.handoff) ?? legacy.handoffEnabled ?? DEFAULT_FEATURES.handoff,
-		},
-		autolearn: {
-			at: typeof rawAutolearn.at === "number" ? rawAutolearn.at : (legacy.autolearnAt ?? 0),
-			turns: positive(rawAutolearn.turns, DEFAULT_AUTOLEARN.turns, 1),
-			intervalMs: positive(rawAutolearn.intervalMs, DEFAULT_AUTOLEARN.intervalMs, 1000),
-		},
-		handoff: normalizeHandoff(raw.handoff) ?? legacy.handoff ?? { ...DEFAULT_HANDOFF },
+		archiveEnabled: bool(raw.archiveEnabled) ?? bool(features.archive) ?? DEFAULT_CONFIG.archiveEnabled,
+		autoConsolidate: bool(raw.autoConsolidate) ?? bool(features.memory) ?? DEFAULT_CONFIG.autoConsolidate,
+		autoLearn: bool(raw.autoLearn) ?? bool(features.autolearn) ?? legacy.autolearnEnabled ?? DEFAULT_CONFIG.autoLearn,
+		handoffEnabled: bool(raw.handoffEnabled) ?? bool(features.handoff) ?? legacy.handoffEnabled ?? DEFAULT_CONFIG.handoffEnabled,
+
+		autolearnAt: positive(raw.autolearnAt, 0) ?? positive(autolearn.at, 0) ?? legacy.autolearnAt ?? DEFAULT_CONFIG.autolearnAt,
+		autolearnTurns: positive(raw.autolearnTurns, 1) ?? positive(autolearn.turns, 1) ?? DEFAULT_CONFIG.autolearnTurns,
+		autolearnIntervalMs: positive(raw.autolearnIntervalMs, 1000) ?? positive(autolearn.intervalMs, 1000) ?? DEFAULT_CONFIG.autolearnIntervalMs,
+		consolidateTurns: positive(raw.consolidateTurns, 1) ?? DEFAULT_CONFIG.consolidateTurns,
+		consolidateIntervalMs: positive(raw.consolidateIntervalMs, 1000) ?? DEFAULT_CONFIG.consolidateIntervalMs,
+		forceDedupeMs: positive(raw.forceDedupeMs, 0) ?? DEFAULT_CONFIG.forceDedupeMs,
+
+		handoffAdaptive: bool(raw.handoffAdaptive) ?? adaptiveOf(nestedThreshold) ?? adaptiveOf(legacyThreshold) ?? DEFAULT_CONFIG.handoffAdaptive,
+		handoffThresholdRatio: ratio(raw.handoffThresholdRatio)
+			?? ratio(nestedThreshold)
+			?? ratio(legacyThreshold)
+			?? DEFAULT_CONFIG.handoffThresholdRatio,
+		handoffTargetTokens: bounded(raw.handoffTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
+			?? bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
+			?? bounded(global.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
+			?? DEFAULT_CONFIG.handoffTargetTokens,
+		handoffKeepTokens: bounded(raw.handoffKeepTokens, 0, MAX_KEEP_RECENT_TOKENS)
+			?? bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
+			?? bounded(global.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
+			?? DEFAULT_CONFIG.handoffKeepTokens,
+		handoffSummaryThinking: (raw.handoffSummaryThinking === "session" || raw.handoffSummaryThinking === "off"
+			? raw.handoffSummaryThinking
+			: undefined)
+			?? (handoff.summaryThinking === "session" || handoff.summaryThinking === "off" ? handoff.summaryThinking : undefined)
+			?? (global.summaryThinking === "session" || global.summaryThinking === "off" ? global.summaryThinking : undefined)
+			?? DEFAULT_CONFIG.handoffSummaryThinking,
+		handoffMode: modeOf(raw.handoffMode) ?? modeOf(handoff.mode) ?? modeOf(global.mode) ?? DEFAULT_CONFIG.handoffMode,
+		handoffGuard: guardOf(raw.handoffGuard) ?? guardOf(handoff.guard) ?? guardOf(global.guard) ?? DEFAULT_CONFIG.handoffGuard,
 	};
 	cache.set(projectRoot, config);
 	return config;
@@ -184,20 +240,12 @@ export async function saveConfig(projectRoot: string, config: ProjectContextConf
 	return config;
 }
 
+/** Merge a partial update into the cached config and persist it in the flat layout. */
+export async function updateConfig(projectRoot: string, patch: Partial<ProjectContextConfig>): Promise<ProjectContextConfig> {
+	return saveConfig(projectRoot, { ...(await getConfig(projectRoot)), ...patch });
+}
+
 export async function setFeature(projectRoot: string, feature: FeatureName, enabled: boolean): Promise<ProjectContextConfig> {
-	const config = await getConfig(projectRoot);
-	config.features = { ...config.features, [feature]: enabled };
-	return saveConfig(projectRoot, config);
-}
-
-export async function updateHandoff(projectRoot: string, patch: Partial<HandoffSettings>): Promise<ProjectContextConfig> {
-	const config = await getConfig(projectRoot);
-	config.handoff = { ...config.handoff, ...patch };
-	return saveConfig(projectRoot, config);
-}
-
-export async function setAutolearnAt(projectRoot: string, at: number): Promise<ProjectContextConfig> {
-	const config = await getConfig(projectRoot);
-	config.autolearn = { ...config.autolearn, at };
-	return saveConfig(projectRoot, config);
+	const patch: Partial<ProjectContextConfig> = { [FEATURE_FIELDS[feature]]: enabled };
+	return updateConfig(projectRoot, patch);
 }

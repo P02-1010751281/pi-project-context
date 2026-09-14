@@ -9,7 +9,7 @@
  * context that protects answer quality.
  *
  * Threshold:
- *   - auto (default): trigger once the context can give up ~autoTargetTokens
+ *   - adaptive (default): trigger once the context can give up ~handoffTargetTokens
  *     (default 64k) on top of the measured baseline + keepRecent, bounded by
  *     half the usable window and by the model's first cost tier. Derived from
  *     model info (contextWindow, cost tiers) and measured usage, not a fixed %.
@@ -65,12 +65,8 @@ import {
 	type SessionManager,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_HANDOFF, getConfig, type HandoffSettings, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, runIsDisabled, setFeature, updateHandoff } from "./config.ts";
+import { DEFAULT_CONFIG, getConfig, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, type ProjectContextConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
 import { getProjectRoot, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
-
-type Config = HandoffSettings;
-
-const DEFAULT_CONFIG: Config = { ...DEFAULT_HANDOFF };
 /** pi's default compaction reserve; window headroom used by the threshold math. */
 const WINDOW_RESERVE_TOKENS = 16_384;
 /** Output room for the summary call (0.8 * this is the maxTokens cap). */
@@ -84,7 +80,7 @@ const SUMMARY_TIMEOUT_MS = 180_000;
 const FAILURE_BACKOFF_MS = 5 * 60_000;
 const RETRIGGER_COOLDOWN_MS = 30_000;
 
-let config: Config = { ...DEFAULT_CONFIG };
+let config: ProjectContextConfig = { ...DEFAULT_CONFIG };
 /** Project whose project-context.json supplied the current settings. */
 let configRoot: string | undefined;
 /** Per-run override from --no-auto-handoff / --handoff-ratio off. */
@@ -96,20 +92,20 @@ let failureBackoffUntil = 0;
 
 /** Feature switch (`/project-context off handoff`) plus run-level overrides. */
 function handoffEnabled(): boolean {
-	return !runIsDisabled() && flagEnabled && (peekConfig(configRoot)?.features.handoff ?? false);
+	return !runIsDisabled() && flagEnabled && (peekConfig(configRoot)?.handoffEnabled ?? false);
 }
 
-/** Load the project's handoff settings into the local working copy. */
+/** Load the project's configuration into the local working copy. */
 async function syncConfig(root: string | undefined): Promise<void> {
 	configRoot = root;
 	if (!root) return;
-	config = (await getConfig(root)).handoff;
+	config = await getConfig(root);
 }
 
 async function saveConfig(): Promise<void> {
 	if (!configRoot) return;
 	try {
-		await updateHandoff(configRoot, config);
+		await updateConfig(configRoot, config);
 	} catch {
 		// Best effort; a read-only project dir must not break the session.
 	}
@@ -121,7 +117,7 @@ function parseRatio(input: string): number | undefined {
 	const value = Number(text);
 	if (!Number.isFinite(value)) return undefined;
 	const ratio = value > 1 ? value / 100 : value;
-	return ratio > 0.05 && ratio < 0.98 ? ratio : undefined;
+	return ratio >= 0.1 && ratio <= 0.95 ? ratio : undefined;
 }
 
 /** Accepts "12k", "12000", "1.5k". */
@@ -194,21 +190,21 @@ function firstCostTierEdge(model: NonNullable<ExtensionContext["model"]>): numbe
 /**
  * Resolve the trigger threshold from model info and measured usage:
  * - fixed: ratio * contextWindow.
- * - auto: give up ~autoTargetTokens per handoff, bounded by half the usable
+ * - adaptive: give up ~handoffTargetTokens per handoff, bounded by half the usable
  *   window and by the first cost tier so a surcharge is not crossed.
  */
 function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold | undefined {
 	const window = usage.contextWindow;
 	if (window <= 0) return undefined;
-	if (config.threshold !== "auto") {
-		const tokens = Math.min(Math.round(config.threshold * window), window - TIER_EDGE_MARGIN);
-		return tokens > 0 ? { tokens, label: `${fmtPct(config.threshold * 100)} of window` } : undefined;
+	if (!config.handoffAdaptive) {
+		const tokens = Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN);
+		return tokens > 0 ? { tokens, label: `${fmtPct(config.handoffThresholdRatio * 100)} of window` } : undefined;
 	}
 	const model = ctx.model;
 	if (!model || usage.tokens === null) return undefined;
 
 	const baseline = baselineTokens(ctx, usage);
-	const keep = config.keepRecentTokens;
+	const keep = config.handoffKeepTokens;
 	const floor = baseline + keep + MIN_SUMMARIZE_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return undefined; // window too small for this configuration
@@ -216,7 +212,7 @@ function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold
 	const conversationRoom = usable - baseline - keep;
 	const targetOlder = Math.max(
 		MIN_SUMMARIZE_TOKENS,
-		Math.min(config.autoTargetTokens, Math.floor(conversationRoom / 2)),
+		Math.min(config.handoffTargetTokens, Math.floor(conversationRoom / 2)),
 	);
 	let tokens = baseline + keep + targetOlder;
 	const tierEdge = firstCostTierEdge(model);
@@ -229,16 +225,16 @@ function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold
 }
 
 function statusText(ctx: ExtensionContext): string {
-	const keep = config.keepRecentTokens > 0 ? `~${fmtTokens(config.keepRecentTokens)} recent kept` : "summary only";
+	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
 	const usage = ctx.getContextUsage();
-	let thresholdLabel = config.threshold === "auto" ? "auto" : fmtPct(config.threshold * 100);
+	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	if (usage && usage.tokens !== null) {
 		const threshold = resolveThreshold(ctx, usage);
 		if (threshold) thresholdLabel = threshold.label;
-		else if (config.threshold === "auto") thresholdLabel = "auto (no room at this window)";
+		else if (config.handoffAdaptive) thresholdLabel = "auto (no room at this window)";
 	}
-	const target = config.threshold === "auto" ? ` · target ${fmtTokens(config.autoTargetTokens)}` : "";
-	return `Auto handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.mode} · guard ${config.guard} · context ${usageText(ctx)}`;
+	const target = config.handoffAdaptive ? ` · target ${fmtTokens(config.handoffTargetTokens)}` : "";
+	return `Auto handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · context ${usageText(ctx)}`;
 }
 
 interface FileOps {
@@ -385,7 +381,7 @@ async function generateHandoffSummary(
 	messages: AgentMessage[],
 	previousSummary: string | undefined,
 ): Promise<string> {
-	const primary: NonNullable<ExtensionContext["thinkingLevel"]> = config.summaryThinking === "session"
+	const primary: NonNullable<ExtensionContext["thinkingLevel"]> = config.handoffSummaryThinking === "session"
 		? (ctx.thinkingLevel ?? "off")
 		: "off";
 	const attempts: Array<{ thinking: NonNullable<ExtensionContext["thinkingLevel"]>; reserveTokens: number }> = [
@@ -457,8 +453,8 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 
 		// Older context gets summarized; the recent tail is carried over verbatim.
 		let firstKeptIndex = allEntries.length;
-		if (config.keepRecentTokens > 0) {
-			const cut = findCutPoint(allEntries, 0, allEntries.length, config.keepRecentTokens);
+		if (config.handoffKeepTokens > 0) {
+			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffKeepTokens);
 			firstKeptIndex = cut.firstKeptEntryIndex;
 			// Keep whole turns so tool calls and their results replay as a pair.
 			if (cut.isSplitTurn && cut.turnStartIndex >= 0 && cut.turnStartIndex < firstKeptIndex) {
@@ -488,7 +484,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// until the user answers; "draft" is applied further below.
 		const pendingQuestion = findPendingQuestion(allEntries);
 		const guardApplies = autoTriggered && pendingQuestion !== undefined;
-		if (guardApplies && config.guard === "skip") {
+		if (guardApplies && config.handoffGuard === "skip") {
 			cooldownUntil = Date.now() + RETRIGGER_COOLDOWN_MS;
 			notify(ctx, "Auto handoff skipped: the session is waiting for your answer (guard=skip).", "warning");
 			return;
@@ -525,9 +521,9 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// "wait" (default) keeps the continuation automatic but hands the open
 		// question to the new session with a do-not-answer instruction; "draft"
 		// additionally leaves the prompt in the editor for review.
-		const guardWaiting = guardApplies && config.guard !== "send";
-		const guardDraft = guardWaiting && config.guard === "draft";
-		const useDraft = config.mode === "draft" || guardDraft;
+		const guardWaiting = guardApplies && config.handoffGuard !== "send";
+		const guardDraft = guardWaiting && config.handoffGuard === "draft";
+		const useDraft = config.handoffMode === "draft" || guardDraft;
 		const percentText = usage && usage.percent !== null ? fmtPct(usage.percent) : "over threshold";
 		const carryLine = keptTokens > 0
 			? "The handoff summary below covers the earlier part of that session; its most recent messages were carried over verbatim."
@@ -685,11 +681,14 @@ export function registerHandoff(pi: ExtensionAPI): void {
 		const ratioFlag = pi.getFlag("handoff-ratio");
 		if (typeof ratioFlag === "string") {
 			const flag = ratioFlag.trim().toLowerCase();
-			if (flag === "auto") config.threshold = "auto";
+			if (flag === "auto") config.handoffAdaptive = true;
 			else if (flag === "off") flagEnabled = false;
 			else {
 				const ratio = parseRatio(flag);
-				if (ratio !== undefined) config.threshold = ratio;
+				if (ratio !== undefined) {
+					config.handoffAdaptive = false;
+					config.handoffThresholdRatio = ratio;
+				}
 			}
 		}
 		if (pi.getFlag("no-auto-handoff") === true) flagEnabled = false;
@@ -711,20 +710,20 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "keep") {
 				if (value === "off") {
-					config.keepRecentTokens = 0;
+					config.handoffKeepTokens = 0;
 				} else {
 					const tokens = parseTokenCount(value ?? "");
 					if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
 						notify(ctx, "Usage: /auto-handoff keep <tokens|off> (e.g. keep 20k)", "warning");
 						return;
 					}
-					config.keepRecentTokens = tokens;
+					config.handoffKeepTokens = tokens;
 				}
 				await saveConfig();
 				notify(
 					ctx,
-					config.keepRecentTokens > 0
-						? `Auto handoff will keep ~${fmtTokens(config.keepRecentTokens)} recent tokens verbatim.`
+					config.handoffKeepTokens > 0
+						? `Auto handoff will keep ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
 						: "Auto handoff will use summary only (no recent carry-over).",
 				);
 				return;
@@ -735,7 +734,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /auto-handoff target <tokens> (e.g. target 64k)", "warning");
 					return;
 				}
-				config.autoTargetTokens = tokens;
+				config.handoffTargetTokens = tokens;
 				await saveConfig();
 				notify(ctx, `Auto threshold will summarize ~${fmtTokens(tokens)} per handoff.`);
 				return;
@@ -745,7 +744,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /auto-handoff thinking off|session", "warning");
 					return;
 				}
-				config.summaryThinking = value;
+				config.handoffSummaryThinking = value;
 				await saveConfig();
 				notify(
 					ctx,
@@ -756,7 +755,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				return;
 			}
 			if (head === "auto") {
-				config.threshold = "auto";
+				config.handoffAdaptive = true;
 				await saveConfig();
 				notify(ctx, statusText(ctx));
 				return;
@@ -768,7 +767,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				return;
 			}
 			if (head === "send" || head === "draft") {
-				config.mode = head;
+				config.handoffMode = head;
 				await saveConfig();
 				notify(ctx, `Auto handoff mode: ${head}.`);
 				return;
@@ -778,7 +777,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /auto-handoff guard wait|draft|send|skip", "warning");
 					return;
 				}
-				config.guard = value;
+				config.handoffGuard = value;
 				await saveConfig();
 				notify(
 					ctx,
@@ -802,7 +801,8 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			const ratio = parseRatio(head);
 			if (ratio !== undefined) {
-				config.threshold = ratio;
+				config.handoffAdaptive = false;
+				config.handoffThresholdRatio = ratio;
 				await saveConfig();
 				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
 				return;

@@ -36,7 +36,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 		if (runIsDisabled()) return false;
 		try {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			return (await getConfig(projectRoot)).features.archive;
+			return (await getConfig(projectRoot)).archiveEnabled;
 		} catch {
 			return false;
 		}
@@ -105,7 +105,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (runIsDisabled()) return;
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
-		if (!(await getConfig(projectRoot)).features.memory) return;
+		if (!(await getConfig(projectRoot)).autoConsolidate) return;
 		const context = (await readOptional(contextFile(projectRoot))).trim();
 		if (!context) return;
 		return {

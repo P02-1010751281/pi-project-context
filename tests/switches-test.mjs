@@ -67,7 +67,7 @@ try {
 
 	console.log("\n=== archive switch ===");
 	await command.handler("off archive", ctx);
-	check("off persisted", (await readConfig())?.features.archive === false);
+	check("off persisted", (await readConfig())?.archiveEnabled === false);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "turn_end", ctx);
 	await sleep(80);
@@ -133,18 +133,42 @@ try {
 	check("no injection", disabledInject.every((result) => result === undefined));
 
 	console.log("\n=== off all / on all ===");
+	const FEATURE_KEYS = ["archiveEnabled", "autoConsolidate", "autoLearn", "handoffEnabled"];
 	await command.handler("off all", ctx);
-	check("all off persisted", Object.values((await readConfig())?.features ?? {}).every((value) => value === false));
+	const allOff = await readConfig();
+	check("all off persisted", FEATURE_KEYS.every((key) => allOff?.[key] === false));
 	await command.handler("on all", ctx);
-	check("all on persisted", Object.values((await readConfig())?.features ?? {}).every((value) => value === true));
+	const allOn = await readConfig();
+	check("all on persisted", FEATURE_KEYS.every((key) => allOn?.[key] === true));
 
 	console.log("\n=== legacy autolearn.json compatibility ===");
 	await rm(configPath, { force: true });
 	await writeFile(path.join(tmp, ".agents/memory/autolearn.json"), `${JSON.stringify({ at: 123, enabled: false })}\n`);
 	const { getConfig } = await loadNamespace(`${PC}/config.ts`);
 	const legacy = await getConfig(tmp);
-	check("legacy enabled=false maps to the switch", legacy.features.autolearn === false);
-	check("legacy throttle timestamp kept", legacy.autolearn.at === 123);
+	check("legacy enabled=false maps to the switch", legacy.autoLearn === false);
+	check("legacy throttle timestamp kept", legacy.autolearnAt === 123);
+
+	console.log("\n=== nested config layout still loads (and upgrades on save) ===");
+	await rm(path.join(tmp, ".agents/memory/autolearn.json"), { force: true });
+	await writeFile(configPath, `${JSON.stringify({
+		features: { archive: false, memory: false, autolearn: true, handoff: false },
+		autolearn: { at: 456, turns: 7, intervalMs: 60_000 },
+		consolidateTurns: 9,
+		handoff: { threshold: 0.6, autoTargetTokens: 32_000, keepRecentTokens: 1_000, summaryThinking: "session", mode: "draft", guard: "skip" },
+	}, null, 2)}\n`);
+	const { getConfig: getNested, setFeature: setNested } = await loadNamespace(`${PC}/config.ts`);
+	const nested = await getNested(tmp);
+	check("nested switches mapped", nested.archiveEnabled === false && nested.autoConsolidate === false && nested.handoffEnabled === false && nested.autoLearn === true);
+	check("nested threshold maps to adaptive=false + ratio", nested.handoffAdaptive === false && nested.handoffThresholdRatio === 0.6);
+	check("nested handoff settings mapped", nested.handoffTargetTokens === 32_000 && nested.handoffKeepTokens === 1_000 && nested.handoffSummaryThinking === "session" && nested.handoffMode === "draft" && nested.handoffGuard === "skip");
+	check("nested autolearn state mapped", nested.autolearnAt === 456 && nested.autolearnTurns === 7 && nested.autolearnIntervalMs === 60_000);
+	check("flat consolidation cadence read", nested.consolidateTurns === 9 && nested.consolidateIntervalMs === 300_000 && nested.forceDedupeMs === 15_000);
+	await setNested(tmp, "archive", true);
+	const upgraded = await readConfig();
+	check("file rewritten flat on save", upgraded.archiveEnabled === true && upgraded.features === undefined && upgraded.autolearn === undefined && upgraded.handoff === undefined);
+	check("upgraded flat values kept", upgraded.handoffAdaptive === false && upgraded.handoffThresholdRatio === 0.6 && upgraded.autolearnAt === 456 && upgraded.autolearnTurns === 7);
+	check("upgraded cadence kept", upgraded.consolidateTurns === 9 && upgraded.consolidateIntervalMs === 300_000);
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }
