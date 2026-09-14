@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerArchive } from "./archive.ts";
 import { registerAutolearn } from "./autolearn.ts";
-import { configFile, FEATURE_FIELDS, FEATURE_NAMES, getConfig, runIsDisabled, setFeature, setRunDisabled } from "./config.ts";
+import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./config.ts";
 import { registerConsolidation } from "./consolidate.ts";
 import { registerHandoff } from "./handoff.ts";
 import { getProjectRoot, notify } from "./project-state.ts";
@@ -53,8 +53,13 @@ export default function projectContext(pi: ExtensionAPI): void {
 		return FEATURE_NAMES.map((name) => `${name}=${config[FEATURE_FIELDS[name]] ? "on" : "off"}`).join("  ");
 	}
 
+	function auxText(config: Awaited<ReturnType<typeof getConfig>>): string {
+		const route = config.provider && config.model ? `${config.provider}/${config.model}` : "session model";
+		return `${route}, max ${config.maxTokens} tokens`;
+	}
+
 	pi.registerCommand("project-context", {
-		description: "Show or toggle project-context features: status | on|off archive|memory|autolearn|handoff|all",
+		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default",
 		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
@@ -62,13 +67,50 @@ export default function projectContext(pi: ExtensionAPI): void {
 
 			if (!verb || verb === "status") {
 				const config = await getConfig(projectRoot);
-				const lines = [`Project context: ${featuresText(config)}`, `Config: ${configFile(projectRoot)}`];
+				const lines = [
+					`Project context: ${featuresText(config)}`,
+					`Auxiliary calls: ${auxText(config)}`,
+					`Config: ${configFile(projectRoot)}`,
+				];
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));
 				return;
 			}
+			if (verb === "model" || verb === "max-tokens") {
+				const value = (parts[1] ?? "").trim();
+				const usage = verb === "max-tokens"
+					? `Usage: /project-context max-tokens <n ≥ ${MIN_AUX_MAX_TOKENS}> | default`
+					: "Usage: /project-context model <provider>/<model-id> | off";
+				if (!value) {
+					notify(ctx, usage, "warning");
+					return;
+				}
+				if (verb === "max-tokens") {
+					if (value === "default") {
+						await updateConfig(projectRoot, { maxTokens: DEFAULT_CONFIG.maxTokens });
+					} else {
+						const tokens = Number(value);
+						if (!Number.isFinite(tokens) || tokens < MIN_AUX_MAX_TOKENS) {
+							notify(ctx, usage, "warning");
+							return;
+						}
+						await updateConfig(projectRoot, { maxTokens: Math.round(tokens) });
+					}
+				} else if (value === "off" || value === "default" || value === "session") {
+					await updateConfig(projectRoot, { provider: "", model: "" });
+				} else {
+					const slash = value.indexOf("/");
+					if (slash <= 0 || slash === value.length - 1) {
+						notify(ctx, usage, "warning");
+						return;
+					}
+					await updateConfig(projectRoot, { provider: value.slice(0, slash), model: value.slice(slash + 1) });
+				}
+				notify(ctx, `Auxiliary calls: ${auxText(await getConfig(projectRoot))}`);
+				return;
+			}
 			if (verb !== "on" && verb !== "off") {
-				notify(ctx, `Usage: /project-context status | on|off <${FEATURE_NAMES.join("|")}|all>`, "warning");
+				notify(ctx, `Usage: /project-context status | on|off <${FEATURE_NAMES.join("|")}|all> | model <provider>/<id>|off | max-tokens <n>|default`, "warning");
 				return;
 			}
 

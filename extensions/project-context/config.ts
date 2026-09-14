@@ -64,6 +64,12 @@ export type ProjectContextConfig = HandoffSettings & {
 	consolidateIntervalMs: number;
 	/** Suppress an almost-immediate duplicate forced pass. */
 	forceDedupeMs: number;
+	/** Output cap for the auxiliary model calls (`llm.ts`); the handoff summary keeps its own reserve math. */
+	maxTokens: number;
+	/** Optional auxiliary-call route override; must be set together with `model`. Empty = session model. */
+	provider: string;
+	/** Optional auxiliary-call route override; must be set together with `provider`. Empty = session model. */
+	model: string;
 };
 
 /** Defaults match the dsh plugin's `DEFAULT_CONFIG`. */
@@ -78,6 +84,9 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	consolidateTurns: 6,
 	consolidateIntervalMs: 5 * 60 * 1000,
 	forceDedupeMs: 15 * 1000,
+	maxTokens: 8192,
+	provider: "",
+	model: "",
 	handoffAdaptive: true,
 	handoffThresholdRatio: 0.4,
 	handoffTargetTokens: 64_000,
@@ -143,6 +152,16 @@ function ratio(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_RATIO && value <= MAX_RATIO ? value : undefined;
 }
 
+/** dsh's accepted floor for `maxTokens`; also enforced by the `/project-context max-tokens` verb. */
+export const MIN_AUX_MAX_TOKENS = 256;
+
+/** `provider`/`model` only take effect as a pair; a half-configured route is ignored. */
+function auxRoute(rawProvider: unknown, rawModel: unknown): { provider: string; model: string } {
+	const provider = typeof rawProvider === "string" ? rawProvider.trim() : "";
+	const model = typeof rawModel === "string" ? rawModel.trim() : "";
+	return provider && model ? { provider, model } : { provider: "", model: "" };
+}
+
 /** "auto" → adaptive, number → fixed ratio; anything else → undefined. */
 function adaptiveOf(threshold: unknown): boolean | undefined {
 	if (threshold === "auto") return true;
@@ -186,6 +205,7 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 	const autolearn = asRecord(raw.autolearn);
 	const handoff = asRecord(raw.handoff);
 	const global = legacy.handoff ?? {};
+	const route = auxRoute(raw.provider, raw.model);
 	// Pre-unification threshold keys: nested `handoff.threshold`/`ratio`, then the global file.
 	const nestedThreshold = handoff.threshold ?? handoff.ratio;
 	const legacyThreshold = global.threshold ?? global.ratio;
@@ -202,6 +222,9 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 		consolidateTurns: positive(raw.consolidateTurns, 1) ?? DEFAULT_CONFIG.consolidateTurns,
 		consolidateIntervalMs: positive(raw.consolidateIntervalMs, 1000) ?? DEFAULT_CONFIG.consolidateIntervalMs,
 		forceDedupeMs: positive(raw.forceDedupeMs, 0) ?? DEFAULT_CONFIG.forceDedupeMs,
+		maxTokens: positive(raw.maxTokens, MIN_AUX_MAX_TOKENS) ?? DEFAULT_CONFIG.maxTokens,
+		provider: route.provider,
+		model: route.model,
 
 		handoffAdaptive: bool(raw.handoffAdaptive) ?? adaptiveOf(nestedThreshold) ?? adaptiveOf(legacyThreshold) ?? DEFAULT_CONFIG.handoffAdaptive,
 		handoffThresholdRatio: ratio(raw.handoffThresholdRatio)

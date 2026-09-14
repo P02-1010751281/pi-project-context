@@ -60,7 +60,7 @@ session.jsonl（唯一权威）──► session.md（全量渲染，人读）�
     ├── HANDOFF.md                  # ④ 最近一次交接摘要（含旧存档指针）
     ├── project-context.json        # 功能开关与参数（dsh 侧在 ~/.dsh/settings.yaml）
     ├── skill-candidates/<name>.md  # ③ 待确认候选（approve 后转正）
-    ├── errors.log                  # 各阶段被吞掉的异常；单条截断 8000 字符，>1MB 轮换保留最新 64k
+    ├── errors.log                  # 各阶段捕获的异常（不打断会话）；单条截断 8000 字符，>1MB 轮换保留最新 64k
     └── session-logs/
         ├── INDEX.md                # ① 机械索引：每会话一行，按 id 去重、只留最新 200 行
         ├── .gitignore              # 首次写出时生成，忽略整个目录
@@ -85,7 +85,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 ├── context-doc.ts      # CONTEXT.md 渲染
 ├── autolearn.ts        # ③ 沉淀 pass：证据门禁、技能校验
 ├── handoff.ts          # ④ 交接：阈值判断、摘要、新会话、guard
-├── llm.ts              # 模型 JSON 调用
+├── llm.ts              # 模型 JSON 调用与辅助路由解析
 └── project-state.ts    # 路径、原子写、errors.log 轮换、旧数据迁移
 ```
 
@@ -105,6 +105,9 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
   "consolidateTurns": 6,
   "consolidateIntervalMs": 300000,
   "forceDedupeMs": 15000,
+  "maxTokens": 8192,
+  "provider": "",
+  "model": "",
   "handoffAdaptive": true,
   "handoffThresholdRatio": 0.4,
   "handoffTargetTokens": 64000,
@@ -119,7 +122,8 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 - autolearn 自动 pass 门禁与 dsh 相同：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮 ≥ `autolearnTurns` 或距上次 ≥ `autolearnIntervalMs`）；`autolearnAt` 持久化，重启不会重复跑已消化的材料。
 - consolidation 节奏：`consolidateTurns` / `consolidateIntervalMs` 控制自动整理，`forceDedupeMs` 抑制紧邻的强制重复调用。
 - handoff：`handoffAdaptive=true` 用自适应阈值，false 时用 `handoffThresholdRatio`（0.1–0.95）；`handoffTargetTokens`/`handoffKeepTokens` 控制移交量与保留量；`handoffMode`（send/draft）与 `handoffGuard`（wait/draft/send/skip）是 pi 独有——dsh 无编辑器，改用 `handoffPendingQuestion: defer|wait`。
-- dsh 另有 `maxTokens`/`provider`/`model` 三个辅助调用旋钮，可单独指定辅助调用的路由与输出上限；pi 的辅助调用固定用会话模型，上限写在各调用点（整理 8192 / 沉淀 4096 / 交接摘要 40960），不可配。
+- 辅助调用（整理 / 沉淀 / 交接摘要）默认用会话模型；`provider`/`model` 成对设置后改走指定路由（解析不到或未授权时退回会话模型，各警告一次），`maxTokens`（默认 8192，下限 256）是整理/沉淀调用的输出上限。用 `/project-context model <provider>/<id>|off`、`/project-context max-tokens <n>|default` 修改，`status` 显示当前路由与上限。
+- 平台差异：dsh 的交接摘要同样吃 `maxTokens`；pi 的交接摘要复用宿主 `generateSummaryWithUsage`，上限是 reserve 语义（`min(0.8 × reserve, 模型自身上限)`，重试时 reserve 翻倍），不随 `maxTokens` 变化。
 - 开关管**自动行为**（写盘 / LLM 调用 / 换会话；`memory` 开关同时管 MEMORY、CONTEXT 的注入）；显式命令不受开关限制；`--no-project-context` 本轮全关且不改配置。
 - 旧配置只读兼容：嵌套布局（`features.*`/`autolearn.*`/`handoff.*`）、`memory/autolearn.json` 的 `enabled`/`at`、全局 `~/.pi/agent/auto-handoff.json`；下次保存时重写为扁平布局。
 
@@ -127,7 +131,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 
 | 命令 | 作用 |
 |---|---|
-| `/project-context [status \| on\|off <feature\|all>]` | 查看 / 切换功能开关 |
+| `/project-context [status \| on\|off <feature\|all> \| model <provider>/<id>\|off \| max-tokens <n>\|default>]` | 查看 / 切换功能开关，设置辅助调用路由与输出上限 |
 | `/memory-learn`（别名 `/context-update`） | 立即跑 consolidation：重写 MEMORY.md + CONTEXT.md |
 | `/memory` | 显示项目记忆位置与状态 |
 | `/context` | 显示 context / 会话索引 / 日志路径 |
@@ -143,7 +147,7 @@ Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-han
 node tests/run-all.mjs
 ```
 
-用 pi 自带的 jiti loader 加载本仓库的扩展（与运行时同一套 alias，不触碰 `~/.pi`），全部跑在临时项目目录上：loader 完整性、注册项、会话投影、索引渲染、autolearn 取证与门禁（含注入体拒绝）、consolidation 端到端与会话级节流、功能开关、日志轮换/迁移冲突/原子写卫生。若 pi 不在全局 npm root，用 `PI_PKG=/path/to/@earendil-works/pi-coding-agent` 指定。
+用 pi 自带的 jiti loader 加载本仓库的扩展（与运行时同一套 alias，不触碰 `~/.pi`），全部跑在临时项目目录上：loader 完整性、注册项、会话投影、索引渲染、autolearn 取证与门禁（含注入体拒绝）、consolidation 端到端与会话级节流、辅助调用路由与上限、功能开关、日志轮换/迁移冲突/原子写卫生。若 pi 不在全局 npm root，用 `PI_PKG=/path/to/@earendil-works/pi-coding-agent` 指定。
 
 ## 许可证
 

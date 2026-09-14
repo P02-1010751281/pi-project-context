@@ -66,6 +66,7 @@ import {
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, getConfig, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, type ProjectContextConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
+import { resolveAuxModel } from "./llm.ts";
 import { getProjectRoot, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
 /** pi's default compaction reserve; window headroom used by the threshold math. */
 const WINDOW_RESERVE_TOKENS = 16_384;
@@ -433,9 +434,11 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			notify(ctx, "Auto handoff skipped: the agent is busy.", "warning");
 			return;
 		}
-		const model = ctx.model;
+		// The summary may run on the configured auxiliary route; the threshold math above
+		// still uses the session model's window and pricing tier.
+		const model = resolveAuxModel(ctx, config);
 		if (!model) {
-			notify(ctx, "Auto handoff skipped: no model selected.", "warning");
+			notify(ctx, "Auto handoff skipped: no authenticated model available.", "warning");
 			return;
 		}
 

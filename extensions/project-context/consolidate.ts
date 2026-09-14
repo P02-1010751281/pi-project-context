@@ -2,7 +2,7 @@ import { convertToLlm, serializeConversation, sessionEntryToContextMessages } fr
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "./config.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
-import { completeText, parseJsonObject } from "./llm.ts";
+import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	MAX_CONVERSATION_CHARS,
@@ -324,8 +324,9 @@ export async function consolidateProjectState(
 		const throttled = !force && (turns - baseline < config.consolidateTurns || Date.now() - (previous?.at ?? 0) < config.consolidateIntervalMs);
 		if (throttled) return cached?.outcome;
 		if (force && cached && Date.now() - cached.at < config.forceDedupeMs) return cached.outcome;
-		if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
-			notify(ctx, "Project state update skipped: current model is not authenticated", "warning");
+		const auxModel = resolveAuxModel(ctx, config);
+		if (!auxModel) {
+			notify(ctx, "Project state update skipped: no authenticated model available", "warning");
 			return undefined;
 		}
 
@@ -340,7 +341,7 @@ export async function consolidateProjectState(
 
 		let raw: string;
 		try {
-			raw = await completeText(ctx, prompt);
+			raw = await completeText(ctx, prompt, { model: auxModel, maxTokens: config.maxTokens });
 		} catch (error) {
 			// Record the attempt so a persistent failure backs off instead of retrying on every settle.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });

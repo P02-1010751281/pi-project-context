@@ -3,7 +3,7 @@ import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
-import { completeText, parseJsonObject } from "./llm.ts";
+import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
 	contextFile,
@@ -54,7 +54,6 @@ const AUTOLEARN_MEMORY_CHARS = 12000;
 const AUTOLEARN_CONTEXT_CHARS = 16000;
 const AUTOLEARN_INVENTORY_CHARS = 8000;
 const AUTOLEARN_INDEX_LINES = 40;
-const AUTOLEARN_MAX_TOKENS = 4096;
 const MIN_SKILL_BODY_CHARS = 160;
 const MAX_SKILL_DESCRIPTION_CHARS = 1024;
 
@@ -407,8 +406,9 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			const context = (await readOptional(contextFile(projectRoot))).slice(0, AUTOLEARN_CONTEXT_CHARS);
 			// The archive-layer index lives next to the logs it points at (`.agents/memory/session-logs/INDEX.md`).
 			const sessions = indexedSessions(parseSessionIndex(await readOptional(sessionIndexFile(projectRoot))), archived, AUTOLEARN_INDEX_LINES);
-			if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
-				if (force) notify(ctx, "Autolearn skipped: current model is not authenticated", "warning");
+			const auxModel = resolveAuxModel(ctx, config);
+			if (!auxModel) {
+				if (force) notify(ctx, "Autolearn skipped: no authenticated model available", "warning");
 				return;
 			}
 
@@ -420,7 +420,8 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 
 			// First look: consolidated artifacts + session index decide whether there is something to learn.
 			let decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions), {
-				maxTokens: AUTOLEARN_MAX_TOKENS,
+				model: auxModel,
+				maxTokens: config.maxTokens,
 			}));
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
@@ -433,7 +434,8 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			if (!decision.skill && decision.inspect.length > 0) {
 				const evidence = await collectEvidence(projectRoot, decision.inspect);
 				decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions, { evidence }), {
-					maxTokens: AUTOLEARN_MAX_TOKENS,
+					model: auxModel,
+					maxTokens: config.maxTokens,
 				}));
 				if (!decision) {
 					if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");
