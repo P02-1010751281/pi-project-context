@@ -29,12 +29,13 @@ extensions/
 ├── project-context/
 │   ├── index.ts          # hooks、命令、flags、功能开关
 │   ├── config.ts         # 项目级配置（开关 / autolearn 节流 / handoff 参数）
-│   ├── archive.ts        # 会话存档（无 LLM）：jsonl / md / session-index，注入 CONTEXT.md
+│   ├── archive.ts        # 会话存档（无 LLM）：jsonl / md / INDEX.md，注入 CONTEXT.md
 │   ├── session-log.ts    # session.jsonl 与 session.md 渲染
 │   ├── consolidate.ts    # consolidation pass（一次 LLM）→ MEMORY.md + CONTEXT.md
 │   ├── autolearn.ts      # 低频（新材料 + 20 轮 / 30min）技能 pass
 │   ├── handoff.ts        # 上下文窗口阀门
-│   ├── context-doc.ts    # 索引与 CONTEXT.md 渲染
+│   ├── session-index.ts  # 机械会话索引渲染（与 dsh 同模块划分）
+│   ├── context-doc.ts    # CONTEXT.md 渲染
 │   ├── llm.ts            # 模型 JSON 调用
 │   └── project-state.ts  # 路径、原子写、旧数据迁移
 ```

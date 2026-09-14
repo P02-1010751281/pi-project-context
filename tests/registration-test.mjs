@@ -54,7 +54,8 @@ console.log(`raw-entries path chars=${buggy.length} (expect 0)`);
 if (!(fixed.includes(marker) && buggy.length === 0)) failures += 1;
 
 console.log("\n=== context-doc rendering ===");
-const { parseIndexLines, renderContextDocument, renderIndexDocument } = await loadNamespace(`${PC}/context-doc.ts`);
+const { renderContextDocument } = await loadNamespace(`${PC}/context-doc.ts`);
+const { parseIndexLines, renderIndexDocument } = await loadNamespace(`${PC}/session-index.ts`);
 const existing = [
 	"# Session Index",
 	"",

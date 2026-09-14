@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "./config.ts";
-import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionTitle } from "./context-doc.ts";
+import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionTitle } from "./session-index.ts";
 import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
 	MAX_CONTEXT_CHARS,
