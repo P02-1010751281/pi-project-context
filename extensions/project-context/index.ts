@@ -12,7 +12,7 @@ import { getProjectRoot, notify } from "./project-state.ts";
  * The four features work on one project-scoped data flow:
  *
  *   session.jsonl (source of truth)
- *    ├─ archive      (no LLM)  writes session.jsonl/session.md, maintains session-index.md,
+ *    ├─ archive      (no LLM)  writes session.jsonl/session.md, maintains session-logs/INDEX.md,
  *    │                         injects CONTEXT.md read-only
  *    ├─ memory       (1 LLM)   consolidation pass → MEMORY.md + CONTEXT.md, both injected
  *    ├─ autolearn    (1 LLM, ≥6h) reads memory/context/index, backtracks for evidence,

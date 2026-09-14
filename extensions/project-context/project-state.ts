@@ -12,7 +12,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
  *   <project>/.agents/skills/<name>/SKILL.md              learned project skills (standard location)
  *   <project>/.agents/memory/MEMORY.md                    durable project memory
  *   <project>/.agents/memory/CONTEXT.md                   recent session summary + session index
- *   <project>/.agents/memory/session-index.md             archive-layer session index (no LLM)
+ *   <project>/.agents/memory/session-logs/INDEX.md        archive-layer session index (no LLM)
+ *   <project>/.agents/memory/HANDOFF.md                   last handoff summary (written by handoff)
  *   <project>/.agents/memory/autolearn.json               autolearn throttle/enabled state
  *   <project>/.agents/memory/session-logs/<session-id>/   session.jsonl (raw) + session.md (rendered)
  *
@@ -70,8 +71,13 @@ export function contextFile(projectRoot: string): string {
 	return path.join(memoryDir(projectRoot), "CONTEXT.md");
 }
 
-/** Session index maintained by the archive layer (session-context, no LLM). */
+/** Mechanical session index maintained by the archive layer, next to the logs it points at. */
 export function sessionIndexFile(projectRoot: string): string {
+	return path.join(logsDir(projectRoot), "INDEX.md");
+}
+
+/** Older index location (`<memory>/session-index.md`); read once during migration. */
+export function legacySessionIndexFile(projectRoot: string): string {
 	return path.join(memoryDir(projectRoot), "session-index.md");
 }
 

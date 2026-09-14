@@ -50,6 +50,7 @@
  *   --no-project-context         disable every project-context feature for this run
  */
 
+import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	buildContextEntries,
@@ -65,7 +66,7 @@ import {
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_HANDOFF, getConfig, type HandoffSettings, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, runIsDisabled, setFeature, updateHandoff } from "./config.ts";
-import { getProjectRoot } from "./project-state.ts";
+import { getProjectRoot, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
 
 type Config = HandoffSettings;
 
@@ -425,7 +426,7 @@ async function generateHandoffSummary(
  * Summarize the older context and continue in a fresh session.
  * Must run with an ExtensionCommandContext, because newSession() is command-only.
  */
-async function runHandoff(args: string, ctx: ExtensionCommandContext): Promise<void> {
+async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
 	const trigger = args.trim();
 	const force = trigger === "force" || trigger === "force-auto";
 	// "force-auto" marks the scheduled agent_settled trigger; only it applies the
@@ -536,7 +537,7 @@ async function runHandoff(args: string, ctx: ExtensionCommandContext): Promise<v
 		const detailLines = [
 			`- Previous session id: ${previousSessionId}`,
 			previousSessionFile ? `- Raw transcript (JSONL): ${previousSessionFile}` : undefined,
-			"- The project context session index (## Session index) links the Markdown log for that id.",
+			"- The project session index (.agents/memory/session-logs/INDEX.md) links the Markdown log for that id.",
 			"If a needed detail is missing from this summary, look it up there (grep, do not load whole files).",
 		].filter((line): line is string => line !== undefined);
 		const pendingLines = guardWaiting
@@ -571,6 +572,29 @@ async function runHandoff(args: string, ctx: ExtensionCommandContext): Promise<v
 			cooldownUntil = Date.now() + RETRIGGER_COOLDOWN_MS;
 			notify(ctx, "Auto handoff skipped: the agent became busy while summarizing. It will retry when idle.", "warning");
 			return;
+		}
+
+		// Archive the handoff document next to the project memory (the fresh session
+		// carries a copy, but the file keeps it reachable after the fact).
+		const handoffRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
+		if (handoffRoot) {
+			try {
+				const logRel = path.posix.join(".agents/memory/session-logs", safeSessionId(previousSessionId), "session.md");
+				const document = [
+					`# Handoff from pi session ${previousSessionId}`,
+					"",
+					`- Created: ${new Date().toISOString()}`,
+					`- Project: ${handoffRoot}`,
+					`- Session log: ${logRel}`,
+					"- Session index: .agents/memory/session-logs/INDEX.md",
+					"",
+					summaryWithIndex.trim(),
+					"",
+				].join("\n");
+				await writeAtomic(path.join(memoryDir(handoffRoot), "HANDOFF.md"), document);
+			} catch {
+				// Persisting the handoff document must never block the session switch.
+			}
 		}
 
 		const parentSession = ctx.sessionManager.getSessionFile();
@@ -769,11 +793,11 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				return;
 			}
 			if (head === "now" || head === "run" || head === "force") {
-				await runHandoff("force", ctx);
+				await runHandoff(pi, "force", ctx);
 				return;
 			}
 			if (head === "force-auto") {
-				await runHandoff("force-auto", ctx);
+				await runHandoff(pi, "force-auto", ctx);
 				return;
 			}
 			const ratio = parseRatio(head);

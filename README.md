@@ -43,18 +43,18 @@ extensions/
 
 ```
 session.jsonl（原始，唯一权威）
- ├─ archive      （无 LLM）每轮落盘 jsonl；settle/shutdown 渲染 md 并维护 session-index.md；
- │                        只读注入 CONTEXT.md
+ ├─ archive      （无 LLM）每轮落盘 jsonl（进程内按游标增量 append，不重写整份）；
+ │                        settle/shutdown 渲染 md 并维护 session-logs/INDEX.md；只读注入 CONTEXT.md
  ├─ memory       （1 次 LLM，6 轮 / 5min 节流）consolidation →
  │                        MEMORY.md（长期）+ CONTEXT.md（工作态），两者每轮注入
  ├─ autolearn    （1 次 LLM，≥6h）读 MEMORY/CONTEXT + 会话索引判断；
  │                        缺证据时按索引回溯存档摘录；≥2 个已存档会话才直接写
  │                        .agents/skills/<name>/SKILL.md，低置信度写 candidate 等确认；
  │                        拒绝含提示注入话术的 body
- └─ handoff      （1 次 LLM）阈值阀门：旧段摘要 + 最近原文重放 + 指向旧 session id/索引 → 新会话
+ └─ handoff      （1 次 LLM）阈值阀门：旧段摘要 + 最近原文重放 + 指向旧 session id/索引 → 新会话，摘要存档为 HANDOFF.md
 ```
 
-边界规则：**memory = 长期**（跨会话仍成立的事实/决策/偏好，写入门槛高）；**context = 工作态**（本会话摘要/关键点/open tasks/session 索引，整体重写，可重建）。不确定先写 context，下轮仍成立再晋升 memory。
+边界规则：**memory = 长期**（跨会话仍成立的事实/决策/偏好，写入门槛高）；**context = 工作态**（本会话摘要/关键点/open tasks，整体重写，可重建）。不确定先写 context，下轮仍成立再晋升 memory。
 
 四项功能放在同一个扩展里是刻意的：pi 对每个扩展用 `moduleCache: false` 单独建模块注册表，跨扩展共享节流/单飞状态会各拿一份；合并后这些状态天然单实例，`agent_settled` 的执行顺序（存档 → consolidation → autolearn → handoff）也在一个 handler 链里确定。
 
@@ -89,7 +89,8 @@ session.jsonl（原始，唯一权威）
 | `/project-context [status \| on\|off <feature\|all>]` | 查看 / 切换功能开关 |
 | `/memory-learn`（别名 `/context-update`） | 立即跑 consolidation：重写 MEMORY.md + CONTEXT.md |
 | `/memory` | 显示项目记忆位置与状态 |
-| `/context` / `/session-log` | 显示 context 位置 / 立即写会话存档 |
+| `/context` | 显示 context / 会话索引 / 日志路径 |
+| `/session-log` | 立即写会话存档；`import <session.jsonl\|目录>…` 回填已结束的历史会话 |
 | `/autolearn` | 立即跑技能学习；`list` / `approve <name>` / `reject <name>` / `on` / `off` |
 | `/auto-handoff` | 阀门状态与参数：`auto`、`0.6`、`target 64k`、`keep 20k`、`thinking off`、`guard wait`、`send`/`draft`、`now` |
 
@@ -104,17 +105,21 @@ Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-han
 ├── skills/<name>/SKILL.md              # autolearn 产出的项目技能（pi 原生发现）
 └── memory/
     ├── MEMORY.md                       # 长期记忆，注入 system prompt
-    ├── CONTEXT.md                      # 工作态 + session 索引，注入 system prompt
-    ├── session-index.md                # 存档层索引（无 LLM 维护）
+    ├── CONTEXT.md                      # 工作态（摘要/关键点/open tasks），注入 system prompt
+    ├── HANDOFF.md                      # 最近一次交接的摘要（含旧存档指针）
     ├── project-context.json            # 功能开关与参数
     ├── autolearn.json                  # （旧）节流/开关，只读兼容
     ├── skill-candidates/<name>.md      # 待确认候选技能
     ├── errors.log                      # 被吞掉的异常（诊断用；单条截断到 8000 字符，超 1MB 轮换保留最新）
-    └── session-logs/                   # 首次写出时自动放一份忽略一切的 .gitignore
+    └── session-logs/
+        ├── INDEX.md                    # 机械会话索引（无 LLM 维护，链接相对本目录）
+        ├── .gitignore                  # 首次写出时自动生成，忽略整个目录
         └── <session-id>/{session.jsonl,session.md}
 ```
 
-旧数据在 `session_start` 时自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）。迁移遇到**文件/目录类型冲突**（例如旧 `MEMORY.md` 是目录、新位置已是文件）时两侧都保留并在通知里点名，不做删除；迁移失败会在下个会话启动时重试。
+已结束的历史会话可用 `/session-log import <session.jsonl|目录>…` 回填进同一套布局（逐字节保留原文、同一渲染器、同一索引；已归档的默认跳过，无模型调用）。
+
+旧数据在 `session_start` 时自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、`.agents/memory/session-index.md`（旧索引位置，链接自动改写）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）。迁移遇到**文件/目录类型冲突**（例如旧 `MEMORY.md` 是目录、新位置已是文件）时两侧都保留并在通知里点名，不做删除；迁移失败会在下个会话启动时重试。
 
 ## 测试
 

@@ -55,7 +55,7 @@ try {
 	check("session.jsonl written with the marker", rawLog.includes(marker));
 	const markdown = await readFile(path.join(tmp, ".agents/memory/session-logs/e2e-session/session.md"), "utf8").catch(() => "");
 	check("session.md rendered with the entry count", markdown.includes("# Pi Session e2e-session") && markdown.includes("- Entries: 2"));
-	const index = await readFile(path.join(tmp, ".agents/memory/session-index.md"), "utf8").catch(() => "");
+	const index = await readFile(path.join(tmp, ".agents/memory/session-logs/INDEX.md"), "utf8").catch(() => "");
 	check("session index has the current session", index.includes("[e2e-session]"));
 
 	console.log("\n=== consolidation ===");
@@ -63,7 +63,7 @@ try {
 	const context = await readFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "utf8");
 	check("MEMORY.md rewritten", memory.includes("Consolidation e2e project."));
 	check("CONTEXT.md has the new summary", context.includes("Consolidation e2e ran."));
-	check("CONTEXT.md embeds both index lines", context.includes("[old]") && context.includes("[e2e-session]"));
+	check("CONTEXT.md has no session index", !context.includes("## Session index"));
 	check("prompt had the real conversation", prompt.includes(marker));
 	check("prompt has boundary rules", prompt.includes("long-term memory"));
 	check("prompt has both artifacts", prompt.includes("<existing-memory>") && prompt.includes("<existing-context>"));

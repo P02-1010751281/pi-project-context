@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ContextUpdate } from "./consolidate.ts";
 import { MAX_CONTEXT_CHARS, MAX_LIST_ITEM_CHARS, MAX_SUMMARY_CHARS, safeSessionId } from "./project-state.ts";
@@ -6,10 +5,10 @@ import { MAX_CONTEXT_CHARS, MAX_LIST_ITEM_CHARS, MAX_SUMMARY_CHARS, safeSessionI
 /**
  * Rendering for the session index and CONTEXT.md.
  *
- * The index is produced by the archive layer (`session-context`, no LLM) and stored in
- * `session-index.md`; the consolidation pass (`memory`) embeds it into CONTEXT.md, which
- * `session-context` injects read-only. Durable facts belong in MEMORY.md; CONTEXT.md is
- * working state and pointers.
+ * The index is produced by the archive layer (no LLM) and stored in
+ * `session-logs/INDEX.md`; autolearn and handoff read it to navigate the archive, and the
+ * archive layer injects CONTEXT.md read-only. Durable facts belong in MEMORY.md;
+ * CONTEXT.md is working state and pointers.
  */
 
 const MAX_INDEX_LINES = 200;
@@ -37,6 +36,14 @@ function lineId(line: string): string {
 	return /^- \[([^\]]+)\]/.exec(line)?.[1] ?? line;
 }
 
+/** Convert pre-move index links (`session-logs/<id>/session.md`) to the new relative form. */
+export function normalizeLegacyIndex(document: string): string {
+	return document
+		.split("\n")
+		.map((line) => line.replace(/\]\(session-logs\//, "]("))
+		.join("\n");
+}
+
 /** Newest line per session id, oldest first, capped; `sessionLine` replaces its id's line. */
 function dedupeIndexLines(lines: string[], sessionLine: string | undefined, limit: number): string[] {
 	const replaceId = sessionLine ? lineId(sessionLine) : undefined;
@@ -53,28 +60,42 @@ function dedupeIndexLines(lines: string[], sessionLine: string | undefined, limi
 }
 
 export function sessionIndexLine(ctx: ExtensionContext, title: string): string {
-	const id = safeSessionId(ctx.sessionManager.getSessionId());
-	const relativeLog = path.posix.join("session-logs", id, "session.md");
-	const timestamp = ctx.sessionManager.getHeader()?.timestamp ?? new Date().toISOString();
-	return `- [${id}](${relativeLog}) — ${timestamp.slice(0, 10)} — ${trimLine(title, 160)}`;
+	return sessionIndexLineFrom(ctx.sessionManager.getSessionId(), ctx.sessionManager.getHeader()?.timestamp, title);
+}
+
+/** One index line from raw parts (also used by the archive backfill). */
+export function sessionIndexLineFrom(id: string, timestamp: string | undefined, title: string): string {
+	const safe = safeSessionId(id);
+	return `- [${safe}](${safe}/session.md) — ${(timestamp ?? new Date().toISOString()).slice(0, 10)} — ${trimLine(title, 160)}`;
+}
+
+type EntryLike = { type?: unknown; message?: { role?: unknown; content?: unknown } };
+
+function contentText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "")
+		.join(" ");
+}
+
+/** No-LLM title from a bare entry list: first user message, else a date fallback. */
+export function titleFromEntries(entries: readonly EntryLike[], timestamp?: string): string {
+	for (const entry of entries) {
+		if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+		const text = contentText(entry.message.content);
+		if (text.trim()) return trimLine(text, 120);
+	}
+	return `Session ${(timestamp ?? new Date().toISOString()).slice(0, 10)}`;
 }
 
 /** No-LLM title for the archive layer: first user message, else the session date. */
 export function sessionTitle(ctx: ExtensionContext): string {
 	try {
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "message" || entry.message.role !== "user") continue;
-			const content = entry.message.content;
-			const text = typeof content === "string"
-				? content
-				: content.map((part) => (part.type === "text" ? (part as { text?: string }).text ?? "" : "")).join(" ");
-			if (text.trim()) return trimLine(text, 120);
-		}
+		return titleFromEntries(ctx.sessionManager.getBranch() as readonly EntryLike[], ctx.sessionManager.getHeader()?.timestamp);
 	} catch {
-		// Fall through to the date fallback.
+		return `Session ${(ctx.sessionManager.getHeader()?.timestamp ?? new Date().toISOString()).slice(0, 10)}`;
 	}
-	const timestamp = ctx.sessionManager.getHeader()?.timestamp ?? new Date().toISOString();
-	return `Session ${timestamp.slice(0, 10)}`;
 }
 
 /** The archive layer's index document; rewritten (deduped, capped) on each settle/shutdown. */
@@ -83,17 +104,11 @@ export function renderIndexDocument(existing: string, sessionLine: string): stri
 	return ["# Session Index", "", ...lines, ""].join("\n");
 }
 
-export function renderContextDocument(
-	existing: string,
-	update: ContextUpdate,
-	options: { indexLines?: string[]; sessionLine: string; updatedAt: string },
-): string {
-	const source = options.indexLines && options.indexLines.length > 0 ? options.indexLines : parseIndexLines(existing);
-	const indexLines = dedupeIndexLines(source, options.sessionLine, MAX_INDEX_LINES);
+export function renderContextDocument(update: ContextUpdate, options: { updatedAt: string }): string {
 	const title = trimLine(update.title, 160) || "Untitled session";
 	const keyPoints = update.key_points.slice(0, MAX_LIST_ENTRIES);
 	const openTasks = update.open_tasks.slice(0, MAX_LIST_ENTRIES);
-	const build = (lines: string[]): string => [
+	const build = (points: string[], tasks: string[]): string => [
 		"# Project Context",
 		"",
 		`Last updated: ${options.updatedAt}`,
@@ -104,26 +119,24 @@ export function renderContextDocument(
 		"",
 		"## Key points",
 		"",
-		listMarkdown(keyPoints),
+		listMarkdown(points),
 		"",
 		"## Open tasks",
 		"",
-		listMarkdown(openTasks),
-		"",
-		"## Session index",
-		"",
-		...lines,
+		listMarkdown(tasks),
 		"",
 		`<!-- latest-session-title: ${title} -->`,
 		"",
 	].join("\n");
 
-	// Drop the oldest index lines first: a plain slice() would cut the newest entries.
-	let kept = indexLines;
-	let document = build(kept);
-	while (document.length > MAX_CONTEXT_CHARS && kept.length > 0) {
-		kept = kept.slice(1);
-		document = build(kept);
+	// Shed list items until the document fits; the summary is already capped.
+	let points = keyPoints;
+	let tasks = openTasks;
+	let document = build(points, tasks);
+	while (document.length > MAX_CONTEXT_CHARS && (points.length > 0 || tasks.length > 0)) {
+		if (points.length > tasks.length) points = points.slice(0, -1);
+		else tasks = tasks.slice(0, -1);
+		document = build(points, tasks);
 	}
 	return document.length > MAX_CONTEXT_CHARS ? document.slice(0, MAX_CONTEXT_CHARS) : document;
 }

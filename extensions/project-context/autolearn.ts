@@ -15,6 +15,7 @@ import {
 	memoryDir,
 	notify,
 	readOptional,
+	sessionIndexFile,
 	skillsDir,
 	validSkillName,
 	writeAtomic,
@@ -378,7 +379,8 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			const archived = await archivedSessionIds(projectRoot);
 			if (archived.size === 0 && !force) return;
 			const context = (await readOptional(contextFile(projectRoot))).slice(0, AUTOLEARN_CONTEXT_CHARS);
-			const sessions = indexedSessions(parseSessionIndex(context), archived, AUTOLEARN_INDEX_LINES);
+			// The archive-layer index lives next to the logs it points at (`.agents/memory/session-logs/INDEX.md`).
+			const sessions = indexedSessions(parseSessionIndex(await readOptional(sessionIndexFile(projectRoot))), archived, AUTOLEARN_INDEX_LINES);
 			if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
 				if (force) notify(ctx, "Autolearn skipped: current model is not authenticated", "warning");
 				return;

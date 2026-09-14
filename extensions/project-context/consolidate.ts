@@ -1,7 +1,7 @@
 import { convertToLlm, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "./config.ts";
-import { fallbackUpdate, parseIndexLines, renderContextDocument, sessionIndexLine } from "./context-doc.ts";
+import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { completeText, parseJsonObject } from "./llm.ts";
 import {
 	MAX_CONTEXT_CHARS,
@@ -16,7 +16,6 @@ import {
 	migrateProjectState,
 	notify,
 	readOptional,
-	sessionIndexFile,
 	writeAtomic,
 } from "./project-state.ts";
 
@@ -151,7 +150,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function consolidate(ctx: ExtensionContext, force: boolean, silent = false): Promise<void> {
+	async function consolidate(ctx: ExtensionContext, force: boolean, silent = false): Promise<ConsolidateReport> {
 		// Resolving the project root reads ctx.cwd, which throws if the session was
 		// replaced or reloaded while this pass was pending. Never let that reject:
 		// agent_settled calls this without awaiting.
@@ -160,10 +159,10 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
 			if (!force) {
 				const { enabled } = await memoryEnabled(ctx);
-				if (!enabled) return;
+				if (!enabled) return "unchanged";
 			}
 			const outcome = await consolidateProjectState(pi, ctx, { force });
-			if (!outcome || (written.get(projectRoot) ?? 0) >= outcome.version) return;
+			if (!outcome || (written.get(projectRoot) ?? 0) >= outcome.version) return "deduped";
 
 			const memoryText = outcome.result.memory.trim();
 			const memoryChanged = memoryText.length >= 40;
@@ -172,20 +171,16 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			written.set(projectRoot, outcome.version);
 			if (memoryChanged) await writeAtomic(memoryFile(projectRoot), cleanMemory(memoryText));
 			if (update) {
-				const indexLines = parseIndexLines(await readOptional(sessionIndexFile(projectRoot)));
-				const document = renderContextDocument(existingContext, update, {
-					indexLines,
-					sessionLine: sessionIndexLine(ctx, update.title),
-					updatedAt: new Date().toISOString(),
-				});
-				await writeAtomic(contextFile(projectRoot), document);
+				await writeAtomic(contextFile(projectRoot), renderContextDocument(update, { updatedAt: new Date().toISOString() }));
 			}
 			if (!silent && (memoryChanged || update)) {
 				notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
 			}
+			return memoryChanged || update ? "updated" : "unchanged";
 		} catch (error) {
 			if (projectRoot) await logError(projectRoot, "memory", error);
 			if (!silent) notify(ctx, `Project memory update failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			return "failed";
 		}
 	}
 
@@ -238,16 +233,29 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	pi.registerCommand("memory-learn", {
 		description: "Consolidate durable facts and the session context from this project session",
 		handler: async (_args, ctx) => {
-			await consolidate(ctx, true);
+			const report = await consolidate(ctx, true, true);
+			notify(ctx, consolidateReply(report), report === "failed" ? "warning" : "info");
 		},
 	});
 
 	pi.registerCommand("context-update", {
 		description: "Alias for /memory-learn: rewrite project memory and context now",
 		handler: async (_args, ctx) => {
-			await consolidate(ctx, true);
+			const report = await consolidate(ctx, true, true);
+			notify(ctx, consolidateReply(report), report === "failed" ? "warning" : "info");
 		},
 	});
+}
+
+/** What one consolidation attempt did, so the explicit commands can report truthfully. */
+export type ConsolidateReport = "updated" | "unchanged" | "deduped" | "failed";
+
+/** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
+export function consolidateReply(report: ConsolidateReport): string {
+	if (report === "failed") return "Project memory update failed; see .agents/memory/errors.log.";
+	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
+	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
+	return "Project memory and context updated.";
 }
 
 export async function consolidateProjectState(

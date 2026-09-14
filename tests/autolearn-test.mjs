@@ -41,12 +41,18 @@ try {
 			"",
 			"Temp project for the autolearn test.",
 			"",
-			"## Session index",
-			"",
-			"- [sess-a](session-logs/sess-a/session.md) — 2026-09-10 — first session",
-			"- [sess-b](session-logs/sess-b/session.md) — 2026-09-11 — second session",
-			"",
 			"<!-- latest-session-title: Temp -->",
+			"",
+		].join("\n"),
+	);
+	// The archive-layer index now lives next to the logs it points at.
+	await writeFile(
+		path.join(logs, "INDEX.md"),
+		[
+			"# Session Index",
+			"",
+			"- [sess-a](sess-a/session.md) — 2026-09-10 — first session",
+			"- [sess-b](sess-b/session.md) — 2026-09-11 — second session",
 			"",
 		].join("\n"),
 	);

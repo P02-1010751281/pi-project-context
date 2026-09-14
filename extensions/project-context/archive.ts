@@ -1,10 +1,13 @@
+import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "./config.ts";
-import { renderIndexDocument, sessionIndexLine, sessionTitle } from "./context-doc.ts";
+import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionTitle } from "./context-doc.ts";
+import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	contextFile,
 	getProjectRoot,
+	legacySessionIndexFile,
 	logError,
 	logsDir,
 	notify,
@@ -17,8 +20,7 @@ import { writeSessionArtifacts } from "./session-log.ts";
 /**
  * Session archive: raw `session.jsonl` plus the rendered `session.md`, refreshed per turn,
  * on settle and on shutdown. The archive layer also maintains the no-LLM session index
- * (`session-index.md`) that the consolidation pass embeds into CONTEXT.md, and injects
- * CONTEXT.md read-only. No model calls happen here.
+ * (`session-logs/INDEX.md`) and injects CONTEXT.md read-only. No model calls happen here.
  *
  * Feature switches: `archive` gates the writes, `memory` gates the CONTEXT.md injection
  * (the injected document is produced by the consolidation pass). Explicit commands always
@@ -49,16 +51,23 @@ export function registerArchive(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Archive-layer index update: no LLM, deduped by session id, capped. Seeds from
-	 * CONTEXT.md the first time so an existing index is not lost when the file is created.
+	 * Archive-layer index update: no LLM, deduped by session id, capped. On first use it
+	 * adopts the pre-move `<memory>/session-index.md` (converting its links) so an existing
+	 * index is not lost.
 	 */
 	async function updateSessionIndex(ctx: ExtensionContext, knownRoot?: string): Promise<void> {
 		let projectRoot = knownRoot;
 		try {
 			projectRoot ??= await getProjectRoot(pi, ctx.cwd);
 			const existing = await readOptional(sessionIndexFile(projectRoot));
-			const seed = existing.trim() ? existing : await readOptional(contextFile(projectRoot));
-			await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(seed, sessionIndexLine(ctx, sessionTitle(ctx))));
+			if (!existing.trim()) {
+				const legacyFile = legacySessionIndexFile(projectRoot);
+				const legacy = normalizeLegacyIndex(await readOptional(legacyFile));
+				await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(legacy, sessionIndexLine(ctx, sessionTitle(ctx))));
+				if (legacy.trim()) await rm(legacyFile, { force: true }).catch(() => undefined);
+				return;
+			}
+			await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(existing, sessionIndexLine(ctx, sessionTitle(ctx))));
 		} catch (error) {
 			// Best effort: a stale ctx or read-only dir must not break the archive write.
 			if (projectRoot && !loggedScopes.has("session-index")) {
@@ -121,9 +130,27 @@ export function registerArchive(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("session-log", {
-		description: "Write the current session raw JSONL and Markdown log",
-		handler: async (_args, ctx) => {
+		description: "Write the current session log, or backfill ended sessions (import <path…>)",
+		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
+			const value = (args ?? "").trim();
+			if (value === "import" || value.startsWith("import ")) {
+				const targets = await resolveImportTargets(value.replace(/^import\s*/, ""), ctx.cwd);
+				if (targets.length === 0) {
+					notify(ctx, "Usage: /session-log import <session.jsonl|dir>…", "warning");
+					return;
+				}
+				const outcomes = await importArchiveFiles(targets, { projectRoot });
+				const created = outcomes.filter((outcome) => outcome.status === "created").length;
+				const skipped = outcomes.filter((outcome) => outcome.status === "skipped").length;
+				const failed = outcomes.filter((outcome) => outcome.status === "failed");
+				const detail = [
+					skipped > 0 ? `skipped ${skipped} existing` : "",
+					failed.length > 0 ? `failed ${failed.length}: ${failed.map((outcome) => `${outcome.source} (${outcome.error})`).join("; ")}` : "",
+				].filter(Boolean).join("; ");
+				notify(ctx, `Imported ${created} archive(s) into ${logsDir(projectRoot)}${detail ? ` (${detail})` : ""}`, failed.length > 0 ? "warning" : "info");
+				return;
+			}
 			const result = await writeSessionArtifacts(projectRoot, ctx);
 			await updateSessionIndex(ctx, projectRoot);
 			notify(ctx, `Session log written: ${result.dir}`);

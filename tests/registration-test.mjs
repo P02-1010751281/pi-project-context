@@ -54,32 +54,30 @@ console.log(`raw-entries path chars=${buggy.length} (expect 0)`);
 if (!(fixed.includes(marker) && buggy.length === 0)) failures += 1;
 
 console.log("\n=== context-doc rendering ===");
-const { parseIndexLines, renderContextDocument } = await loadNamespace(`${PC}/context-doc.ts`);
+const { parseIndexLines, renderContextDocument, renderIndexDocument } = await loadNamespace(`${PC}/context-doc.ts`);
 const existing = [
-	"# Project Context",
+	"# Session Index",
 	"",
-	"## Session index",
-	"",
-	"- [old-one](session-logs/old-one/session.md) — 2026-09-01 — old one",
-	"- [old-two](session-logs/old-two/session.md) — 2026-09-02 — old two",
+	"- [old-one](old-one/session.md) — 2026-09-01 — old one",
+	"- [old-two](old-two/session.md) — 2026-09-02 — old two",
 	"",
 ].join("\n");
 const indexLines = parseIndexLines(existing);
-const document = renderContextDocument(existing, {
+const indexDocument = renderIndexDocument(existing, "- [cur-sess](cur-sess/session.md) — 2026-09-12 — registration test");
+const rendered = parseIndexLines(indexDocument);
+const ids = rendered.map((line) => /^- \[([^\]]+)\]/.exec(line)?.[1]);
+console.log(`existing lines=${indexLines.length} rendered=${rendered.length} (expect +1)`);
+console.log(`current line last, no duplicate ids: ${indexDocument.includes("[cur-sess]") && new Set(ids).size === ids.length}`);
+if (!(rendered.length === indexLines.length + 1 && new Set(ids).size === ids.length && indexDocument.includes("[cur-sess]"))) failures += 1;
+
+const contextDocument = renderContextDocument({
 	title: "registration test",
 	summary: "rendering",
 	key_points: ["a"],
 	open_tasks: ["b"],
-}, {
-	indexLines,
-	sessionLine: "- [cur-sess](session-logs/cur-sess/session.md) — 2026-09-12 — registration test",
-	updatedAt: "2026-09-12T00:00:00.000Z",
-});
-const rendered = parseIndexLines(document);
-const ids = rendered.map((line) => /^- \[([^\]]+)\]/.exec(line)?.[1]);
-console.log(`existing lines=${indexLines.length} rendered=${rendered.length} (expect +1)`);
-console.log(`current line last, no duplicate ids: ${document.includes("[cur-sess]") && new Set(ids).size === ids.length}`);
-if (!(rendered.length === indexLines.length + 1 && new Set(ids).size === ids.length && document.includes("[cur-sess]"))) failures += 1;
+}, { updatedAt: "2026-09-12T00:00:00.000Z" });
+console.log(`CONTEXT.md has no session index: ${!contextDocument.includes("## Session index")}`);
+if (!(contextDocument.includes("## Summary") && contextDocument.includes("rendering") && !contextDocument.includes("## Session index"))) failures += 1;
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);
 if (failures > 0) process.exitCode = 1;

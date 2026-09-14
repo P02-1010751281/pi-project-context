@@ -1,3 +1,4 @@
+import { appendFile, open, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from "./project-state.ts";
@@ -6,6 +7,12 @@ import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from ".
  * Session archive: the raw JSONL is canonical, the Markdown rendering preserves every
  * entry. The summarized CONTEXT.md is rendered by context-doc.ts and written by the
  * consolidation pass; the archive layer only injects it read-only.
+ *
+ * The raw copy is append-only within a process run: after the initial full copy of the
+ * harness session file, each refresh appends only the new tail instead of rewriting the
+ * whole log, so a long session does not rewrite itself on every turn. A stamp
+ * (size + inode + mtime) guards that append: if the file on disk is no longer the one
+ * this process wrote — an external truncation or replacement — the copy is rebuilt.
  */
 
 /** Keep local transcripts out of version control without touching project ignore files. */
@@ -23,28 +30,76 @@ async function ensureLogsIgnored(projectRoot: string): Promise<void> {
 	}
 }
 
+/** Identity of an artifact right after this process wrote it. */
+interface ArtifactStamp {
+	readonly size: number;
+	readonly ino: number;
+	readonly mtimeMs: number;
+}
+
+async function stampOf(file: string): Promise<ArtifactStamp | undefined> {
+	try {
+		const info = await stat(file);
+		return { size: info.size, ino: info.ino, mtimeMs: info.mtimeMs };
+	} catch {
+		return undefined;
+	}
+}
+
+function sameStamp(a: ArtifactStamp | undefined, b: ArtifactStamp | undefined): boolean {
+	return a !== undefined && b !== undefined && a.size === b.size && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
+}
+
+/** Read a file's `[start, end)` bytes as UTF-8. */
+async function readRange(file: string, start: number): Promise<string> {
+	const handle = await open(file, "r");
+	try {
+		const { size } = await handle.stat();
+		const length = Math.max(0, size - start);
+		const buffer = Buffer.alloc(length);
+		if (length > 0) await handle.read(buffer, 0, length, start);
+		return buffer.toString("utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+/** How much of the harness session file (or of the entry list) is already in the archive. */
+interface RawCursor {
+	source: string;
+	sourceIno: number;
+	sourceSize: number;
+	dest: ArtifactStamp;
+}
+
+const rawCursors = new Map<string, RawCursor>();
+
 function jsonBlock(value: unknown): string {
 	return JSON.stringify(value, null, 2);
 }
 
-function sessionMarkdown(ctx: ExtensionContext, raw: string): string {
-	const header = ctx.sessionManager.getHeader() ?? {
-		type: "session",
-		id: ctx.sessionManager.getSessionId(),
-		timestamp: new Date().toISOString(),
-		cwd: ctx.cwd,
-	};
-	const entries = ctx.sessionManager.getEntries();
+/**
+ * Render a session's Markdown from bare parts so the live writer and the archive
+ * backfill (`import-archive.ts`) produce the same document.
+ */
+export function renderSessionMarkdown(
+	sessionId: string,
+	header: { timestamp?: unknown; cwd?: unknown } | undefined,
+	entries: readonly { type?: unknown; timestamp?: unknown }[],
+	raw: string,
+): string {
+	const started = typeof header?.timestamp === "string" ? header.timestamp : "unknown time";
+	const project = typeof header?.cwd === "string" ? header.cwd : "unknown";
 	const sections = entries.map((entry, index) => {
 		const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "unknown time";
-		return `### ${index + 1}. ${entry.type} — ${timestamp}\n\n~~~~json\n${jsonBlock(entry)}\n~~~~`;
+		return `### ${index + 1}. ${String(entry.type ?? "entry")} — ${timestamp}\n\n~~~~json\n${jsonBlock(entry)}\n~~~~`;
 	});
 
 	return [
-		`# Pi Session ${ctx.sessionManager.getSessionId()}`,
+		`# Pi Session ${sessionId}`,
 		"",
-		`- Started: ${header.timestamp}`,
-		`- Project: ${header.cwd}`,
+		`- Started: ${started}`,
+		`- Project: ${project}`,
 		`- Raw log: [session.jsonl](./session.jsonl)`,
 		`- Entries: ${entries.length}`,
 		"",
@@ -57,6 +112,15 @@ function sessionMarkdown(ctx: ExtensionContext, raw: string): string {
 	].join("\n");
 }
 
+function sessionMarkdown(ctx: ExtensionContext, raw: string): string {
+	return renderSessionMarkdown(
+		ctx.sessionManager.getSessionId(),
+		ctx.sessionManager.getHeader() as { timestamp?: unknown; cwd?: unknown } | undefined,
+		ctx.sessionManager.getEntries(),
+		raw,
+	);
+}
+
 export async function writeSessionArtifacts(
 	projectRoot: string,
 	ctx: ExtensionContext,
@@ -65,7 +129,9 @@ export async function writeSessionArtifacts(
 	const id = safeSessionId(ctx.sessionManager.getSessionId());
 	const dir = path.join(logsDir(projectRoot), id);
 	await ensureLogsIgnored(projectRoot);
-	const existingRaw = await readOptional(ctx.sessionManager.getSessionFile() ?? "");
+	const rawPath = path.join(dir, "session.jsonl");
+	const key = `${projectRoot}\u0000${id}`;
+	const source = ctx.sessionManager.getSessionFile() ?? "";
 	const entries = ctx.sessionManager.getEntries();
 	const header = ctx.sessionManager.getHeader() ?? {
 		type: "session",
@@ -73,11 +139,46 @@ export async function writeSessionArtifacts(
 		timestamp: new Date().toISOString(),
 		cwd: ctx.cwd,
 	};
-	const raw = existingRaw.trim()
-		? (existingRaw.endsWith("\n") ? existingRaw : `${existingRaw}\n`)
-		: [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 
-	await writeAtomic(path.join(dir, "session.jsonl"), raw);
-	if (options.markdown ?? true) await writeAtomic(path.join(dir, "session.md"), sessionMarkdown(ctx, raw));
+	let raw: string | undefined;
+	let appended = false;
+	if (source) {
+		const sourceStat = await stat(source).catch(() => undefined);
+		const cursor = rawCursors.get(key);
+		if (
+			sourceStat
+			&& cursor
+			&& cursor.source === source
+			&& cursor.sourceIno === sourceStat.ino
+			&& cursor.sourceSize <= sourceStat.size
+			&& sameStamp(await stampOf(rawPath), cursor.dest)
+		) {
+			if (sourceStat.size > cursor.sourceSize) {
+				await appendFile(rawPath, await readRange(source, cursor.sourceSize), "utf8");
+				const dest = await stampOf(rawPath);
+				if (dest) rawCursors.set(key, { source, sourceIno: sourceStat.ino, sourceSize: sourceStat.size, dest });
+			}
+			// A refresh that adds no bytes writes nothing at all.
+			appended = true;
+		}
+	}
+
+	if (!appended) {
+		const existingRaw = source ? await readOptional(source) : "";
+		raw = existingRaw.trim()
+			? (existingRaw.endsWith("\n") ? existingRaw : `${existingRaw}\n`)
+			: [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+		await writeAtomic(rawPath, raw);
+		const dest = await stampOf(rawPath);
+		if (dest && source) {
+			const sourceStat = await stat(source).catch(() => undefined);
+			if (sourceStat) rawCursors.set(key, { source, sourceIno: sourceStat.ino, sourceSize: sourceStat.size, dest });
+		}
+	}
+
+	if (options.markdown ?? true) {
+		if (raw === undefined) raw = await readOptional(rawPath);
+		await writeAtomic(path.join(dir, "session.md"), sessionMarkdown(ctx, raw));
+	}
 	return { dir };
 }

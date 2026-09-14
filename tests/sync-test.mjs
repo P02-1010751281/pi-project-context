@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -93,12 +93,13 @@ console.log("\n=== session-logs gets a .gitignore ===");
 console.log("\n=== CONTEXT.md caps the list sections ===");
 {
 	const { renderContextDocument } = await loadNamespace(`${PC}/context-doc.ts`);
-	const document = renderContextDocument("# Project Context\n", {
+	const document = renderContextDocument({
 		title: "cap test",
 		summary: "summary",
 		key_points: Array.from({ length: 60 }, (_, index) => `key point ${index}`),
 		open_tasks: Array.from({ length: 60 }, (_, index) => `task ${index}`),
-	}, { sessionLine: "- [cap](session-logs/cap/session.md) — 2026-09-12 — cap", updatedAt: "2026-09-12T00:00:00.000Z" });
+	}, { updatedAt: "2026-09-12T00:00:00.000Z" });
+	check("no session index in CONTEXT.md", !document.includes("## Session index"));
 	check("capped at 50 key points", document.includes("key point 49") && !document.includes("key point 55"));
 	check("capped at 50 open tasks", document.includes("task 49") && !document.includes("task 55"));
 }
@@ -141,6 +142,82 @@ console.log("\n=== consolidation throttle is session-local ===");
 	} finally {
 		Date.now = realNow;
 	}
+	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== session.jsonl appends incrementally ===");
+{
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-append-"));
+	const { writeSessionArtifacts } = await loadNamespace(`${PC}/session-log.ts`);
+	const source = path.join(tmp, "harness.jsonl");
+	await writeFile(source, `${JSON.stringify({ type: "message", id: "m1" })}\n`);
+	const entries = [messageEntry("m1", "user", "first", "2026-09-12T10:00:00.000Z")];
+	const sessionManager = {
+		getSessionId: () => "append-session",
+		getSessionFile: () => source,
+		getHeader: () => ({ type: "session", id: "append-session", timestamp: "2026-09-12T10:00:00.000Z", cwd: tmp }),
+		getEntries: () => entries,
+		getBranch: () => entries,
+		buildContextEntries: () => entries,
+		getLeafId: () => entries.at(-1)?.id ?? null,
+	};
+	const ctx = makeCtx(tmp, { sessionManager });
+	const artifacts = path.join(tmp, ".agents/memory/session-logs/append-session/session.jsonl");
+
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	check("first write copies the source", (await readFile(artifacts, "utf8")).split("\n").filter(Boolean).length === 1);
+
+	await appendFile(source, `${JSON.stringify({ type: "message", id: "m2" })}\n`);
+	entries.push(messageEntry("m2", "assistant", "second", "2026-09-12T10:01:00.000Z"));
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	const grown = await readFile(artifacts, "utf8");
+	check("append keeps the first line", grown.includes('"m1"') && grown.includes('"m2"'));
+
+	const before = await stat(artifacts);
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	const after = await stat(artifacts);
+	check("a flush with no new bytes writes nothing", before.size === after.size && before.mtimeMs === after.mtimeMs);
+
+	// An external rewrite must force a rebuild instead of a bad append.
+	await writeFile(source, `${JSON.stringify({ type: "message", id: "m3" })}\n`);
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	const rebuilt = await readFile(artifacts, "utf8");
+	check("external rewrite rebuilds", rebuilt.includes('"m3"') && !rebuilt.includes('"m1"'));
+	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== archive backfill import ===");
+{
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-import-"));
+	const { importArchiveFiles, importSessionFile, resolveImportTargets } = await loadNamespace(`${PC}/import-archive.ts`);
+	const dir = path.join(tmp, "exports");
+	await mkdir(dir, { recursive: true });
+	const file = path.join(dir, "session-old.jsonl");
+	await writeFile(file, [
+		JSON.stringify({ type: "session", version: 3, id: "old-session-1", timestamp: "2026-08-01T00:00:00.000Z", cwd: tmp }),
+		JSON.stringify(messageEntry("u1", "user", "an old session about backfill", "2026-08-01T00:00:01.000Z")),
+		JSON.stringify(messageEntry("a1", "assistant", "done", "2026-08-01T00:00:02.000Z")),
+	].join("\n") + "\n");
+
+	const first = await importSessionFile(file, { projectRoot: tmp });
+	check("imported", first.status === "created" && first.id === "old-session-1");
+	const rawCopy = await readFile(path.join(tmp, ".agents/memory/session-logs/old-session-1/session.jsonl"), "utf8");
+	check("raw copied verbatim", rawCopy.includes("backfill"));
+	const markdown = await readFile(path.join(tmp, ".agents/memory/session-logs/old-session-1/session.md"), "utf8");
+	check("markdown rendered", markdown.includes("# Pi Session old-session-1") && markdown.includes("- Entries: 2"));
+	const index = await readFile(path.join(tmp, ".agents/memory/session-logs/INDEX.md"), "utf8");
+	check("index line added", index.includes("[old-session-1]") && index.includes("an old session about backfill"));
+	check("idempotent", (await importSessionFile(file, { projectRoot: tmp })).status === "skipped");
+
+	const second = path.join(dir, "session-two.jsonl");
+	await writeFile(second, [
+		JSON.stringify({ type: "session", id: "old-session-2", timestamp: "2026-08-02T00:00:00.000Z", cwd: tmp }),
+		JSON.stringify(messageEntry("u2", "user", "second", "2026-08-02T00:00:01.000Z")),
+	].join("\n") + "\n");
+	const targets = await resolveImportTargets(dir, tmp);
+	check("directory expands to both files", targets.length === 2);
+	const outcomes = await importArchiveFiles(targets, { projectRoot: tmp });
+	check("bulk import creates one and skips one", outcomes.filter((o) => o.status === "created").length === 1 && outcomes.filter((o) => o.status === "skipped").length === 1);
 	await rm(tmp, { recursive: true, force: true });
 }
 
