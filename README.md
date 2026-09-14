@@ -4,25 +4,15 @@
 
 ## 安装
 
-两种方式**二选一**：同时装会加载两份实例（见末尾）。
-
-**A. pi 包**（新机器）：
-
 ```bash
 pi install git:github.com/P02-1010751281/pi-project-context
 ```
 
 > 本包没有 `package.json`：pi 按约定目录 `extensions/` 发现入口，git 安装不需要 npm（无运行时依赖，pi 核心由宿主提供）。不要加回 `package.json`——含 manifest 的 git 包在安装/checkout 对齐时会执行 `npm install`，未装 npm 的机器会让 `pi` 启动失败。
 
-**B. 本机镜像部署**（本仓库是唯一来源，`~/.pi/agent/extensions` 只是副本，外置盘未挂载也不丢扩展）：
+升级：仓库侧打新 tag，再 `pi install <source>@<new-ref>`（`pi update --extensions` 只对齐已 pin 的 ref）。
 
-```bash
-./install.sh        # 目标目录可用 PI_EXTENSIONS_DIR=... 覆盖
-```
-
-同步 `extensions/` 下的扩展目录，并移除 5 个被取代的旧拆分扩展（`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`），其余文件不碰；装完在 pi 里 `/reload`（或重启 pi）。
-
-**不要同时用 A 和 B**：两份实例各自注册同名命令，pi 会把**所有**副本都改名（`auto-handoff:1`/`:2`），原名失效——斜杠命令变成普通聊天发给模型，hook 也双跑。`install.sh` 发现全局或项目设置里仍有本仓库的 pi package 时会警告；此时 `pi remove <该 package>` 再 `/reload`。
+**不要再往 `~/.pi/agent/extensions` 部署副本**：pi 会同时加载两份实例，各自注册同名命令，pi 把**所有**副本都改名（`auto-handoff:1`/`:2`），原名失效——斜杠命令变成普通聊天发给模型，hook 也双跑。旧版镜像部署已移除（`install.sh` 删除）；残留的 `~/.pi/agent/extensions/project-context` 与旧拆分目录（`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`）删掉再 `/reload`。
 
 ## 架构与数据流
 
