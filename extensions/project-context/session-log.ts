@@ -1,12 +1,27 @@
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { logsDir, readOptional, safeSessionId, writeAtomic } from "./project-state.ts";
+import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from "./project-state.ts";
 
 /**
  * Session archive: the raw JSONL is canonical, the Markdown rendering preserves every
  * entry. The summarized CONTEXT.md is rendered by context-doc.ts and written by the
  * consolidation pass; the archive layer only injects it read-only.
  */
+
+/** Keep local transcripts out of version control without touching project ignore files. */
+const logsIgnored = new Set<string>();
+async function ensureLogsIgnored(projectRoot: string): Promise<void> {
+	if (logsIgnored.has(projectRoot)) return;
+	logsIgnored.add(projectRoot);
+	try {
+		const file = path.join(logsDir(projectRoot), ".gitignore");
+		if (!await pathExists(file)) {
+			await writeAtomic(file, "# Local session transcripts; not meant for version control.\n*\n");
+		}
+	} catch {
+		// Best effort: a failed ignore file must not break the log write.
+	}
+}
 
 function jsonBlock(value: unknown): string {
 	return JSON.stringify(value, null, 2);
@@ -49,6 +64,7 @@ export async function writeSessionArtifacts(
 ): Promise<{ dir: string }> {
 	const id = safeSessionId(ctx.sessionManager.getSessionId());
 	const dir = path.join(logsDir(projectRoot), id);
+	await ensureLogsIgnored(projectRoot);
 	const existingRaw = await readOptional(ctx.sessionManager.getSessionFile() ?? "");
 	const entries = ctx.sessionManager.getEntries();
 	const header = ctx.sessionManager.getHeader() ?? {

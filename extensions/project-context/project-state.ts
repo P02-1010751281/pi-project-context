@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFile, cp, mkdir, readFile, readdir, rename, rmdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -103,12 +104,39 @@ export function notify(ctx: ExtensionContext, message: string, type: "info" | "w
 	}
 }
 
+/** Rotate `errors.log` once its on-disk size passes this many bytes. */
+const MAX_ERROR_LOG_BYTES = 1_000_000;
+/** How many characters of the newest tail survive a rotation. */
+const KEEP_ERROR_LOG_CHARS = 64_000;
+/** Cap one appended record so a huge stack cannot dominate the (bounded) log. */
+const MAX_ERROR_DETAIL_CHARS = 8_000;
+
+/**
+ * Keep the diagnostic file bounded. It is append-only and lives inside the
+ * user's repository, so an unrotated file would grow without limit there.
+ * The size threshold is real bytes (from `stat`); the kept tail and the record
+ * cap are character counts, which is what the rendering costs.
+ */
+async function rotateErrorLog(file: string): Promise<void> {
+	try {
+		if ((await stat(file)).size <= MAX_ERROR_LOG_BYTES) return;
+		const tail = (await readFile(file, "utf8")).slice(-KEEP_ERROR_LOG_CHARS);
+		// Drop the partial first line so the kept text starts on a record.
+		const boundary = tail.indexOf("\n");
+		await writeAtomic(file, `[...truncated; newest entries kept...]\n${boundary < 0 ? tail : tail.slice(boundary + 1)}`);
+	} catch {
+		// A missing file or a failed rotation must not block the append.
+	}
+}
+
 /** Append a swallowed failure to `<project>/.agents/memory/errors.log` so it is diagnosable later. */
 export async function logError(projectRoot: string, scope: string, error: unknown): Promise<void> {
 	try {
 		const file = path.join(memoryDir(projectRoot), "errors.log");
 		await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-		const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+		await rotateErrorLog(file);
+		const full = error instanceof Error ? (error.stack ?? error.message) : String(error);
+		const detail = full.length > MAX_ERROR_DETAIL_CHARS ? `${full.slice(0, MAX_ERROR_DETAIL_CHARS)}\n[...detail truncated...]` : full;
 		await appendFile(file, `${new Date().toISOString()} [${scope}] ${detail}\n`, { encoding: "utf8", mode: 0o600 });
 	} catch {
 		// Diagnostics must never throw.
@@ -134,9 +162,15 @@ export async function pathExists(target: string): Promise<boolean> {
 
 export async function writeAtomic(file: string, content: string): Promise<void> {
 	await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-	const temporary = `${file}.${process.pid}.tmp`;
-	await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-	await rename(temporary, file);
+	// The UUID keeps two concurrent writers of the same file from sharing a temp path.
+	const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
+		await rename(temporary, file);
+	} catch (error) {
+		await rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 async function movePath(source: string, destination: string): Promise<void> {
@@ -149,35 +183,47 @@ async function movePath(source: string, destination: string): Promise<void> {
 	}
 }
 
-/** Merge legacy artifacts into the new location; newest content wins, then the legacy path is removed. */
-async function mergePath(source: string, destination: string): Promise<boolean> {
-	if (!await pathExists(source)) return false;
+/**
+ * Merge one legacy artifact into the new location; newest content wins, then the
+ * legacy path is removed.
+ *
+ * A file/directory type conflict cannot be merged automatically. Deleting the
+ * legacy side would destroy the user's data, and `cp` would throw
+ * `ERR_FS_CP_NON_DIR_TO_DIR` and abort the whole migration, so both sides stay
+ * where they are and the caller reports the conflict.
+ *
+ * @param source - the legacy path to consume.
+ * @param destination - the new location.
+ * @returns `absent` when there is nothing to move, `conflict` when the two paths
+ *   have incompatible types, `merged` when the source was consumed.
+ */
+async function mergePath(source: string, destination: string): Promise<"merged" | "absent" | "conflict"> {
+	if (!await pathExists(source)) return "absent";
 	if (!await pathExists(destination)) {
 		await movePath(source, destination);
-		return true;
+		return "merged";
 	}
 
 	const sourceStat = await stat(source);
 	const destinationStat = await stat(destination);
 	if (sourceStat.isDirectory() && destinationStat.isDirectory()) {
+		let conflicted = false;
 		for (const entry of await readdir(source, { withFileTypes: true })) {
-			await mergePath(path.join(source, entry.name), path.join(destination, entry.name));
+			if (await mergePath(path.join(source, entry.name), path.join(destination, entry.name)) === "conflict") conflicted = true;
 		}
+		// Keep the source directory when it still holds an unmergeable child.
+		if (conflicted) return "conflict";
 		await rm(source, { recursive: true, force: true });
-		return true;
+		return "merged";
 	}
 
-	if (sourceStat.isDirectory()) {
-		// Directory vs file conflict cannot be merged automatically; keep the new location.
-		await rm(source, { recursive: true, force: true });
-		return true;
-	}
+	if (sourceStat.isDirectory() || destinationStat.isDirectory()) return "conflict";
 
 	if (sourceStat.mtimeMs > destinationStat.mtimeMs) {
 		await cp(source, destination, { force: true });
 	}
 	await rm(source, { force: true });
-	return true;
+	return "merged";
 }
 
 /** Remove leftover `<name>.<pid>.tmp` files from interrupted atomic writes. */
@@ -190,7 +236,7 @@ async function cleanStaleTemps(directory: string): Promise<void> {
 	}
 	const cutoff = Date.now() - 60 * 60 * 1000;
 	for (const entry of entries) {
-		if (!entry.isFile() || !/\.\d+\.tmp$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.\d+(?:\.[0-9a-f-]{36})?\.tmp$/.test(entry.name)) continue;
 		const file = path.join(directory, entry.name);
 		try {
 			if ((await stat(file)).mtimeMs < cutoff) await rm(file, { force: true });
@@ -237,11 +283,14 @@ export type MigrationResult = {
 	moved: string[];
 	importedSkills: number;
 	importedMemory: boolean;
+	/** Destination paths whose legacy counterpart could not be merged and was left in place. */
+	conflicts: string[];
 };
 
 /** Consolidate legacy memory, context, logs and skills into the `.agents/` layout. */
 export async function migrateProjectState(projectRoot: string): Promise<MigrationResult> {
 	const moved: string[] = [];
+	const conflicts: string[] = [];
 	const legacyPi = legacyPiDir(projectRoot);
 	const moves: Array<[string, string]> = [
 		[path.join(legacyPi, "MEMORY.md"), memoryFile(projectRoot)],
@@ -249,7 +298,10 @@ export async function migrateProjectState(projectRoot: string): Promise<Migratio
 		[path.join(legacyPi, SESSION_LOGS_SUBDIR), logsDir(projectRoot)],
 	];
 	for (const [source, destination] of moves) {
-		if (await mergePath(source, destination)) moved.push(path.relative(projectRoot, destination) || destination);
+		const label = path.relative(projectRoot, destination) || destination;
+		const outcome = await mergePath(source, destination);
+		if (outcome === "merged") moved.push(label);
+		if (outcome === "conflict") conflicts.push(label);
 	}
 
 	const importedSkills =
@@ -274,7 +326,7 @@ export async function migrateProjectState(projectRoot: string): Promise<Migratio
 	// Drop the legacy directory when migration emptied it; pi recreates it if ever needed.
 	await rmdir(legacyPi).catch(() => undefined);
 
-	return { moved, importedSkills, importedMemory };
+	return { moved, importedSkills, importedMemory, conflicts };
 }
 
 export async function loadMemory(projectRoot: string): Promise<{ text: string; source: string }> {

@@ -13,6 +13,8 @@ import { MAX_CONTEXT_CHARS, MAX_LIST_ITEM_CHARS, MAX_SUMMARY_CHARS, safeSessionI
  */
 
 const MAX_INDEX_LINES = 200;
+/** Cap list sections before budgeting so a runaway model cannot force thousands of renders. */
+const MAX_LIST_ENTRIES = 50;
 
 function trimLine(value: string, limit = MAX_LIST_ITEM_CHARS): string {
 	return value.replace(/\s+/g, " ").trim().slice(0, limit);
@@ -89,6 +91,8 @@ export function renderContextDocument(
 	const source = options.indexLines && options.indexLines.length > 0 ? options.indexLines : parseIndexLines(existing);
 	const indexLines = dedupeIndexLines(source, options.sessionLine, MAX_INDEX_LINES);
 	const title = trimLine(update.title, 160) || "Untitled session";
+	const keyPoints = update.key_points.slice(0, MAX_LIST_ENTRIES);
+	const openTasks = update.open_tasks.slice(0, MAX_LIST_ENTRIES);
 	const build = (lines: string[]): string => [
 		"# Project Context",
 		"",
@@ -100,11 +104,11 @@ export function renderContextDocument(
 		"",
 		"## Key points",
 		"",
-		listMarkdown(update.key_points),
+		listMarkdown(keyPoints),
 		"",
 		"## Open tasks",
 		"",
-		listMarkdown(update.open_tasks),
+		listMarkdown(openTasks),
 		"",
 		"## Session index",
 		"",

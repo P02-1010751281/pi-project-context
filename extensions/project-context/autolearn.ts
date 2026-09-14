@@ -259,12 +259,33 @@ function parseDecision(text: string): Decision | undefined {
 	};
 }
 
+/**
+ * Learned skills are discovered natively and injected into future sessions, so
+ * refuse bodies that try to steer the agent instead of describing a workflow.
+ * Heuristic, but it catches the common injection phrasings a summarizer might
+ * copy out of untrusted repository content.
+ */
+const UNSAFE_SKILL_PATTERNS: readonly RegExp[] = [
+	/ignore (?:all |any |the )?(?:previous|prior|earlier|above) (?:instructions|rules|prompts)/i,
+	/override (?:the )?(?:system|developer|user) (?:prompt|instructions|rules)/i,
+	/(?:do not|don't|never) (?:tell|inform|mention (?:this |it )?to|reveal (?:this |it )?to) the user/i,
+	/hide (?:this|it) from the user/i,
+	/忽略(?:之前|以上|上述|先前|前面)(?:的)?(?:所有)?(?:指令|指示|规则|要求)/,
+	/(?:不要|别)(?:告诉|告知|提醒|透露给)用户/,
+	/绕过(?:安全|权限|限制)/,
+];
+
+function skillBodyUnsafe(body: string): boolean {
+	return UNSAFE_SKILL_PATTERNS.some((pattern) => pattern.test(body));
+}
+
 function rejectionReason(skill: ProposedSkill, verified: Set<string>, skills: SkillInfo[], candidateExists: boolean): string | undefined {
 	if (!validSkillName(skill.name)) return "invalid kebab-case name";
 	if (!skill.description) return "missing description";
 	if (skill.description.length > MAX_SKILL_DESCRIPTION_CHARS) return "description too long";
 	if (skill.body.length < MIN_SKILL_BODY_CHARS) return "body too short";
 	if (skill.body.length > MAX_SKILL_BODY_CHARS) return "body too long";
+	if (skillBodyUnsafe(skill.body)) return "body looks like an instruction injection";
 	const cited = [...new Set(skill.evidence)].filter((id) => verified.has(id));
 	const required = skill.candidate ? AUTOLEARN_CANDIDATE_MIN_SESSIONS : AUTOLEARN_MIN_SESSIONS;
 	if (cited.length < required) {

@@ -49,7 +49,8 @@ session.jsonl（原始，唯一权威）
  │                        MEMORY.md（长期）+ CONTEXT.md（工作态），两者每轮注入
  ├─ autolearn    （1 次 LLM，≥6h）读 MEMORY/CONTEXT + 会话索引判断；
  │                        缺证据时按索引回溯存档摘录；≥2 个已存档会话才直接写
- │                        .agents/skills/<name>/SKILL.md，低置信度写 candidate 等确认
+ │                        .agents/skills/<name>/SKILL.md，低置信度写 candidate 等确认；
+ │                        拒绝含提示注入话术的 body
  └─ handoff      （1 次 LLM）阈值阀门：旧段摘要 + 最近原文重放 + 指向旧 session id/索引 → 新会话
 ```
 
@@ -108,11 +109,12 @@ Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-han
     ├── project-context.json            # 功能开关与参数
     ├── autolearn.json                  # （旧）节流/开关，只读兼容
     ├── skill-candidates/<name>.md      # 待确认候选技能
-    ├── errors.log                      # 被吞掉的异常（诊断用，正常为空）
-    └── session-logs/<session-id>/{session.jsonl,session.md}
+    ├── errors.log                      # 被吞掉的异常（诊断用；单条截断到 8000 字符，超 1MB 轮换保留最新）
+    └── session-logs/                   # 首次写出时自动放一份忽略一切的 .gitignore
+        └── <session-id>/{session.jsonl,session.md}
 ```
 
-旧数据在 `session_start` 时自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）。
+旧数据在 `session_start` 时自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）。迁移遇到**文件/目录类型冲突**（例如旧 `MEMORY.md` 是目录、新位置已是文件）时两侧都保留并在通知里点名，不做删除；迁移失败会在下个会话启动时重试。
 
 ## 测试
 
@@ -120,4 +122,4 @@ Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-han
 node tests/run-all.mjs
 ```
 
-测试通过 pi 自带的 jiti loader 加载本仓库的扩展（与运行时同一套 alias，不触碰 `~/.pi`），全部跑在临时项目目录上：loader 完整性、注册项、会话投影、索引渲染、autolearn 取证与门禁、consolidation 端到端、功能开关。若 pi 不在全局 npm root，用 `PI_PKG=/path/to/@earendil-works/pi-coding-agent` 指定。
+测试通过 pi 自带的 jiti loader 加载本仓库的扩展（与运行时同一套 alias，不触碰 `~/.pi`），全部跑在临时项目目录上：loader 完整性、注册项、会话投影、索引渲染、autolearn 取证与门禁（含注入体拒绝）、consolidation 端到端与会话级节流、功能开关、日志轮换/迁移冲突/原子写卫生。若 pi 不在全局 npm root，用 `PI_PKG=/path/to/@earendil-works/pi-coding-agent` 指定。

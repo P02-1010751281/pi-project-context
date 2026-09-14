@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "./config.ts";
-import { parseIndexLines, renderIndexDocument, sessionIndexLine, sessionTitle } from "./context-doc.ts";
+import { renderIndexDocument, sessionIndexLine, sessionTitle } from "./context-doc.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	contextFile,

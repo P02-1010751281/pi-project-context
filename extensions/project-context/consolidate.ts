@@ -51,7 +51,7 @@ export type ConsolidateOutcome = {
 	version: number;
 };
 
-type PassState = { turns: number; at: number };
+type PassState = { session: string; turns: number; at: number };
 
 let nextVersion = 0;
 let activeConsolidation: Promise<ConsolidateOutcome | undefined> | undefined;
@@ -134,8 +134,8 @@ function cleanMemory(text: string): string {
 }
 
 /**
- * Register the consolidation hooks and commands. Must be called before the archive and
- * autolearn registrations so archive writes queue before a settle-time pass starts.
+ * Register the consolidation hooks and commands. Registered after the archive hooks so the
+ * settle-time archive write is queued before a pass starts.
  */
 export function registerConsolidation(pi: ExtensionAPI): void {
 	/** Last consolidation-pass version each project's artifacts were written from. */
@@ -198,6 +198,9 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (result.importedSkills > 0) details.push(`imported ${result.importedSkills} skill${result.importedSkills === 1 ? "" : "s"}`);
 			if (result.importedMemory) details.push("imported legacy OMP memory");
 			if (details.length > 0) notify(ctx, `Project memory in ${memoryDir(projectRoot)}: ${details.join("; ")}`);
+			if (result.conflicts.length > 0) {
+				notify(ctx, `Legacy layout left in place (file/directory type conflict, merge it by hand): ${result.conflicts.join(", ")}`, "warning");
+			}
 		} catch (error) {
 			await logError(projectRoot, "migration", error);
 		}
@@ -260,9 +263,13 @@ export async function consolidateProjectState(
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
 		const branch = ctx.sessionManager.getBranch();
 		const turns = userTurnCount(branch);
-		const previous = throttle.get(projectRoot) ?? { turns: 0, at: 0 };
+		const sessionId = ctx.sessionManager.getSessionId();
+		const previous = throttle.get(projectRoot);
+		// The turn counter is session-local: after a session change, count from zero again.
+		// Otherwise a fresh session would need `previous session turns + CONSOLIDATE_TURNS` before learning.
+		const baseline = previous?.session === sessionId ? previous.turns : 0;
 		const cached = lastOutcome.get(projectRoot);
-		const throttled = !force && (turns - previous.turns < CONSOLIDATE_TURNS || Date.now() - previous.at < CONSOLIDATE_INTERVAL_MS);
+		const throttled = !force && (turns - baseline < CONSOLIDATE_TURNS || Date.now() - (previous?.at ?? 0) < CONSOLIDATE_INTERVAL_MS);
 		if (throttled) return cached?.outcome;
 		if (force && cached && Date.now() - cached.at < FORCE_DEDUPE_MS) return cached.outcome;
 		if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
@@ -279,9 +286,17 @@ export async function consolidateProjectState(
 			conversationText(ctx.sessionManager.buildContextEntries()),
 		);
 
-		const result = parseConsolidated(await completeText(ctx, prompt));
+		let raw: string;
+		try {
+			raw = await completeText(ctx, prompt);
+		} catch (error) {
+			// Record the attempt so a persistent failure backs off instead of retrying on every settle.
+			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
+			throw error;
+		}
+		const result = parseConsolidated(raw);
 		const version = (nextVersion += 1);
-		throttle.set(projectRoot, { turns, at: Date.now() });
+		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 		const outcome: ConsolidateOutcome = { result, version };
 		lastOutcome.set(projectRoot, { version, at: Date.now(), outcome });
 		return outcome;
