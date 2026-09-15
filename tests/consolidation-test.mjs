@@ -571,6 +571,13 @@ try {
 			const legacy = await loadMemory(fixTmp);
 			check("a legacy .pi stored reply is decoded", legacy.poisoned === true && legacy.source.includes(".pi"));
 
+			// An unreadable legacy source is reported too, not shown as "no memory".
+			await rm(path.join(fixTmp, ".pi/MEMORY.md"), { force: true });
+			await mkdir(path.join(fixTmp, ".pi/MEMORY.md"), { recursive: true });
+			const legacyUnreadable = await loadMemory(fixTmp);
+			check("an unreadable legacy source is flagged", legacyUnreadable.unreadable === true && legacyUnreadable.source.includes(".pi"));
+			await rm(path.join(fixTmp, ".pi/MEMORY.md"), { recursive: true, force: true });
+
 			// Token rate charges every non-ASCII code point and the escape cost.
 			check("non-CJK scripts are charged a full token", replyTokenRate("привет") === 1);
 			check("ASCII escapes cost extra", replyTokenRate('"\\\\') > replyTokenRate("ab"));

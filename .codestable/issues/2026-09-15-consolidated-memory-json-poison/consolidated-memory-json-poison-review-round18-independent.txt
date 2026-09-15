@@ -1,0 +1,49 @@
+# Round 18 独立审查
+
+## 核验过程与证据
+
+**1. 改动范围**：`git diff HEAD` 仅 `extensions/project-context/project-state.ts`（+19/−3）与 `tests/consolidation-test.mjs`（+7）；`git diff HEAD --check` 干净。未跟踪的 `.agents/`、`.codestable/` 是本仓库自身运行产生的项目记忆/特性目录，非代码改动。
+
+**2. 隔离探针（/tmp/probe-rev18.mjs，HOME 指向临时目录）**：A–K 全部符合预期
+- 主目标：ENOENT→fallthrough；EISDIR→`{unreadable:true, source:主目标}`；空文件→继续 legacy。
+- `.pi/MEMORY.md`：ENOENT→继续 OMP；EISDIR/EACCES→`unreadable:true, source=.pi/MEMORY.md`；可读→正常 `legacyMemory` 解码，`poisoned` 语义不变。
+- OMP 三个 fallback：ENOENT 逐个继续（`memory_summary.md`、`learned.md` 均能命中且 source 正确）；EISDIR→`unreadable:true, source=该 fallback`。
+- 「主目标缺失 → legacy 存在但不可读」组合：正确返回 unreadable 且不带 `poisoned`。
+- 主目标 EISDIR 优先于可读 legacy，行为与 round-17 一致。
+
+**3. readMemorySource**：`readFile(file,"utf8")` 成功即 `unreadable:false`；仅 `code === "ENOENT"` 视为缺失，其余（含无 `code` 错误）一律 unreadable，失败方向是「可见」而非「静默丢」，符合本轮规格。
+
+**4. 调用方覆盖**：
+- `/memory`（consolidate.ts:503-507）先判 `memory.unreadable`，消息用 `memory.source`，对 legacy 来源天然生效。
+- consolidation（consolidate.ts:578-583）与 autolearn（autolearn.ts:416-420）也只读 `.unreadable`/`.text`，无来源类型过滤，覆盖 legacy。
+- 写入侧 `backupMemoryBeforeWrite` 只作用于 `.agents/memory/MEMORY.md`；legacy 文件从不被写，因此 unreadable legacy 不会造成覆盖丢失。
+
+**5. 测试**：`node tests/run-all.mjs` → **All 8 tests passed**；新检查 `OK an unreadable legacy source is flagged` 确实执行。用例在旧代码下会失败（旧逻辑返回 `source=主目标`、`unreadable` 未定义），是有效回归测试；清理用 `force` 且 `check` 不抛，不会污染后续用例。
+
+## blocking
+无。
+
+## important
+无。
+
+## nit
+1. **日志措辞**（`consolidate.ts:579`、`autolearn.ts:418`）：硬编码「MEMORY.md exists but cannot be read」且称「the write path fails closed」。当 unreadable 来自 `memory_summary.md`/`learned.md` 时文件名不符；来自 legacy 时写入路径**不会** fail closed（只有主目标是写目标）。建议至少改成引用 `existing.source`，并去掉/限定 fail-closed 表述，避免运维误判「写已被阻止」。
+2. `readMemorySource` 把 ENOTDIR 也归为 unreadable：若 `.pi` 或 `~/.omp` 是普通文件，会报「存在但不可读」而非缺失。这与主目标既有行为一致、也严格符合本轮「仅 ENOENT 为缺失」的规格，影响很低，仅记录。
+3. 新测试只覆盖 `.pi` 的 EISDIR；OMP fallback 的 unreadable/顺序未入测试（探针已人工验证）。
+
+## suggestion
+1. 主目标读取可与 `readMemorySource` 合并，消除两处重复的 try/catch 语义（非必需）。
+2. 可加一条 OMP `memory_summary.md`/`learned.md` 不可读的序测试，锁住 `source` 指向与「先到先停」语义。
+
+## learning
+「ENOENT 与其它错误分流」的 helper + 统一的 `.unreadable` 契约，使新增 legacy 覆盖零调用方改动；这也验证了 round-17 把 unreadable 判定收敛到 `LoadedMemory` 上的设计收益。
+
+## praise
+改动最小、语义清晰，测试是真正能失败的反例；`source` 始终指向实际被读取的路径，`poisoned`/`text` 与旧行为兼容，正常路径与 fallback 顺序无回归。
+
+## residual-risk
+1. 仅 legacy 不可读时 consolidation 仍以空记忆继续；若主目标缺失会写出新的 MEMORY.md，之后 legacy（字节未动）被永久遮蔽，仅 errors.log 留痕。属旧有行为，本轮只提升了可见性。
+2. 早停语义：高优先级来源不可读时会跳过可读的低优先级来源（探针 F/J），用户修权限前可能暂时无记忆注入。
+3. `migrateProjectState` 的 OMP 导入仍用 `readOptional`（project-state.ts:522-524），不可读的 OMP 记忆在迁移时仍被静默跳过——不在本轮范围，但属同类残留。
+
+VERDICT: PASSED

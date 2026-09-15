@@ -521,7 +521,13 @@ export async function migrateProjectState(projectRoot: string): Promise<Migratio
 	if (!await pathExists(memoryFile(projectRoot))) {
 		for (const name of ["MEMORY.md", "memory_summary.md", "learned.md"]) {
 			const source = path.join(legacyOmpDir(projectRoot), name);
-			const raw = (await readOptional(source)).trim();
+			const loaded = await readMemorySource(source);
+			if (loaded.unreadable) {
+				// Skipping silently would hide a legacy memory that exists but cannot be imported.
+				await logError(projectRoot, "migration", `legacy OMP memory at ${source} exists but cannot be read`);
+				continue;
+			}
+			const raw = loaded.text.trim();
 			if (!raw) continue;
 			// Lock and re-check, so a concurrent writer's file is never replaced unbacked.
 			await withMemoryLock(memoryFile(projectRoot), async () => {
@@ -762,6 +768,15 @@ export function normalizeMemoryDocument(value: string): string {
 
 export type LoadedMemory = { text: string; source: string; poisoned: boolean; unreadable?: boolean };
 
+/** Read one memory source, distinguishing "absent" from "exists but unreadable". */
+async function readMemorySource(file: string): Promise<{ text: string; unreadable: boolean }> {
+	try {
+		return { text: await readFile(file, "utf8"), unreadable: false };
+	} catch (error) {
+		return { text: "", unreadable: (error as { code?: string }).code !== "ENOENT" };
+	}
+}
+
 /** Decode a stored reply found outside the `.agents/` layout (legacy `.pi`, OMP import). */
 function legacyMemory(text: string, source: string): LoadedMemory {
 	const decoded = decodePoisonedMemory(text);
@@ -788,12 +803,16 @@ export async function loadMemory(projectRoot: string): Promise<LoadedMemory> {
 	}
 
 	const legacyPi = path.join(legacyPiDir(projectRoot), "MEMORY.md");
-	const fromPi = (await readOptional(legacyPi)).trim();
-	if (fromPi) return legacyMemory(fromPi, legacyPi);
+	const fromPi = await readMemorySource(legacyPi);
+	if (fromPi.unreadable) return { text: "", source: legacyPi, poisoned: false, unreadable: true };
+	const piText = fromPi.text.trim();
+	if (piText) return legacyMemory(piText, legacyPi);
 
 	for (const name of ["MEMORY.md", "memory_summary.md", "learned.md"]) {
 		const fallback = path.join(legacyOmpDir(projectRoot), name);
-		const text = (await readOptional(fallback)).trim();
+		const source = await readMemorySource(fallback);
+		if (source.unreadable) return { text: "", source: fallback, poisoned: false, unreadable: true };
+		const text = source.text.trim();
 		if (text) return legacyMemory(text, fallback);
 	}
 

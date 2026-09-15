@@ -182,4 +182,7 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
   - round 17 复审 **PASSED**（无 blocking/important）；最后两个 nit 已收口：`cleanStaleTemps` 只删除
     「空目录且超龄」的 `.broken-*`（含内容/非目录一律保留，避免误删用户数据），`tests/run-all.mjs`
     加 60s timeout 且挂起按失败上报；新增 broken 回收回归。60k 随机网格复跑 0 越界/0 清零/0 地板/0 浪费。
+  - round 18 复审 **PASSED**：补上 `loadMemory` 对 legacy `.pi`/OMP 来源的不可读区分
+    （`readMemorySource`：仅 ENOENT 视为缺失，其余报 `unreadable` 并返回该来源路径），
+    `migrateProjectState` 的 OMP 导入对不可读来源改记 `errors.log` 而非静默跳过；新增 legacy 不可读回归。
 - 两个项目的存量数据不受影响（已修复的 UniField / Quantum_Matrix `MEMORY.md` 保持原样）。
