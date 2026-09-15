@@ -1,0 +1,79 @@
+# Round 11 独立代码审查报告（memory-json-poison review-fix 完整复审）
+
+## 1. Scope And Method
+
+- Diff basis：`git diff`（工作区未提交）`consolidate.ts` +269、`project-state.ts` +176、`tests/consolidation-test.mjs` +397；HEAD = e29abe4。
+- 独立核验（全部在 /tmp 沙箱探针，未改工作区；审查前后 `git status --short` 一致）：
+  - 仓库测试 `node tests/consolidation-test.mjs` → **ALL OK**（519 行全绿）。
+  - `fitMemoryInput` 随机 8000 例 + 结构化 1176 例（含 ASCII 体+CJK 尾、CJK 头+尾、全 ASCII/CJK 混合、cap 1..32768）。
+  - claim 语义 e2e 4 组（模型失败不回放 / EISDIR 写失败立即重试 / MEMORY 成功+CONTEXT 失败 / settle+shutdown 并发）。
+  - prune 身份 + 真实 `utimes` 时钟错位、EACCES fail-closed e2e、备份 Buffer 字节保真、读路径副作用、解析器与 HEAD 10,016 例差分。
+
+## 2. Round-10 Findings 闭合确认
+
+**IMP-R10-1（保底分支把 token 配额当字符上限）— 已修复。** 复现 reviewer 反例：`memory="a"×900`、`context=1600 ASCII+400 CJK`、cap 2048 →
+`consolidate.ts:197-265` 实测输出 `mem=900/900（整份）`、`ctx=1060/2000`、`tokens=1024.00 / budget=1024 = 100.0%`、`clipped=true`。无过度剪裁、无浪费。
+- 随机 8000 例：严格越界 `Σ本地率 + reserved ≤ maxTokens` 最大 **+0.4 token**（代码 `+0.5` 容差内，见 nit-1）；budget≥800 时 **0 次地板破坏、0 次浪费超 2%/32 token**；两侧清零仅出现在 cap=1（配置层 `MIN_AUX_MAX_TOKENS=256`，不可达）。
+- 结构化 1176 例：worstWaste=**11.4 token @budget 4096（0.28%）**，floorBreak=0。
+
+**N-R10-1（部分写失败释放 claim）— 已修复。** `consolidate.ts:329-341,351-355,378-382` 的 `claimed && !wroteMemory` 语义探针全过：
+- 模型抛错（claimed=false）→ 外部编辑在后续节流 settle 后原样保留，无第 3 次模型调用（写盘仍 v1 被 dedupe）。
+- EISDIR 写失败（claimed=true, wroteMemory=false）→ 立即 `/memory-learn` 无需再调模型即落地，旧字节进备份。
+- MEMORY 成功 + CONTEXT 目录失败（wroteMemory=true）→ 外部编辑保留，不回放 cached outcome。
+
+**N-R10-3（skew 测试/预算矩阵）— 已落实。** `tests/consolidation-test.mjs:318` 使用真实 `utimes`；`:452-475` 复用导出 `replyTokenRate`，含「不浪费预算」与两个新 fixture，均随套件通过。
+
+## 3. 重点核验结论
+
+- **claim 语义**：4/4 场景通过（模型/解析失败不回放、写失败可立即重试且不重复调模型、部分写失败不覆盖外部编辑、settle+shutdown 单次模型调用/单次写入）；仓库并发两命令测试也通过。
+- **prune/fail-closed/保真**：全名锚定正则 `project-state.ts:470` + `isFile` + mtime；真实 `utimes` 下新备份必存活、未来名旧 mtime 文件被删、嵌套生成名用户文件/目录/大写 hex/多后缀字符全部保留；仅保留 5 份。EISDIR/EACCES 均不覆盖、记日志、返回 failed，权限恢复后重试成功。非法 UTF-8 备份 `Buffer.compare===0`。
+- **回归**：读路径（`loadMemory`、`/memory`、`before_agent_start`）零新增文件、污染文件原字节不动；坏文件解码保留末行；`/memory` 对污染给 warning；解析器与 HEAD 10,016 例 **0 mismatch**；headless clipped 留痕与备份由仓库测试覆盖。
+
+## 4. Findings
+
+### blocking
+- 无。
+
+### important
+- 无。
+
+### nit
+- **N-1 严格预算不变量可越界 0.4 token，测试容差不一致。** `consolidate.ts:225,253,260` 的收敛/保底判定用 `budget + 0.5`，而 `tests/consolidation-test.mjs:467` 断言 `≤ cap + 0.001`；随机输入下 1574/8000 落在 (0.001,0.4]。影响：率是保守估计，实际不可感知；但该断言在新增 fixture 下可能偶发失败。修复边界：把三处 slack 收到 `budget`，或测试容差改为 0.5 并注明。
+- **N-2 `clipText` 可切开 surrogate pair / 孤立代理对。** `consolidate.ts:182-188` 按 UTF-16 索引 slice；仅影响 prompt 边缘字符，已是记录残差。
+- **N-3（沿用 round 9）命令回执不指向实际备份。** `consolidate.ts:443,451,463-469` 对 `clipped` 一律回中性文案，而同一次调用 `:373` 的自动通知会带备份路径；显式 `/memory-learn` 用户不知道刚写的备份在哪。属展示问题。
+
+### suggestion
+- **S-1 `.memory-backup-*` 未纳入 gitignore；`errors.log` 落盘最多 4000 字符原始回复**（`consolidate.ts:125-131`，`logError` 总上限 8000，`project-state.ts:118,145`）。建议随提交决定忽略/脱敏策略。
+- **S-2 `/memory` 对不可读文件显示「No project memory yet」**（`consolidate.ts:433` + `readOptional` 吞 EACCES）：显示误导，写路径不受影响（fail-closed 仍正确）。
+- **S-3 跨进程竞争窗口仍在**：备份 read→prune→rename（`project-state.ts:474-486`）、`migrateProjectState` 的 check-then-write。同进程由 single-flight 保护。
+
+### learning
+- 定点收敛必须「每次从原始文本 re-clip」而非在已剪裁中间结果上继续剪：`consolidate.ts:226-227,248-249` 始终以 `memory/context` 为源，保证增长单调、内容始终是原文本头尾并集，不会像 round 9 那样把一侧清零或振荡。
+- claim 释放条件应与「本次是否持久化了被保护产物」绑定（`wroteMemory`），而不是「是否进入 catch」；这是 round 9 IMP-2 与 round 10 N-R10-1 的通用修复模式。
+- 删除类保留策略 = 全名锚定正则 + `isFile` + mtime + 排除本次刚写项，可同时抵抗名字伪装与时钟错位。
+
+### praise
+- round-10 三个 finding 均以可复现数字关闭：R10 反例预算利用率 100% 且 memory 整份保留；claim 四场景无回放；预算矩阵 0 地板破坏/0 浪费超标。收敛逻辑（按需分配→实际文本迭代→阻尼增长回填→字符保底）在 9k+ 探针下没有清零、没有越界（>0.4 token）、没有过度剪裁。
+- fail-closed 与写时无条件备份的组合经受住 EISDIR/EACCES/部分写/并发/时钟错位测试，字节保真可靠。
+
+### residual-risk
+- `model.maxTokens` 缺失时 `maxTokens` 可被抬到 `needed`，是否被 provider 接受取决于实现（失败不覆盖，仅 pass 失败）。
+- token 率未计 JSON 转义膨胀、emoji/西里尔/阿拉伯等非 CJK 低位宽文字；极端输入仍可能截断。
+- decoder 召回缺口（`context` 先行、prose 前缀、无 header 值、`.pi`/OMP 来源）与 `/memory` 不可读显示问题不变。
+- 备份仅保留 5 份，通知指名的备份可能已被轮换；`.memory-backup-*` 未忽略。
+
+## 5. Test And QA Focus
+
+- 预算：加入随机化不变量测试（容差与代码 slack 对齐）、ASCII 体+CJK 尾/混合密度的表驱动矩阵，并断言 clipped 且未整份发出时 used ≥ budget−2%。
+- claim：把「模型失败后节流 settle 不得回放」「EISDIR 失败后立即重试」「MEMORY 成功+CONTEXT 失败后外部编辑保留」做成回归用例（当前仅 EISDIR 中止已覆盖）。
+- prune：真实 `utimes` 的未来/回拨 mtime 用例已有，建议补同毫秒多写与跨进程窗口。
+- 读路径：断言 `/memory`、`before_agent_start`、`loadMemory` 前后目录清单与文件字节不变；不可读文件应给出 warning 而非「No memory」（若修 S-2）。
+- 发布前确认 `.agents/memory/errors.log` 与 `.memory-backup-*` 的忽略/清理策略。
+
+## 6. 无法确认点（沙箱限制）
+
+- 真实 provider 对抬高 `maxTokens` 的接受度、真实 tokenizer 与 `replyTokenRate` 的偏差。
+- Windows/NFS 的 rename 原子性、mtime 粒度、目录 readFile 错误码；EACCES 仅在 Linux uid 1000 下验证。
+- 真实历史坏文件/备份不在沙箱，仅以合成夹具 + HEAD 差分验证。
+
+**VERDICT: PASSED**

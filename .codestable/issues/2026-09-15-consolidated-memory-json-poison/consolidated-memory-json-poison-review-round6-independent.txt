@@ -1,0 +1,157 @@
+# 独立代码审查报告（round 6 · 完整复审）
+
+## 0. 审查基线与独立核验方式
+
+- 基线：`git status --short` = `M consolidate.ts`、`M project-state.ts`、`M tests/consolidation-test.mjs`（+427/−52）+ 既有未跟踪目录。审查前后逐项 diff 比对一致，**工作区零写入**（只在 `/tmp/rev6-probe`、`/tmp/rev6-mut` 操作）。
+- 基线测试：`node tests/run-all.mjs` → **8/8 通过**。
+- 独立探针（全部自建，不依赖历史结论）：
+  - `/tmp/rev6-probe/decode.mjs`：前缀/嵌套/级联/FP/TP 矩阵 + 读纯净性 + 三份真实备份回放；
+  - `/tmp/rev6-probe/writepath.mjs`：正常修复、只读失败、缓存 outcome、并发双写、memoryChanged=false；
+  - `/tmp/rev6-probe/writer-toctou.mjs`：用 `fs.promises.readFile` 钩子确定性插入并发写者；
+  - `/tmp/rev6-probe/fuzz.mjs`：与 HEAD（ad81a11）旧实现做 20 万 + 5 万例差分 fuzz；
+  - `/tmp/rev6-probe/budget.mjs`：11 档 cap × CJK/ASCII × 有/无 context 共 198 断言，独立复算预算公式；
+  - `/tmp/rev6-probe/tail2.mjs`、`callers*.mjs`、`clipbackup.mjs`、`shapes.mjs`；
+  - 13 组变异（`/tmp/rev6-mut`）验证测试是否真的锁定修复。
+
+---
+
+## 1. 重点核验结论（对应任务 1–5）
+
+**1) B 是否由构造消除读路径写副作用 —— 成立。**
+`loadMemory`（project-state.ts:470-490）只调 `readOptional` 与纯函数 `decodePoisonedMemory`（:421-443）；`backupStoredPoison`（:445-451）只被 consolidate.ts:274 调用。静态与动态均验证：read 后文件字节、备份数、errors.log 全不变（decode.mjs 每组 `read purity`、callers2.mjs、变异 M3 被测试抓住）。round 5 的 I-S2R「读路径 TOCTOU」已因读路径不再写盘而**由构造关闭**。
+
+**2) 解码精度。**
+round 5 三向量全部关闭（单行 bullet/numbered/quote/CRLF、嵌套键、二次级联均 `poisoned=false` 且文件不变）。三份真实备份均能解码（14385/14525/15055，与 round-5 期望一致），但**尾行有欠恢复**（见 B-1）。仍可构造健康记忆误判（见 I-2）。
+
+**3) 写入路径备份。**
+正常路径：备份字节等于原件、恰好 1 份、errors.log 1 条、自动路径有 warning（callers2.mjs）。`memoryChanged=false` 不覆盖也就不备份（符合语义）。**但两处保证不成立**：并发写者造成的 stale snapshot（B-2）、clip 覆盖无备份（I-1）；并发同版本双写会重复备份/重复日志（I-3）。
+
+**4) 回归。**
+- `parseConsolidated`/`readJsonStringField` 与 HEAD 差分 fuzz **0 mismatch**（20 万随机 + 5 万结构化），截断回复仍 fail-closed；
+- 预算 198 断言全过：maxTokens 公式、`sentMem+sentCtx ≤ budget`、非空源不出现 `(none)`、context 不饥饿、clipped 标记一致；
+- 调用方：injection/autolearn 得到干净 Markdown 且不写盘；`/memory` 正常；通知矩阵（silent 抑制、自动修复 warning、headless clip 留痕）正常。
+
+**5) 测试与变异。**
+M1 删备份、M2 删日志、M3 读路径写盘、M4b/M4c 放宽前缀、M5 删首键约束、M6 接受不完整回复、M7 保留截断碎片、M8 永不备份、M10 删对象后校验、M12 关掉 clipped、M13 放大 reserved —— **全部被现有测试抓住**。**M9 删 context 回流、M11 删 `written` 去重 —— 全绿**（测试缺口，见 I-4）。
+
+---
+
+## 2. Findings
+
+### blocking
+
+#### B-1 `normalizeHealedMemory` 的截断裁剪会丢掉「完整尾行」，三份真实备份已实证丢内容
+- 证据：project-state.ts:463-466。`body` 先 `.trim()` 再取 `max(lastIndexOf("\n"), lastIndexOf("。！？"))`，于是**任何不以 `。！？` 结尾的末行都会被整行丢弃**——即使它是完整句子（英文 `.`、闭括号、闭引号、代码 span），甚至原始 `memory_markdown` 值本身以 `\n` 结束（截断点恰在行边界、末行必然完整）也会被丢。
+- 实测（tail2.mjs）：
+  - unterminated 值末行 `- durable decoded fact.` → 解码结果只剩 `# Project Memory\n\n## Project`；
+  - 值以 `\n` 结尾 → 仍丢末行；
+  - 末行 `已确认的事实（重要）` → 丢；
+  - 只有末行含 `。` 才保留。
+- 真实数据（tail2.mjs）：独立转义解码 vs `loadMemory`：
+  - `Quantum_Matrix…06-58-06-299Z`：indep 14617 / live 14367 → **丢 250 字符**末行（一串完整的代码符号清单）；
+  - `Quantum_Matrix…20260915`：丢 34 字符；
+  - `UniField…`：丢 5 字符（该 5 字符 round5 有意丢弃，但同一机制对完整英文行同样生效）。
+- 端到端：callers 探针里，injection 与 autolearn 的 `<project-memory>` 都**丢失了 `- durable decoded fact.`**；随后 consolidation 以欠恢复文本为输入，覆盖后该行从 live memory 永久消失（raw 备份里仍在，但产品再解码仍会同样丢弃）。
+- 影响：本 fix 的核心目的就是恢复截断记忆；当前实现会静默丢末行，且现有测试把「丢截断片段」当成正确并用 CJK 句号夹具锁定，掩盖了这个问题。
+- 修复边界：不要在裁剪前 `.trim()` 抹掉行边界信息——若 `value` 以 `\n` 结尾则保留全部；否则把 ASCII `.`/`!`/`?`、闭括号/引号/反引号也纳入终止符集合，只在末行确实像碎片时丢弃。用三份真实备份的「期望尾部」和英文末行夹具做回归。
+
+#### B-2 写入路径的「先备份」保证在并发写者下不成立（stale snapshot，窗口 = 整个模型调用）
+- 证据：`storedPoisoned` 在 consolidate.ts:413（`loadMemory`）取样，模型调用在 :420（数秒～数十秒），覆盖发生在 :279；:273 的备份判断用的是**旧快照**，:274 也没有重新校验磁盘。project-state.ts:445-451 的备份同样没有 expected-content 校验。
+- 确定性反例（writer-toctou.mjs，`fs.promises.readFile` 钩子）：在 `loadMemory` 之后、`writeAtomic` 之前把 MEMORY.md 换成污染 JSON →
+  `poison survived on disk: false`、`backups: 0`、`repair logged: false`。即**污染文件被覆盖但没有备份、没有 repair 日志**。
+- 同窗口还有一个更小的子窗口：`storedPoisoned=true` 时，另一个写者在 `backupStoredPoison` 读盘与 rename 之间落地，也会被无备份覆盖。
+- 影响：本 issue 的现实环境正是「新代码进程 + 旧版本进程并发写同一项目」。owner 批准的 B 明确承诺「污染文件由写入路径在覆盖前备份」；该保证在最需要它的场景下失效，原始字节可能永久丢失。
+- 修复边界：覆盖前重读目标并与快照比对（或直接复用 `decodePoisonedMemory` 再判定一次），不一致/仍是污染就先 `backupStoredPoison` 再写；最省事且最稳的是**每次覆盖 MEMORY.md 前无条件备份当前字节**（`pre-consolidate-*`，24KB 量级，代价可忽略）。残余的 check→rename 微窗口需在 fix-note 明示。
+
+### important
+
+#### I-1 clip 覆盖健康记忆没有任何备份，且通知让用户做无法完成的「review」
+- 证据：consolidate.ts:273-280 仅在 `outcome.storedPoisoned` 时备份；clip 路径（:282-286、CLIPPED_NOTICE :372-373）直接 `writeAtomic`。clipbackup.mjs：大记忆 + cap 8192，模型只能看到 head+tail（`model saw MIDDLE: false`），覆盖后 `new disk has MIDDLE: false`，`backup-like files: []`，仅 errors.log 有 `shortened`。
+- 影响：被剪掉的中间段**永远无法从本机恢复**；`CLIPPED_NOTICE` 却让用户「review MEMORY.md and CONTEXT.md if older details matter」——旧细节已被覆盖，review 无意义。这是 C 方案新引入的损失写入路径（旧行为是「回复截断 → 解析失败 → 不写」的 fail-safe）。
+- 修复边界：`outcome.clipped && memoryChanged` 时先写 `MEMORY.md.pre-clip-<stamp>`，并在通知里给出备份路径；或复用同一 backup helper（与 B-2 一并设计）。
+
+#### I-2 解码器仍有可达误判：冒号引入行 + 行内 `{"memory_markdown": ...}`（complete 或 unterminated）
+- 证据：project-state.ts:386-393 的 `^[^\n#*\-+>|]{1,40}[:：]$`。健康记忆里「单行、≤40 字符、以冒号结尾」的引入语 + 行内 JSON 示例即命中；unterminated 时 `after` 不校验（:428-432），字符串吞掉的后续文字还会被 B-1 裁掉。实测（decode.mjs）：
+  - `Example: {"memory_markdown": "# Project Memory\n\n## Sample\n- documented reply format"}` → `poisoned=true`，正文塌缩成示例；
+  - `Format note:\n{...complete...}` → 丢掉 `Format note`；
+  - `Example: {"memory_markdown": "# Project Memory\n\n## Real notes\n- keep me (durable fact)\n`（unterminated）→ `poisoned=true` 且 bullet 被裁掉。
+- 影响：不再破坏磁盘文件，但 injection/autolearn/consolidation 输入被替换成示例/残片；写入方还会据此产生一次**误报的**「old bug 污染」备份+覆盖。测试只覆盖了多行/反引号/嵌套反例，未覆盖「冒号引入行」这一等价类。
+- 修复边界：把冒号规则限制在「对象 must complete」或「对象结束后无任何内容且值占正文高比例」；为上述三个反例补「文件字节与注入内容均不变」断言。
+
+#### I-3 同版本并发 consolidate 会重复备份、重复 repair 日志
+- 证据：consolidate.ts:266 的 `written` 检查到 :270 的 `written.set` 之间隔了 `await readOptional`；`agent_settled`（fire-and-forget）与 `session_shutdown` 可同时进入。writepath.mjs 用两个并发 `memory-learn` 复现：`backups=2, repair-log-lines=2`（两份备份都是污染原文）。
+- 影响：磁盘/日志噪声；违背测试声明的「恰好 1 份备份」，也让「备份数=污染次数」不再可靠。内容无丢失。
+- 修复边界：版本检查后**同步** `written.set`（把 `existingContext` 读取移到 set 之后），或加 per-project in-flight 写锁；补并发用例断言备份数与 repair 日志数。
+
+#### I-4 测试仍缺三类边界（变异 M9/M11 全绿）
+- 证据：`tests/consolidation-test.mjs:290/301` 的上界仍是 cap/固定数字；删除 `contextLimit2` 回流（M9）与删除 `written` 去重（M11）整套测试全绿；decode 尾部裁剪无任何断言；写入路径 TOCTOU 无测试。
+- 影响：未来改坏预算回流、去重并发、尾行恢复都不会被发现。
+- 修复边界：用实现公式断言 `sentMem+sentCtx ≤ budget` 与「小 memory 剩余额度回流」；并发双调用断言 1 备份/1 日志；tail 夹具（英文句号、闭括号、值尾 `\n`、真实备份期望尾部）；writer 竞态钩子测试。
+
+### nit
+- **N-1** repair 日志先于实际替换写入（consolidate.ts:275-279）：若随后 `writeAtomic` 失败，errors.log 已写「replaced…」，与真实结果矛盾。建议替换成功后再记一条，或改成「backed up … before replacing」。
+- **N-2** `index.ts:58` 仍显示 `max ${config.maxTokens} tokens`，本轮后它是下限/会被自适应抬高或按模型上限压低。
+- **N-3** `readJsonStringField` 未映射 `\b`/`\f`（既有行为，fix-note 已记录）。
+- **N-4** `/memory`（consolidate.ts:342-349）看到污染被解码后只回显路径，不提示「磁盘仍是 raw JSON、下次整理会备份修复」；显式 `/memory-learn` 的 silent 路径也不显示 repair 通知（只有 `consolidateReply("updated")`）。自动路径已有 warning。
+- **N-5** `.poison-backup-*`/未来的 `.pre-clip-*` 无清理策略、未 gitignore；`errors.log` 会存最多 4000 字符模型原文（0600）。
+- **N-6** `clipText` 按 UTF-16 code unit 切分，可能劈开 surrogate pair（emoji）。
+
+### suggestion
+- **S-1** 把「备份当前字节」抽成一个整体原语（poison 与 clip 共用），覆盖前调用；这样同时收敛 B-2/I-1/N-1。
+- **S-2** 解码判定改为「depth-1 成员」而不是「首键」：首键约束会漏掉 `{"context": ..., "memory_markdown": ...}` 的截断污染（shapes.mjs 实测 raw 不解码）；depth-1 校验既准确又保留召回。
+- **S-3** 完整数组包裹（`[...]` 且对象闭合）目前因 `after === "]"` 不解码（shapes.mjs）；补一个 `]` 白名单可提升召回（虽然历史上完整数组本就会被 braced-scan 解析，实际风险低）。
+- **S-4** `replyTokenRate` 未计 JSON 转义膨胀（`\n`→2 字符），clipped 边界仍可能低估输出量；至少乘 1.1–1.2 系数。
+- **S-5** fix-note §2/§3 的函数名/行号仍描述旧版（`healPoisonedMemory`、`clipMemory`），§6 已声明但易误导；提交时建议整体重写。
+
+### learning
+- Mode B 用「纯读 + 写侧备份」正确地把「读路径破坏性启发式」和读侧 TOCTOU 从构造上删除了——这是本轮最大的结构收益。
+- 但「备份决策取自己在长模型调用之前的快照」并不是保证；check-then-act 只要跨越一个长 await，就退化成概率保护。备份这类安全动作应当**读当前磁盘、写当前字节**。
+- 截断恢复必须在裁剪前保留行边界证据：先 `trim()` 再找边界，会等价于「凡无中文句号的末行都视为碎片」，对英文/代码记忆是系统性丢尾。
+
+### praise
+- 读路径真正无写副作用：静态调用图 + 三组动态探针 + 变异 M3 三重验证；round 5 的三向量（单行前缀/嵌套键/二次级联）以及 CRLF、多行反例全部关闭。
+- 三份真实备份都能解码（除 B-1 尾行外）且读后文件逐字节不变；`readJsonStringField` 与 HEAD 20 万例差分 0 mismatch。
+- 预算实现经 198 条独立断言验证：公式、`≤ budget`、不饥饿、回流、clipped 标记全部成立；`reserved`/clipped/reflux 都有测试锁定（M9 除外）。
+- 只读目录下 fail-safe：备份写不出就绝不覆盖污染文件（writepath.mjs）。
+- headless clip 有 errors.log 留痕；自动修复通知带备份路径；错误通知只显示首行、原始回复只进日志。
+
+### residual-risk
+- `model.maxTokens` 元数据不可靠/高于 provider 实际输出上限时，自适应抬高会把「8192 能跑但会截断」变成「请求被拒、记忆停更」。
+- token 率未含转义膨胀与头尾密度差，极端文本仍可能截断（fail-closed + 诊断）。
+- 召回缺口（fail-safe 但污染会继续进 prompt）：`.pi`/OMP 遗留来源不解码、`context` 先行的截断回复、>40 字符散文前缀、值不以 `# Project Memory` 开头的污染、完整数组包裹。
+- `readOptional` 吞掉一切读错误（含 EACCES/EMFILE），备份判断可能把「读不到」当成「无记忆/无污染」而 fail-open。
+- 备份文件、errors.log 原始回复长期驻留；`.poison-backup-*` 未纳入仓库忽略/清理。
+
+---
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核**
+1. **尾行恢复（B-1）**：以三份真实备份为固定夹具，断言解码结果包含各自末行（至少 `Quantum_Matrix…06-58-06-299Z` 的 250 字符末行）；另加英文句号/闭括号/值尾 `\n` 的合成夹具。当前实现会失败。
+2. **写入侧并发（B-2）**：旧版本进程写 poison 与新进程整理交错的实测；或在测试内用 fs 钩子在 `loadMemory` 之后、覆盖之前落地污染，断言「必有备份 + repair 日志」。
+3. **clip 覆盖（I-1）**：大记忆 + 小 cap 跑 `/memory-learn`，断言覆盖前产生可恢复的 pre-clip 备份；否则至少确认 owner 接受「中段不可恢复」。
+4. **误判反例（I-2）**：`Example: {...}` 行内示例（complete/unterminated）、`Format note:` + 完整对象、以及「真实 facts 在对象之后」的组合；断言文件字节、备份数、注入内容均不变。
+5. **并发双写（I-3）**：`agent_settled` + `session_shutdown` 同时触发，断言备份数=1、repair 日志=1。
+6. **预算**：cap ∈ {256,1024,1025,1400,1424,2048,3685,8192,32768} × 大/小 CJK/ASCII × 大/无 context（可复用本轮 198 断言脚本），断言按实现公式 `sentMem+sentCtx ≤ budget` 且小 memory 回流。
+7. **真机 headless**：`-p`/`--json` 下 automatic/shutdown/命令三路径 errors.log 均有 `shortened`/repair 记录；自动路径 UI warning 带备份路径。
+8. **迁移路径**：`.pi/`、OMP 来源含污染时的行为（当前不解码、不修复），确认是否有意接受。
+
+**建议新增/加强的测试**
+- 解码尾行测试与真实备份夹具（期望尾部）；
+- 并发（读-写、写-写）确定性交错测试；
+- `written.set` 同步化后的并发去重断言；
+- `fitMemoryInput` 直接单测（导出或用实现公式）；
+- 变异清单纳入 QA：删备份/删回流/删去重/放宽前缀/放宽首键/接受不完整回复/保留碎片。
+
+**review 无法确认的点**
+- provider 对抬高后 `maxTokens` 的接受度与 `model.maxTokens` 元数据可信度；
+- 生产记忆自然演化出 I-2 形态的概率；
+- Windows/网络文件系统下 `rename` 语义与并发窗口表现。
+
+---
+
+## 4. VERDICT
+
+**VERDICT: BLOCKED**
+
+理由：B-1（截断解码系统性丢末行，三份真实备份分别丢 5/34/250 字符，injection/autolearn 已实测复现）与 B-2（并发写者下污染文件被覆盖而**无备份、无日志**，确定性复现）都直接命中本 issue 的数据完整性目标与 owner 批准的 B 方案承诺；I-1（clip 覆盖无备份）与 I-4（预算回流/并发去重无测试锁）需要同轮处理。读路径无写副作用、round-5 三向量关闭、解析器等价与预算矩阵是实打实的通过项，修完上述三项后 round 7 复审面会小很多。

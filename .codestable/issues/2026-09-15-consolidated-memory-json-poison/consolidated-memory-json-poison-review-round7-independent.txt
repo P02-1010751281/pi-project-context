@@ -1,0 +1,154 @@
+# Round 7 独立代码审查报告（完整复审）
+
+## 0. 审查基线与独立核验方式
+
+- 沙箱：`/tmp/pi-context-rev7`（只读）。审查前后 `git status --short` 与 `git diff --stat` 完全一致：
+  `M consolidate.ts`、`M project-state.ts`、`M tests/consolidation-test.mjs`（+530/−59），
+  `.agents/memory/*` mtime 均为 16:10（会话开始前），工作区零写入。
+- 基线测试：`node tests/run-all.mjs` → **8/8 通过**（审查前后各跑一次）。
+- 自建探针（全部在 `/tmp/rev7-probe`、`/tmp/rev7-mut`）：
+  - 三份真实备份回放（`/tmp/rev2/real/*`）逐字符比对；
+  - 写路径确定性交错（模型调用中落盘污染/健康内容）；
+  - clip 覆盖备份、注入/自动/headless/`/memory` 通知矩阵；
+  - 读路径纯度 fuzz（3000 例）、解码器 20 万例与 HEAD 旧实现差分 fuzz；
+  - 预算 112 组矩阵（cap×CJK/ASCII×有/无 context×4 尺寸）用实现公式独立复算；
+  - 6 组变异（去重、备份、尾行裁剪、前缀白名单、context 回流）验证测试灵敏度；
+  - EACCES 与「未来时间戳备份」两组对抗反例。
+
+---
+
+## 1. 重点核验结论（对应任务 1–5）
+
+| 项 | 独立结论 | 证据 |
+|---|---|---|
+| **B-1 截断解码丢末行** | **已关闭**。三份真实备份 `loadMemory` 输出 15060 / 14559 / 14635 字符，与 `readJsonStringField` 解出的字段值按字符一一对应，唯一差异是 `normalizeHealedMemory` 归一化的结尾 `\n`；末行（`短 ssh`、`32×32/64×64`、`...target_matrix\``）完整保留；读前后文件字节、备份数不变 | `/tmp/rev7-probe/p1b-real-decode.mjs` |
+| **B-2 写路径陈旧快照** | **已关闭**。在模型调用中把 MEMORY.md 换成污染后，覆盖前备份的是**落地时磁盘字节**（111 字节污染原文），repair 日志 1 条；换健康并发内容同样被原样备份 | `p2-writepath.mjs` |
+| **I-1 clip 覆盖无备份** | **已关闭（代码）**。大记忆 + cap 8192 → 1 份 `.memory-backup-` 内容等于覆盖前全文，errors.log 有 `shortened`；但测试未锁（见 I/Test 部分） | `p3b-clip-backup.mjs` |
+| **I-2 冒号引入行误判** | **已关闭**。`Example: {...}`（complete/unterminated）、`Format note:`、`json:`、行内示例、prose 前缀均 `poisoned=false` 且文件不变；round-5 单行/嵌套/级联向量全部关闭 | `p4-i2-injection.mjs`、`p9-round5vectors.mjs` |
+| **I-3 并发同版本重复写** | **已关闭**。`written.set` 提前到首个 await 之前后，并发双 `/memory-learn` 为 1 备份/1 日志；把 claim 移回旧位置后测试立即失败（backups=2, logs=2） | 变异 A + 套件用例 |
+| **回归** | `jsonStringField` 与 HEAD 旧实现 200,000 例差分 **0 mismatch**；预算 112 组 **0 fail**；真实健康 MEMORY.md（本仓库自身）`poisoned=false` 且逐字符不变；注入/autolearn/`/memory`/通知均使用解码后文本且不写盘 | `p6-parser-fuzz.mjs`、`p7b-budget-matrix.mjs`、`p11-real-healthy.mjs`、`p5-debug.mjs` |
+
+---
+
+## 2. Findings
+
+### blocking
+
+- 无。round 6 的 B-1/B-2、I-1..I-3 均已独立确认关闭，未发现新的破坏性/静默数据丢失主路径。
+
+### important
+
+#### IMP-1 `backupMemoryBeforeWrite` 在目标不可读时 fail-open：无备份、无日志、仍报成功
+- **位置**：`extensions/project-context/project-state.ts:450-452`（`await readOptional(target)` 把 EACCES/EMFILE/EIO 一律当空字符串）＋ `extensions/project-context/consolidate.ts:274-277`（空快照直接进入写路径）。
+- **证据**（`/tmp/rev7-probe/p12-eacces.mjs`）：MEMORY.md 内容为旧记忆、`chmod 000`、目录可写；跑 `/memory-learn` →
+  `backups=0`，`final="# Project Memory\n\n## Project\n- new memory."`（旧字节已丢失），`errors.log` 为空，
+  通知为 `Project memory and context updated.`。同一文件上 `/memory` 会报 "No project memory yet"。
+- **影响**：mode B 的全部数据保护承诺（"Always keep the bytes that are on disk right now"）在最需要时静默失效；
+  EACCES（共享目录/他人创建的文件）、EMFILE（fd 耗尽）、EIO（网络盘）都能触发；用户得到成功提示，无任何可恢复副本。
+  这是 round 6 residual-risk 中"`readOptional` 吞掉读错误"的升级版——B 方案下线路径不再有写副作用，此路径成为唯一安全网。
+- **修复边界**：`backupMemoryBeforeWrite` 内改用直接 `readFile`，仅 `ENOENT` 视为"无文件"；其它错误向上抛，
+  让 `consolidate` 走 catch（fail-closed：不覆盖 MEMORY.md、写 errors.log、返回 failed）。
+  `loadMemory` 的展示型 fail-open 可保留，但备份路径必须区分"读不到"与"不存在"。
+
+#### IMP-2 备份修剪按文件名墙钟排序，可把"刚创建的备份"删掉并返回失效路径
+- **位置**：`extensions/project-context/project-state.ts:454-462`（stamp = `Date.now()` 的 ISO 串；`.sort()` 后删最旧 N 个）。
+- **证据**（`/tmp/rev7-probe/p8b-skew.mjs`）：目录里已有 6 份带 2099 时间戳的备份时，调用 `backupMemoryBeforeWrite` →
+  新备份写入后被当作"最旧"删除，函数仍返回其路径；`consolidate.ts:279/292` 的日志与通知会出现
+  "original kept at `<已删除路径>`" 的假声明，实际旧字节已被覆盖。正常单调时钟下保留最新 5 份，行为正确。
+- **影响**：当系统时钟回拨跨度超过最近 5 次备份的时间跨度（VM 快照恢复、RTC 错误后 NTP 校正、手工改钟），
+  安全网在覆盖前被自己删除且用户被误导；≥6 个跨进程同毫秒写者也可触发同类排序问题。概率低，但违反本 fix 的核心承诺。
+- **修复边界**：修剪时显式排除刚创建的备份名（或先修剪再落新备份）；排序改用 `stat().mtimeMs`，
+  墙钟名只作兜底；修剪后可用 `pathExists(backup)` 校验，失败则重建并在日志中说明。
+
+### nit
+
+- **N-1** 污染修复通知吞掉同轮的 clip 通知：`consolidate.ts:290-296` 中 `storedPoisoned` 分支优先，
+  `report === "clipped"` 不再提示；用户只被告知"raw JSON 已修好"，不知道本次重写还剪掉了内容（errors.log 有 `shortened`）。
+  建议两条合并输出或追加一句。
+- **N-2** `/project-context status` 仍显示 `max ${config.maxTokens} tokens`（`extensions/project-context/index.ts:58`），
+  现在它是下限、会被自适应抬高到 `needed` 并以 `model.maxTokens` 封顶。round 6 N-2 未闭环。
+- **N-3** fix-note §6 自相矛盾/过时：`fix-note.md:117` 写前缀白名单含"以冒号结尾的引入行"，
+  `:125` 又写"冒号引入行不再参与解码"；代码实际只允许 空 / `json`/`JSON` / `[` / 围栏
+  （`project-state.ts:386-391`）。同段 "memory_markdown 是对象首键（depth-1）" 也与实现的首键正则
+  （`project-state.ts:433`）不符（真实语义是首键，不是 depth-1 成员）。提交前应重写 §6 以代码为准。
+- **N-4** `.agents/memory/MEMORY.md.memory-backup-*` 未纳入 gitignore/清理策略：用户项目 `git status` 会出现未跟踪备份，
+  可能被误提交（含记忆原文）。`session-log.ts:24-31` 已有 `ensureLogsIgnored` 的先例可复用；errors.log 同理（round 6 N-5 沿用）。
+- **N-5** `POISON_PREFIX_LIMIT`（`project-state.ts:383,389`）实际是死代码：白名单里最长的前缀也 <11 字符，长度判断永远不会改变结果。可删或注明。
+- **N-6** 显式命令的 clip 提示不含备份路径：`/memory-learn` 走 silent 路径，最终只显示 `CLIPPED_NOTICE`；
+  自动路径（`agent_settled`）的通知才带 `Previous file: <backup>`。建议统一。
+
+### suggestion
+
+- **S-1（测试）** 补三类缺失的锁：① 写路径确定性交错（见 Test 部分）；② clip 覆盖后断言备份存在且等于覆盖前全文；③ 修剪保留新备份（含未来时间戳夹具）。当前删掉 clip 备份的变异能让整个 budget 块保持全绿（我实测）。
+- **S-2** `replyTokenRate` 未计 JSON 转义膨胀（`\n` → 2 字符）与单字符 >1 token 的文字（假名/Hangul）；
+  可在剪裁后重算 rate 或乘 1.1–1.2 安全系数（round 6 S-4）。
+- **S-3** `clipText` 用 UTF-16 code unit 切分，可能劈开 surrogate pair（emoji）；建议按 code point 切（round 6 N-6）。
+- **S-4** `cleanMemory`（consolidate.ts:226-230）与 `normalizeHealedMemory`（project-state.ts:470-478）逻辑重复，
+  可抽共享归一化函数；`decodePoisonedMemory` 可导出供直接单测。
+
+### learning
+
+- 写路径"读当前磁盘、写当前字节"确实把 round 6 的 stale snapshot 从构造上关闭了（确定性交错下备份字节正确）。
+- 安全备份的修剪不能假设墙钟单调：**修剪对象必须由身份（刚创建的名字/mtime）校验，而不是假设它一定排最后**。
+- "读错误 == 不存在"对展示路径可接受，对安全动作是错误默认值；备份必须 fail-closed。
+
+### praise
+
+- 读路径真正无写副作用：静态调用图 + 3000 例随机内容 fuzz（0 抛出、0 读时写入）+ 三份真实备份读后字节不变。
+- 真实数据完整恢复且末行保真（B-1 修复扎实），CJK、英文句、以 `\n` 结尾三类合成夹具都有断言，且尾行裁剪变异被 4 条断言抓住。
+- `readJsonStringField` 与 HEAD 旧实现 200k 差分 0 mismatch；截断回复仍 fail-closed。
+- 预算分配经 112 组独立复算全部满足实现公式（maxTokens、`sent ≤ budget`、不出现 `(none)`、回流），`reserved`/clipped/context 回流均有测试锁（回流变异被抓）。
+- 并发去重修复由测试锁定（移回旧位置立即失败）；前缀白名单放宽变异被 4 条反例抓住；headless clip 留痕、自动修复通知带备份路径均实测通过。
+
+### residual-risk
+
+- 解码启发式仍可被"以回复样本开头且被截断"的极窄形态健康文档命中（前缀白名单 + 首键 + 值含 header + 对象后校验已把面收得很窄）；mode B 下只影响注入/autolearn，磁盘由写时备份兜底。
+- 召回缺口（fail-safe 但会自锁）：`context` 先行的截断回复、>40 字符散文前缀、值不以 `# Project Memory` 开头、`.pi`/OMP 来源污染不解码；这些文件继续以 raw JSON 注入，直到某次成功整理覆盖。
+- `model.maxTokens` 元数据/provider 实际输出上限不一致时，自适应抬高可能被 pi 自己的 `clampMaxTokensToContext`（chars/4 估算，CJK 低估约 2–3×）再次压低或触发 provider 拒绝 → 失败但 fail-closed。
+- 多进程（双 pi 实例/旧版本进程）下 backup-read→rename 的微窗口仍在（有意接受）；跨进程 last-writer-wins。
+- 备份与 errors.log 长期驻留记忆/原始回复文本，无自动清理（0600/0700）。
+- `readOptional` 对非 UTF-8 文件有损（替换字符），备份字节保真对这些文件不成立。
+
+---
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核**
+
+1. **真实备份固定夹具**（最重要）：用当前 `loadMemory` 回放 `/tmp/rev2/real` 三份（或线上 `*.poison-backup-*`），
+   断言解码长度/末行与独立转义解码一致（期望 15060/14559/14635，尾部分别含 `短 ssh`、`32×32/64×64`、`...target_matrix\``），
+   并断言读后文件字节与备份数不变。
+2. **B-2 写路径交错**：在 fake `modelRegistry.complete` 内写入污染（或健康并发内容）到 MEMORY.md，
+   断言覆盖后必有 1 份备份且内容等于"落地时磁盘字节"、污染时有 repair 日志、最终 MEMORY.md 为新内容。
+   当前套件没有这个场景（只覆盖 by-value 备份，不覆盖"备份取的是当前磁盘"这一修复要点）。
+3. **I-1 clip 覆盖备份**：大记忆 + cap 8192 走命令/自动路径，断言 `.memory-backup-*` 存在且等于覆盖前全文；
+   自动路径通知应含 `Previous file`。当前 budget 块只断言 errors.log `shortened`，删掉备份的变异全绿。
+4. **修剪安全**：构造 >5 份备份并断言最新 5 份与"刚创建的那份"都在；构造 6 份未来时间戳备份，
+   断言新备份仍保留（当前会失败，对应 IMP-2）；顺带断言返回路径 `exists`。
+5. **IMP-1 fail-closed**：Linux 非 root 下 `chmod 000` MEMORY.md 跑 `/memory-learn`，
+   期望不覆盖/写 failed+errors.log，而不是当前的无备份静默覆盖。
+6. **并发**：`agent_settled` + `session_shutdown` 同时触发、双命令并发 → 备份数=1、repair 日志=1（套件已有，可再加跨实例场景）。
+7. **headless 真机**：`-p`/`--json` 下 poison+clip 的 automatic/shutdown/命令三路径 errors.log 均有 `replaced a stored JSON reply` / `shortened`。
+8. **预算矩阵**：cap ∈ {256,1024,1400,8192,32768,无 cap} × 大/小 CJK/ASCII × 大/无 context，按实现公式断言 `sentMem+sentCtx ≤ budget`、小 memory 回流、非空源无 `(none)`。
+9. **变异清单**（QA 纳入回归）：删备份/删去重/裁末行/放宽前缀白名单/删 context 回流/删对象后校验/放宽首键；其中"删 clip 备份"目前无法被套件发现。
+
+**建议新增或加强的测试**
+
+- `tests/consolidation-test.mjs` 增加：mid-call 写者交错、clip 备份断言、修剪/时钟回拨夹具、EACCES fail-closed（POSIX-only，root 下跳过）。
+- 把 `loadMemory`/`fitMemoryInput` 的关键分支做成可导出单测（或至少变异清单入 QA 文档），避免只靠 e2e 假阳性。
+- 真实备份可用结构等价（非个人数据）的固定夹具落库：英文句末、值尾 `\n`、长代码符号末行、`json`/`[`/围栏前缀。
+
+**review 无法确认的点**
+
+- provider 对抬高后 `maxTokens` 的接受度，`model.maxTokens` 元数据可信度；pi `clampMaxTokensToContext`（chars/4）与真实 CJK token 数的偏差在具体 provider 上的表现。
+- 生产记忆自然长出"回复样本形态"或被截断在无 header 值的概率。
+- Windows/网络文件系统下 `rename` 语义、EACCES/EMFILE 组合与多进程窗口表现。
+- 备份修剪触发所需的时钟回拨在真实环境的概率（我给出的是确定性构造，不是频率估计）。
+
+---
+
+## 4. VERDICT
+
+**VERDICT: CHANGES-REQUESTED**
+
+理由：round 6 的三项 blocking 与三项 important 在本轮实现中已全部独立确认关闭（真实备份末行保真、写时备份经确定性交错验证、clip 有备份、冒号误判关闭、并发去重由测试锁定），无新增破坏性主路径，因此不是 BLOCKED。但备份这一安全网仍有两条 important 级 fail-open：**IMP-1**（目标不可读时无备份无日志仍报成功，有确定性复现）与 **IMP-2**（非单调时钟下修剪会删除刚创建的备份并返回/记录失效路径）；另有 clip 备份、写路径交错、修剪三类测试缺口。建议 IMP-1 改为 fail-closed、IMP-2 用 mtime+排除新备份名修正并补测试后即可通过；若 owner 明确把这两条与测试缺口记为 accepted residual，可降为 PASSED（带 residual）。

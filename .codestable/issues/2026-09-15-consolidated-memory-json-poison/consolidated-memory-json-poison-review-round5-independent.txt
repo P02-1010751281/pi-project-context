@@ -1,0 +1,155 @@
+# 独立代码审查报告（round 5 · 完整复审）
+
+## 0. 审查基线与独立核验
+
+- 基线：`git status --short` = 仅 `M extensions/project-context/consolidate.ts`、`M extensions/project-context/project-state.ts`、`M tests/consolidation-test.mjs`（+427/−52）；其余 `??` 为 issue/feature/运行期数据。审查前后 `git status` 一致，未做 git 写操作，未向工作区写任何文件。
+- 独立复跑：`node tests/run-all.mjs` → **8/8 通过**。
+- 独立反例环境：全部在 `/tmp/rev5-probe/`（`heal.mjs`/`heal2.mjs`/`budget.mjs`/`budget2.mjs`/`race.mjs`/`cascade.mjs`/`inject.mjs`/`fuzz.mjs`）与 `/tmp/rev5-mut/` 变异副本中构造；三份真实备份从 `/tmp/rev2/real/` 只读回放。
+- 独立手段：heal 边界矩阵（前缀/对象内/对象后 × complete/incomplete）、cap 矩阵 64 组、300k 例解码器差分 fuzz、并发确定性交错、端到端注入、11 个变异。
+
+## 1. round-4 review-fix 关闭核验（独立结论）
+
+| round-4 项 | 独立结论 | 关键证据 |
+|---|---|---|
+| B-1R 前缀不校验 | ❌ **未真正关闭**：新增 `isPoisonPrefix` 挡住了多行前缀，但单行真实内容/嵌套字段仍可命中，且存在二次级联与端到端注入破坏 | 见 B-1R5 |
+| I-2bR context 饥饿/预算不回流 | ✅ **实现已关闭**：cap∈{256,1024,1025,1400,1424,2048,3685,8192} × 大/小 CJK/ASCII × 大/无 context，64 组无 `(none)`（非空源）、`sent ≤ budget`、小 memory 的剩余额度回流给 context | `consolidate.ts:179-189`；`/tmp/rev5-probe/budget.mjs` |
+| I-S2 stale heal CAS | ⚠️ **只缩小窗口，未防止覆盖**：CAS 读与 `writeAtomic` 之间仍可被写者插入；删除 CAS 的变异测试全绿 | `project-state.ts:443-444`；`/tmp/rev5-probe/race.mjs`；变异 M4 |
+| 备份命名冲突 | ✅ 已消除（随机后缀） | `project-state.ts:439`；变异 M5 全绿（无覆盖测试但不影响正确性） |
+| T-1R 测试强度 | ⚠️ **部分改善**：`near` 用例能抓住 budget×1.25 及 reserved 放宽；但删除 context 回流（M6）、CAS、备份后缀仍全绿，`sentLength` 仍以 cap 为上界 | `tests/consolidation-test.mjs:257-275`；变异 M6/M4/M5 |
+
+## 2. Findings
+
+### blocking
+
+#### B-1R5 自愈判定仍可在健康记忆上静默、破坏性重写（单行前缀 + 嵌套字段两个向量）
+
+**证据**
+
+- 前缀判定（`extensions/project-context/project-state.ts:383-391`）：
+  ```ts
+  const POISON_PREFIX_LIMIT = 40;
+  function isPoisonPrefix(prefix: string): boolean {
+    const trimmed = prefix.trim();
+    if (!trimmed) return true;
+    if (trimmed.length > POISON_PREFIX_LIMIT) return false;
+    return /^(?:json|JSON)$/.test(trimmed) || !/[\n#*]/.test(trimmed);
+  }
+  ```
+  非空前缀只要求「≤40 字符、不含 `\n`/`#`/`*`」。因此 `- 事实`、`1. 事实`、`> 事实`、任意单行散文、CRLF 行都通过；而对象前的内容在 heal 时被整体丢弃（`project-state.ts:421-437` 只用 `field.value`）。
+- 实测（`/tmp/rev5-probe/heal.mjs`）：
+  - FP1：`# Project Memory\n\n- IMPORTANT never run migrations in prod\n{"memory_markdown": "# Project Memory\\n\\n## Sample\\n- documented reply format", "context": {}}\n` → 磁盘被重写为 `# Project Memory\n\n## Sample\n- documented reply format\n`，durable fact 消失，仅 1 个备份、无通知；
+  - FP3（`1.`）、FP4（`>`）、FP6（未闭合示例）同样命中；CRLF 变体同样命中（`heal2.mjs`）。
+- 端到端（`/tmp/rev5-probe/inject.mjs`，`before_agent_start` 真实注册路径）：`injected has durable fact: false`、`injected has sample: true`、磁盘 `has durable fact: false`——真实事实同时从 system prompt 与 `MEMORY.md` 消失。
+- **二次级联**（`/tmp/rev5-probe/cascade.mjs`）：poison 恢复出的记忆若为「单行 bullet + 完整示例」，第一次 `loadMemory` 自愈后，第二次 `loadMemory` 会对刚写出的 Markdown 再自愈一次并丢掉 bullet；两次共 2 个备份，全程无 warning。即无需人工构造特殊文件，poison 派生内容即可触发。
+- **嵌套字段向量**：`readJsonStringField(scope, "memory_markdown")`（`project-state.ts:432`）不校验匹配键是对象顶层成员。`{"real_fact": "KEEP", "inner": {"memory_markdown": "# Project Memory\\n\\n## Nested\\n- inner"}}` 顶层前缀为空即命中，`real_fact` 被丢弃（`heal2.mjs` nested-key）。这与 analysis §5-A.2 的「仅匹配结构性顶层 JSON … 正常记忆不得误判」直接冲突。
+- **测试假保证**：`tests/consolidation-test.mjs:178-187` 只覆盖多行前缀（`## Notes\n- keep me`），单行前缀与嵌套形态无夹具；变异 M16（`POISON_PREFIX_LIMIT` 40→400）全绿，说明长度上限也没被断言锁定。
+
+**影响**：`loadMemory` 是注入、consolidation、autolearn、`/memory` 的共享读路径，命中即健康记忆被静默替换，只能靠人工发现 `.poison-backup-*`；这是本 issue 的核心数据完整性约束（round 2/3/4 的同一 blocking 类）。
+
+**建议修复边界**
+
+1. 要求匹配到的 `memory_markdown` 是对象 **depth 1** 成员（用 `jsonObjectEnd` 同款字符串感知扫描记录 depth，或在 `[objectAt, objectEnd)` 内验证键前 depth 为 1）。
+2. 「对象前」只允许真正的 wrapper：空、围栏/JSON-ish token（` ``` ` / ` ```json ` / `json` / `[`），拒绝所有行首 markdown 结构（`-`、`*`、`+`、`> `、`N.`）与多行/散文；或对字段值占全文比例加守卫（真实 poison 的值≈全文，示例明显不是）。
+3. incomplete 分支同样受上述约束（当前 FP6 已证明）。
+4. 补固定反例：单行 bullet/numbered/quote/CRLF、嵌套键、二次级联，断言「文件字节不变 + 备份数不变 + 注入内容保留真实事实」。
+
+---
+
+### important
+
+#### I-S2R CAS 不是原子校验，并发写者仍会被 healed 旧内容覆盖
+
+**证据**：`extensions/project-context/project-state.ts:443-444`
+```ts
+if (await readOptional(target) !== raw) return current;
+await writeAtomic(target, healed);
+```
+两次 await 之间仍是 TOCTOU；`writeAtomic` 内部还有 `mkdir → writeFile → rename` 三个 await（`project-state.ts:178-188`）。
+`/tmp/rev5-probe/race.mjs` 用 `fs.promises.readFile` 钩子在「CAS 读之后、heal rename 之前」确定性插入竞争写：`NEW memory survived: false`，healed 旧内容覆盖新记忆，只留 1 个备份。round-4 的 500/500 大窗口（备份写入期间）已被收窄到读→rename，但没有关闭。变异 M4（删除 CAS 行）整套测试全绿，说明 CAS 本身也无测试覆盖。
+
+**影响**：两个 pi 进程/会话共用一个项目时（本 issue 现场即有两个旧进程），低概率整份覆盖刚写入的新记忆；自愈失败静默。
+
+**建议修复边界**：用排他 claim（`open(..., "wx")` 或 `mkdir` 锁）串行化自愈；或引入真正的 compare-and-swap 原语（如先 `link` 到唯一临时名、确认后再 `rename`；或校验 inode/mtime 且接受仍非原子的事实）。至少要补并发测试，并在 fix-note 明确残余窗口与取舍。
+
+#### T-1R 预算测试仍缺「≤实现 budget」与「回流额度」断言
+
+**证据**：`tests/consolidation-test.mjs:257-266`
+```js
+const sentLength = () => call.prompt.slice(call.prompt.indexOf("<existing-memory>"), call.prompt.indexOf("</existing-context>")).length;
+check("a tiny cap bounds the artifacts sent", sentLength() > 0 && sentLength() <= 1400);
+check("the smallest cap still sends memory content", ... sentLength() <= 1024);
+```
+上界用模型 cap（1400/1024），且 `sentLength` 还包含 `<existing-memory>`/`</existing-context>` 标记；`near` 用例只覆盖 cap=8192 的剪裁。独立变异：**M6（删掉 `contextLimit2` 回流，`consolidate.ts:188-189`）整套测试全绿**——小 memory + 大 context 场景下实现发 365 字符 context，M6 只发 200 字符、留下 ~165 字符预算闲置，无断言发现；M5（删随机备份后缀）全绿。
+
+**影响**：预算回流这一 round-4 important 修复本身没有回归保护；未来改坏预算分配仍可能全绿。
+
+**建议修复边界**：导出 `fitMemoryInput`/`replyTokenRate` 做直接单测，或在测试内用实现公式计算期望 budget，断言 `sentMem + sentCtx ≤ budget`、小 memory 时 context 得到 `budget - memoryUsed`；补 cap=256/1424 边界与回流断言。
+
+---
+
+### nit
+
+- **N-1** `project-state.ts:385` 注释写 “nothing, `json`, or one prose line”，实现实际还接受 `-`/`>`/`[`/围栏等任意单行；注释与实现不一致（B-1R5 的直接诱因）。
+- **N-2** `extensions/project-context/index.ts:58` 仍显示 `max ${config.maxTokens} tokens`；本轮后它是下限，自适应可抬高（round-4 N-3 沿用）。
+- **N-3** `readJsonStringField` 未映射 `\b`/`\f`（既有行为，fix-note 已记录）。
+- **N-4** `consolidate.ts:360-364` `CLIPPED_NOTICE` 只提 MEMORY.md，context-only 剪裁也发同一条。
+- **N-5** `.poison-backup-*` 长期驻留、无清理/未 gitignore；`errors.log` 含最多 4000 字符模型原始回复（0600）。
+
+### suggestion
+
+- **S-1** `replyTokenRate` 未计 JSON 转义膨胀（`\n`→2 字符）与头/尾片段密度差；建议剪裁后重算 rate 或乘 1.1–1.2 安全系数（`consolidate.ts:146-150`）。
+- **S-2** clipped 重写无独立备份（与 heal 路径不一致）；建议 `MEMORY.md.pre-clip-*`。
+- **S-3** autolearn 仍固定 `config.maxTokens`（`autolearn.ts:424/438`），同类截断未消；fix-note 已声明另开 issue，建议 closeout 前明确范围。
+- **S-4** 自愈成功只有 errors.log/备份，无 UI 提示；对 B-1R5 这类误判用户几乎无法及时发现。
+
+### learning
+
+- 状态识别启发式的每一段（对象前/对象内/对象后）都必须绑定结构；「单行例外」是等价类漏洞，且测试只用多行 fixture 会制造假保证。
+- 读快照比较不是 CAS；没有排他 claim/原子交换，TOCTOU 只是窗口变窄。
+- 预算测试必须用实现公式断言实际分配；用 cap 当上界会掩盖预算收紧/放宽类回归。
+
+### praise
+
+- **真实数据**：三份备份独立回放全部成功——UniField 15055 字符、Quantum_Matrix 14385/14525；备份逐字节一致、只产生 1 个备份、二次读取幂等、无再次写盘（`/tmp/rev5-probe/heal.mjs`、`heal2.mjs`）。
+- **预算**：64 组 cap × 大/小 CJK/ASCII × 大/无 context 实测无 `(none)`（非空源）、`sent ≤ budget`、`reqMax` 与公式一致、回流有效；M8（回退 reserved）、M10（contextLimit 吃满预算）均被现有测试抓住。
+- **解码器**：`readJsonStringField` 与 HEAD 旧实现 300k 例差分 fuzz **0 mismatch**；`parseConsolidated` 截断/坏 JSON 保持 fail-closed。
+- **变异确认有效**：M1/M2（前缀守卫）、M7（after 守卫）、M9（incomplete 恢复）都被现有测试抓住；只读目录 fail-safe 返回原文不抛（`cascade.mjs`）。
+- headless clip 留痕、命令报告、`errors.log` 原始回复头部断言均工作。
+
+### residual-risk
+
+- **召回缺口**（fail-safe 但有自锁）：>40 字符散文前缀、complete 值不以 `# Project Memory` 开头、完整数组包裹、`.pi`/OMP 来源污染不修复，继续被注入/回流且无 warning。
+- **maxTokens 抬高依赖元数据**：`model.maxTokens` 高于 provider 实际上限时可能从「8192 成功」变成请求被拒，整理整体失败、记忆停更。
+- **token 率估算**未含转义膨胀，极端文本仍可能截断（fail-closed，有诊断）。
+- **多进程 stale heal** 覆盖窗口仍在（I-S2R）；备份/errors.log 长期驻留。
+- 自愈静默，发现依赖备份与日志。
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核**
+
+1. **自愈误判实机**：构造「单行 bullet/numbered/quote/散文/CRLF + 末尾完整 sample」与「嵌套 `memory_markdown`」的 `MEMORY.md`，跑 `before_agent_start` 注入、`/memory`、autolearn、automatic consolidate；断言文件字节、备份数、注入内容均不变，真实事实保留。
+2. **二次级联**：poison 恢复出的记忆再含「单行 + 完整示例」，连续两次 `loadMemory` 后断言事实仍存在。
+3. **并发/时序**：两个 pi 进程（或 `race.mjs` 式确定性交错）复测 heal vs consolidate 写盘窗口；确认新记忆是否被覆盖，并检查 claim/备份行为。
+4. **cap 矩阵**：`maxTokens ∈ {256,1024,1025,1400,1424,2048,3685,8192}` ×（大/小 memory，大/无 context）跑 `/memory-learn` 与 automatic；断言 memory/context 非空（源非空时）、`sentMem+sentCtx ≤ 实现公式 budget`、小 memory 时 context 得到剩余额度、不出现 `(none)`。
+5. **真实数据夹具**：三份 `/tmp/rev2/real/*` 纳入固定回归（期望 15055/14385/14525）。
+6. **真机 headless**：`-p`/`--json` 下 automatic/shutdown/命令三路径 errors.log 均有 `shortened`。
+7. **errors.log/备份治理**：长期 clipped 的增长与 1MB 轮转、备份清理策略。
+
+**建议新增/加强的测试**
+
+- 单行前缀、嵌套键、二次级联三组「文件与备份数不变」heal 反例；
+- 在测试内用实现公式断言 `sentMem+sentCtx ≤ budget`，并断言回流额度（当前 M6 能全绿）；
+- 并发 `loadMemory`/heal vs 写者 的 CAS 行为与备份数断言；
+- `fitMemoryInput` 边界单测（`budget` 平台区 1024–1424、cap=256、小 memory+大 context）；
+- 变异测试纳入 QA 清单（budget×1.25、删除回流、删除 CAS、删除随机后缀、放大 prefix limit、放宽 incomplete 恢复）。
+
+**review 无法确认的点**
+
+- provider 对抬高后 `maxTokens` 的接受度、真实 aux 模型 `maxTokens` 元数据可靠性；
+- 生产记忆自然生长出「单行内容 + 完整示例」形态的概率（级联路径已证明 poison 派生内容即可触发，但线上两份真实备份未命中）；
+- Windows/远端文件系统下 `writeAtomic`/rename 与并发窗口表现。
+
+**VERDICT: CHANGES-REQUESTED**
+
+（B-1R5 仍属 blocking 类：`loadMemory` 共享读路径可静默、破坏性重写健康记忆，且 round-4 的 fix 只关了多行前缀这一半，另有嵌套字段与二次级联两个可达向量；I-S2R 的 CAS 未真正防止覆盖且无测试，应与 B-1R5 同轮处理或由 owner 明确接受。）

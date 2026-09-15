@@ -1,0 +1,150 @@
+# 独立代码审查报告（round 4 · 完整复审）
+
+## 0. 审查基线与只读声明
+
+- 基线：HEAD = `e29abe4`，工作区未提交改动 3 文件（`git diff --stat` = **+394 / −52**：`consolidate.ts` 110+/48−、`project-state.ts` 117+/2−、`tests/consolidation-test.mjs` 167+/2−）；审查前后 `git status --short` 一致，未做 git 写操作，未向工作区写入任何文件。
+- 独立环境：所有反例与回放在 `/tmp/rev4-probe/` 构造（`heal.mjs` / `heal2.mjs` / `heal3.mjs` / `budget.mjs` / `race.mjs` / `race2.mjs` / `inject.mjs` / `fuzz.mjs` / `idem.mjs`），变异测试在 `/tmp/rev4-mut{,2,3,4}` 副本上执行；未复用 round 1..3 的结论，三份真实备份直接从 `/tmp/rev2/real/` 拷贝回放。
+- 独立复跑：`node tests/run-all.mjs` → **8/8 通过**；`readJsonStringField` 与 HEAD 旧解码器 60,000 例差分 fuzz **0 mismatch**；`parseConsolidated` 截断/坏 JSON 仍 fail-closed。
+- 对抗假设：本轮实现里仍有生产 bug。攻击了结构判定前缀/后缀对称性、cap 边界、TOCTOU、备份命名、错误路径、测试断言强度。**命中 1 条 blocking（B-1 同族的反向漏判）、2 条 important（context 饥饿、stale heal 覆盖）、1 条测试假保证。**
+
+---
+
+## 1. 重点核验结论（逐项）
+
+| 核验项 | 结论 |
+|---|---|
+| 1. B-1：round 3 四个结构反例是否关闭 | ✅ round 3 的完整对象+后置内容、末尾 `}`、无关 `{}`、regex mention 全部不再误判（R1/R1b/R2/R3/R4 实测，文件与备份数不变）；三份真实备份全部可修复、字节备份、二次读取幂等 ✅ |
+| 1b. B-1：健康记忆误判是否**仍可**构造 | ❌ **仍可**：`healPoisonedMemory` 只校验对象**之后**的内容，不校验对象**之前**的内容；「短前缀真实内容 + 完整/未闭合的 reply 示例」会被静默整份重写（见 B-1R）。测试只覆盖了镜像方向（示例在前、真实内容在后） |
+| 2. I-2b：cap∈{256,1024,1025,1400,1424,2048} × 大/小 memory × 大/小 context | ⚠️ **memory 侧已关闭**：不存在 memory=(none)（原文非空时）、无超预算发送、无 `reqMax>cap`；**context 侧未关闭**：cap≤1424（CJK）时 context 仍被丢成 `(none)`/1 字符，即使 memory 很小、预算大量闲置（见 I-2bR） |
+| 3. 自愈留痕与 fail-safe | ✅ 成功写 `errors.log`（0600，含原始/修复长度与备份路径，不含明文噪音）；只读目录下返回原文不抛、不中断；失败 fail-safe 返回原文 |
+| 4. 是否引入新回归 | 回复解析无回归（60k fuzz 0 mismatch；fail-closed 保持）；新回归集中在 B-1R / I-2bR / stale heal（见 findings）；测试断言强度见 T-1R |
+
+---
+
+## 2. Findings
+
+### blocking
+
+#### B-1R 自愈判定仍可在健康记忆上静默、破坏性重写：不校验对象前内容
+**证据**：`extensions/project-context/project-state.ts:411-427`。判定链为 `objectAt = body.indexOf("{")`（`:413`，只要求 ≤40）→ `objectEnd` 配对（`:417`）→ **仅检查对象之后的 `after`**（`:419-420`）→ 字段必须在对象内（`:422-423`）→ 值以 `# Project Memory` 开头（`:426-427`）。`body.slice(0, objectAt)` 这段前缀**从未被校验**，而 poison 的恢复只使用字段值，前缀与后置内容都会丢。
+
+**独立反例（/tmp/rev4-probe/heal2.mjs、inject.mjs 实测）**：
+1. 真实内容在前、文档化示例在后（前缀 19–38 字符，均 ≤40，完整 JSON、文件末尾无多余字符）：
+   - 输入 `# Project Memory\n\n## Notes\n- keep me (durable fact)\n{"memory_markdown": "# Project Memory\n\n## Sample\n- documented reply format", "context": {}}\n`
+   - 输出 `# Project Memory\n\n## Sample\n- documented reply format\n`，`keep me (durable fact)` 从磁盘消失，仅留 1 个 `.poison-backup-*`，无 warning、无通知。
+2. 同一形态走真实注入路径（`before_agent_start` → `loadMemory`）：`injected has real note: false`、`disk has real note: false`——真实事实同时从 system prompt 与 `MEMORY.md` 消失。
+3. 未闭合示例同样中招（`heal.mjs` NEW1/NEW2）：值前缀是真实 note 的一部分、无闭合 `"`、文件后部无 `}` 时，整份文件被重写，末尾真实事实被 `normalizeHealedMemory` 的边界回退丢弃。
+
+**影响**：`loadMemory` 是注入 / 整理 / autolearn / `/memory` 的共享读路径，命中即健康记忆被静默替换，只能靠人工发现备份。analysis §5-A.2 要求「仅匹配结构性顶层 JSON … 正常记忆不得误判」；round 3 的修复只关闭了「对象之后」这一半，另一半（对象之前）仍是同一 bug 类。仓库自身 `.agents/memory/MEMORY.md:16` 就在文档化 `memory_markdown` 自愈机制，说明这类内容会自然出现在真实记忆中。
+
+**建议修复边界**：
+1. 前缀白名单：`body.slice(0, objectAt)` 只允许空、闭合/开启围栏（```` ```json ```` 等）或不含 markdown 块结构的单行模型散文（如 `Here is the JSON:`）；出现 `\n#`、`\n-`、`\n*`、多行文档结构即拒。
+2. 或增加「字段值占正文支配比」守卫（真实 poison 的字段值 ≈ 全文，P1/NEW4 类示例明显不是）。
+3. incomplete 分支应同样受前缀约束（NEW1/NEW2）。
+4. 三份真实备份前缀为空、不受影响；补「真实内容在前 + 完整示例」与「未闭合示例」两条固定反例（断言文件与备份数不变）。
+
+---
+
+### important
+
+#### I-2bR context 预算饥饿：cap≤1424（CJK）时 context 被丢成 `(none)`，且 memory 未用的预算不回流
+**证据**：`extensions/project-context/consolidate.ts:184-187`。`contextLimit = min(context.length, max(0, budget - 400), max(400, floor(budget/2)))`：当 `budget ≤ 400` 时 `max(0, budget-400)=0`，context 被强制清零；随后 `memoryLimit = budget - contextText.length`，但 memory 只按自身长度占用，**剩余预算不再还给 context**。
+
+**独立矩阵（/tmp/rev4-probe/budget.mjs，CJK，52 组）**：
+- cap=1024/1025/1400/1424、memory 43 字符、context 21061 字符：`ctxSent=(none)`，`sent=42`，`budget=401/803`，**最多 761 字符预算闲置**；
+- cap=1024–1424、memory 18060、context 43：context 被压到 **1 字符**（`ctxSent=1`），虽然 context 本身很小；
+- cap=256：context 一律 `(none)`（memory 保住 256 字符）；
+- cap=2048：memory 513 / context 512，分配正常；
+- 全矩阵无 `sent > budget`、无 `reqMax > cap`、memory 原文非空时无 `memory=(none)` —— memory 侧确实是 round-3 fix 的效果（把 `reserved` 还原为旧公式跑测试会 FAIL 2 条，实测）。
+
+**影响**：`model.maxTokens ∈ (400, 1424]` 的自定义模型（本地 ollama/llama.cpp 等，`MIN_AUX_MAX_TOKENS=256` 挡不住，模型元数据是硬顶）每次整理都收不到任何既有 context，仍有大量预算空转；模型只能凭会话重写 CONTEXT.md，`open_tasks`/指针类信息静默丢失，并伴随每次 clipped warning。与 round-3 I-2b 是同一根因的另一侧（当时只修了 memory floor）。
+
+**建议修复边界**：先算 memory 实际占用 `memoryUsed = min(memory.length, max(0, budget - MIN_CLIP_CHARS))`，再把 `[memoryUsed, budget]` 的剩余额度给 context（至少 `min(budget/2, …)`），保证总量不变；或至少在 `budget > memory.length + 16` 时不要把 context 清零。补「小 memory + 大 context、cap∈{256,1024,1400,1424}」的 context 非空断言。
+
+#### I-S2 stale heal 覆盖并发写入（TOCTOU），本轮未处理且已实测
+**证据**：`extensions/project-context/project-state.ts:428-435`：`readOptional`（`:460`）→ 写备份 → 无条件 `writeAtomic(target, healed)`，没有内容/mtime 校验，也没有 claim。
+
+**独立实测（/tmp/rev4-probe/race2.mjs、race.mjs）**：
+- 24KB（真实事故同量级）poison + 启动 `loadMemory` 后 0–1.5ms 写入新记忆：**500/500 次新记忆被 healed 旧内容覆盖**；
+- 1MB poison：30 次竞态中 **29 次**覆盖新内容；
+- 16 个并发 `loadMemory` 同一 poison 文件：产生 2 个备份（非 1），说明读—写窗口真实存在。
+
+**影响**：两个 pi 进程/会话共用同一项目（本 issue 现场就有两个旧进程）时，一个进程的自愈可以在另一个进程刚写完新记忆后把它整份覆盖；窗口 ≈ 备份写入耗时（与 poison 大小成正比，24KB 约 ms 级），属低概率但可复现的数据丢失。round 3 将其列为 residual，本轮未改。
+
+**建议修复边界**：写回前重读并比对（内容或 mtime/inode），不一致就放弃本次自愈（返回原文，下次再试）；备份文件用排他创建（`wx`）或名字带内容哈希；最小可接受动作是在 fix-note 里明确接受该风险并补并发测试。
+
+#### T-1R 预算测试仍给出部分假保证：断言上界用 cap 而非真实 budget，且无 prefix/context 覆盖
+**证据**：`tests/consolidation-test.mjs:245-255`。`sentLength() <= 1400` / `<= 1024` 用的是模型 cap，不是实现计算出的 `budget`（实测该用例真实 budget 仅 ~412/401）。
+
+**独立变异测试**：把 `consolidate.ts:180` 的 `budget` 乘 2（发送量超出真实预算一倍）后，`node tests/consolidation-test.mjs` **ALL OK**——说明该断言抓不住预算收紧/放宽类回归。另：没有「对象前真实内容」用例（B-1R 因此逃过全绿），没有 `contextSent != "(none)"` 断言（I-2bR 因此逃过全绿）。已确认有真效果的用例：还原 round-3 `reserved` 公式会 FAIL 2 条；删除 `after` 守卫会 FAIL 2 条。
+
+**建议修复边界**：在测试内用与实现一致的公式（或直接导出 `fitMemoryInput`）计算期望 budget，断言 `sent ≤ budget`；补 cap≤1424 时 context 非空的（或明确失败的）断言；补 B-1R 两条前缀反例并断言「文件与备份数都不变」。
+
+---
+
+### nit
+
+- **N-1 备份名只有毫秒精度，同毫秒 heal 会互相覆盖**：`project-state.ts:429-431`。实测（`heal2.mjs` P4）`healed=true` 但备份数 `3->3`，P3 的备份被 P4 同名覆盖。建议时间戳加 pid/随机后缀或 `wx` 排他创建。
+- **N-2 clipped 日志与实际写入不一致**：`consolidate.ts:270-274` 在 `report === "unchanged"`（memory 与 context 都没写）时仍写 “consolidation shortened …”。建议仅在 `memoryChanged || update` 时写。
+- **N-3 `/project-context status` 把配置 `maxTokens` 展示为输出上限**：`index.ts:56-59`（`max ${config.maxTokens} tokens`），但本次改动后它已是「下限语义」，实际请求可被抬高到模型上限。建议文案改为 “min/at least”。
+- **N-4 持续剪裁反复写日志/弹 warning**：同一项目长期超预算时每轮整理都会追加 `shortened` 行并弹 warning（`consolidate.ts:271-277`），无去重/降频（round-3 N-7 沿用）。
+- **N-5 自愈日志用绝对路径且缺少目标文件标识**：`project-state.ts:434`，多项目 errors.log 汇总时可读性一般。
+
+### suggestion
+
+- **S-1 预算公式仍是估算**：`replyTokenRate`（`consolidate.ts:146-150`）按字符率计算，未计 JSON 转义膨胀（`\n`→2 字符、引号翻倍）与头/尾片段密度差；密集代码/标点文本可能被低估。建议对剪裁后的文本重算一次 rate 或乘安全系数 1.1–1.2。
+- **S-2 剪裁写盘无独立备份/回滚**：与自愈路径不同，clipped 重写只靠 toast/日志（`consolidate.ts:266-268`），用户错过通知即不可回滚。建议 clipped 落盘前保留一次 `MEMORY.md.pre-clip-*`。
+- **S-3 autolearn 仍用固定 `config.maxTokens`**（`autolearn.ts:422/436`），同类截断未消；fix-note 已声明另开 issue，建议 closeout 前明确 owner 范围决策。
+- **S-4 自愈成功可增加一次性可见性**：目前只写 errors.log（N-2 修复）与备份，UI 无提示；对 B-1R 这类误判，用户几乎无法及时发现。
+
+### learning
+
+- 「判定 poison」必须同时约束对象**起点之前、对象内部、对象之后**三段；只约束后段会让「真实内容 + 末置示例」成为绕过路径，而测试恰好只取了镜像顺序，形成假保证。
+- 预算分配必须基于各 artifact 的**实际占用**做二次分配；只给 floor 不回流剩余额度，会在小 cap 下制造「memory 保住了、context 被清零且预算大量闲置」的隐形丢失。
+- 读路径上的启发式自愈是有写副作用的 RMW，必须定义并发语义（CAS/放弃），否则低概率窗口就是数据覆盖窗口。
+
+### praise
+
+- round-3 的四个结构反例经独立复现全部关闭：完整对象+后置内容、末尾 `}`、无关 `{}` 前缀、regex mention 均不改写文件；删除 `after` 守卫的变异会被 2 条测试抓住。
+- 三份真实事故备份（UniField 15055 字符、Quantum×2 14385/14525 字符）全部自愈成功，备份与原文逐字节一致，连续三次读取幂等且不新增备份。
+- `readJsonStringField` 搬移共享后与 HEAD 旧实现 60k 例差分 fuzz 0 mismatch；截断回复仍 fail-closed，未把原始 JSON 写入记忆。
+- `errors.log` 留痕正确（0600、内容为长度+备份路径），只读目录 fail-safe 不抛、返回原文；headless clipped 也有 `shortened` 落盘（I-1 确实关闭）。
+- memory 侧 I-2b 确实修复：cap 256/1024/1025/1400/1424/2048 × 大/小 memory 均不再出现 memory=(none)，无超预算发送。
+
+### residual-risk
+
+- 自愈召回缺口（fail-safe 但有自锁）：完整数组包裹 `[{"memory_markdown": …}]`、对象后接散文/第二个对象、未闭合但值不以 `# Project Memory` 开头等形态不修复，会继续被注入/回流且无 warning（实测 FN1/FN2/FN3）。fix-note/round-3 N-4 已知，建议 QA 明确列为接受项。
+- 抬高后的 `maxTokens` 依赖 `model.maxTokens` 元数据；元数据高于 provider 实际上限时，整理可能从「8192 成功」变成请求被拒，记忆停止更新。
+- `.pi/`、OMP 回退来源的污染不写回、不修复（`loadMemory:467-475`）。
+- `errors.log` 含最多 4000 字符模型原始回复（敏感回显面，0600），备份长期驻留、不在 `.gitignore`。
+- cap≤~400 时 `reserved=0`，JSON scaffold 自身就超预算，几乎必然截断失败（fail-closed 但每次 warning）；属极端自定义模型场景。
+
+---
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核**
+1. **B-1R 真实路径**：构造「`## Notes\n- keep me` + 完整 reply 示例作为文件最后内容」的 `MEMORY.md`，跑 `before_agent_start` 注入、`/memory`、autolearn、automatic consolidate，确认文件/注入内容/备份数都不变；再用未闭合示例变体重跑。当前实现会改写并丢内容。
+2. **cap 矩阵真机**：自定义模型 `maxTokens ∈ {256,1024,1025,1400,1424,2048}` ×（小/大 memory，小/大 context）跑 `/memory-learn` 与 automatic；断言 memory 非空、**context 非空或明确 failed**、`sent ≤ 实现公式 budget`、不出现 `(none)`；重点确认 1024–1424 区间 context 是否被清空。
+3. **并发/时序**：同项目两个 pi 进程，一个在另一个 consolidate 写盘窗口内触发 `loadMemory` 自愈，确认新记忆是否被覆盖（本地已能用 24KB 文件 100% 复现覆盖，需在真实 fs/provider 节奏下复测）。
+4. **headless 真机**：`-p`/`--json` 三条路径（automatic/shutdown/命令）errors.log 均有 `shortened`；安装包仍为 ad81a11，改了才生效。
+5. **真实数据**：三份 `/tmp/rev2/real/*` 备份纳入固定夹具（修复输出 15055/14385/14525 与人工解码一致）。
+6. **errors.log 噪音/轮转**：长期 clipped 下的增长、1MB 轮转、`replyHead` 多行记录可读性。
+
+**建议新增/加强的测试**
+- 「对象前有真实内容」与「未闭合示例」两组 heal 反例（断言磁盘与备份数不变）；
+- 参数化 cap 测试改用实现公式的 `sent ≤ budget`，并断言 context 不被无谓清零；
+- `fitMemoryInput` 边界单测（`budget ≤ MIN_CLIP_CHARS`、小 memory + 大 context）；
+- 只读目录 fail-safe 断言；并发 `loadMemory` 备份数与 stale-heal 覆盖断言；
+- clipped 仅在发生写入时记录日志的断言。
+
+**review 无法确认的点**
+- provider 对抬高 `maxTokens` 的接受度、真实 aux 模型 `maxTokens` 元数据可靠性；
+- 生产记忆是否会自然长出「短前缀 + 完整示例」形态（当前两份真实健康记忆未触发，但仓库自身 memory 已在文档化该机制）；
+- Windows/远端文件系统下 `writeAtomic` rename 与并发窗口表现。
+
+---
+
+**VERDICT: CHANGES-REQUESTED**
+
+（B-1R 属 blocking 级：健康记忆仍可在共享读路径被静默破坏性重写，必须修复；I-2bR、T-1R 建议同轮处理。若下游 gate 约定 blocking ⇒ BLOCKED，则本次同样满足 BLOCKED 条件。）

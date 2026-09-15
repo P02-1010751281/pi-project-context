@@ -1,0 +1,113 @@
+# Round 10 独立复审报告（issue: consolidated-memory-json-poison）
+
+## 0. 基线与独立核验手段
+
+- 基线：`git status --short` 仅 3 个 `M`（`consolidate.ts`、`project-state.ts`、`tests/consolidation-test.mjs`，未提交 diff +746/−60），其余为未跟踪 issue/feature 文档；审查前后工作区无写入、无 git 写操作。
+- `node tests/run-all.mjs`：**8/8 通过**（consolidation-test 全绿，见 §4 的测试盲区分析）。
+- 独立探针（全部在 `/tmp/probe10`，用 jiti 加载沙箱真实模块，不复制实现）：
+  - `fitMemoryInput` 不变量/地板/浪费：结构化网格 + 60k 随机（输入均 ≥400 字符）+ 头/中/尾密度极值 + cap ∈ {256,400,512,1024,1400,2048,4096,8192,16384,32768,65536}；
+  - 预算 bug 的 e2e 复现（真实 `consolidateProjectState` + 打点 prompt）；
+  - `written`/`claimed`：round-9 IMP-2 场景复现、写失败后立即重试、settle+shutdown 并发、部分写失败回放；
+  - prune：嵌套生成名/目录/符号链接/用户改名/真实 `utimes` 未来与回拨/字节保真/EACCES；
+  - fail-closed e2e（EACCES→恢复→重试）、注入/`/memory` 读净化、通知矩阵；
+  - `parseConsolidated` 与 HEAD 差分 5 万例（0 mismatch）、`loadMemory` 真假阳性探针 16 例。
+
+---
+
+## 1. Blocking
+
+无。未发现不可恢复的数据丢失主路径：MEMORY.md 覆盖前必先 `backupMemoryBeforeWrite`，读错 fail-closed，写失败时原子写不会破坏原文件，修剪不会误删用户文件。B 语义（读路径零写副作用）经探针验证成立。
+
+---
+
+## 2. Important
+
+### IMP-R10-1 `fitMemoryInput` 的“最后保底”把 token 配额当字符数用，触发时会造成大幅过度剪裁，并破坏 ≥400 字符地板（round-9 IMP-1 未完全闭合）
+
+- 证据（`extensions/project-context/consolidate.ts:230-237`）：
+  ```ts
+  if (finalText + finalContext > budget) {
+      const safe = allocateTokens(budget, finalText, finalContext);
+      text = clipTo(memory, Math.min(text.length, Math.floor(safe.memory)));       // ← safe.memory 是 token 数，却当字符上限
+      contextText = clipTo(context, Math.min(contextText.length, Math.floor(safe.context)));
+  }
+  ```
+  `allocateTokens` 返回的是 token 配额（`consolidate.ts:159-180`），而这里把它直接当 `clipTo` 的**字符**上限；当文本 `rate < 1`（ASCII/混合）时，`min(旧字符长, token 配额)` 会把内容砍到配额对应的 token 数之下，最多丢 60% 已分配内容。
+- 该分支被一个**极小残差**触发：`consolidate.ts:222` 循环只跑 4 次，复算显示收敛每轮约降 80 tokens，第 4 轮后 `Σtokens = 7168.4 > budget 7168`（超 0.4 token），于是进入保底分支并对 `memory`/`context` 双重过度剪裁。
+- 独立复现（真实函数，cap 2048）：
+  - `memory="a".repeat(900)`（360 tokens，完全装得下）、`context=1600×ASCII+400×CJK`：输出 `memory 360 字符/144 tokens`、`context 664 字符/424 tokens`，`used=568 / budget=1024`，**浪费 44.5%**，memory 字符数 360 < 400。
+  - e2e（真实 `consolidateProjectState`，cap 8192）：MEMORY.md 963 字符，prompt 的 `<existing-memory>` 只剩 **385 字符**，CONTEXT.md 32000 字符只发 6782，`Σ=4067 / budget=7168`（浪费 43.3%）。
+- 独立统计（`/tmp/probe10/scan-waste.mjs`、`floor2.mjs`）：结构化网格 11972 个 clipped 例中 **134 例** `fitted` 字符数 < `min(input, 400)`（输入 ≥400 字符、budget ≥800）；60k 随机中 544 例同型；最大浪费 44.5%。而 round-9 要求的两条性质（“两侧非空且 budget 够时 ≥400 字符”“无本可装下却被剪”）并不成立。`Σ rate + reserved ≤ maxTokens` 与“不清零”两条确实闭合（0 越界 / 0 空侧，含 cap 256..65536）。
+- 影响：模型看不到本应放进去的记忆/上下文，只按头尾片段重写长期记忆，可能静默丢掉事实。因覆盖前有备份且会告警 clipped，故非 blocking；但这正是本 issue 要防的“记忆丢失”在预算层的复现，属于 round-9 明确点名的验收项未闭合。
+- 建议修复边界：保底不要用 `safe.X` 当字符上限。按当前文本的 token 比例缩：
+  `limit = floor(text.length * safe.memory / max(finalText, ε))`（随后仍以 `min(limit, floor(safe.memory))` 作绝对保险），且只对已剪裁的 `text`/`contextText` 再剪，不要回头剪原始 `memory`；同时把循环次数提高到收敛（如 8 次）或对 `Σ ≤ budget + 0.5` 给浮点容差。测试上补：ASCII 头 + CJK 尾、小低密度 memory × 高密度 context 等形状，断言「两侧长度 ≥ min(输入, 400)（budget≥800 时）」与「clipped 时 `used ≥ budget − 小 slack`，除非该 artifact 已整份发出」。注意不要退回全局平均率。
+
+---
+
+## 3. Nit
+
+- **N-R10-1 部分写失败后释放 claim，会把缓存 outcome 回放到更新的外部内容上**（`consolidate.ts:351`）。
+  证据：探针 `/tmp/probe10/partial-probe.mjs`——MEMORY 写成功后 CONTEXT 写失败（CONTEXT.md 是目录）→ catch 释放 claim → 外部改写 MEMORY.md → 下一次强制/节流 settle 返回缓存 outcome 并覆盖外部编辑（通知为 “Project memory updated”，无 warning；外部内容保存在新备份里）。触发条件窄（需 CONTEXT 写失败 + 外部编辑 + 重放窗口），且可恢复，故记 nit；若团队标准是“任何陈旧 outcome 不得回放”，应升为 important。
+  建议边界：记录 `memoryWritten`，仅当本次**未写成功 MEMORY.md** 时才 `written.delete`；或在 catch 里保留 claim、把 CONTEXT 失败作为单独重试点。
+- **N-R10-2 命令路径的修复回执不指出备份**（`consolidate.ts:339-347` + `:409-423`）：`/memory-learn` 以 `silent=true` 调 `consolidate`，`storedPoisoned` 的 warning 被吞掉，回执统一是 “Project memory and context updated.”；备份路径只进 `errors.log`（探针 `/tmp/probe10/notify2.mjs`）。自动 `agent_settled` 路径正常（探针 `repair-notify2.mjs` 带备份路径）。N-3 只中性化了 clipped 文案，修复分支未覆盖命令回执；`/memory` 事前有 warning，影响低。
+- **N-R10-3 测试的“时钟回拨”是假覆盖**（`tests/consolidation-test.mjs:314-319`）：只写了 2099 年**名字**的文件（mtime 仍是 now），且 `skewed.path` 因 keep 被名字排除必然存在，断不死排序回归；`tests/consolidation-test.mjs:450-471` 的预算矩阵自造 `localRate` 而不复用导出的 `replyTokenRate`，且 4 个 fixture 恰好都不触发 IMP-R10-1 的保底分支。建议补真实 `utimes`（未来/回拨）与判据“新备份在 mtime 最旧时仍存活”，并让矩阵用导出函数、加入 ASCII 头+CJK 尾形状。
+
+---
+
+## 4. Suggestion
+
+- **S-R10-1 备份未纳入 gitignore**：`.gitignore` 仅 `node_modules/`、`*.log`、`.DS_Store`；现在每次覆盖 MEMORY.md 都产生 `.memory-backup-*`（可能含项目秘密），既未忽略也未清理策略（fix-note 自列“待定”）。建议随提交决定 ignore/清理，并在 `errors.log`（含最多 4000 字符模型原文，`consolidate.ts:119-127`）考虑脱敏。
+- **S-R10-2 `migrateProjectState` 的 check-then-write 仍可在竞态下无备份覆盖并发新建的 MEMORY.md**（`project-state.ts:328-334`）：可改 `wx` 或复用 `backupMemoryBeforeWrite`。
+- **S-R10-3 `/memory` 对不可读文件显示 “No project memory yet”**（`project-state.ts:504-513` `readOptional` 吞错 + `consolidate.ts:403-406`），与 fail-closed 语义不一致；建议区分“不存在”与“读不了”。
+- **S-R10-4 `fitMemoryInput` 注释与实现不符**：`consolidate.ts:219-221` 写 “context takes up to half the tokens”，实际是 `MIN_CLIP_CHARS` token 地板 + 按需分配；`consolidate.ts:230` “at rate 1.0 the char count…” 表述反了（实际是 token 数 ≤ 字符数，所以用字符数兜底）。
+
+---
+
+## 5. Learning
+
+- 把 token 配额直接当字符上限是典型越界点：只有 `rate ≤ 1` 的方向安全，反向会剪掉 `1/rate` 倍内容；安全兜底必须做“按 token 比例缩放”，而不是“用 token 数截字符”。
+- 有硬迭代上限的收敛循环，必须配一个**尽可能保留内容**的收尾步骤；否则一个 0.4-token 的浮点残差就会让保守兜底主导分配，使整个按需分配形同虚设。
+- 幂等 claim 的释放要与“操作的哪一部分真正落地”绑定；只按“本次是否 claim 过”释放，会把已成功写盘的半边也一起回滚成可重放状态。
+
+---
+
+## 6. Praise
+
+- round-9 IMP-2 真正闭合：模型调用/解析失败不再删 claim。探针 `claim-probe.mjs` A 场景：v1 写入 → 模型故障 → 外部编辑 → 下一次 settle 为 deduped，外部内容保留、无回放、备份数不变。
+- 写失败重试与 fail-closed 端到端成立：EACCES 目标不覆盖、字节/大小不变、errors.log 记录、返回 failed；恢复权限后无需再调模型即落盘（探针；repository 仅覆盖 EISDIR，独立补验了 EACCES）。
+- settle + shutdown 并发只调 1 次模型、只写 1 份备份；两个 `/memory-learn` 去重在仓库测试中亦成立。
+- prune 身份修复真实有效（`project-state.ts:470` 全名锚定 + `isFile`）：`MEMORY.md.memory-backup-keep.memory-backup-<gen>` 用户文件、目录、符号链接、改名文件全部保留，真实文件数稳定 5，新备份在“先写未来 mtime 的旧备份”与回拨场景均存活；单项 `rm` 有 try/catch。
+- 备份 Buffer 读写对非法 UTF-8 逐字节保真（`Buffer.equals` true）。
+- 读路径零写副作用（mode B）：`loadMemory` 对 16 例真假阳性探针均不改文件、不建备份/日志；注入、`/memory`、autolearn 三个调用方消费新 `{text, source, poisoned}` 正确（注入探针返回解码后 Markdown）。
+- `parseConsolidated` 与 HEAD 差分 5 万例 0 mismatch。
+
+---
+
+## 7. Residual-risk
+
+- **写时备份 → rename 的微窗口**（`consolidate.ts:323-329`）：A 读旧文件并备份、B 写新内容、A rename，B 的内容不会出现在任何备份中。这正是旧进程并发写场景的残留风险（fix-note 已承认）。
+- **单飞是全局而非按项目**（`consolidate.ts:452`）：同进程内两个不同 projectRoot 的调用会让 B 拿到 A 的 outcome（`consolidate()` 按 B 的 `written` 判空后会把 A 的记忆写进 B）。HEAD 已如此，属 pre-existing；是否可达取决于 pi 每进程/每 session 的扩展实例模型（review 无法确认）。
+- 解码召回缺口（`project-state.ts:415-435`）：prose 前缀、`context` 先行、值不带 `# Project Memory` 头、`.pi`/OMP 来源不解码；整文件恰为一个 JSON 示例时会误判为污染（mode B 下只影响读，写时有备份）。有真实坏文件时应回放验证。
+- 自适应 `maxTokens` 在模型无 `maxTokens` 元数据时可抬到 provider 实际输出上限以上（`consolidate.ts:212-214`）；`replyTokenRate` 未计 JSON 转义、emoji/代理对（`clipText` 可能切开 surrogate pair）；备份仅留 5 份，通知里指名的备份可能已被轮换。
+
+---
+
+## 8. Test And QA Focus
+
+**QA 必须重点复核的场景**
+1. **预算保底（IMP-R10-1）**：表驱动加入 ASCII 体 + CJK 尾、`all_ascii` 小 memory × 高密度 context、密度突变三类，断言：(a) `Σ rate + reserved ≤ cap`；(b) budget≥800 且输入 ≥400 字符时两侧 ≥400 字符，且两侧永不为空；(c) clipped 时 `used ≥ budget − slack`，除非该 artifact 已整份发出；(d) e2e 断言 prompt 的 `<existing-memory>` 与 `<existing-context>` 不是过短残缺。至少覆盖 cap 1400/2048/8192。
+2. **claim 语义**：保留现有“模型失败后 settle 不回放”用例并加变异守卫（把 `written.delete` 放回 catch 必须挂）；新增“MEMORY 写成功、CONTEXT 写失败”的部分写失败用例，明确期望（当前会回放缓存 outcome 覆盖外部编辑）。
+3. **prune**：真实 `utimes` 未来/回拨 mtime；符号链接；单项 `rm` 失败隔离（需 chattr/root 或可注入 fs）；总数恒为 5。
+4. **fail-closed 与备份**：EACCES 端到端 + 恢复后立即重试；`session_shutdown` silent 路径；mid-call 写者（仓库已有）；跨进程并发写者的备份覆盖（可脚本模拟两个 writer）。
+5. **通知/留痕矩阵**：命令路径修复（存污染）是否应提示备份；clipped 且未写 MEMORY 时不得宣称存在备份（仓库已覆盖）；headless。
+6. **读净化**：整文件仅一个 JSON 示例的误判边界、`context` 先行截断、值无 header 的召回缺口，明确预期。
+
+**建议新增/加强**：把预算矩阵改为 import 真实 `replyTokenRate`；对 `fitMemoryInput` 加“保底分支变异守卫”（把 `safe.memory` 当字符上限的写法改回比例缩放应使 `used ≥ budget − slack` 用例区分）；对 prune 全名匹配加变异守卫（改回 `startsWith` 应挂）。
+
+**review 无法确认**：真实 provider 对自适应抬高 `maxTokens` 的接受度、`model.maxTokens` 元数据可靠性；真实 tokenizer 与 `replyTokenRate` 的偏差（含 JSON 转义/emoji）；Windows/NFS 的 rename/mtime/目录错误码；真实坏文件备份不在本沙箱（仅合成夹具 + HEAD 差分）；pi 的扩展实例生命周期是否会让跨项目单飞可达。
+
+---
+
+**VERDICT: CHANGES-REQUESTED**
+
+理由：无 blocking；round-9 的两个 important 中，`written.delete` 语义已按“仅本次 claim 过才释放”闭合（模型/解析失败不回放、写失败可立即重试、并发只写一次均已独立复现），预算不变量与“不清零”也已闭合；但 `fitMemoryInput` 的最后保底把 token 配额当字符上限，在一个常见密度形状（ASCII 体 + CJK 尾）上被 0.4-token 的循环残差触发，实测浪费 43–44.5% 预算、把本可整份装下的 900/963 字符 memory 剪到 360/385 字符，并破坏 ≥400 字符地板（结构化 134/11972、随机 544/60k 例）。建议按 §2 修复并用 §8 的矩阵+变异守卫锁定后再复审。

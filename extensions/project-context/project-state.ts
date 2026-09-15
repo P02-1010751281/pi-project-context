@@ -175,7 +175,7 @@ export async function pathExists(target: string): Promise<boolean> {
 	}
 }
 
-export async function writeAtomic(file: string, content: string): Promise<void> {
+export async function writeAtomic(file: string, content: string | Uint8Array): Promise<void> {
 	await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
 	// The UUID keeps two concurrent writers of the same file from sharing a temp path.
 	const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
@@ -344,20 +344,182 @@ export async function migrateProjectState(projectRoot: string): Promise<Migratio
 	return { moved, importedSkills, importedMemory, conflicts };
 }
 
-export async function loadMemory(projectRoot: string): Promise<{ text: string; source: string }> {
+type JsonStringField = { value: string; complete: boolean };
+
+/**
+ * Read a `"key": "..."` string out of JSON-looking text. Unlike `JSON.parse` this tolerates an
+ * unterminated value, which is how a reply truncated by the output cap arrives; `complete`
+ * reports whether the closing quote was found.
+ */
+export function readJsonStringField(text: string, key: string): JsonStringField | undefined {
+	const match = new RegExp(`"${key}"\\s*:\\s*"`).exec(text);
+	if (!match) return undefined;
+	let index = match.index + match[0].length;
+	let out = "";
+	while (index < text.length) {
+		const char = text[index];
+		if (char === "\\") {
+			const escaped = text[index + 1];
+			if (escaped === undefined) return { value: out, complete: false };
+			if (escaped === "u") {
+				const hex = text.slice(index + 2, index + 6);
+				if (!/^[0-9a-f]{4}$/i.test(hex)) return { value: out, complete: false };
+				out += String.fromCharCode(Number.parseInt(hex, 16));
+				index += 6;
+				continue;
+			}
+			out += escaped === "n" ? "\n" : escaped === "t" ? "\t" : escaped === "r" ? "\r" : escaped;
+			index += 2;
+			continue;
+		}
+		if (char === '"') return { value: out, complete: true };
+		out += char;
+		index += 1;
+	}
+	return { value: out, complete: false };
+}
+
+/** Wrapper text a stored reply may carry before its object: nothing, `json`/`[`, or a fence. */
+function isPoisonPrefix(prefix: string): boolean {
+	const trimmed = prefix.trim();
+	if (!trimmed) return true;
+	return /^(?:json|JSON|\[|```(?:json|JSON|markdown)?)$/.test(trimmed);
+}
+
+/** Index just after the object opened at `start`, or -1 when the braces never close. */
+function jsonObjectEnd(text: string, start: number): number {
+	let depth = 0;
+	let inString = false;
+	for (let index = start; index < text.length; index += 1) {
+		const char = text[index];
+		if (inString) {
+			if (char === "\\") index += 1;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{") depth += 1;
+		else if (char === "}") {
+			depth -= 1;
+			if (depth === 0) return index + 1;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Older builds stored an unparseable reply verbatim, which left raw JSON in MEMORY.md. Decode it
+ * back into markdown for readers (injection, consolidation, autolearn); the stored file is only
+ * replaced by the normal consolidation write path, so a mis-detection can never destroy it.
+ */
+function decodePoisonedMemory(current: string): string | undefined {
+	const body = current.replace(/^#\s*Project Memory\s*/i, "").trim();
+	const objectAt = body.indexOf("{");
+	if (objectAt < 0) return undefined;
+	// Both sides of the object are part of the shape: a stored reply has nothing but wrapper text
+	// before it, and nothing but a closing fence after it.
+	if (!isPoisonPrefix(body.slice(0, objectAt))) return undefined;
+	const objectEnd = jsonObjectEnd(body, objectAt);
+	if (objectEnd >= 0) {
+		const after = body.slice(objectEnd).trim();
+		if (after && after !== "```" && after !== "]") return undefined;
+	}
+	const scope = objectEnd >= 0 ? body.slice(objectAt, objectEnd) : body.slice(objectAt);
+	// The reply's object opens with the memory field; a nested or later occurrence is an example.
+	if (!/^\{\s*"memory_markdown"\s*:/.test(scope)) return undefined;
+	const field = readJsonStringField(scope, "memory_markdown");
+	if (!field || !field.value.trim()) return undefined;
+	// The value must be the memory document itself, not a documented reply sample.
+	const decoded = field.value.trim().replace(/^```(?:markdown)?\s*/i, "").trim();
+	if (!decoded.startsWith("# Project Memory")) return undefined;
+	return normalizeHealedMemory(field.value);
+}
+
+/** Number of newest memory backups kept per project. */
+const MEMORY_BACKUPS_KEPT = 5;
+
+/** Escape a literal string for use inside a RegExp. */
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Keep the current bytes of a memory file next to it before the writer replaces it, and report
+ * whether the bytes on disk are a stored reply. Reads the disk at write time, so a concurrent
+ * writer's file is what gets backed up. Older backups beyond the newest few are pruned.
+ */
+export async function backupMemoryBeforeWrite(target: string): Promise<{ path?: string; poisoned: boolean }> {
+	// Fail closed: a missing file has nothing to keep, but an unreadable one must stop the write.
+	let raw: Buffer;
+	try {
+		raw = await readFile(target);
+	} catch (error) {
+		if ((error as { code?: string }).code === "ENOENT") return { poisoned: false };
+		throw error;
+	}
+	if (raw.length === 0) return { poisoned: false };
+	const poisoned = Boolean(decodePoisonedMemory(raw.toString("utf8").trim()));
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const directory = path.dirname(target);
+	const prefix = `${path.basename(target)}.memory-backup-`;
+	const keep = `${prefix}${stamp}-${randomUUID().slice(0, 8)}`;
+	const backup = path.join(directory, keep);
+	await writeAtomic(backup, raw);
+	// Match only names this generator writes, from the start of the name. A user file that merely
+	// carries a similar suffix must survive the prune.
+	const generated = new RegExp(`^${escapeRegExp(prefix)}\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z-[0-9a-f]{8}$`);
+	try {
+		// Prune only files this extension generated, by mtime, never the backup just written.
+		const candidates: Array<{ name: string; mtime: number }> = [];
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (entry.name === keep || !entry.isFile()) continue;
+			if (!generated.test(entry.name)) continue;
+			candidates.push({ name: entry.name, mtime: await fileMtimeMs(path.join(directory, entry.name)) });
+		}
+		candidates.sort((left, right) => right.mtime - left.mtime);
+		for (const stale of candidates.slice(MEMORY_BACKUPS_KEPT - 1)) {
+			try {
+				await rm(path.join(directory, stale.name), { force: true });
+			} catch {
+				// One unremovable backup must not stop the others.
+			}
+		}
+	} catch {
+		// Pruning is best-effort; a stale backup is harmless.
+	}
+	return { path: backup, poisoned };
+}
+
+/** Rebuild the `# Project Memory` document from a decoded field value, keeping every recovered line. */
+function normalizeHealedMemory(value: string): string {
+	const body = value
+		.replace(/^```(?:markdown)?\s*/i, "")
+		.replace(/\s*```$/, "")
+		.trim()
+		.replace(/^#\s*Project Memory\s*/i, "")
+		.trim();
+	return `# Project Memory\n\n${body}`.slice(0, MAX_MEMORY_CHARS).trimEnd() + "\n";
+}
+
+export async function loadMemory(projectRoot: string): Promise<{ text: string; source: string; poisoned: boolean }> {
 	const target = memoryFile(projectRoot);
-	const current = (await readOptional(target)).trim();
-	if (current) return { text: current.slice(0, MAX_MEMORY_CHARS), source: target };
+	const raw = await readOptional(target);
+	const current = raw.trim();
+	if (current) {
+		const decoded = decodePoisonedMemory(current);
+		if (decoded) return { text: decoded.trim().slice(0, MAX_MEMORY_CHARS), source: target, poisoned: true };
+		return { text: current.slice(0, MAX_MEMORY_CHARS), source: target, poisoned: false };
+	}
 
 	const legacyPi = path.join(legacyPiDir(projectRoot), "MEMORY.md");
 	const fromPi = (await readOptional(legacyPi)).trim();
-	if (fromPi) return { text: fromPi.slice(0, MAX_MEMORY_CHARS), source: legacyPi };
+	if (fromPi) return { text: fromPi.slice(0, MAX_MEMORY_CHARS), source: legacyPi, poisoned: false };
 
 	for (const name of ["MEMORY.md", "memory_summary.md", "learned.md"]) {
 		const fallback = path.join(legacyOmpDir(projectRoot), name);
 		const text = (await readOptional(fallback)).trim();
-		if (text) return { text: text.slice(0, MAX_MEMORY_CHARS), source: fallback };
+		if (text) return { text: text.slice(0, MAX_MEMORY_CHARS), source: fallback, poisoned: false };
 	}
 
-	return { text: "", source: target };
+	return { text: "", source: target, poisoned: false };
 }

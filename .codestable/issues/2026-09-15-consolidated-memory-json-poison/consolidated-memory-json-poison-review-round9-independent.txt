@@ -1,0 +1,116 @@
+核验完成。以下为 round 9 完整独立复审结论。
+
+---
+
+# Round 9 独立复审（完整）
+
+## 0. 基线与核验方式
+
+- 基线：`git status --short` 仅 `consolidate.ts`、`project-state.ts`、`tests/consolidation-test.mjs` 三个 `M`（未提交 diff：+697/−60），其余为未跟踪的 issue 文档；评审前后工作区未写入。
+- 已读：attention、report、analysis、fix-note §6、approval-report、review.md（round 8）及 round1..8 独立记录（round 7/8 记录存在）。
+- 独立核验（全部在 `/tmp/pi-probe9`）：
+  - `node tests/run-all.mjs` → 8/8 通过；
+  - `fitMemoryInput` 6 万例均匀随机 + 72.8 万例分段结构化网格 + 20 万例随机分段搜索（独立复算 `replyTokenRate`，含不等号与 reserved 复算）；
+  - `parseConsolidated` 与 HEAD(b9c8618) 实现 12 万例差分；
+  - prune：嵌套生成名/目录/符号链接/用户改名/同毫秒 20 连写/`utimes` 未来与回拨 mtime/单项失败隔离；
+  - fail-closed e2e：EISDIR、EACCES、ENOENT 首写、权限恢复后 15s 内重试；
+  - 写路径 e2e：真实 `consolidateProjectState` + `memory-learn`，核验 prompt 内容、备份字节、日志、通知；
+  - 备份字节保真（非法 UTF-8 Buffer 比对）。
+
+---
+
+## 1. 重点核验结论
+
+1. **IMP-1（round 8 预算修复）不闭合，且引入了新的内容破坏方式。** 按 artifact 本地率估算是正确方向，但收敛循环（`consolidate.ts:196-209`）以「率更高」为唯一收缩选择依据：当另一 artifact 剪裁后自身已超预算时，给高率 artifact 算出的 limit 会变成负数并被 `Math.max(0, …)` 归零（`:201-203`），**整个 memory 被清空**（prompt 里变成 `(none)`），而 context 仍可能超预算。结构化网格 72.8 万例中 67,359 例违反 `Σ本地率 + reserved ≤ maxTokens`（cap 8192 最坏超 290 tokens；cap 32768 最坏超 467 tokens）；均匀随机 6 万例仅 14 例微小越界（≤0.4 token），说明该缺陷集中在「头尾密度分布不均」的真实 CJK 文本上。仓库新增的两个混合语种 fixture 恰好都是均匀密度，因此测试全绿。
+2. **修剪语义大部分达标，但「精确名」并未真正实现。** `entry.isFile()`、目录/符号链接保留、单项 `rm` 失败隔离、mtime 排序 + 按名排除新备份、同毫秒/未来时间戳/回拨下新备份存活且收敛到 5，均独立复现通过。但 `startsWith(prefix) && /\.memory-backup-…-[0-9a-f]{8}$/` 的组合并非全名锚定：`MEMORY.md.memory-backup-keep.memory-backup-2026-01-01T00-00-00-000Z-deadbeef` 这类用户文件会被当作生成名静默删除（实测已删）。
+3. **fail-closed 与写路径成立。** EACCES/EISDIR 端到端不覆盖、文件 hash 不变、`errors.log` 记录、返回 failed；ENOENT 首写建文件 0 备份；失败后释放 claim，权限恢复后立即重试（仅 1 次模型调用）成功并留下 1 份备份；mid-call 写者字节被备份；Buffer 备份逐字节保真。
+4. **读路径无写副作用，回归面基本干净。** `parseConsolidated` 与 HEAD 12 万例差分 0 mismatch；读净化不落盘；`loadMemory` 三个调用方（injection、autolearn、/memory）与 consolidation 均正确消费新 `{text, source, poisoned}`；headless 剪裁有 errors.log 留痕；末行保真（test:142-145）通过。
+5. **仍有 important：无 blocking（无不可恢复的破坏性丢失主路径）。** 但 IMP-1 会把已有 memory 从 prompt 中整段丢弃（写盘前有备份 + clipped 警告，故可恢复），IMP-2 会因失败路径 `written.delete` 过宽而回放陈旧 outcome、覆盖更新的外部内容（有备份）。两者都建议在合并前修掉。
+
+---
+
+## 2. Findings
+
+### important
+
+#### IMP-1 `fitMemoryInput` 收敛循环可把某一 artifact（含 memory）清零，且仍可超过输出预算
+- 证据：`extensions/project-context/consolidate.ts:196-209`。`if (textRate >= keptRate)` 只用「本地率」决定收缩谁；当对侧 artifact 剪裁后的 tokens 已 > `budget`（初始分配用的是原始平均率，剪裁头尾后的实际率更高，属常见情形），高率一侧的 `limit = floor((budget - ctxTokens)/rate)` 为负，经 `Math.max(0, …)` 变为 0，随后 `text = limit === 0 ? "" : …`（`:203`）**把 memory 置空**；循环只再给另一侧 1~2 次机会，且不会恢复被清零的一侧。
+  - 端到端反例（真实 `consolidateProjectState`，cap 8192）：MEMORY.md = 500 个 CJK 字符，CONTEXT.md = 32k 混合文本 → prompt 中 `<existing-memory>\n(none)\n`（实测），`out.clipped === true`、写入照常发生，模型只能凭会话重写 memory。
+  - 单元反例：memory=`"记".repeat(4000)` 级别的小而密文本即可触发；大 memory 也会被清零（随机分段搜索命中 memory 长度 1695~2044 的整段丢弃，例如 memory≈1651 tokens、ctx 剪裁后 7312 tokens > budget 7168）。
+  - 不变量反例（结构化网格 728,352 例，`Σ len*replyTokenRate + reserved ≤ maxTokens`）：67,359 例不满足；最坏 `over=290 tokens @cap8192`（memory 1 字符 + context 22000 混合），`over=467 @cap32768`；仓库测试 `tests/consolidation-test.mjs:455,458` 只覆盖两个均匀分布 fixture，二者恰好满足。
+  - 另外该循环最多 3 轮且第 3 轮收缩后不再校验（`:196`），浮点/密度跳变时越界不会被发现。
+- 影响：现有 memory 被整段从 prompt 移除，模型从零重写长期记忆，live 文件可能静默丢失全部旧事实；`reserved`/`MIN_CLIP_CHARS` 想表达的「artifact 地板」承诺不成立。因覆盖前有无条件备份且会发 clipped 警告/日志，故不是 blocking，但这是本 issue 要防的「记忆丢失」在预算层的复现。
+- 建议修复边界：收缩选择按「当前 tokens 与配额的超额量」而非率；对非空 artifact 保证 `MIN_CLIP_CHARS` 地板（`clipText` 与循环都要遵守）；两侧按 token 比例收缩而不是单侧归零；循环改为带终止条件的定点迭代（或结束时做一次 `Σ + scaffolding ≤ maxTokens` 断言并继续收缩），最后在单测中断言「两个非空输入在 `budget ≥ 2*MIN_CLIP_CHARS` 时输出都非空」以及全矩阵不变量。注意不要用「全局平均率」回到 round 8 的老问题。
+
+#### IMP-2 失败路径无条件 `written.delete` 会清除既有 claim，导致陈旧 outcome 回放并覆盖更新的外部内容
+- 证据：`consolidate.ts:318-320` 的 catch 对**该次调用内任何**失败都执行 `written.delete(projectRoot)`，但 claim 直到 `:283` 才可能被设置；模型调用/解析失败（`consolidateProjectState` 抛错）时本次并未 claim，却把上一次成功写入的 claim 一并删掉。
+  - 复现（e2e）：pass v1 写入成功 → 等过 `forceDedupeMs` 后模型故障（`complete` 抛错）→ 用户/外部进程修改 MEMORY.md → 下一次 `agent_settled`（被 `consolidateIntervalMs` 节流，返回缓存的 v1 outcome）因 claim 已被删除而重新写入 v1，通知为 info「Project memory updated」。实测外部编辑被还原为旧内容，外部编辑仅存于新备份（backups=2）。
+- 影响：一次失败的 pass 会触发对陈旧内存快照的重放，静默覆盖更新的磁盘内容（备份可恢复，但通知不提示）。同时说明「释放 claim 便于写失败重试」的实现范围过宽。
+- 建议修复边界：只在本调用确实 claim 过时释放，例如 `let claimed = false; … written.set(...); claimed = true;`，catch 中 `if (claimed) written.delete(projectRoot)`；或按版本比较（仅当 `written.get(root) === outcome.version` 时删除）。写失败重试语义不变。
+
+### nit
+
+- **N-1 修剪不是全名精确匹配**：`project-state.ts:471` 为 `entry.name.startsWith(prefix) && MEMORY_BACKUP_NAME.test(entry.name)`，正则只锚定结尾（`:442`）。实测用户文件 `MEMORY.md.memory-backup-keep.memory-backup-2026-01-01T00-00-00-000Z-deadbeef`（前缀 + 另一段生成形后缀）被归入候选并按 mtime 静默删除；目录/符号链接/KEEP-ME 型改名均正确保留。建议用 `new RegExp('^' + escapeRegExp(prefix) + '\\d{4}-…-[0-9a-f]{8}$')` 全名匹配。
+- **N-2 `MIN_CLIP_CHARS` 注释与行为不符**：`consolidate.ts:141` 注释称「Keep at least this much of an artifact」，但 `:182` 只用于 `reserved`，`clipText`（`:154-161`）和循环（`:203`）都能返回 0 长度（IMP-1 即其后果）。注释应改为描述「小 cap 时保留的预算地板」，或按注释实现 artifact 地板。
+- **N-3 命令回执在「确实写了备份」时仍用 `CLIPPED_NOTICE_NO_WRITE`**：`consolidate.ts:407-408` 对所有 `clipped` 一律返回「Project context updated…」，而 `:313-314` 的自动通知会带备份路径。显式 `/memory-learn` 在 memory 被覆盖 + 备份存在时不会告诉用户备份位置。建议 `consolidateReply` 接收 `{backup, memoryWritten}` 或直接复用同一文案分支。
+- **N-4 剪裁可浪费约 10% 预算**：初始 `memoryLimit/contextLimit` 用原始平均率，`clipText` 头尾实际率更低时不再回填（结构化最坏 waste=746/7168 tokens）。不违反安全上界，属「本可多送一点内容」的质量问题。
+
+### suggestion
+
+- **S-1 `.memory-backup-*` 未纳入 gitignore**（fix-note 自列待定）：本次改为「每次覆盖 MEMORY.md 都无条件备份」，备份更频繁且可能含项目秘密；`errors.log` 现包含最多 4000 字符模型原文（`consolidate.ts:122-127`，虽被 `*.log` 忽略，但仍在仓库目录落盘）。建议随提交决定忽略/清理策略，并在 `errors.log` 中考虑脱敏。
+- **S-2 `migrateProjectState` 的 check-then-write 仍可能在极窄竞态下无备份覆盖并发新建的 MEMORY.md**（`project-state.ts:328-334`，先 `pathExists` 再 `writeAtomic`）。可在该写入走 `wx` 或先做一次 `backupMemoryBeforeWrite`。
+- **S-3 读→prune→rename 窗口仍在**（fix-note 只承认 read→rename 微窗口，实际 prune 的 readdir/stat/rm 多个 await 扩大了窗口）；跨进程 mtime 修剪也可能误删他进程刚写但 mtime 偏旧的备份。属已记录残差。
+- **S-4 token 率未计入 JSON 转义膨胀与非 CJK 低位宽文字（西里尔/阿拉伯/天城文/emoji/代理对）**，极端输入仍可能截断；`clipText` 可能切开 surrogate pair。
+
+### learning
+
+- 「裁剪后用新文本重算」不等于「保证不越界」：必须把**变换后的实际量**收敛到上界，而不是只做一次重算；用「率」选择收缩对象也不等于「用可吸收的余量」选择。
+- 清理/去重状态应在 catch 中按「本次是否取得」而非按变量是否存在来释放；过宽的清理会把上一状态的成功保护一起撤销。
+- 删除类保留策略的身份判定要用全名模式；`startsWith + 尾部正则` 是典型越界点。
+
+### praise
+
+- fail-closed 严格二分（仅 ENOENT 视为无文件），备份先于覆盖；EACCES/EISDIR e2e 实测不覆盖、有 EACCES 日志、返回 failed，权限恢复后 15s 内重试无需再调模型即落地。
+- prune 的 `isFile + mtime + 按名排除本次 keep` 组合在 20 连写/未来 mtime/回拨 mtime 下均稳定 5 份且新备份必存活；单项 `rm` 失败隔离到位。
+- 备份改 Buffer 读写后对非法 UTF-8 逐字节保真（我实测 `Buffer.equals` true）。
+- 解析器与 HEAD 12 万例差分 0 mismatch；读路径零写副作用；`/memory` 对污染文件给出 warning；并发 pass 只写一次（测试与独立复现一致）。
+- 混合语种 fixture 的两个方向都断言了 `Σ本地率 + reserved ≤ cap`，方向是对的（覆盖面仍需扩，见 Test And QA）。
+
+### residual-risk
+
+- IMP-1 触发时 live memory 被模型重写，旧内容仅存于备份；备份只保留 5 份，多次自动整理后通知里指名的备份可能已被轮换。
+- decoder 召回缺口（prose 前缀、`context` 先行的截断回复、值无 header、`.pi`/OMP 来源）在本轮未变。
+- `/memory` 对不可读文件仍显示「No project memory yet」（`consolidate.ts:372-375` + `readOptional` 吞错）。
+- `fitted.maxTokens` 在模型无 `maxTokens` 元数据时可能被抬到超过 provider 实际上限，取决于 provider 是否接受。
+
+---
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核的场景**
+1. **预算不变量与 artifact 地板（IMP-1）**：用头/中/尾密度不均的文本（如 `"记"*fA + "a"*mid + "记"*fB` 的 fA/fB/mid 矩阵），断言 `Σ len*replyTokenRate + reserved ≤ maxTokens`，并断言「输入非空 + budget 足够时 `fitted.text` 与 `fitted.contextText` 均非空且 ≥ MIN_CLIP_CHARS」。至少覆盖：小 memory × 大 context（可复现 `(none)`）、大 memory × 小 context、反向、cap ∈ {1024,1400,2048,4096,8192,32768}。建议直接 e2e 断言 prompt 的 `<existing-memory>` 不为 `(none)`。
+2. **失败后 claim 语义（IMP-2）**：write 失败（EACCES/EISDIR）→ 立即重试必须写；**模型/解析失败**→ 不得清除上一次写入 claim，下一次节流 settle 必须是 `deduped`，不得回放缓存 outcome 覆盖外部新内容。
+3. **prune 身份**：全名锚定后仍要断言嵌套生成名用户文件（`<prefix>keep.memory-backup-<gen>`）不被删；目录、符号链接、`KEEP-ME.md` 保留；单个 `rm` 失败不中止；总数 `===5`；同毫秒 20 连写、`utimes` 未来/回拨 mtime 下新备份必存活。当前测试 `tests/consolidation-test.mjs:317-319` 只改文件名时间戳、不改 mtime，建议补真实 `utimes` 用例。
+4. **fail-closed 端到端**：当前仓库只覆盖 EISDIR（`:334-353`）；建议补 EACCES + 权限恢复立即重试，以及 `session_shutdown`（silent）路径。
+5. **通知/留痕矩阵**：memoryChanged=false + clipped 时不得宣称有 MEMORY.md 备份（N-3）；自动路径 repair warning 带备份路径；headless 下 repair/clipped 均有 errors.log。
+6. **解码**：现有反例已较全，建议加「整个文件只有一个以 `# Project Memory` 开头的 JSON 示例」的已知 fail-safe 边界（N-6/round 8）并明确其预期；有真实坏文件时用 UniField/Quantum_Matrix 备份回放。
+
+**建议新增/加强**
+- 把 IMP-1 的矩阵做成表驱动单测（同时锁定不变量与地板），而不是只测两个 fixture；对 `fitMemoryInput` 的 3 轮上限做变异守卫（例如去掉第 3 轮后的越界检测应被测试抓住）。
+- prune 全名匹配的变异守卫：把正则改回 `startsWith` 应使嵌套用户文件用例失败。
+- claim 状态的变异守卫：把 `written.delete` 放回 catch 应使「模型失败后 settle 不回放」用例失败。
+- 并发：settle + shutdown、两个 `/memory-learn`、mid-call 写者（已有）、prune 窗口写者。
+
+**review 无法确认的点**
+- 真实 provider 对自适应抬高 `maxTokens` 的接受度、`model.maxTokens` 元数据的可靠性；
+- 真实 tokenizer 与 `replyTokenRate` 保守估计的偏差（4% 越界是否会在真实模型上造成截断，取决于具体模型）；
+- Windows/NFS 的 rename 原子性、mtime 粒度、readFile-on-directory 错误码；
+- 真实坏文件/备份不在本沙箱（只以合成夹具 + HEAD 差分验证）。
+
+---
+
+## 4. VERDICT
+
+**VERDICT: CHANGES-REQUESTED**
+
+理由：无 blocking（写路径 fail-closed + 无条件写时备份仍成立，未发现不可恢复的数据丢失）；但 round 8 的预算修复存在可复现的内容破坏（memory 被清零、预算不变量最多 4% 越界），且 `written.delete` 过宽会回放陈旧 outcome 覆盖更新的外部内容，二者均有明确反例与修复边界。建议按 IMP-1/IMP-2 修复并补上第 3 节测试后再复审。

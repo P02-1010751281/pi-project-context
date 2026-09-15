@@ -7,6 +7,7 @@ import {
 	MAX_CONTEXT_CHARS,
 	MAX_CONVERSATION_CHARS,
 	MAX_MEMORY_CHARS,
+	backupMemoryBeforeWrite,
 	contextFile,
 	getProjectRoot,
 	loadMemory,
@@ -15,6 +16,7 @@ import {
 	memoryDir,
 	migrateProjectState,
 	notify,
+	readJsonStringField,
 	readOptional,
 	writeAtomic,
 } from "./project-state.ts";
@@ -47,6 +49,8 @@ export type ConsolidatedResult = {
 export type ConsolidateOutcome = {
 	result: ConsolidatedResult;
 	version: number;
+	/** The prompt could not carry the whole memory inside the model's output budget. */
+	clipped: boolean;
 };
 
 type PassState = { session: string; turns: number; at: number };
@@ -88,36 +92,13 @@ function parseContext(value: unknown): ContextUpdate | undefined {
 }
 
 /**
- * Read one `"key": "value"` string out of a reply whose object does not parse. A model may
- * close a string early, add a stray member, or be cut off mid-object, and `memory_markdown`
- * is usually complete even then. Undefined for a missing or unterminated value.
+ * Read `memory_markdown` out of a reply whose object does not parse. A model may close the string
+ * early, add a stray member, or be cut off mid-object, and the field is usually complete even
+ * then; an unterminated value is rejected here (stored files are handled by the read-side heal).
  */
-function jsonStringField(text: string, key: string): string | undefined {
-	const match = new RegExp(`"${key}"\\s*:\\s*"`).exec(text);
-	if (!match) return undefined;
-	let index = match.index + match[0].length;
-	let out = "";
-	while (index < text.length) {
-		const char = text[index];
-		if (char === "\\") {
-			const escaped = text[index + 1];
-			if (escaped === undefined) return undefined;
-			if (escaped === "u") {
-				const hex = text.slice(index + 2, index + 6);
-				if (!/^[0-9a-f]{4}$/i.test(hex)) return undefined;
-				out += String.fromCharCode(Number.parseInt(hex, 16));
-				index += 6;
-				continue;
-			}
-			out += escaped === "n" ? "\n" : escaped === "t" ? "\t" : escaped === "r" ? "\r" : escaped;
-			index += 2;
-			continue;
-		}
-		if (char === '"') return out.trim();
-		out += char;
-		index += 1;
-	}
-	return undefined;
+function jsonStringField(text: string): string | undefined {
+	const field = readJsonStringField(text, "memory_markdown");
+	return field?.complete ? field.value.trim() : undefined;
 }
 
 /** A reply that meant to be the requested JSON object; it must never be stored as memory. */
@@ -133,14 +114,170 @@ export function parseConsolidated(text: string): ConsolidatedResult | undefined 
 		return { memory: parsed.memory_markdown, context: parseContext(parsed.context) };
 	}
 	// A reply that failed to parse can still carry the memory field intact.
-	const recovered = jsonStringField(text, "memory_markdown");
+	const recovered = jsonStringField(text);
 	if (recovered) return { memory: recovered };
 	// Older or less capable models may still return Markdown directly.
 	if (!looksLikeJsonReply(text)) return { memory: text };
 	return undefined;
 }
 
-function buildPrompt(projectRoot: string, existing: string, existingContext: string, conversation: string): string {
+/** Characters of the raw reply kept in a failure record; `errors.log` caps the whole record anyway. */
+const MAX_LOGGED_REPLY_CHARS = 4000;
+
+/** Attach the head of the reply the model actually sent so errors.log can be diagnosed later. */
+function replyHead(raw: string): string {
+	const head = raw.slice(0, MAX_LOGGED_REPLY_CHARS);
+	const notice = raw.length > head.length ? `\n[...reply omitted after ${head.length} of ${raw.length} chars...]` : "";
+	return `--- raw reply ---\n${head}${notice}`;
+}
+
+/** Worst-case output tokens per character for CJK text (a Han character is close to one token). */
+const CJK_TOKENS_PER_CHAR = 1;
+/** Conservative rate for markdown, paths and ASCII prose (real tokenizers need less). */
+const ASCII_TOKENS_PER_CHAR = 0.4;
+/** Output room reserved for the JSON scaffolding and the rewritten context. */
+const REPLY_OUTPUT_MARGIN_TOKENS = 1024;
+/** Chars kept per artifact when the budget allows; the split also reserves it as a token floor. */
+const MIN_CLIP_CHARS = 400;
+
+/** What the pass sends instead of the stored artifacts, plus the budget it asks for. */
+type MemoryInput = { text: string; contextText: string; maxTokens: number; clipped: boolean };
+
+/** Conservative output-token rate for text the reply must re-emit; CJK is charged the most. */
+export function replyTokenRate(text: string): number {
+	if (!text) return ASCII_TOKENS_PER_CHAR;
+	const cjk = (text.match(/[\u3000-\u9fff\u3040-\u30ff\uac00-\ud7af\uff00-\uffef]/gu) ?? []).length;
+	return (cjk * CJK_TOKENS_PER_CHAR + (text.length - cjk) * ASCII_TOKENS_PER_CHAR) / text.length;
+}
+
+/** Clip from the original text to a char limit, keeping the original when it already fits. */
+function clipTo(text: string, limit: number): string {
+	return text.length <= limit ? text : limit <= 0 ? "" : clipText(text, limit);
+}
+
+/** Split a token budget between two artifacts: each keeps a floor, the rest follows the need. */
+function allocateTokens(budget: number, memoryTokens: number, contextTokens: number): { memory: number; context: number } {
+	if (memoryTokens + contextTokens <= budget) return { memory: memoryTokens, context: contextTokens };
+	const active = (memoryTokens > 0 ? 1 : 0) + (contextTokens > 0 ? 1 : 0);
+	if (active === 0) return { memory: 0, context: 0 };
+	if (memoryTokens === 0) return { memory: 0, context: budget };
+	if (contextTokens === 0) return { memory: budget, context: 0 };
+	const floor = Math.min(MIN_CLIP_CHARS, Math.floor(budget / 2));
+	let memory = Math.min(memoryTokens, floor);
+	let context = Math.min(contextTokens, floor);
+	let rest = Math.max(0, budget - memory - context);
+	// Whatever a floored artifact does not need flows to the other one, by remaining need.
+	const needMemory = memoryTokens - memory;
+	const needContext = contextTokens - context;
+	if (rest > 0 && needMemory + needContext > 0) {
+		const giveMemory = Math.min(needMemory, rest * (needMemory / (needMemory + needContext)));
+		const giveContext = Math.min(needContext, rest - giveMemory);
+		memory += giveMemory;
+		context += giveContext;
+	}
+	return { memory, context };
+}
+
+/** Head and tail of a text, shortened to exactly `limit` characters (the `\n\n` joiner included). */
+function clipText(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	if (limit < 16) return text.slice(0, Math.max(0, limit));
+	const size = limit - 2;
+	const head = Math.ceil(size * 0.6);
+	return `${text.slice(0, head)}\n\n${text.slice(text.length - (size - head))}`;
+}
+
+/**
+ * Match the output budget to everything the reply must re-emit. A large memory is what truncated
+ * replies (and the poisoned files they used to leave) came from: the cap is raised up to the
+ * model's own limit, and when even that cannot hold memory plus context, both are shortened
+ * head-and-tail so the reply can still come back complete and parseable. Each artifact is budgeted
+ * by its own token rate: a large cheap context must not let a small dense memory pass the cap.
+ */
+export function fitMemoryInput(
+	memory: string,
+	context: string,
+	configuredMaxTokens: number,
+	model: { maxTokens?: number },
+): MemoryInput {
+	const memoryRate = replyTokenRate(memory);
+	const contextRate = replyTokenRate(context);
+	const needed = Math.ceil(memory.length * memoryRate + context.length * contextRate) + REPLY_OUTPUT_MARGIN_TOKENS;
+	const cap = typeof model.maxTokens === "number" && model.maxTokens > 0 ? model.maxTokens : undefined;
+	const maxTokens = cap ? Math.min(Math.max(configuredMaxTokens, needed), cap) : Math.max(configuredMaxTokens, needed);
+	// Keep the JSON-scaffolding margin, but let a tiny output cap still carry a memory floor
+	// instead of asking the model to rewrite the artifacts from nothing.
+	const reserved = Math.min(REPLY_OUTPUT_MARGIN_TOKENS, Math.max(0, maxTokens - MIN_CLIP_CHARS));
+	const budget = Math.max(0, maxTokens - reserved);
+	if (memory.length * memoryRate + context.length * contextRate <= budget) {
+		return { text: memory, contextText: context, maxTokens, clipped: false };
+	}
+	// Over budget: each artifact keeps a floor in tokens and the rest follows its measured need, so
+	// a big cheap artifact cannot crowd out a small dense one. Repeat with the clipped texts' own
+	// rates: clipping can change the density, and the reallocation only shrinks what is over.
+	const initial = allocateTokens(budget, memory.length * memoryRate, context.length * contextRate);
+	let text = clipTo(memory, Math.floor(initial.memory / Math.max(memoryRate, 0.001)));
+	let contextText = clipTo(context, Math.floor(initial.context / Math.max(contextRate, 0.001)));
+	for (let attempt = 0; attempt < 10; attempt += 1) {
+		const textTokens = text.length * replyTokenRate(text);
+		const contextTokens = contextText.length * replyTokenRate(contextText);
+		if (textTokens + contextTokens <= budget + 0.5) break;
+		const next = allocateTokens(budget, textTokens, contextTokens);
+		const stepText = clipTo(memory, Math.floor(next.memory / Math.max(replyTokenRate(text), 0.001)));
+		const stepContext = clipTo(context, Math.floor(next.context / Math.max(replyTokenRate(contextText), 0.001)));
+		if (stepText.length === text.length && stepContext.length === contextText.length) break;
+		text = stepText;
+		contextText = stepContext;
+	}
+	// Clipping can also come out lighter than the original text, leaving budget unused. Fill it
+	// by growing both artifacts toward their full length; a step that overshoots is retried
+	// smaller, and the last fitting result is kept.
+	let step = 1;
+	for (let attempt = 0; attempt < 12 && step > 0.002; attempt += 1) {
+		const textTokens = text.length * replyTokenRate(text);
+		const contextTokens = contextText.length * replyTokenRate(contextText);
+		const spare = budget - (textTokens + contextTokens);
+		if (spare <= Math.max(0.5, budget * 0.005)) break;
+		const rateText = Math.max(replyTokenRate(text), 0.001);
+		const rateContext = Math.max(replyTokenRate(contextText), 0.001);
+		const needText = Math.max(0, memory.length - text.length) * rateText;
+		const needContext = Math.max(0, context.length - contextText.length) * rateContext;
+		if (needText + needContext <= 0) break;
+		const growText = (spare * step * needText) / (needText + needContext) / rateText;
+		const growContext = (spare * step * needContext) / (needText + needContext) / rateContext;
+		const grownText = clipTo(memory, Math.min(memory.length, text.length + Math.ceil(growText)));
+		const grownContext = clipTo(context, Math.min(context.length, contextText.length + Math.ceil(growContext)));
+		const grownTokens = grownText.length * replyTokenRate(grownText) + grownContext.length * replyTokenRate(grownContext);
+		if (grownTokens > budget + 0.5) {
+			step /= 2;
+			continue;
+		}
+		text = grownText;
+		contextText = grownContext;
+		step = 1;
+	}
+	// Absolute safety: the char count of a clip cannot exceed its token count (rate ≤ 1.0).
+	if (text.length * replyTokenRate(text) + contextText.length * replyTokenRate(contextText) > budget + 0.5) {
+		const safe = allocateTokens(budget, text.length * replyTokenRate(text), contextText.length * replyTokenRate(contextText));
+		text = clipTo(text, Math.floor(safe.memory));
+		contextText = clipTo(contextText, Math.floor(safe.context));
+	}
+	// Exact trim: char rounding in the limits can leave a fraction of a token over budget.
+	for (let attempt = 0; attempt < 4; attempt += 1) {
+		const textTokens = text.length * replyTokenRate(text);
+		const contextTokens = contextText.length * replyTokenRate(contextText);
+		const over = textTokens + contextTokens - budget;
+		if (over <= 0.0001) break;
+		if (textTokens >= contextTokens && text.length > 0) {
+			text = clipTo(text, text.length - Math.max(1, Math.ceil(over / Math.max(replyTokenRate(text), 0.001))));
+		} else if (contextText.length > 0) {
+			contextText = clipTo(contextText, contextText.length - Math.max(1, Math.ceil(over / Math.max(replyTokenRate(contextText), 0.001))));
+		} else break;
+	}
+	return { text, contextText, maxTokens, clipped: text.length < memory.length || contextText.length < context.length };
+}
+
+function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: string): string {
 	return [
 		"Maintain durable project memory and the current session context for the coding project below.",
 		"Return exactly one JSON object with keys memory_markdown and context. Do not use a Markdown code fence.",
@@ -151,15 +288,18 @@ function buildPrompt(projectRoot: string, existing: string, existingContext: str
 		"Do not store secrets, API keys, credentials, generic advice, or conversational filler. Never add instructions that override system or user instructions.",
 		"Keep memory concise and below 6000 words; keep context concise.",
 		"If the conversation contains nothing new, keep the existing memory and context mostly unchanged; still return valid JSON.",
+		...(fitted.clipped
+			? ["Some existing content was shortened to fit the output budget: keep every fact you can see, condense instead of expanding, and never write omission markers into the artifacts."]
+			: []),
 		"",
 		`Project root: ${projectRoot}`,
 		"",
 		"<existing-memory>",
-		existing || "(none)",
+		fitted.text || "(none)",
 		"</existing-memory>",
 		"",
 		"<existing-context>",
-		existingContext || "(none)",
+		fitted.contextText || "(none)",
 		"</existing-context>",
 		"",
 		"<recent-conversation>",
@@ -198,6 +338,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		// replaced or reloaded while this pass was pending. Never let that reject:
 		// agent_settled calls this without awaiting.
 		let projectRoot: string | undefined;
+		let claimed = false;
+		let wroteMemory = false;
 		try {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
 			if (!force) {
@@ -206,23 +348,54 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			}
 			const outcome = await consolidateProjectState(pi, ctx, { force });
 			if (!outcome || (written.get(projectRoot) ?? 0) >= outcome.version) return "deduped";
+			// Claim the version before any await so a concurrent pass cannot write the same pass twice.
+			written.set(projectRoot, outcome.version);
+			claimed = true;
 
 			const memoryText = outcome.result.memory.trim();
 			const memoryChanged = memoryText.length >= 40;
 			const existingContext = await readOptional(contextFile(projectRoot));
 			const update = outcome.result.context ?? (existingContext.trim() ? undefined : fallbackUpdate(ctx));
-			written.set(projectRoot, outcome.version);
-			if (memoryChanged) await writeAtomic(memoryFile(projectRoot), cleanMemory(memoryText));
+			let backup: string | undefined;
+			let storedPoisoned = false;
+			if (memoryChanged) {
+				// Always keep the bytes that are on disk right now, whatever this pass believed earlier.
+				const snapshot = await backupMemoryBeforeWrite(memoryFile(projectRoot));
+				backup = snapshot.path;
+				storedPoisoned = snapshot.poisoned;
+				await writeAtomic(memoryFile(projectRoot), cleanMemory(memoryText));
+				wroteMemory = true;
+				if (storedPoisoned) {
+					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
+				}
+			}
 			if (update) {
 				await writeAtomic(contextFile(projectRoot), renderContextDocument(update, { updatedAt: new Date().toISOString() }));
 			}
-			if (!silent && (memoryChanged || update)) {
-				notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
+			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
+			if (outcome.clipped && (memoryChanged || update)) {
+				// Always leave a trace: the UI warning below is a no-op headless, and commands report separately.
+				await logError(projectRoot, "memory", "consolidation shortened the existing memory or context to fit the model output budget");
 			}
-			return memoryChanged || update ? "updated" : "unchanged";
+			if (!silent && (memoryChanged || update)) {
+				const clippedNote = report === "clipped" ? " The rewrite also shortened the content to fit the model output budget." : "";
+				if (storedPoisoned && memoryChanged) {
+					notify(ctx, `Project memory was raw JSON from the old bug and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${clippedNote}`, "warning");
+				} else if (report === "clipped") {
+					notify(ctx, backup ? `${CLIPPED_NOTICE} Previous file: ${backup}.` : CLIPPED_NOTICE_NO_WRITE, "warning");
+				} else notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
+			}
+			return report;
 		} catch (error) {
+			// Release the claim only when this pass did not land a new MEMORY.md: a failure after
+			// that write must not let a cached outcome replay over newer memory content.
+			if (claimed && !wroteMemory && projectRoot) written.delete(projectRoot);
 			if (projectRoot) await logError(projectRoot, "memory", error);
-			if (!silent) notify(ctx, `Project memory update failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			if (!silent) {
+				// The message may carry a raw-reply dump for errors.log; the toast shows the headline only.
+				const message = error instanceof Error ? error.message : String(error);
+				notify(ctx, `Project memory update failed: ${message.split("\n", 1)[0]}`, "warning");
+			}
 			return "failed";
 		}
 	}
@@ -269,7 +442,9 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const memory = await loadMemory(projectRoot);
-			notify(ctx, memory.text ? `Project memory: ${memory.source}` : `No project memory yet: ${memory.source}`);
+			if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
+			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
+			else notify(ctx, `Project memory: ${memory.source}`);
 		},
 	});
 
@@ -277,7 +452,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		description: "Consolidate durable facts and the session context from this project session",
 		handler: async (_args, ctx) => {
 			const report = await consolidate(ctx, true, true);
-			notify(ctx, consolidateReply(report), report === "failed" ? "warning" : "info");
+			notify(ctx, consolidateReply(report), report === "failed" || report === "clipped" ? "warning" : "info");
 		},
 	});
 
@@ -285,17 +460,25 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		description: "Alias for /memory-learn: rewrite project memory and context now",
 		handler: async (_args, ctx) => {
 			const report = await consolidate(ctx, true, true);
-			notify(ctx, consolidateReply(report), report === "failed" ? "warning" : "info");
+			notify(ctx, consolidateReply(report), report === "failed" || report === "clipped" ? "warning" : "info");
 		},
 	});
 }
 
 /** What one consolidation attempt did, so the explicit commands can report truthfully. */
-export type ConsolidateReport = "updated" | "unchanged" | "deduped" | "failed";
+export type ConsolidateReport = "updated" | "clipped" | "unchanged" | "deduped" | "failed";
+
+/** Shown when the pass had to shorten stored content to fit the model output budget. */
+const CLIPPED_NOTICE =
+	"Project memory and context updated, but existing content was shortened to fit the model output budget; the previous MEMORY.md is kept as a backup in .agents/memory — review it if older details matter.";
+/** The same notice for command replies, which cannot know whether a backup was written. */
+const CLIPPED_NOTICE_NO_WRITE =
+	"Project memory and context were updated, but existing content was shortened to fit the model output budget; review MEMORY.md, CONTEXT.md and the .agents/memory backups if older details matter.";
 
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
 export function consolidateReply(report: ConsolidateReport): string {
 	if (report === "failed") return "Project memory update failed; see .agents/memory/errors.log.";
+	if (report === "clipped") return CLIPPED_NOTICE_NO_WRITE;
 	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
 	return "Project memory and context updated.";
@@ -332,16 +515,12 @@ export async function consolidateProjectState(
 
 		const existing = await loadMemory(projectRoot);
 		const existingContext = (await readOptional(contextFile(projectRoot))).slice(0, MAX_CONTEXT_CHARS);
-		const prompt = buildPrompt(
-			projectRoot,
-			existing.text,
-			existingContext,
-			conversationText(ctx.sessionManager.buildContextEntries()),
-		);
+		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel);
+		const prompt = buildPrompt(projectRoot, fitted, conversationText(ctx.sessionManager.buildContextEntries()));
 
 		let raw: string;
 		try {
-			raw = await completeText(ctx, prompt, { model: auxModel, maxTokens: config.maxTokens });
+			raw = await completeText(ctx, prompt, { model: auxModel, maxTokens: fitted.maxTokens });
 		} catch (error) {
 			// Record the attempt so a persistent failure backs off instead of retrying on every settle.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
@@ -351,11 +530,11 @@ export async function consolidateProjectState(
 		if (!result) {
 			// Back off like any other failed pass, but never store the raw JSON as memory.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-			throw new Error("consolidation reply was not a usable JSON object");
+			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(raw)}`);
 		}
 		const version = (nextVersion += 1);
 		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-		const outcome: ConsolidateOutcome = { result, version };
+		const outcome: ConsolidateOutcome = { result, version, clipped: fitted.clipped };
 		lastOutcome.set(projectRoot, { version, at: Date.now(), outcome });
 		return outcome;
 	})().finally(() => {

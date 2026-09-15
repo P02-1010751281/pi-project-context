@@ -1,0 +1,108 @@
+# 独立代码审查报告（round 8 · 完整复审）
+
+## 0. 审查基线与独立核验方式
+
+- 基线：`git status --short` 仅 3 个文件 `M`（consolidate.ts +185/−?、project-state.ts +161、tests/consolidation-test.mjs +305），与 round 7 review-fix 描述一致；审查前后 diff 与文件哈希一致，**工作区零写入**（所有探针在 `/tmp/rev8/`）。
+- 已读：attention、report、analysis、fix-note §6、review.md（round 6）、round1..6 独立记录、approval-report。**本沙箱中不存在 round 7 的独立记录文件**（目录只有 round1..6），round 7 结论只能从 fix-note §6 / 任务描述获知，未采用其结论代替本轮判断。
+- 基线测试：`node tests/run-all.mjs` → **8/8 通过**。
+- 独立探针：fail-closed（EACCES/EISDIR/ENOENT）、prune 时钟回拨/未来时间戳/30 连写/目录项/用户文件、decode 30k 随机 + 10 例健康语料、parser 与 HEAD 差分 50,010 例、`fitMemoryInput` 2,880 例网格复算、混合语言预算端到端、失败后重试、`/memory`/auto 通知、备份字节保真、末行保真。
+
+## 1. 重点核验结论（对应任务 1–5）
+
+1. **IMP-1 fail-closed：成立。** `backupMemoryBeforeWrite`（project-state.ts:449-462）仅在 `ENOENT` 返回「无文件」，EACCES/EISDIR 等一律抛出；`consolidate` 捕获后 `logError` + warning + 返回 `failed`。实测：`chmod 000` 的 MEMORY.md 端到端 shutdown → 文件逐字节不变、errors.log 含 EACCES、报告 failed；目录目标 EISDIR 同样抛错。`ENOENT`（含全新项目）→ 无备份直接创建，实测 e2e 成功建文件、0 备份。`/memory` 展示路径的 fail-open 无数据风险，但会把不可读文件误报为「No project memory yet」（见 N-3）。
+2. **IMP-2 prune：对既定风险成立，但命名空间过宽。** 按 mtime 排序 + 按名字排除刚写备份，实测未来时间戳 6 份、时钟回拨、同毫秒 30 连写下新备份 30/30 存活、最终稳定为 5 份，返回 path 有效。但 prune 用 `startsWith(prefix)` 而不是生成名精确匹配（project-state.ts:467），会静默删除任何落在该前缀下的用户文件，且遇到同名目录会让 prune 中途抛错、保留 >5 份（见 IMP-2 下置）。
+3. **round 7 测试缺口：大部分已锁，仍有 5 处未锁。** mid-call 写者（:294）、clip 备份（:417）、不可读目标（:305）、时钟回拨（:317）都在；但回拨用例只断言「新备份存在」不断言 prune 后总数（`:317`），fail-closed 只测 helper 不测端到端，ENOENT 建文件、自动路径 repair warning、混合语种预算上界均无测试。
+4. **回归：未发现回归。** `parseConsolidated` 与 HEAD 差分 50,010 例 **0 mismatch**；decode 30k 随机无坏输出/无异常、健康语料 0 误判；末行保真（英文无句号尾行、值尾 `\n`）保留；读路径无写副作用；injection/autolearn/`/memory` 均拿到解码后 Markdown。
+5. **blocking/important：无 blocking；2 个 important**（C 预算在混合语种下越界、prune 命名空间过宽会静默删非生成文件）。
+
+---
+
+## 2. Findings
+
+### important
+
+#### IMP-1 `fitMemoryInput` 的剪裁分支按字符均分，混合语种下实际输出需求可超过 `maxTokens`，C 方案的「回复完整返回」保证不成立
+- 证据：`consolidate.ts:168-192`。`rate` 用 memory+context 的**全局字符加权平均**，`budget` 按字符算；剪裁时 context 拿 `budget/2` 字符、memory 拿其余（:185-191），**从未按各自本地 token 率重算**。当较贵的 artifact 反而是较小的那个、且两者都越界时必然越界：
+  - 端到端实测（`/tmp/rev8/probe3.mjs`，真实 `consolidateProjectState`）：memory = 8000 CJK 字符、context = 32000 ASCII 字符（= `MAX_CONTEXT_CHARS`）、config/model cap 均 8192；prompt 实际发送 6609 CJK + 6609 ASCII，按代码自己的 `replyTokenRate` 计需 **9240.6 tokens > 8192**（超 1048.6）。
+  - 2,880 例网格（`/tmp/rev8/budget-brute2.mjs`，全部在 `MAX_MEMORY_CHARS`/`MAX_CONTEXT_CHARS` 上限内）415 例越界，最坏 **9647.6 vs 7168（reserved 后预算），超 2479.6**（cap 8192、memory CJK 8000 + context ASCII 32000）。
+- 影响：模型被要求在 8192 输出 cap 内重写大于该 cap 的内容 → 回复在 context 中途被截断：`memory_markdown` 完整时 memory 写入、context 永久丢失；截断发生在 memory 值内时整次整理 `parseConsolidated → undefined` 失败——正是本 issue 的「每次整理都失败」症状在双语/中英混合项目上复发。写盘仍 fail-closed，无污染/无破坏性丢失，所以不是 blocking，但代码注释「the reply can still come back complete and parseable」与 `fitMemoryInput` 的承诺不成立。
+- 修复边界：剪裁按 **token** 分配而非字符：分别算 `replyTokenRate(memory)`/`replyTokenRate(context)`，把 `maxTokens - reserved - scaffolding` 按 token 分给两者，再除以各自本地率得字符上限；或在 clip 后加一步校验 `estTokens(text)+estTokens(contextText)+真实 scaffolding ≤ maxTokens`，超了继续收缩高率 artifact。测试补「CJK memory + ASCII context」与反向组合，断言 `ΣestTokens(sent) ≤ maxTokens`（而不是现在只断言 `sentLength ≤ cap` 字符数）。
+
+#### IMP-2 prune 以 `startsWith(prefix)` 圈定删除范围：静默删除非本扩展生成的文件；目录项会让 prune 中途失败
+- 证据：`project-state.ts:466-473`——`filter((name) => name.startsWith(prefix))` 后按 mtime 排序，`slice(MEMORY_BACKUPS_KEPT - 1)` 之外的**无条件 `rm(..., {force:true})`**，异常被外层 catch 吞掉。
+  - 实测（`/tmp/rev8/probe1.mjs` E）：用户把「要留档」的备份重命名为 `MEMORY.md.memory-backup-2026-01-01T00-00-00-000Z-KEEP-ME.md`（CLIPPED_NOTICE 明确让用户 review 备份，重命名留档是自然操作），下一次写备份时该文件被**静默删除**（无日志）。
+  - 实测（`/tmp/rev8/probe5.mjs` B）：同名目录 `MEMORY.md.memory-backup-...-DIR` 令 `rm`（非 recursive）抛 EISDIR，prune 循环在此中止，之后备份数停在 **6**，keep-5 不变量被打破。
+- 影响：静默、不可逆地删除用户数据（虽然多数情况下是备份副本）；prune 在异常时整体放弃，长期可累积超过 5 份。
+- 修复边界：只把**精确匹配生成模式**的普通文件视为候选（如 `/^MEMORY\.md\.memory-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/` + `entry.isFile()`）；每个 `rm` 单独 try/catch，单个失败不中止其余修剪；可选地把「保留 4 份历史 + 当前 1 份」写成显式断言并用测试锁定。
+
+### nit
+
+- **N-1 写成失败后 15s 内的强制重试被误报为 deduped**：`consolidate.ts:264` 在首个 await 前 `written.set`，而 `consolidateProjectState` 会在 `forceDedupeMs` 内回放缓存 outcome（consolidate.ts:413）。实测（`/tmp/rev8/probe4.mjs`）：EACCES 导致 failed → 修复权限后立刻 `/memory-learn` → 通知「already up to date (deduped recently); nothing was rewritten」，文件仍是旧内容；60s 后才真正写入。可自愈（≤15s 或下一轮），但显式命令的反馈与事实相反。建议按版本记录写入结果，或失败时清除/标记缓存，避免同版本被报 deduped。
+- **N-2 备份不是字节保真**：`backupMemoryBeforeWrite` 用 `readFile(target,"utf8")` 再 `writeAtomic` 回写（project-state.ts:456-462）。实测含 `0xFF 0xFE` 的文件备份被重编码为 U+FFFD，`Buffer.equals` 为 false（probe5 A），与 fix-note「原始字节备份」表述不符。真实模型 JSON 均为合法 UTF-8，影响面小；要字节保真应读写 Buffer。
+- **N-3 `/memory` 对不可读文件误报「无记忆」**：`readOptional` 吞掉一切错误（project-state.ts:152-158），EACCES/EISDIR 的 MEMORY.md 在 consolidate.ts:351 显示 `No project memory yet`。读路径无数据风险，但诊断误导；展示路径可单独区分错误。
+- **N-4 `CLIPPED_NOTICE` 可能宣称一个不存在的备份**：当只更新 CONTEXT（memory 文本 <40 字符，`memoryChanged=false`）但 prompt 被剪裁时，`report === "clipped"` 且 `backup === undefined`，仍发出「the previous MEMORY.md is kept as a backup in .agents/memory — review it」。实测（`/tmp/rev8/probe7c.mjs`）MEMORY.md 未被触碰、备份数 0，通知却说有备份。建议文案按「是否真的写过 MEMORY.md/存在备份」分支。
+- **N-5 文档一致性**：fix-note §6 描述 B 决策时引用 `backupStoredPoison()`，当前代码为 `backupMemoryBeforeWrite()`；§2/§3 也标注为旧版（§6 已声明，但容易被下游误读）。round 7 的独立审查记录未落盘到 issue 目录（只有 round1..6），建议补存档。
+- **N-6 解释器仍接受「仅缩进的 JSON 示例」文件**：`isPoisonPrefix` trim 后允许空前缀（project-state.ts:394-398），所以正文只有一个缩进/顶格 JSON 示例且示例值以 `# Project Memory` 开头的健康记忆会被解码（probe2）。非破坏（有备份，磁盘不变），属已知 fail-safe 边界。
+
+### suggestion
+
+- **S-1 测试加强**（对应第 3 节）：回拨用例补 prune 后 `≤5`（当前只看新文件存在，prune 整体失效也能过，tests/consolidation-test.mjs:317）；fail-closed 补端到端（现在只调 helper，:305）；补「无 MEMORY.md 的新项目创建」e2e（当前无任何已提交用例覆盖 ENOENT 分支；我独立验证通过）；补混合语种预算上界；补自动路径 repair warning 断言；`:312` 的 `>=1 && <=5` 改为 `===5` 更精确。
+- **S-2** prune 模式精确化 + `isFile()` + 单项失败隔离（见 IMP-2）。
+- **S-3** `.memory-backup-*` 未纳入 `.gitignore`（fix-note 已列待定）；它可能含被清理掉的项目秘密，且 errors.log 存 4000 字符模型原文，建议随提交一并决定忽略/清理策略。
+- **S-4** 备份改 Buffer 读写（见 N-2）；`writeAtomic` 按字符串写入会顺带做 UTF-8 归一，备份语义应明确为「内容副本」还是「字节副本」。
+
+### learning
+
+- **模式 B 的结构性收益再次被验证**：读路径零写副作用 + 写路径无条件写时备份，把「误判即破坏」与读侧 TOCTOU 从构造上移除；即使 decoder 有 false positive，磁盘也有原件备份，最坏是注入内容偏差。
+- **预算这类安全保证必须用「实际要重发的 token」收敛，不能用全局平均字符率**：全局平均会把大而便宜的 artifact 拉低率估计，而 50/50 字符分配又给贵 artifact 过量字符——这是「保守估计」反向失效的典型案例。
+- **修剪类保留策略要按身份/模式精确匹配**，`startsWith` 前缀是数据删除的常见越界点。
+
+### praise
+
+- fail-closed 实现干净：ENOENT 与其它错误严格二分，且备份写入先于覆盖、写失败即整次失败；EACCES/EISDIR 均实测不覆盖、有日志、返回 failed。
+- prune 的 `mtime + 排除本次 keep 名` 正确关闭了 round 7 的时钟回拨删除；30 连写/未来时间戳/同毫秒均稳定 5 份且新备份必存活。
+- 解析器与 HEAD 50,010 例差分 0 mismatch；decode 30k 随机无坏输出、健康语料 0 误判；round 6 B-1 的末行丢失已修复（英文无句号末行、值尾 `\n` 都保留）。
+- 测试有效锁定 round 6 B-2/I-1/I-2/I-3 与 headless 留痕、mid-call 写者、clip 备份；自动路径 repair warning 实测带备份路径（probe8），通知合并逻辑正确。
+
+### residual-risk
+
+- 备份读 → prune（readdir/stat/rm 多个 await）→ rename 之间仍有并发写者窗口；另一进程可在窗口内落盘并被无备份覆盖（fix-note 只承认 read→rename 微窗口，实际窗口含 prune）。
+- 跨进程时钟不一致时，mtime 修剪可能让 A 进程的 prune 把 B 进程刚写、但 mtime 偏旧的备份当作旧份删除。
+- 保留最近 5 份意味着 repair/clip 通知里的备份在数次自动整理后即被轮换掉，用户看到通知再去 review 时可能已不存在。
+- JSON 转义膨胀（`\n` 变 2 字符、引号转义）未计入 token 率；非 CJK 非拉丁文字（西里尔、阿拉伯、天城文、emoji）按 0.4 token/字符低估，极端记忆仍可能截断（fail-closed + 诊断兜底）。
+- `clipText` 按 UTF-16 code unit 切分可能劈开 surrogate pair（emoji），个别 provider 可能拒绝孤立代理项。
+- `context` 先行的截断污染、值不以 `# Project Memory` 开头的污染、`.pi`/OMP 遗留来源仍不解码（召回缺口，fail-safe）。
+- `migrateProjectState`（project-state.ts:328-334，先 `pathExists` 再 `writeAtomic`）与 `mergePath` 的 mtime-newest-wins 仍可能在极窄竞态覆盖并发新建的 MEMORY.md 且不走备份；`session_start` 场景，建议顺手改为 `wx`/备份原语。
+
+---
+
+## 3. Test And QA Focus
+
+**QA 必须重点复核**
+1. **混合语种预算**：CJK memory（~8k 字）× ASCII context（~32k 字）、cap 8192，断言 `Σ replyTokenRate(sent) + scaffolding ≤ maxTokens`，而不是字符数 ≤ cap；反向组合（ASCII memory × CJK context）同样要过。当前实现会失败（9240.6 > 8192）。
+2. **prune 身份与命名空间**：写 prune 后断言总数 `===5`；放置 `MEMORY.md.memory-backup-...-KEEP-ME.md`（不同 mtime）断言不被删；放置同名目录断言 prune 不中止、其它旧份仍被清；模拟跨进程时钟偏旧的新备份。
+3. **fail-closed 端到端**：`chmod 000` 目标跑 `/memory-learn` 与 `session_shutdown`，断言 failed、文件 hash 不变、errors.log 有 EACCES；权限恢复后 15s 内/后可重写。
+4. **ENOENT 建文件**：无 MEMORY.md 的干净项目跑一次整理，断言创建成功、0 备份（当前已提交测试完全没覆盖，分支反转不会被发现）。
+5. **备份保真**：含非法 UTF-8 字节的 MEMORY.md 备份后用 Buffer 比对；确认预期是字节副本还是内容副本。
+6. **通知矩阵**：只更新 CONTEXT 且 clipped 时不应宣称有 MEMORY.md 备份（N-4）；自动路径 repair warning 带备份路径；headless 下 clipped/repair 仍有 errors.log。
+7. **真实备份回放**：用 UniField/Quantum_Matrix 的 `MEMORY.md.poison-backup-*` 做固定夹具（本沙箱无法访问，round 8 未复验）。
+
+**建议新增/加强**
+- 把 `fitMemoryInput` 导出或用实现公式单测（含两端 artifact 本地率差异矩阵）。
+- 并发：settle + shutdown、两个 `/memory-learn`、mid-call 写者（已有）、prune 窗口写者。
+- 变异守卫：反转 ENOENT 分支、删 keep 排除、改回名字排序 prune、放宽 prune 匹配、删 token 越界检查。
+
+**review 无法确认的点**
+- 真实坏文件/备份不在本沙箱，无法复验 round 6 所称 14385/14525/15055 的解码输出；本报告只以合成夹具与通用形状验证。
+- provider 对自适应抬高 `maxTokens` 的实际接受度、`model.maxTokens` 元数据可靠性。
+- Windows/NFS 的 rename 原子性、mtime 粒度与 readFile-on-directory 错误码。
+
+---
+
+## 4. 结论
+
+- blocking：**无**（无破坏性数据丢失路径；写路径 fail-closed + 无条件备份成立）。
+- important：**2**（IMP-1 混合语种预算越界导致截断/context 丢失；IMP-2 prune 命名空间过宽静默删除非生成文件且遇目录中止）。
+- 其余为 nit/suggestion/residual；round 7 的 IMP-1/IMP-2 与测试缺口本身已按声明修复，但上述两点表明「C 的完整性保证」与「keep-5 修剪边界」尚未真正闭合。
+
+**VERDICT: CHANGES-REQUESTED**
