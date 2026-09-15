@@ -3,6 +3,7 @@ import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
+import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens } from "./consolidate.ts";
 import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
@@ -412,16 +413,29 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const memory = (await loadMemory(projectRoot)).text.slice(0, AUTOLEARN_MEMORY_CHARS);
+			const loadedMemory = await loadMemory(projectRoot);
+			if (loadedMemory.unreadable) {
+				await logError(projectRoot, "autolearn", "MEMORY.md exists but cannot be read; continuing with an empty memory.");
+			}
+			const memory = loadedMemory.text.slice(0, AUTOLEARN_MEMORY_CHARS);
 			const skills = [
 				...(await collectSkills(skillsDir(projectRoot), "project")),
 				...(await collectSkills(globalSkillsDir(), "global")),
 			];
 
+			// A skill body can be as large as MAX_SKILL_BODY_CHARS; ask for enough output room (1
+			// token per char worst case), bounded by the model's own limit and the configured ceiling.
+			const maxTokens = adaptiveOutputTokens(
+				config.maxTokens,
+				MAX_SKILL_BODY_CHARS + REPLY_OUTPUT_MARGIN_TOKENS,
+				auxModel,
+				config.maxOutputTokens,
+			);
+
 			// First look: consolidated artifacts + session index decide whether there is something to learn.
 			let decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions), {
 				model: auxModel,
-				maxTokens: config.maxTokens,
+				maxTokens,
 			}));
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
@@ -435,7 +449,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				const evidence = await collectEvidence(projectRoot, decision.inspect);
 				decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions, { evidence }), {
 					model: auxModel,
-					maxTokens: config.maxTokens,
+					maxTokens,
 				}));
 				if (!decision) {
 					if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");

@@ -12,7 +12,8 @@ const tests = readdirSync(here)
 let failed = 0;
 for (const test of tests) {
 	process.stdout.write(`== ${test} ... `);
-	const result = spawnSync(process.execPath, [path.join(here, test)], { encoding: "utf8" });
+	// A hung test must fail the run instead of blocking CI forever.
+	const result = spawnSync(process.execPath, [path.join(here, test)], { encoding: "utf8", timeout: 60_000 });
 	if (result.status === 0) {
 		console.log("ok");
 	} else {

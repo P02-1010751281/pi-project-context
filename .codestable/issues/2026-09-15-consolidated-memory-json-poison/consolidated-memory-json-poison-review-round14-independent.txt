@@ -1,0 +1,79 @@
+# Round 14 独立复审报告 — consolidated-memory-json-poison
+
+审查方式：只读沙箱 `/tmp/pi-context-rev14`，diff 基准 `HEAD 9059877`；独立探针写在 `/tmp/probe14/`（未写工作区）。已复跑 `node tests/run-all.mjs`（8/8 通过），并用真实模块做了锁/裁剪/预算/读路径探针。
+
+结论先行：round-13 的四项 finding 中，N-R13-1（`lastWrite` 清理）、N-R13-2（畸形代理）、N-R13-3/N-R13-4（文档/注释）均已闭环；IMP-R13-1 的"单胜者夺取"在**夺取成功分支**已修好，但**释放侧在 claim 竞争失败时仍继续删除**，所有权互斥未完全成立；此外发现夺取等待路径的忙等/deadline 旁路。无 blocking。
+
+---
+
+## Blocking
+
+无。
+
+## Important
+
+**IMP-R14-1 `releaseLock` 在拿不到 claim 时仍执行「读 token → 删锁」，claim 与释放并未真正互斥**
+`extensions/project-context/project-state.ts:289-297`（`claimed` 于 292，读于 294，删于 295）
+
+- 事实：`releaseLock` 先 `acquireClaim`，但**不检查结果**就进入 try 块：即使 `claimed === false`（即某个夺取者正持有 `<lock>.steal`），仍会读锁文件、token 匹配就 `rm`。注释声称 "Serialize against a concurrent steal, so the token read and the delete cannot straddle one"，实际只有 `claimed === true` 的分支成立。
+- 探针实证（`/tmp/probe14/lock-probe.mjs` 第 4 项）：预置陈旧锁 + 外部持有 fresh claim，原持有者 `release` 后 `lock deleted by release = true` —— 释放确实在别人持 claim 时删了锁。
+- 危害路径：A 持有超 30s 的陈旧锁（suspend/NFS 停顿/长写盘）→ B 夺取，持 claim、删 T1、放 claim、`tryLock` 建 T2 并进入临界区；A 的 release 因抢不到 claim，在读到 T1 后、`rm` 落地前与 B/C 交错 → A 的 unlink 按**路径**删掉 T2 → 新持有者的锁消失，其他写者可同时进入临界区。这正是 round-13 IMP-R13-1 的同类竞态，只是窗口更窄（需要 A 的读与 rm 之间出现"删除 T1 + 新建 T2"）。
+- 现有回归 `tests/consolidation-test.mjs:280-300` 只覆盖"读到 T2（≠T1）"的顺序，覆盖不到"读到 T1 后 T2 才出现"。
+- 修复边界：`if (!claimed) return;`（抢不到 claim 说明有夺取者在处理这把陈旧锁，由它删；不删是安全的），或在 claim 内重读 token 并只在持有 claim 时删除。不需要改 30s 阈值或协议结构。
+- 严重度定级说明：主路径（<30s 的正常临界区）不受影响，故不是 blocking；但代码/README 的所有权不变量（project-state.ts:303-306、README.md:69）在当前实现下不成立，需要修。
+
+**IMP-R14-2 陈旧锁 + 新鲜 claim 时 `withMemoryLock` 忙等并可无限旁路 5s deadline**
+`extensions/project-context/project-state.ts:313-322`（stale 分支 316-318 后直接 `continue`；deadline 检查在 320）
+
+- 事实：`tryLock` 失败且锁陈旧时，循环走 `stealStaleLock` 后 `continue`，**既不 sleep 也不检查 deadline**。若 `acquireClaim` 因存在一个未过期的 claim 而失败（夺取者崩溃/被 SIGSTOP，claim 要 30s 后才可回收），循环就满速重试 `open/stat` 直到 claim 过期。
+- 探针实证：陈旧锁 + fresh claim，`withMemoryLock` 在 6s 后仍 pending（未按 `MEMORY_LOCK_WAIT_MS=5s` 抛错），期间进程 CPU 6.6s/6s wall；移除 claim 后立即 resolve。
+- 影响：崩溃夺取者会让每个后续写者空转一个核最多 30s（多写者多核），且"5 秒等待上限"这一文档化契约失效；最终能恢复，故非 blocking。
+- 修复边界：把 deadline 检查前置到 stale 判断之前，并在 stale 分支失败（未取得 claim）时同样 `sleep(...)`/退避，或限制总夺取尝试次数后抛超时。
+
+## Nit
+
+- **N-R14-1** `tryLock` 写失败清理时先 `rm` 后 `close`（`project-state.ts:243-246`）。POSIX 无碍；Windows 上句柄未关时 `rm` 可能 EPERM，空锁文件残留至 30s 陈旧窗口。建议 finally 关闭后再删。
+- **N-R14-2** 首次建文件时 `.gitignore` 不会生成：`backupMemoryBeforeWrite` 在 ENOENT/空文件时提前 return（`project-state.ts:658/661`），`ensureMemoryGitignore` 在 662 才调用。首个写入若崩溃留下 `.lock`，该目录还没有忽略规则；README.md:54 的"首次写出本地产物时生成"略超前。
+- **N-R14-3** `lastWrite` 跨 pass 竞争：显式命令与并发的自动 pass 同进程交错时，自动 pass 的 `lastWrite.delete/set`（`consolidate.ts:397,425`）可让命令回执丢失备份指针或引用并发 pass 的备份（`consolidate.ts:515,524`）。不构成"引用上一轮"，仅是回执精度问题。
+
+## Suggestion
+
+- 修 IMP-R14-1 时补回归：陈旧锁 + 外部 fresh claim + 原持有者释放 → 断言锁仍存在；再由 claim 持有者删除。可另加"读到 token 后延迟 rm、期间出现新锁"的注入测试。
+- 修 IMP-R14-2 时补：遗留 fresh claim 下断言 5s 内按超时失败（或受界退避），并断言等待期 CPU 占用受控（如 `process.cpuUsage`）。
+- 更彻底地消除读-删 TOCTOU：删除改为在 claim 内 `rename(lockPath, lockPath + ".released")` 后再 unlink，或删除前在 claim 内二次校验 mtime+token；`stealStaleLock` 的 mtime 复检→rm 之间也存在同类窗口，同样受益。
+- `.gitignore` 可改为在 `withMemoryLock` 建立锁时确保（锁文件本身就是本地产物）。
+
+## Learning
+
+claim 文件只保护"取得 claim 的分支"。任何在 claim 竞争失败后仍继续执行的路径（本例的 release）会重新打开经典的 read→delete TOCTOU；唯一 token 只能防"删错 token"，不能防"读旧 token 后路径被替换"。要保证互斥，每个删除动作都必须持有 claim，或改成 rename 原子摘除。
+
+## Praise
+
+- round-13 核心修复经探针独立确认：fresh 锁不被夺取（等待到手动释放才进入）；陈旧 lock+claim 可恢复并清理两者；夺取者进入后原持有者释放不删新锁（repo 测试）；`cleanStaleTemps` 只匹配 `*.tmp`，`migrateProjectState` 后 `.lock`/`.steal` 均保留。
+- `clipText`：4 组样例 × limit 0–70 + 4000 随机（含畸形代理）× 15 档 limit，0 超限、良构输入 0 新增孤立代理；`length ≤ limit` 契约成立。
+- `fitMemoryInput`：4000 随机（5 种密度 × 10 档 cap × 有无模型上限），按 `fit.maxTokens` 的有效预算 0 越界，最差利用率 97.2%；独立复算的 rate 与 `replyTokenRate` 逐项一致。
+- 读路径零写：污染文件 `loadMemory` 前后目录项/字节/mtime 全等；gitignore 含 `*.lock`/`*.steal`/`*.memory-backup-*`/`errors.log`；JWT/Bearer/`sk-`/`ghp_` 脱敏生效；`node tests/run-all.mjs` 8/8。
+- `lastWrite` 静态确认：每轮 `getProjectRoot` 后立即 delete（consolidate.ts:397），只有本轮的 `memoryChanged` 分支才 set（425），回执不会再引用上一轮备份。
+
+## Residual Risk
+
+- 30s 陈旧阈值本身承认"活着的慢写者"可被夺取：夺取期间原写者若仍在执行，token 校验只保护 claimed 路径；修 IMP-R14-1 后该风险限于"抢占导致重复备份/后写覆盖"，不产生锁交错。
+- 平台面：Windows/NFS 的 rename/rm/mtime 语义、时钟回拨仍无法在沙箱覆盖（`.agents/memory` 可能位于网络盘时 30s 判定不稳）。
+- 解码召回：单行引导语 + 无 header 但 ≥120 字符且多行的值仍可判污染（读侧只读，写侧有备份），误判面已很小但非零。
+- `.pi`/OMP 回退来源用 `readOptional`，不可读仍会显示"无记忆"（仅主目标报 unreadable）。
+- 真实 tokenizer 与 `replyTokenRate` 的偏差仍可能低估（但按码点全价 + 转义加成，方向保守）。
+
+## Test And QA Focus
+
+- 必跑：`node tests/run-all.mjs`（本沙箱 8/8）。
+- 新增（修 IMP 后）：所有权保护回归（foreign claim + stale lock + release）、遗弃 claim 的超时/CPU 回归、3 进程/3 async × 陈旧锁多轮压测。
+- 已有探针可复用：`/tmp/probe14/lock-probe.mjs`（fresh 锁不夺取 / stale claim 回收 / 6.6s 忙等 / release 无 claim 删锁 / migrate 保留锁文件）、`clip-fit-probe2.mjs`（预算网格）、`read-path-probe.mjs`（读路径零写、gitignore、脱敏）。
+- 复现 IMP-R14-2：`lock-probe.mjs` 第 3 项（约 6s 可观测）。
+
+## 无法确认点
+
+- IMP-R14-1 的"删掉后继新锁"未做确定性交错复现：jiti 在模块初始化时绑定 `node:fs/promises`（探针确认 namespace 不可改写），无法注入 fs 延迟；结论由"无 claim 仍删锁"的探针 + 294→295 读删代码路径 + POSIX unlink-by-path 语义推出。
+- fix-note 所述"400 轮 ×3 写者压测"未在同等规模独立重跑（本轮用仓库测试 + 自有探针）。
+- Windows 下 `rm`-while-open 行为、真实供应商 tokenizer 偏差未验证。
+
+VERDICT: CHANGES-REQUESTED

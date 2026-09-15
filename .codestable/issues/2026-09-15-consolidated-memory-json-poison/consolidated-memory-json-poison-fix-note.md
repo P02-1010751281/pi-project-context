@@ -149,7 +149,37 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
   - round 11 复审 **PASSED**（无 blocking / 无 important）。其唯一可执行 nit（严格不变量可有 0.4 token
     浮点残差，测试容差 0.001 与代码 slack 0.5 不一致）已用**精确修剪**收口：收敛判定保留浮点容差，
     之后按超出量对密度更高的一侧做 1–2 字符修剪；60k 随机网格在 0.001 容差下 0 越界。
-  - 已知残余（有意接受）：写时备份到最终 rename 之间的微窗口；`context` 先行的截断回复、
-    >40 字符前缀（实际白名单最长 <11 字符）、值无 header 的污染不解码（fail-safe）；
-    备份保留最近 5 份（按 mtime）后自动修剪；`.memory-backup-*` 未纳入 gitignore（待定，见 completion checkpoint）。
+  - owner 要求「残差都修复掉」后的 **round-12 批次**（待独立复审）：
+    - 解码召回：`context` 先行的回复、单行引导语前缀、无 header 的文档值、`.pi`/OMP 来源均可解码；
+      同时保持「对象是全文剩余部分 + 首键为回复字段 + 值为文档」三重约束，嵌套示例/短值不解码；
+    - 写入串行：`MEMORY.md.lock`（`wx`）串起「备份读取 → 修剪 → 原子改名」，跨进程不再互覆；
+      陈旧锁（>30 秒）可安全夺取；`migrateProjectState` 的 OMP 导入同样在锁内 check-then-write；
+    - 备份保留：一小时内新建的备份不被轮换，通知点名的备份在下一次整理后仍在；
+    - 本地产物：`.agents/memory/.gitignore` 自动忽略 `*.memory-backup-*` 与 `errors.log`；
+      `errors.log` 落盘前对 `sk-`/`ghp_`/JWT/Bearer/键值对凭据脱敏；
+    - 预算/编码：`replyTokenRate` 对所有非 ASCII 码点记 1 token（含 emoji/西里尔/阿拉伯），
+      `"`/`\` 计 JSON 转义开销；`clipText` 不再切开 surrogate pair；
+      模型元数据缺失时自适应上限由新配置 `maxOutputTokens`（默认 32768）封顶；
+      autolearn 输出上限按 skill body 最大尺寸用同一 helper 自适应；
+    - 读错误展示：`loadMemory` 区分 ENOENT 与不可读，`/memory` 对不可读文件给出 warning；
+      命令回执指向本次修复的备份；
+    - 去重：`cleanMemory`/`normalizeHealedMemory` 合并为导出的 `normalizeMemoryDocument`；
+      `readJsonStringField` 补齐 `\b`/`\f` 转义。
+    - 仍记录：整文件恰为「JSON 示例」时的误判在无磁盘标记下无法与真实存量污染区分（mode B 只影响读，
+      写路径有备份）；Windows/NFS 的 rename/mtime 行为与真实 tokenizer 偏差仍属平台不确定性。
+  - round 12/13 复审的 findings 已修：锁内容改为唯一 token，释放前读回比对；陈旧夺取用
+    `<lock>.steal` 声明**单胜者**（两个夺取者不再互删新锁），释放也与夺取串行；
+    `clipText` 在补偿代理对时同步从 head 扣除，保证 `length ≤ limit`（精确修剪不再空转）；
+    `lastWrite` 每轮开始清空；畸形孤立低代理跳过；`.gitignore` 补 `*.lock`/`*.steal`。
+  - round 14/15 复审的 findings 已修：`releaseLock` 抢不到 claim 时不再删锁（只有 claim 持有者能删，
+    `tryLock` 失败先 close 再 rm）；等待循环 deadline 前置且所有失败路径退避（不再忙等）；
+    `<lock>.steal` 若被目录等非普通文件占据则移开自愈；锁 mtime 区分「缺失=0 / 不可读=视为新鲜」；
+    仓库新增 3 个子进程的跨进程互斥回归与 `tests/helpers/lock-holder.mjs`；`.gitignore` 补 `*.broken-*`。
+    round 15 判 **PASSED**（无 blocking/important）。
+  - round 16 复审 **PASSED**；其 nit 已修：`tryLock` 对锁路径上的目录/设备同样移开自愈（对称于 claim）、
+    跨进程用例加 spawn timeout / 残留断言 / `fileURLToPath`、`cleanStaleTemps` 回收 `.broken-*`、
+    仓库根 `.gitignore` 收窄为 `.agents/**` 前缀规则。
+  - round 17 复审 **PASSED**（无 blocking/important）；最后两个 nit 已收口：`cleanStaleTemps` 只删除
+    「空目录且超龄」的 `.broken-*`（含内容/非目录一律保留，避免误删用户数据），`tests/run-all.mjs`
+    加 60s timeout 且挂起按失败上报；新增 broken 回收回归。60k 随机网格复跑 0 越界/0 清零/0 地板/0 浪费。
 - 两个项目的存量数据不受影响（已修复的 UniField / Quantum_Matrix `MEMORY.md` 保持原样）。

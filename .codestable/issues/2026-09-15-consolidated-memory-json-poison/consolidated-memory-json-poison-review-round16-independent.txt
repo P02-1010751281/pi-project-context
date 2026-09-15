@@ -1,0 +1,71 @@
+# Round 16 独立复审报告 — consolidated-memory-json-poison
+
+审查方式：只读沙箱 `/tmp/pi-context-rev16`，diff 基准 `HEAD 9059877`；探针全部写在 `/tmp/rev16-probe/`（未写工作区、无 git 写操作）。已复跑 `node tests/run-all.mjs` → **8/8 通过**；另用真实模块做了 3 组独立探针（锁协议、claim 自愈、跨进程争用）。
+
+独立探针结果（关键证据）：
+- **claim 目录自愈**：预置 `MEMORY.md.lock.steal/`（内含 `user-file.txt`）→ `withMemoryLock` 2ms 成功进入，目录被 rename 为 `MEMORY.md.lock.steal.broken-734dea0d`，`user-file.txt` 内容逐字节保留，`.lock`/`.steal` 均清理。
+- **S15-1 语义**：把锁路径做成 ELOOP 自环 symlink（stat 非 ENOENT）→ 不被夺取，5018ms 后按 deadline 抛错；移除后立即恢复正常。
+- **跨进程**：3 个真实子进程共享日志 → 6 行、0 嵌套、depth=0，结束后目录内 `.lock`/`.steal`/`.broken-*` 均无残留；memory `.gitignore` 含全部 5 条规则（含 `*.broken-*`）。
+- **release/夺取 claim**：repo 用例（测试行 691-754）与代码路径一致；`releaseLock` 抢不到 claim 即返回，`tryLock` 写失败先 close 再 rm，均已在 `project-state.ts:317-328`、`236-253` 确认。
+
+---
+
+## Blocking
+
+无。
+
+## Important
+
+无。round 15 的 4 项 nit 我已独立复核全部闭环：
+- N15-1（`project-state.ts:270-296`）：非普通文件 claim 被 rename 移开并重试（最多 2 轮，无死循环），用户文件不删除；实测自愈成功。
+- S15-1（`project-state.ts:261-268`）：`lockMtimeMs` 缺失=0、非 ENOENT=`Infinity`；探针确认不可读锁不再被误判陈旧。
+- N15-3（`tests/consolidation-test.mjs:736-754` + `tests/helpers/lock-holder.mjs`）：真实跨进程回归，能检测嵌套（depth>1 即 fail）且断言 6 行完整性。
+- N15-2：`fix-note §6` 已补 round 14/15 修复记录；`review.md` frontmatter 为 round 16、`lane_a_ref` 已到 1..15；round 13/14/15 独立记录文件在仓库中确实存在。
+
+## Nit
+
+1. **N16-1 锁路径本身是非普通文件时仍会永久冻结协议（N15-1 同类问题只修了 `.steal`）** — `project-state.ts:236-253`（`tryLock` EEXIST 直接返回 undefined）、`304-315`（`rm(lockPath,{force:true})` 对目录抛 EISDIR 被吞）。
+   - 事实：探针 `/tmp/rev16-probe/probe3.mjs` 预置 `MEMORY.md.lock/` 目录后，写入 5039ms 超时，目录残留，之后每次都超时；而同样形态的 `.steal/` 已能自愈。影响：项目内所有记忆写入在 5s 后失败（fail-safe、无数据丢失），需人工删目录才能恢复。
+   - 修复边界：在 `tryLock` 的 EEXIST 分支 stat 锁路径，`!info.isFile()` 时按 `acquireClaim:280-288` 同款 `rename(...broken-<rand>)` 后重试一次；普通陈旧文件仍交给 steal 逻辑，不要动正在使用的锁文件。
+2. **N16-2 跨进程子进程与 `run-all.mjs` 都没有 timeout** — `tests/consolidation-test.mjs:739-743`、`tests/run-all.mjs:14`（`spawnSync` 无 timeout）。影响：锁协议若回归成死锁，CI 会永久挂起而非失败。修复边界：`spawn(..., { timeout: 15000 })` 并 kill/reject，或 `Promise.race`；`run-all.mjs` 加 `timeout`。
+3. **N16-3 子进程脚本路径用 `URL.pathname` 而非 `fileURLToPath`** — `tests/consolidation-test.mjs:738`。影响：仓库路径含空格/百分号/非 ASCII 时子进程找不到脚本（当前路径安全，属可移植性隐患）。修复边界：`fileURLToPath(new URL("./helpers/lock-holder.mjs", import.meta.url))`。
+4. **N16-4 跨进程用例后没有断言锁文件无泄漏** — `tests/consolidation-test.mjs:744-754` 只解析日志。影响：泄漏 `.lock`/`.steal` 不被这条用例发现（后续用例偶然覆盖）。修复边界：追加 `readdir(dir)` 断言不含 `MEMORY.md.lock`/`.steal`。
+5. **N16-5 仓库根 `.gitignore` 的 `*.lock` / `errors.log` 过宽** — `.gitignore:6-9`。影响：未来若引入 `yarn.lock`/`Cargo.lock` 等会被静默忽略；本地产物规则本可限定到 `.agents/`。修复边界：改成 `.agents/**/*.lock` 等或仅保留 memory 目录内运行时 `.gitignore`。
+6. **N16-6 `.broken-*` 无回收策略** — `project-state.ts:286` 只 rename、不清理，`cleanStaleTemps` 仅匹配 `*.tmp`。影响：每次有非文件占据 claim 路径就新增一个（已被 `.gitignore` 忽略），外部反复制造才会累积；有界但无回收。修复边界：在 `cleanStaleTemps` 或 claim 自愈时顺带按 mtime 清理旧 `.broken-*`。
+
+## Suggestion
+
+- **S16-1（承接 S15-2，仍未做）**：`tryLock` 写失败清理 `rm(lockPath)` 无 inode/所有权校验（`project-state.ts:250`）。只有在 open 成功与清理之间被挂起 >30s 且锁被夺取重建时才会误删新锁，概率近零；可加 `stat` 比对 ino+dev 或改为 rename 摘除。
+- **S16-2**：修 N16-1 时补一个「锁路径为目录 → 自愈并写成功」用例，与「claim 路径为目录」用例并列，防止不对称回退。
+
+## Learning
+
+- claim 只保护「取得 claim 的分支」；同理，「非普通文件是文件协议盲点」这一结论对 `<lock>` 与 `<lock>.steal` 同等成立——round 15 只修了 claim 一侧，锁路径一侧仍是同一盲点。自愈应作为**协议入口的统一预处理**，而不是某一个辅助路径的补丁。
+- `lockMtimeMs` 的 fail-closed（不可读=Infinity）用「可恢复性」换「不误夺活锁」：对 ELOOP/EACCES 类锁会退化为永久 5s 超时，这是明确记录的取舍，不是 bug。
+
+## Praise
+
+- N15-1/S15-1/N15-3/N15-2 四项修复均经独立探针确认为真：claim 目录自愈且用户数据零删除、不可读锁 fail-closed、跨进程 0 嵌套 0 泄漏、文档与归档记录完整。
+- 锁最终态在正常/陈旧/多进程争用三类场景均 0 重叠、0 泄漏；`release`/`steal` 均以 claim 为门（`317-328`、`304-315`），deadline 前置于 stale 判断且所有失败路径都有 40-100ms 退避（`336-358`）。
+- 锁文件与 `.broken-*` 不会被 `cleanStaleTemps`（仅 `*.tmp` 正则）、备份修剪（生成名全锚定）或 `migrateProjectState` 误删；memory `.gitignore` 5 条规则实测齐全。
+- 回归面无回退：`node tests/run-all.mjs` 8/8；解码安全、`clipText` 长度契约、预算网格、备份保留/时钟回拨、脱敏、`lastWrite` 每轮清理均由仓库用例覆盖。
+
+## Residual Risk
+
+- R15-1/R15-2/R15-3 仍在：steal 的 mtime 复检→rm 微窗口、tryLock 清理所有权、claim 崩溃遗留至多 30s（属协议代价）。
+- R15-4：`fileMtimeMs`（备份修剪用）仍把 stat 失败当 0；与 `lockMtimeMs` 语义不同是刻意区分，但意味着瞬时 EACCES/EIO 可能影响备份轮换。
+- N16-1 的锁路径非文件冻结（本报告 nit）；ELOOP 类不可读锁在人工干预前每个写者都吃满 5s deadline（S15-1 的显式取舍）。
+- 解码误判面（整文件恰为 JSON 示例）仍靠「写前备份」兜底；平台（Windows/NFS rename/mtime/rm）、真实 tokenizer 与 provider 对抬高 `maxTokens` 的接受度无法在沙箱验证。
+- 审计链现已补齐到 round 15；round 16 结论待归档。
+
+## Test And QA Focus
+
+- 必跑：`node tests/run-all.mjs`（本沙箱 8/8）。
+- 建议新增：锁路径为目录的自愈回归（N16-1）；跨进程子进程 timeout + 结束后无锁/claim 残留断言（N16-2/4）；claim 目录自愈时用户文件保留断言已可复用 `probe1.mjs`。
+- 可复用探针：`/tmp/rev16-probe/probe1.mjs`（claim 目录自愈、ELOOP fail-closed）、`probe2.mjs`（跨进程 3 子进程 + gitignore）、`probe3.mjs`（锁路径目录冻结复现）。
+
+## 无法确认点
+
+- Windows/NFS 的 `rename`/`rm`/mtime 粒度与错误码（EISDIR 行为仅 Linux 实测）；真实 provider tokenizer 与预算偏差；真实供应商对自适应输出的接受度；跨进程 CPU 占用未独立计量（round 15 已测 29ms）。
+
+VERDICT: PASSED

@@ -4,9 +4,9 @@ issue: 2026-09-15-consolidated-memory-json-poison
 status: passed
 reviewer: subagent
 reviewed: 2026-09-15
-round: 11
+round: 17
 lane_a_state: completed
-lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..11 完整记录：consolidated-memory-json-poison-review-round{1..11}-independent.txt"
+lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..17 完整记录：consolidated-memory-json-poison-review-round{1..17}-independent.txt"
 lane_a_reason: "独立上下文 reviewer，分别在 /tmp/pi-context-revN 沙箱副本中审查；沙箱与真实仓库均核验无写入"
 lane_b_state: unavailable
 lane_b_ref: ""
@@ -34,6 +34,12 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
 | 9 | changes-requested | IMP-1 round-8 预算收敛循环可把 memory 清零、不变量最多超 4%；IMP-2 失败路径 `written.delete` 过宽回放陈旧 outcome | 修复：地板+按需分配+实际文本迭代+字符保底（20k 网格 0 越界/0 清零）；仅本次 claim 过才释放；修剪全名锚定 |
 | 10 | changes-requested | IMP-R10-1 保底分支把 token 配额当字符上限，触发时浪费 43–44.5% 并破坏 400 字符地板；N-R10-1 部分写失败释放 claim | 修复：token 比例缩放 + 字符数绝对上限 + 阻尼增长回填；仅未写成功 MEMORY.md 时释放 claim；skew 测试改真实 utimes（60k 网格 0 越界/0 清零/0 地板/0 浪费超标） |
 | 11 | **PASSED** | 无 blocking / 无 important；nit：0.4 token 浮点残差与测试容差不一致（已用精确修剪修复，60k 网格 0.001 容差 0 越界） | 无 blocking；残差按记录接受 |
+| 12 | changes-requested | I-1 陈旧锁夺取无所有权判别（原持有者 finally 可能删掉新持有者的锁）；I-2 `clipText` 在补偿代理对时返回 `limit+1`，精确修剪空转（60k 网格 254 越界 @0.001） | 修复：锁内容唯一 token + 释放比对；`tailStart` 补偿 head 保证 `length ≤ limit`；新增 emoji/引号 fixture 与锁回归 |
+| 13 | changes-requested | IMP-R13-1 夺取侧仍可互删新锁（400 轮 ×3 写者重叠 3 次）；N-R13-1 `lastWrite` 陈旧回执；N-R13-2 畸形代理对 | 修复：`<lock>.steal` 单胜者夺取 + 释放串行；每轮清理 `lastWrite`；畸形孤儿低代理跳过；压测 400 轮 0 重叠 0 泄漏 |
+| 14 | changes-requested | IMP-R14-1 `releaseLock` 抢不到 claim 仍删锁（删到夺取者新锁）；IMP-R14-2 stale 分支忙等旁路 5s deadline（CPU 空转 6.6s/6s） | 修复：release 无 claim 即返回；deadline 前置 + 全路径退避；`tryLock` 先 close 再 rm；建锁即写 gitignore |
+| 15 | **PASSED** | 无 blocking / 无 important；nit：`<lock>.steal` 为目录时协议永久冻结；无跨进程回归；文档滞后 | 已修 nit：claim 非普通文件移开自愈、`lockMtimeMs` 区分缺失/不可读、3 子进程跨进程回归、`*.broken-*` 忽略；round 16 确认 |
+| 16 | **PASSED** | 无 blocking / 无 important；nit：锁路径为目录时同类冻结、跨进程用例无 timeout/泄漏断言、`.broken-*` 无回收、根 `.gitignore` 过宽 | 已修 nit：`tryLock` 非普通文件自愈、spawn timeout + 残留断言 + `fileURLToPath`、`cleanStaleTemps` 回收 `.broken-*`、根规则收窄到 `.agents/**`；round 17 确认 |
+| 17 | **PASSED** | 无 blocking / 无 important；nit：`.broken-*` 回收对非文件来源无效（且新增删除面）；`run-all.mjs` 无 timeout | 已修 nit：只删「空目录且超龄」的 broken 产物（含用户数据/非目录一律保留）、`run-all` 加 60s timeout；8/8 通过，闭合 |
 
 ## 3. 当前状态（round 11 复审后）
 
@@ -47,6 +53,12 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
   `migrateProjectState` 的极窄竞态不走备份。
 - round 10：CHANGES-REQUESTED（无 blocking），IMP-R10-1/N-R10-1 已修复（见 fix-note §6），本地 60k 随机网格 0 失败。
 - round 11：**PASSED**（无 blocking/important；唯一 nit 已用精确修剪修复并本地验证）。review gate 关闭，待 owner 确认后提交。
+- round 12：owner 要求「残差都修复掉」；解码召回、跨进程锁、备份保龄、gitignore/脱敏、
+  token 率/代理对、maxOutputTokens、读错误展示、去重等批次已实现（fix-note §6 round-12），待独立复审。
+- round 12/13 的 findings 均已修复（锁单胜者夺取、clipText 长度契约、lastWrite 清理、畸形代理对），round 14 复审确认中。
+- round 14/15：release claim 门控、deadline 退避、claim 异常自愈、跨进程回归均已落实；round 16 复审确认中。
+- round 16 判 **PASSED**；其 nit（锁路径非文件自愈、测试 timeout/残留断言、`.broken-*` 回收、根 .gitignore 收窄）已修，round 17 复审确认中。
+- round 17 判 **PASSED**（无 blocking/important）；最后两个 nit 已以本地测试收口，review gate 关闭。
 
 ## 4. Focused Closure（无则写 none）
 

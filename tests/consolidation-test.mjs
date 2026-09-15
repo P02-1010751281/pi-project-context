@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -222,7 +224,13 @@ try {
 			const prose = '# Project Memory\n\nHere is the JSON:\n{"memory_markdown": "# Project Memory\\n\\n## Project\\n- prose prefix leftover。';
 			await writeFile(healMemory, prose);
 			const proseRead = await loadMemory(healTmp);
-			check("a prose-prefixed reply is left alone (fail-safe)", proseRead.poisoned === false && (await readFile(healMemory, "utf8")) === prose);
+			check("a prose-prefixed stored reply is decoded", proseRead.poisoned === true && proseRead.text.includes("prose prefix leftover") && (await readFile(healMemory, "utf8")) === prose);
+
+			// The same wrapper with a value that is not a memory document stays untouched (fail-safe).
+			const proseValue = '# Project Memory\n\nHere is the JSON:\n{"memory_markdown": "not a document"}';
+			await writeFile(healMemory, proseValue);
+			const proseValueRead = await loadMemory(healTmp);
+			check("a prose prefix without a document value is left alone", proseValueRead.poisoned === false && (await readFile(healMemory, "utf8")) === proseValue);
 
 			// The normal consolidation write path repairs the stored file and keeps the raw bytes.
 			const factory = await loadDefault(`${PC}/index.ts`);
@@ -304,13 +312,23 @@ try {
 			}
 			check("an unreadable memory target fails closed", failedClosed);
 
-			// Pruning keeps at most five backups and never the one just written.
+			// A burst of writes keeps the recent backups, so a backup named in a notice stays reviewable.
+			const countBackups = async () => (await readdir(path.dirname(healMemory), { withFileTypes: true })).filter((entry) => entry.isFile() && /^MEMORY\.md\.memory-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/.test(entry.name)).length;
+			const backupNames = async () => (await readdir(path.dirname(healMemory), { withFileTypes: true }))
+				.filter((entry) => entry.isFile() && /^MEMORY\.md\.memory-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/.test(entry.name))
+				.map((entry) => path.join(path.dirname(healMemory), entry.name));
+			const beforeBurst = await countBackups();
 			for (let round = 0; round < 7; round += 1) {
 				await backupMemoryBeforeWrite(healMemory);
 			}
-			const countBackups = async () => (await readdir(path.dirname(healMemory), { withFileTypes: true })).filter((entry) => entry.isFile() && /^MEMORY\.md\.memory-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/.test(entry.name)).length;
+			const burst = await countBackups();
+			check(`a burst of writes keeps recent backups (have ${burst})`, burst === beforeBurst + 7);
+			// Once they age past the floor, the prune keeps the newest five and never the one just written.
+			const aged = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			for (const file of await backupNames()) await utimes(file, aged, aged);
+			const agedWrite = await backupMemoryBeforeWrite(healMemory);
 			const pruned = await countBackups();
-			check(`pruning keeps at most five backups (have ${pruned})`, pruned === 5);
+			check(`aged backups prune down to five (have ${pruned})`, pruned === 5 && agedWrite.path !== undefined);
 			for (let skew = 0; skew < 6; skew += 1) {
 				const skewName = path.join(path.dirname(healMemory), `MEMORY.md.memory-backup-2099-01-0${skew + 1}T00-00-00-000Z-dead000${skew}`);
 				await writeFile(skewName, "future");
@@ -356,6 +374,8 @@ try {
 			const stillDirectory = await readdir(path.join(failureTmp, ".agents/memory/MEMORY.md")).then(() => true).catch(() => false);
 			const failureLog = await readFile(path.join(failureTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("an unreadable memory aborts the write end to end", stillDirectory && failureLog.includes("EISDIR"));
+			await pi.commands.get("memory").handler("", ctx);
+			check("the memory command reports an unreadable file", ctx.notifications.some(([message]) => message.includes("cannot be read")));
 
 			// A fresh project has no file to back up; the first write creates it without a backup.
 			const freshTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-fresh-"));
@@ -458,11 +478,13 @@ try {
 				["ASCII memory × CJK context", "a".repeat(7999) + ".", "记".repeat(31999) + "。"],
 				["ASCII body + CJK tail", "a".repeat(900), "b".repeat(1600) + "记".repeat(400)],
 				["all-ASCII memory × dense CJK context", "a".repeat(5000), "记".repeat(12000) + "。".repeat(500)],
+				["emoji-heavy memory × CJK context", "😀".repeat(400) + "a".repeat(200), "记".repeat(3000)],
+				["quote-heavy memory × ASCII context", '"\\'.repeat(800) + "x".repeat(200), "y".repeat(6000)],
 			];
 			for (const cap of [1024, 1400, 2048, 8192, 32768]) {
 				for (const [label, memoryText, contextText] of budgetCases) {
 					const fitted = fitMemoryInput(memoryText, contextText, cap, { maxTokens: cap });
-					const reserved = Math.min(1024, Math.max(0, cap - 400));
+					const reserved = Math.min(1024, cap, Math.max(64, cap - 400));
 					const tokens = fitted.text.length * localRate(fitted.text) + fitted.contextText.length * localRate(fitted.contextText);
 					check(`budget invariant: ${label} @${cap} (${Math.round(tokens + reserved)}/${cap})`, tokens + reserved <= cap + 0.001);
 					if (cap - reserved >= 800) {
@@ -509,6 +531,274 @@ try {
 			check("a clipped rewrite keeps a backup", clipBackups.length === 1 && (await readFile(path.join(budgetTmp, ".agents/memory", clipBackups[0]), "utf8")) === big);
 		} finally {
 			await rm(budgetTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== residuals: recall, rate, lock, ignore, redaction ===");
+	{
+		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock } = await loadNamespace(`${PC}/project-state.ts`);
+		const { fitMemoryInput, replyTokenRate, adaptiveOutputTokens, clipText } = await loadNamespace(`${PC}/consolidate.ts`);
+		const fixTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-residuals-"));
+		try {
+			const dir = path.join(fixTmp, ".agents/memory");
+			await mkdir(dir, { recursive: true });
+			const memory = path.join(dir, "MEMORY.md");
+			const value = "# Project Memory\n\n## Project\n- " + "记".repeat(80);
+
+			// context-first replies decode (the first key may be either reply field).
+			await writeFile(memory, `{"context": {"title": "t"}, "memory_markdown": ${JSON.stringify(value)}}`);
+			const contextFirst = await loadMemory(fixTmp);
+			check("a context-first stored reply is decoded", contextFirst.poisoned === true && contextFirst.text.includes("记".repeat(80)));
+
+			// A nested field with the same name is not the reply's field.
+			await writeFile(memory, `{"context": {"note": ${JSON.stringify(`{"memory_markdown": ${JSON.stringify(value)}}`)}}, "memory_markdown": "short nested baseline"}`);
+			check("a nested field is not mistaken for a stored reply", (await loadMemory(fixTmp)).poisoned === false);
+
+			// A header-less but clearly document-shaped value decodes; a short one does not.
+			await writeFile(memory, `{"memory_markdown": ${JSON.stringify("## Project\n- " + "x".repeat(200))}}`);
+			check("a header-less document value is decoded", (await loadMemory(fixTmp)).poisoned === true);
+			await writeFile(memory, `{"memory_markdown": "not a document"}`);
+			check("a header-less short value is left alone", (await loadMemory(fixTmp)).poisoned === false);
+
+			// Backslash escapes beyond n/t/r survive the field decoder.
+			const escaped = readJsonStringField('{"memory_markdown": "a\\b\\f\\u0041"}', "memory_markdown");
+			check("the field decoder maps \\b and \\f", escaped?.value === "a\b\fA" && escaped.end > 0);
+
+			// Legacy .pi sources are decoded too.
+			await rm(memory, { force: true });
+			await mkdir(path.join(fixTmp, ".pi"), { recursive: true });
+			await writeFile(path.join(fixTmp, ".pi/MEMORY.md"), `{"memory_markdown": ${JSON.stringify(value)}}`);
+			const legacy = await loadMemory(fixTmp);
+			check("a legacy .pi stored reply is decoded", legacy.poisoned === true && legacy.source.includes(".pi"));
+
+			// Token rate charges every non-ASCII code point and the escape cost.
+			check("non-CJK scripts are charged a full token", replyTokenRate("привет") === 1);
+			check("ASCII escapes cost extra", replyTokenRate('"\\\\') > replyTokenRate("ab"));
+			const emoji = "😀";
+			check("an emoji never costs less than one token", emoji.length * replyTokenRate(emoji) >= 1);
+
+			// Clipping never splits a surrogate pair, at either boundary.
+			const hasLoneSurrogate = (text) => {
+				for (let index = 0; index < text.length; index += 1) {
+					const code = text.charCodeAt(index);
+					const high = code >= 0xd800 && code <= 0xdbff;
+					const low = code >= 0xdc00 && code <= 0xdfff;
+					if (high && !(text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff)) return true;
+					if (low && !(text.charCodeAt(index - 1) >= 0xd800 && text.charCodeAt(index - 1) <= 0xdbff)) return true;
+				}
+				return false;
+			};
+			const surrogateHead = "x".repeat(10) + "😀" + "y".repeat(100);
+			const surrogateTail = "y".repeat(100) + "😀" + "x".repeat(10);
+			check("clipping keeps a pair whole at the head", !hasLoneSurrogate(clipText(surrogateHead, 20)));
+			check("clipping keeps a pair whole at the tail", !hasLoneSurrogate(clipText(surrogateTail, 20)));
+			let split = false;
+			for (let limit = 4; limit <= 40; limit += 1) {
+				if (hasLoneSurrogate(clipText(surrogateHead, limit)) || hasLoneSurrogate(clipText(surrogateTail, limit))) split = true;
+			}
+			check("no clip limit splits a surrogate pair", !split);
+			let overLimit = false;
+			for (const sample of [surrogateHead, surrogateTail, "😀".repeat(60), "a".repeat(50) + "😀😀" + "b".repeat(50)]) {
+				for (let limit = 0; limit <= 70; limit += 1) {
+					if (clipText(sample, limit).length > limit) overLimit = true;
+				}
+			}
+			check("clipText never exceeds its limit", !overLimit);
+			// A malformed orphan low surrogate just after a valid pair must not be promoted into it.
+			const malformed = "a".repeat(30) + "😀" + "\uDC00" + "b".repeat(18);
+			check("clipping drops a malformed orphan rather than splitting a pair", !clipText(malformed, 50).includes("\uDC00"));
+
+			// The adaptive cap honours the configured ceiling and the model's own limit.
+			check("the adaptive cap respects the ceiling", fitMemoryInput("记".repeat(20000), "", 8192, {}, 16384).maxTokens <= 16384);
+			check("a model limit wins over the ceiling", fitMemoryInput("记".repeat(20000), "", 8192, { maxTokens: 4096 }, 16384).maxTokens <= 4096);
+			check("a skill-sized need raises the cap", adaptiveOutputTokens(8192, 21000, {}, 32768) === 21000);
+
+			// The write lock serializes writers, steals stale locks, and never leaks its file.
+			let active = 0;
+			let overlapped = false;
+			const runLocked = () => withMemoryLock(memory, async () => {
+				active += 1;
+				if (active > 1) overlapped = true;
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				active -= 1;
+			});
+			await Promise.all([runLocked(), runLocked(), runLocked()]);
+			check("the write lock serializes writers", !overlapped && !(await readdir(dir)).includes("MEMORY.md.lock"));
+			const stale = path.join(dir, "MEMORY.md.lock");
+			await writeFile(stale, "stale");
+			await utimes(stale, new Date(Date.now() - 2 * 60 * 60 * 1000), new Date(Date.now() - 2 * 60 * 60 * 1000));
+			let stole = false;
+			await withMemoryLock(memory, async () => {
+				stole = true;
+			});
+			check("a stale lock is stolen and cleaned", stole && !(await readdir(dir)).includes("MEMORY.md.lock"));
+
+			// A stolen lock belongs to the thief: the original holder's release must not delete it.
+			let releaseOriginal;
+			const originalHeld = new Promise((resolve) => {
+				releaseOriginal = resolve;
+			});
+			let originalEntered;
+			const originalEnteredPromise = new Promise((resolve) => {
+				originalEntered = resolve;
+			});
+			const originalRun = withMemoryLock(memory, async () => {
+				originalEntered();
+				await originalHeld;
+			});
+			await originalEnteredPromise;
+			const stolenPath = path.join(dir, "MEMORY.md.lock");
+			await utimes(stolenPath, new Date(Date.now() - 2 * 60 * 60 * 1000), new Date(Date.now() - 2 * 60 * 60 * 1000));
+			let thiefEntered = false;
+			let releaseThief;
+			const thiefHeld = new Promise((resolve) => {
+				releaseThief = resolve;
+			});
+			const thiefRun = withMemoryLock(memory, async () => {
+				thiefEntered = true;
+				await thiefHeld;
+			});
+			for (let attempt = 0; attempt < 300 && !thiefEntered; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			releaseOriginal();
+			await originalRun;
+			let thirdEntered = false;
+			const thirdRun = withMemoryLock(memory, async () => {
+				thirdEntered = true;
+			});
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const thirdBlocked = !thirdEntered;
+			releaseThief();
+			await thiefRun;
+			await thirdRun;
+			check("a stolen lock is not released by its original holder", thiefEntered && thirdBlocked && thirdEntered);
+
+			// A stale lock plus concurrent writers never lets two critical sections overlap.
+			const crashedLock = path.join(dir, "MEMORY.md.lock");
+			await writeFile(crashedLock, "crashed\n");
+			await utimes(crashedLock, new Date(Date.now() - 2 * 60 * 60 * 1000), new Date(Date.now() - 2 * 60 * 60 * 1000));
+			let concurrent = 0;
+			let contendedOverlap = false;
+			const contended = [0, 1, 2].map(() => withMemoryLock(memory, async () => {
+				concurrent += 1;
+				if (concurrent > 1) contendedOverlap = true;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				concurrent -= 1;
+			}));
+			await Promise.all(contended);
+			check("a stale lock is stolen exactly once under contention", !contendedOverlap && !(await readdir(dir)).includes("MEMORY.md.lock"));
+
+			// A release that cannot take the claim must leave the lock for the claimed stealer.
+			const heldLock = path.join(dir, "MEMORY.md.lock");
+			const heldClaim = `${heldLock}.steal`;
+			let releaseHolder;
+			const holderHeld = new Promise((resolve) => {
+				releaseHolder = resolve;
+			});
+			let holderEntered;
+			const holderEnteredPromise = new Promise((resolve) => {
+				holderEntered = resolve;
+			});
+			const holderRun = withMemoryLock(memory, async () => {
+				holderEntered();
+				await holderHeld;
+			});
+			await holderEnteredPromise;
+			await writeFile(heldClaim, "foreign\n");
+			releaseHolder();
+			await holderRun;
+			check("a release without the claim leaves the lock", (await readFile(heldLock, "utf8").catch(() => "")).includes(String(process.pid)));
+			await rm(heldClaim, { force: true });
+			await rm(heldLock, { force: true });
+
+			// A held claim on a stale lock must fail the waiter at its deadline, not spin past it.
+			await writeFile(heldLock, "stale\n");
+			const agedByClaim = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			await utimes(heldLock, agedByClaim, agedByClaim);
+			await writeFile(heldClaim, "fresh-claim\n");
+			const waitStart = Date.now();
+			let deadlineHit = false;
+			try {
+				await withMemoryLock(memory, async () => {});
+			} catch {
+				deadlineHit = true;
+			}
+			check("a held claim cannot bypass the lock deadline", deadlineHit && Date.now() - waitStart < 8000);
+			await rm(heldClaim, { force: true });
+			await rm(heldLock, { force: true });
+
+			// The first lock in a new project also creates the local gitignore.
+			const freshMemoryDir = path.join(fixTmp, "fresh", ".agents", "memory");
+			await mkdir(freshMemoryDir, { recursive: true });
+			await withMemoryLock(path.join(freshMemoryDir, "MEMORY.md"), async () => {});
+			check("the first lock creates the local gitignore", (await readFile(path.join(freshMemoryDir, ".gitignore"), "utf8")).includes("*.lock"));
+
+			// Cross-process writers serialize as well (three real child processes, one shared log).
+			const lockLog = path.join(fixTmp, "lock-log.txt");
+			const childScript = fileURLToPath(new URL("./helpers/lock-holder.mjs", import.meta.url));
+			const children = [0, 1, 2].map(() => new Promise((resolve, reject) => {
+				const child = spawn(process.execPath, [childScript, memory, lockLog, "60"], { stdio: "ignore", timeout: 15_000 });
+				child.on("error", reject);
+				child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`lock child exited ${code}`))));
+			}));
+			await Promise.all(children);
+			const lockLines = (await readFile(lockLog, "utf8")).trim().split("\n");
+			let lockDepth = 0;
+			let nested = false;
+			for (const line of lockLines) {
+				if (line.startsWith("enter")) {
+					lockDepth += 1;
+					if (lockDepth > 1) nested = true;
+				} else lockDepth -= 1;
+			}
+			const residue = (await readdir(dir)).filter((name) => name.startsWith("MEMORY.md.lock"));
+			check("cross-process writers never overlap", !nested && lockDepth === 0 && lockLines.length === 6 && residue.length === 0);
+
+			// A directory at the lock path heals instead of freezing every later write.
+			const dirLockRoot = path.join(fixTmp, "locked", ".agents", "memory");
+			await mkdir(path.join(dirLockRoot, "MEMORY.md.lock"), { recursive: true });
+			let lockPathHealed = false;
+			await withMemoryLock(path.join(dirLockRoot, "MEMORY.md"), async () => {
+				lockPathHealed = true;
+			});
+			check("a directory at the lock path heals", lockPathHealed && !(await readdir(dirLockRoot)).includes("MEMORY.md.lock"));
+
+			// Stale cleanup drops an empty broken artifact but keeps one that may hold user data.
+			const cleanupRoot = path.join(fixTmp, "cleanup");
+			const cleanupDir = path.join(cleanupRoot, ".agents", "memory");
+			await mkdir(path.join(cleanupDir, "MEMORY.md.lock.broken-1234abcd"), { recursive: true });
+			await mkdir(path.join(cleanupDir, "MEMORY.md.lock.broken-deadbeef"), { recursive: true });
+			await writeFile(path.join(cleanupDir, "MEMORY.md.lock.broken-deadbeef", "user.txt"), "user data");
+			await mkdir(path.join(cleanupDir, "MEMORY.md.lock.broken-feedface"), { recursive: true });
+			const oldStamp = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			for (const name of ["MEMORY.md.lock.broken-1234abcd", "MEMORY.md.lock.broken-deadbeef"]) {
+				await utimes(path.join(cleanupDir, name), oldStamp, oldStamp);
+			}
+			await migrateProjectState(cleanupRoot);
+			const cleaned = await readdir(cleanupDir);
+			check("stale cleanup drops only empty broken artifacts", !cleaned.includes("MEMORY.md.lock.broken-1234abcd") && cleaned.includes("MEMORY.md.lock.broken-deadbeef") && cleaned.includes("MEMORY.md.lock.broken-feedface"));
+
+			// Local artifacts are ignored, once, next to the memory they belong to.
+			await writeFile(memory, "# Project Memory\n\n## Project\n- keep.\n");
+			await backupMemoryBeforeWrite(memory);
+			const ignore = await readFile(path.join(dir, ".gitignore"), "utf8");
+			check("backups are gitignored next to the memory", ignore.includes("*.memory-backup-*") && ignore.includes("errors.log"));
+			await backupMemoryBeforeWrite(memory);
+			check("the gitignore is appended only once", (await readFile(path.join(dir, ".gitignore"), "utf8")) === ignore);
+
+			// Errors are redacted before they land in the log.
+			await logError(fixTmp, "test", "api_key: sk-abcdef1234567890 and ghp_abcdefghijklmnop");
+			const log = await readFile(path.join(dir, "errors.log"), "utf8");
+			check("credentials are redacted from errors.log", !log.includes("sk-abcdef") && !log.includes("ghp_abcdef") && log.includes("[redacted"));
+
+			// An unreadable memory file is reported, not reported as missing.
+			await rm(memory, { force: true });
+			await mkdir(memory, { recursive: true });
+			const unreadable = await loadMemory(fixTmp);
+			check("an unreadable memory is flagged", unreadable.unreadable === true && unreadable.text === "");
+		} finally {
+			await rm(fixTmp, { recursive: true, force: true });
 		}
 	}
 } finally {

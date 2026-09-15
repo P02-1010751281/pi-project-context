@@ -50,7 +50,9 @@ session.jsonl（唯一权威）──► session.md（全量渲染，人读）�
     ├── HANDOFF.md                  # ④ 最近一次交接摘要（含旧存档指针）
     ├── project-context.json        # 功能开关与参数（dsh 侧在 ~/.dsh/settings.yaml）
     ├── skill-candidates/<name>.md  # ③ 待确认候选（approve 后转正）
-    ├── errors.log                  # 各阶段捕获的异常（不打断会话）；单条截断 8000 字符，>1MB 轮换保留最新 64k
+    ├── errors.log                  # 各阶段捕获的异常（凭据样串先脱敏）；单条截断 8000 字符，>1MB 轮换保留最新 64k
+    ├── MEMORY.md.memory-backup-*   # 覆盖前写的字节级备份（mtime 保留最新 5 份，一小时内不轮换）
+    ├── .gitignore                  # 首次写出本地产物时生成：忽略备份、errors.log、锁文件
     └── session-logs/
         ├── INDEX.md                # ① 机械索引：每会话一行，按 id 去重、只留最新 200 行
         ├── .gitignore              # 首次写出时生成，忽略整个目录
@@ -58,6 +60,15 @@ session.jsonl（唯一权威）──► session.md（全量渲染，人读）�
 ```
 
 边界规则：**memory = 长期**（跨会话仍成立的事实/决策/偏好，写入门槛高）；**context = 工作态**（本会话摘要/关键点/open tasks，整体重写，可重建）。不确定先写 context，下轮仍成立再晋升 memory。
+
+### 失败与恢复
+
+- **存量污染（旧版本 bug）**：旧实现可能把模型回复原样写进 `MEMORY.md`。读取端只**内存解码**（`memory_markdown` 为对象的首键或次键、前缀为 JSON/围栏/单行引导语、值确为文档），不写盘、不建备份、不记日志；下一次正常整理覆盖前先写字节级备份再改写。
+- **每次覆盖前备份**：`backupMemoryBeforeWrite` 读当前磁盘字节（字节保真）后写 `.memory-backup-<stamp>-<rand>`；目标存在但读不了（非 ENOENT）时 fail closed，pass 报 failed 并留 `errors.log`，绝不覆盖。
+- **保留策略**：按 mtime 保留最新 5 份；一小时内新建的备份不轮换，通知里点名的备份在下一次整理后仍在。修剪只删除本扩展生成的完整名字，用户文件/目录/符号链接不受影响。
+- **写入串行**：`MEMORY.md.lock`（`wx` 独占）把“备份读取 → 修剪 → 原子改名”串起来，跨进程也不会互相覆盖；超过 30 秒的陈旧锁由 `<lock>.steal` 声明单胜者后夺取，释放时按唯一 token 校验，`谁拿到的锁谁释放`。
+- **输出预算自适应**：按每个 artifact 自身的 token 率分配（非 ASCII 记 1 token/字符，含 emoji/西里尔等；`"`/`\` 计 JSON 转义开销），两侧各有下限，被剪时写备份并告警。模型自身上限未知时，自适应上限受 `maxOutputTokens`（默认 32768）封顶。
+- **本地产物不外泄**：备份与 `errors.log` 由 `.agents/memory/.gitignore` 忽略；`errors.log` 落盘前脱敏 `sk-`/`ghp_`/JWT/Bearer 等凭据样串。
 
 已结束的历史会话用 `/session-log import <session.jsonl|目录>…` 回填，与实时路径共用同一渲染器与索引（逐字节保留原文、幂等、无模型调用）。旧数据在 `session_start` 自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、旧索引 `.agents/memory/session-index.md`（链接自动改写）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）；遇到文件/目录类型冲突时两侧都保留并在通知里点名，失败留到下个会话重试。
 
@@ -96,6 +107,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
   "consolidateIntervalMs": 300000,
   "forceDedupeMs": 15000,
   "maxTokens": 8192,
+  "maxOutputTokens": 32768,
   "provider": "",
   "model": "",
   "handoffAdaptive": true,
@@ -112,7 +124,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 - autolearn 自动 pass 门禁与 dsh 相同：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮 ≥ `autolearnTurns` 或距上次 ≥ `autolearnIntervalMs`）；`autolearnAt` 持久化，重启不会重复跑已消化的材料。
 - consolidation 节奏：`consolidateTurns` / `consolidateIntervalMs` 控制自动整理，`forceDedupeMs` 抑制紧邻的强制重复调用。
 - handoff：`handoffAdaptive=true` 用自适应阈值，false 时用 `handoffThresholdRatio`（0.1–0.95）；`handoffTargetTokens`/`handoffKeepTokens` 控制移交量与保留量；`handoffMode`（send/draft）与 `handoffGuard`（wait/draft/send/skip）是 pi 独有——dsh 无编辑器，改用 `handoffPendingQuestion: defer|wait`。
-- 辅助调用（整理 / 沉淀 / 交接摘要）默认用会话模型；`provider`/`model` 成对设置后改走指定路由（解析不到或未授权时退回会话模型，各警告一次），`maxTokens`（默认 8192，下限 256）是整理/沉淀调用的输出上限。用 `/project-context model <provider>/<id>|off`、`/project-context max-tokens <n>|default` 修改，`status` 显示当前路由与上限。
+- 辅助调用（整理 / 沉淀 / 交接摘要）默认用会话模型；`provider`/`model` 成对设置后改走指定路由（解析不到或未授权时退回会话模型，各警告一次），`maxTokens`（默认 8192，下限 256）是整理/沉淀调用的输出上限；输入超预算时 `maxTokens` 可按各 artifact 的 token 率自动抬高，但不超过模型自身上限与 `maxOutputTokens`（默认 32768）。用 `/project-context model <provider>/<id>|off`、`/project-context max-tokens <n>|default` 修改，`status` 显示当前路由与上限。
 - 平台差异：dsh 的交接摘要同样吃 `maxTokens`；pi 的交接摘要复用宿主 `generateSummaryWithUsage`，上限是 reserve 语义（`min(0.8 × reserve, 模型自身上限)`，重试时 reserve 翻倍），不随 `maxTokens` 变化。
 - 开关管**自动行为**（写盘 / LLM 调用 / 换会话；`memory` 开关同时管 MEMORY、CONTEXT 的注入）；显式命令不受开关限制；`--no-project-context` 本轮全关且不改配置。
 - 旧配置只读兼容：嵌套布局（`features.*`/`autolearn.*`/`handoff.*`）、`memory/autolearn.json` 的 `enabled`/`at`、全局 `~/.pi/agent/auto-handoff.json`；下次保存时重写为扁平布局。

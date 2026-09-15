@@ -1,0 +1,74 @@
+# Round 15 独立复审报告（consolidated-memory-json-poison review-fix 完整复审）
+
+## 1. Scope And Method
+
+- Diff basis：`git diff HEAD`（HEAD=9059877，未提交改动 8 文件）；工作区只读，未做 git 写操作，探针全部在 `/tmp/rev15-probe`。
+- 读取：fix-note §6、review.md（frontmatter round 14 / changes-requested）、round 12 独立记录（仓库内无 round 13/14 独立记录文件——见 residual-risk 文档项）、`project-state.ts`、`consolidate.ts`、`tests/consolidation-test.mjs`、README diff、config/autolearn diff。
+- 独立探针（真实加载仓库模块，非仓库测试复跑）：
+  - **锁**：4 进程×30 轮、陈旧锁+3 进程×20 轮、陈旧 claim 回收、2 进程争陈旧 claim、外持 fresh claim、deadline/CPU、迁移保留锁与 claim、跨进程「备份→改名」链 36 次写（每轮上次字节哈希唯一）。
+  - **预算/编码**：`clipText` 10 组畸形/正常样本 × limit 0..140 全枚举；`fitMemoryInput` 60k 随机网格（ASCII/CJK/emoji/西里尔/阿拉伯/引号反斜杠 × cap 64..32768）。
+  - **回归**：3 类「健康文档提及 bug 格式」不误解码、真阳性解码、老化备份修剪、gitignore、脱敏、读路径零写。
+- `node tests/run-all.mjs` → **8/8 通过**。
+
+## 2. blocking
+
+- 无。
+
+## 3. important
+
+- 无。round 14 的 IMP-R14-1/IMP-R14-2、N-R14-1/N-R14-2 在代码中均已落实并独立验证：
+  - IMP-R14-1 `releaseLock`（project-state.ts:297-311）先 `acquireClaim`，失败即返回；成功才比对 token。跨进程探针：外持 fresh `.steal` 时原持有者释放后 `MEMORY.md.lock` 保留且内容仍是持有者 token；外持 claim 的等待者在 5019ms 抛超时，且未删锁/未删 foreign claim。
+  - IMP-R14-2（project-state.ts:321-332）deadline 检查在 stale 判断前，两分支都走 `sleep(40-100ms)`：5s 等待期间进程 CPU 仅 **29ms**，无空转旁路。
+  - N-R14-1（project-state.ts:239-251）`close` 后才 `rm` 再抛；N-R14-2（project-state.ts:319-320）建锁目录即 `ensureMemoryGitignore`，仓库新增用例通过，独立探针确认首次建锁生成含 `*.lock`/`*.steal` 的 `.gitignore`。
+
+## 4. nit
+
+- **N15-1 非普通文件的 `<lock>.steal` 会永久冻结锁协议。** `project-state.ts:261-280`：`open(claimPath,"wx")` 遇到同名**目录**返回 `EEXIST`，随后 mtime 永不陈旧（或 `rm` 非递归失败被吞），`acquireClaim` 永远 false。实测：预置 `MEMORY.md.lock.steal/` 目录后，`withMemoryLock` 的 action 执行成功、无异常、**但锁文件永久残留**，此后每次写入都在 5s deadline 超时。影响：仅用户/环境手工制造的异常路径，无数据丢失，但无自愈。修复边界：`acquireClaim` 对 `EISDIR/ENOTDIR/EPERM` 等做 `rename(claimPath, claimPath+".broken-<uuid>")` 移开或至少 `logError` 一次，而非静默永久阻塞。
+- **N15-2 fix-note §6 未记录 round-14 批次。** `consolidated-memory-json-poison-fix-note.md:163` 只写「round 12/13 复审的 findings 已修」，review.md frontmatter 仍是 round 14/changes-requested；本轮修复无文档闭环痕迹。修复边界：补一行 round 14 修复记录（release claim 门控、deadline 退避、tryLock 清理、建锁即 gitignore）。
+- **N15-3 仓库测试没有跨进程锁用例。** `tests/consolidation-test.mjs` 无 `child_process`；所有锁断言都在单进程内（`withMemoryLock` 并发 Promise + `utimes`）。README:69 与 fix-note 宣称的是**跨进程**串行，但该保证只靠独立探针，未进回归。修复边界：把「3 子进程 × 陈旧锁不重叠」「外持 claim 释放保锁」搬进 `tests`。
+
+## 5. suggestion
+
+- **S15-1 区分 `fileMtimeMs` 的「缺失」与「stat 失败」。** `project-state.ts:197-205` 任何错误都返回 0，于是瞬时 stat 失败会让活锁看起来「无限旧」，outer loop 会进入 steal。建议仅 ENOENT 返回 0，其余错误返回 `Infinity`（视作不陈旧/不可夺）或上抛。
+- **S15-2 `tryLock` 失败清理加所有权校验。** `project-state.ts:248-250` 直接 `rm(lockPath)`；配合 S15-1 的窗口，理论上可删掉别人新锁。建议 `fstat(fd)`/`stat(path)` 比对 ino+dev 后再删。
+- **S15-3 把 round-14 找到的「外持 claim 不删锁」「fresh claim 下 5s 超时」「首次建锁 gitignore」保留为独立 test 标题**（当前已并入大用例，失败定位成本偏高）。
+
+## 6. learning
+
+- 把「夺锁」拆成 `<lock>.steal` 单胜者 claim + 锁内 token 校验后，锁协议从「mtime 判定 + 无条件删」升级为「谁夺谁担责」；本轮再把 release 也纳入 claim 串行，消除了 round-13 的「双夺取者互删新锁」。代价是引入了「claim 崩溃 → 持有者释放被跳过」，这是用可检测的短暂泄漏换互斥正确性——方向正确。
+- 预算不变量要靠**长度契约**下沉到 `clipText`：`length ≤ limit` 是不空转的前提；代理对补偿必须等量从 head 扣除，实测 60k 网格 0.001 容差 0 越界、0 清零、0 地板破坏。
+- claim 目录/权限这类「非普通文件」是文件协议实现的经典盲点：`open wx` 的 EEXIST 不代表「另一竞争者活着」。
+
+## 7. praise
+
+- 压测结果全部达标：正常 4 进程×30 轮、陈旧锁+3 进程×20 轮、陈旧 claim 回收/竞争，**0 重叠、0 锁/claim 残留**；36 次跨进程「备份→原子改名」链的 36 个前序字节哈希全唯一（无丢更新），结束后无 `.lock`/`.steal`。
+- `clipText`：10 组样本（含孤儿低代理、高代理截断、emoji 密集）× limit 0..140 全枚举，**0 超长、0 新引入孤立代理**（避免在 `head` 边界截断高代理、`tailStart` 落在低代理时补对或跳过）。
+- `fitMemoryInput` 60k 随机网格：`tokens+reserved ≤ cap+0.001` **0 越界**、大 cap 下 0 清零、无「预算不用」；`adaptiveOutputTokens` 的 model cap/ceiling/configured 优先级正确。
+- 解码 fail-safe 可信：健康文档中的「围栏 JSON 示例 + 后续正文」「`{"memory_markdown": "` 截断提及」「普通花括号」均 `poisoned=false` 且磁盘字节不变；真污染仍解码。读路径（`loadMemory`）对污染文件前后目录清单/字节**零变化**。
+- 锁/claim 在 `migrateProjectState` + `cleanStaleTemps` 后仍存在；`*.lock`/`*.steal` 均入 memory `.gitignore`；凭据脱敏独立验证通过；fail-closed（EISDIR 目标→failed+errors.log）由仓库测试覆盖。
+
+## 8. residual-risk
+
+- **R15-1 steal 的 mtime 复检→`rm` 微窗口（project-state.ts:284-294）**：若夺取者在复检通过后被挂起 >30s，其 claim 会被他人按陈旧回收，恢复后仍可能删掉期间新建的 fresh 锁。需「>30s 整进程挂起 + 并发放大」共现，本地/NFS 挂起恢复下理论存在；要彻底关闭需把 `rm` 换成带 inode/代际 CAS 的 rename-hardlink 方案，本轮不建议为它扩协议。
+- **R15-2 `tryLock` 写失败清理（project-state.ts:248-250）**：`open` 成功后若写失败处理被延迟 >30s 且期间锁被夺取重建，清理会误删新锁；概率接近零。
+- **R15-3 claim 崩溃遗留（project-state.ts:297-304）**：夺取进程在 claim 持有窗口被 kill，持有者释放会跳过、锁保留至 claim 满 30s；期间其他整理者每次等 5s 后失败。实测确认该行为与恢复路径，属协议代价。
+- **R15-4 `fileMtimeMs` 把 stat 失败当 0（project-state.ts:197-205）**：瞬时 EACCES/EIO 可让活锁被判陈旧；需 stat 失败且竞争者 stat 成功的组合。
+- **R15-5 无磁盘标记下「整文件恰为 JSON 示例」仍会被解码**（mode B 只读，写前备份兜底，fix-note 已记录）。
+- **R15-6 一小时内备份数无上界**（设计使然，高频写有临时磁盘占用）。
+- **R15-7 仓库内没有 round 13/14 的独立记录文件**（review.md `lane_a_ref` 仍写 round 1..11；round-14 findings 只见于 review frontmatter 与 owner 转述），审计链不完整——非代码问题。
+
+## 9. Test And QA Focus
+
+- 跨进程锁回归（N15-3）：子进程 × 陈旧锁、外持 `.steal` 释放保锁、fresh claim 5s deadline；断言 CPU/退避可用「等待期间 `process.cpuUsage` 增量 < 100ms」近似。
+- claim 异常路径（N15-1）：目录/无权限 claim 下写路径要么自愈要么显式报错误日志，不得静默永久超时。
+- 保留现有 60k 网格思路，把 emoji/引号 fixture 固定进仓库矩阵（已部分存在）；补 `clipText(limit<16)` 尾部孤儿低代理用例。
+- 文档：fix-note §6 补 round-14 记录；review.md 复核后再更新状态。
+
+## 10. 无法确认点（沙箱限制）
+
+- 真实 provider 对自适应抬高的 `maxTokens`/`maxOutputTokens` 接受度、真实 tokenizer 与 `replyTokenRate` 偏差未验证。
+- Windows/NFS 上 rename 原子性、mtime 粒度、`open wx`/`rm` 的错误码差异（EISDIR 行为在 Linux 上已实测，其他平台未知）。
+- 真实 UniField/Quantum 备份不在沙箱，仅合成夹具；「>30s 临界区」只能以 `utimes` 加速模拟，未能真实等待。
+- round 13/14 独立审查原始记录不在本沙箱，其结论以 owner 转述为准。
+
+VERDICT: PASSED

@@ -1,0 +1,69 @@
+# Round 13 独立复审报告（memory-json-poison review-fix）
+
+## 1. Scope And Method
+
+- Diff basis：`git diff HEAD`（HEAD `9059877`，diff hash `2c480e8b…`，审查前后工作区一致、无写入、无 git 写操作）。
+- 证据：`.codestable/attention.md`、fix-note §6、review.md、round 11/12 独立记录、`README.md` diff、`project-state.ts`（729 行）、`consolidate.ts`（595 行）、`autolearn.ts`/`config.ts`、`tests/consolidation-test.mjs` diff。
+- 独立探针（/tmp/rev13-probe，经仓库 `tests/harness.mjs` 的 jiti 真实加载模块，未写工作区）：
+  - `probe1/1b`：`clipText` 长度与代理对不变量（~500 样本 × limit 0..100 + 2000×65 有效对 fuzz）、`fitMemoryInput` 900 组矩阵 + 6000 组随机网格（emoji/引号/西里尔/阿拉伯）、小 cap 256/300/400/512。
+  - `probe2`：锁 18 项（串行/高频/单贼夺取/释放所有权/新鲜锁超时/>30s 夺取/锁消失/不可读/prune+迁移存活/gitignore）。
+  - `probe3`：读路径零写、EISDIR/EACCES 留痕与 fail-closed、权限恢复重试。
+  - `probe5`：畸形代理对裁剪复现、`lastWrite` 二次命令回执。
+  - `probe6`：**陈旧锁 + 多夺取者**竞态压力（400 轮 ×3 写者）。
+- `node tests/run-all.mjs` → **8/8 通过**。
+
+## 2. blocking
+
+无。
+
+## 3. important
+
+**IMP-R13-1 陈旧锁的「夺取」本身没有所有权判别，多个夺取者可互删新锁 → 互斥失效。**
+`extensions/project-context/project-state.ts:280-282`：观察到 `mtime > 30s` 后直接 `rm(lockPath, {force:true})` 并 `continue`，删除前不校验内容/持有者。两个同时到达的写者 B、C 都可以先通过 tryLock 的 EEXIST、再各自读到同一个陈旧 mtime；若 B 先 rm+`open wx` 建好自己的锁，C 随后的无条件 `rm` 会把 B 的新锁删掉，然后建自己的锁 → B、C 同时进入临界区。round-12 的 I-1 只修了**释放**侧的所有权（releaseLock 读 token 比对），夺取侧未修。
+- 真实探针（probe6）：预置 60s 陈旧锁 + 3 个并发写者，每个动作 2ms —— **3/400 轮出现两个 action 同时在内**；无陈旧锁时 0/400；单贼 A→B→C 场景（仓库 S-3 测试）全过。
+- 影响：崩溃遗留锁之后（settle + shutdown 并发、或两个 pi 进程）「备份读取 → 修剪 → 原子改名」可能重叠 → MEMORY.md 丢更新（`rename` 原子，字节不会写坏；备份名唯一，prune 不删新鲜项）。触发条件要求「陈旧锁 + 多个写者同窗口」，后果有界，故不判 blocking。
+- 修复边界：把夺取变成**单一胜者**（如另用 `lockPath.steal` 的 `wx` 文件串行化夺取，再在校验 token+mtime 后删除；或 rename 到唯一名后再校验被移动文件的 token），并补「老化锁 + ≥3 并发写者不重叠」回归。README.md:69 与 fix-note §6 的「安全夺取」在修复前是过度承诺。
+
+## 4. nit
+
+- **N-R13-1 `lastWrite` 从不清除，命令回执可能引用陈旧备份/修复标记。** `consolidate.ts:418` 只在 `memoryChanged` 时写入；`:509-513`、`:538-540` 在 `clipped`/`repaired` 分支无条件读取。若上一轮做过 JSON 修复或写过备份、本轮只更新 CONTEXT.md（`memoryChanged=false`、`update` 真、`outcome.clipped` 真），`/memory-learn` 会显示上一次的 `Previous file:`；`updated` 分支也会重播「raw JSON replaced」。我的 e2e 探针被 `written`/version 去重挡住了第二轮（返回 deduped），但代码路径明确。修复边界：每轮开始时把 `lastWrite` 置为 `{ backup: undefined, repaired: false }`，或在 `consolidate()` 内把本轮局部值传给 `consolidateReply`。
+- **N-R13-2 `clipText` 对畸形输入仍可能新造孤立低代理。** `consolidate.ts:229-233`：当 `text[tailStart]` 是孤立低代理（其前一单元不是高代理）时仍 `tailStart -= 1`，可能落到紧邻的**另一个合法对的低半**上，而该对高半留在 head 之外。确定性复现：`clipText("a".repeat(30)+"😀"+"\uDC00"+"b".repeat(18), 50)` → head=28、tailStart=31，pair(30,31) 被拆开（probe5 已验证）。有效对 fuzz 2000×65 零拆分、长度不变量在所有样本成立，故仅畸形输入下的 prompt 边缘风险。修复边界：减 1 前要求 `isHighSurrogate(charCodeAt(tailStart-1))`，否则保留原位或 `tailStart += 1`。
+- **N-R13-3 README 文档漂移**：`README.md:55` 说 `.gitignore` 忽略「备份与 errors.log」，实际写入了 `*.lock`（`project-state.ts:151`）；`README.md:69` 未提锁文件。补一句即可。
+- **N-R13-4（沿用 round-12 N-2，已接受）** `ensureMemoryGitignore` 先入缓存再写，首次失败本进程不重试；best-effort 设计，可在注释中明说。
+
+## 5. suggestion
+
+- **S-R13-1 `releaseLock` 的 read→rm 非原子**（`project-state.ts:256-261`）：A 读到自己的 token 后、rm 前，若恰有夺取者替换锁，A 会删掉新锁。窗口 µs 级且要求 A 临界区 >30s，与 IMP-R13-1 一并做原子化收取即可。
+- **S-R13-2** 建议把「陈旧锁 + 多写者」和「畸形代理对裁剪不新造孤立代理」固化为仓库回归，前者是 round-12 S-3 的另一半，后者可表驱动加入现有 clip 用例。
+
+## 6. learning
+
+- 陈旧锁接管需要**夺取侧与释放侧都做所有权判别**：check-then-unlink 两个观察者都能通过检查，随后的无条件删除会删掉别人的新锁；「单一胜者」的原子声明（rename/二级 claim）才是关键。
+- 代理对边界修补要检查**邻居是不是配对的那一半**，而不是「是不是代理码元」：向回移动一格可能落到另一个对的低半上，把完整对拆成孤立半。
+
+## 7. praise
+
+- round-12 目标修复均独立复核通过：单贼夺取后 A 释放不删 B 的锁、C 被正确阻塞；120+10 写者无泄漏；新鲜锁不被夺取且 ~5s 超时、`utimes` 老化 >30s 立即夺取；锁消失/不可读时不误删；锁存活于备份 prune 与 `migrateProjectState`；`.gitignore` 已含 `*.lock`。
+- `clipText` 长度 `≤ limit` 在全部样本/limit 0..100 成立，round-12 I-2 的 20 字符复现已收敛；有效代理对输入零新孤立半。
+- `fitMemoryInput` 在 6000 随机 + 900 矩阵下 `Σ率 + reserved ≤ maxTokens + 0.001` 零越界、两侧不被清零、无异常浪费；cap 256/300/400/512（model cap）下 reserved=64/64/64/112 与测试公式一致，双方均存活；`adaptiveOutputTokens` 的 floor/ceiling/model-cap 优先级正确。
+- 读路径（含 `.pi` 旧布局）零新增文件、污染字节不动；EISDIR/EACCES 下 consolidation 留下「cannot be read」诊断并中止写入，`/memory` warning 已由仓库测试覆盖；`node tests/run-all.mjs` 8/8。
+
+## 8. residual-risk
+
+- IMP-R13-1 的竞态与 S-R13-1 的 µs 级 release TOCTOU：临界区 >30s / 崩溃锁 + 并发写者才触发，后果是丢更新而非字节损坏。
+- 一小时内备份数上界 = 该小时写入次数 + 5（设计使然，高频写入磁盘占用上升）。
+- `tryLock` 的「open 成功但 writeFile 失败」清理路径未能动态复现：jiti 对 `node:fs/promises` 的绑定不可在探针中 patch（`fsp.open` 赋值被模块封装拒绝），仅在 `project-state.ts:237-245` 静态确认 `rm` 后重抛；EACCES 仅 uid 1000 下验证，root 行为未测。
+- 真实 provider 对抬高 `maxTokens` 的接受度、真实 tokenizer 与 `replyTokenRate` 偏差、Windows/NFS 的 rename/mtime 语义均未在沙箱验证。
+
+## 9. Test And QA Focus
+
+- 新增：预置老化锁 + 3 个并发写者，断言 `active` 不重叠且全部正常退出（当前 S-3 只覆盖单贼）。
+- 新增：畸形代理对 fixture（孤立低代理紧随合法对低半）断言输出不新造孤立代理。
+- 每轮重置 `lastWrite`，加「上一轮修复/剪裁、本轮仅写 CONTEXT.md」的命令回执断言，不得出现陈旧备份路径或 repaired 文案。
+
+## 10. 无法确认点
+
+- 上述 `tryLock` writeFile 失败的动态清理；root 下 EACCES；Windows/NFS；真实 provider/tokenizer。
+- 第二轮 context-only 回执的 e2e 被 version 去重挡住（探针直接调用 `consolidateProjectState` 可绕开，但 `lastWrite` 属 register 闭包）；结论基于静态路径。
+
+VERDICT: CHANGES-REQUESTED

@@ -6,7 +6,6 @@ import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	MAX_CONVERSATION_CHARS,
-	MAX_MEMORY_CHARS,
 	backupMemoryBeforeWrite,
 	contextFile,
 	getProjectRoot,
@@ -15,9 +14,11 @@ import {
 	memoryFile,
 	memoryDir,
 	migrateProjectState,
+	normalizeMemoryDocument,
 	notify,
 	readJsonStringField,
 	readOptional,
+	withMemoryLock,
 	writeAtomic,
 } from "./project-state.ts";
 
@@ -131,23 +132,37 @@ function replyHead(raw: string): string {
 	return `--- raw reply ---\n${head}${notice}`;
 }
 
-/** Worst-case output tokens per character for CJK text (a Han character is close to one token). */
-const CJK_TOKENS_PER_CHAR = 1;
+/** Worst-case output tokens per character for dense scripts (a Han character is close to one token). */
+const DENSE_TOKENS_PER_CHAR = 1;
 /** Conservative rate for markdown, paths and ASCII prose (real tokenizers need less). */
 const ASCII_TOKENS_PER_CHAR = 0.4;
+/** Extra cost for a quote or backslash, which JSON escaping doubles when the reply re-emits it. */
+const ESCAPE_TOKENS_PER_CHAR = 0.2;
 /** Output room reserved for the JSON scaffolding and the rewritten context. */
-const REPLY_OUTPUT_MARGIN_TOKENS = 1024;
+export const REPLY_OUTPUT_MARGIN_TOKENS = 1024;
 /** Chars kept per artifact when the budget allows; the split also reserves it as a token floor. */
 const MIN_CLIP_CHARS = 400;
+/** Hard ceiling for an adaptive output cap when the model reports no limit of its own. */
+export const MAX_ADAPTIVE_OUTPUT_TOKENS = 32_768;
 
 /** What the pass sends instead of the stored artifacts, plus the budget it asks for. */
 type MemoryInput = { text: string; contextText: string; maxTokens: number; clipped: boolean };
 
-/** Conservative output-token rate for text the reply must re-emit; CJK is charged the most. */
+/**
+ * Conservative output-token rate for text the reply must re-emit. Dense scripts (CJK and every
+ * other non-ASCII script, including emoji) are charged a full token per code point; ASCII prose
+ * is charged 0.4; quotes and backslashes pay extra for their JSON escape. Never underestimates.
+ */
 export function replyTokenRate(text: string): number {
 	if (!text) return ASCII_TOKENS_PER_CHAR;
-	const cjk = (text.match(/[\u3000-\u9fff\u3040-\u30ff\uac00-\ud7af\uff00-\uffef]/gu) ?? []).length;
-	return (cjk * CJK_TOKENS_PER_CHAR + (text.length - cjk) * ASCII_TOKENS_PER_CHAR) / text.length;
+	let tokens = 0;
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		if (code > 0x7f) tokens += DENSE_TOKENS_PER_CHAR;
+		else tokens += ASCII_TOKENS_PER_CHAR + (char === '"' || char === "\\" ? ESCAPE_TOKENS_PER_CHAR : 0);
+	}
+	// Rate per UTF-16 unit, so `text.length * rate` stays the token estimate.
+	return tokens / text.length;
 }
 
 /** Clip from the original text to a char limit, keeping the original when it already fits. */
@@ -178,13 +193,51 @@ function allocateTokens(budget: number, memoryTokens: number, contextTokens: num
 	return { memory, context };
 }
 
-/** Head and tail of a text, shortened to exactly `limit` characters (the `\n\n` joiner included). */
-function clipText(text: string, limit: number): string {
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+	return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
+ * Raise the configured output cap to what the pass needs, bounded by the model's own limit and the
+ * configured ceiling. Without model metadata an adaptive cap could exceed what the provider
+ * accepts, so the pass never asks for more than the ceiling; an over-long input is then clipped.
+ */
+export function adaptiveOutputTokens(configured: number, needed: number, model: { maxTokens?: number }, ceiling: number): number {
+	const cap = typeof model.maxTokens === "number" && model.maxTokens > 0 ? model.maxTokens : undefined;
+	const grown = Math.max(configured, needed);
+	return Math.min(cap ? Math.min(grown, cap) : grown, Math.max(configured, ceiling));
+}
+
+/** Head and tail of a text, shortened to a char limit (the `\n\n` joiner included). */
+export function clipText(text: string, limit: number): string {
 	if (text.length <= limit) return text;
-	if (limit < 16) return text.slice(0, Math.max(0, limit));
+	if (limit < 16) {
+		let cut = Math.max(0, limit);
+		// Never end on a high surrogate: a lone half cannot be re-encoded by a provider.
+		if (cut > 0 && isHighSurrogate(text.charCodeAt(cut - 1))) cut -= 1;
+		return text.slice(0, cut);
+	}
 	const size = limit - 2;
-	const head = Math.ceil(size * 0.6);
-	return `${text.slice(0, head)}\n\n${text.slice(text.length - (size - head))}`;
+	let head = Math.ceil(size * 0.6);
+	if (head > 0 && head < text.length && isHighSurrogate(text.charCodeAt(head - 1))) head -= 1;
+	let tailStart = text.length - (size - head);
+	if (tailStart > head && isLowSurrogate(text.charCodeAt(tailStart))) {
+		if (isHighSurrogate(text.charCodeAt(tailStart - 1))) {
+			// Include the pair's high surrogate and take the extra unit back out of the head, so
+			// the result never exceeds `limit` (the exact trim relies on that).
+			tailStart -= 1;
+			head = Math.max(0, head - 1);
+			if (head > 0 && isHighSurrogate(text.charCodeAt(head - 1))) head -= 1;
+		} else {
+			// An unpaired low surrogate from malformed input: skip it instead of starting on half.
+			tailStart += 1;
+		}
+	}
+	return `${text.slice(0, head)}\n\n${text.slice(tailStart)}`;
 }
 
 /**
@@ -199,15 +252,15 @@ export function fitMemoryInput(
 	context: string,
 	configuredMaxTokens: number,
 	model: { maxTokens?: number },
+	ceilingTokens: number = MAX_ADAPTIVE_OUTPUT_TOKENS,
 ): MemoryInput {
 	const memoryRate = replyTokenRate(memory);
 	const contextRate = replyTokenRate(context);
 	const needed = Math.ceil(memory.length * memoryRate + context.length * contextRate) + REPLY_OUTPUT_MARGIN_TOKENS;
-	const cap = typeof model.maxTokens === "number" && model.maxTokens > 0 ? model.maxTokens : undefined;
-	const maxTokens = cap ? Math.min(Math.max(configuredMaxTokens, needed), cap) : Math.max(configuredMaxTokens, needed);
-	// Keep the JSON-scaffolding margin, but let a tiny output cap still carry a memory floor
-	// instead of asking the model to rewrite the artifacts from nothing.
-	const reserved = Math.min(REPLY_OUTPUT_MARGIN_TOKENS, Math.max(0, maxTokens - MIN_CLIP_CHARS));
+	const maxTokens = adaptiveOutputTokens(configuredMaxTokens, needed, model, ceilingTokens);
+	// Keep a JSON-scaffolding margin, with a small absolute floor so a tiny cap cannot spend
+	// every token on content and then truncate the reply's own braces and keys.
+	const reserved = Math.min(REPLY_OUTPUT_MARGIN_TOKENS, maxTokens, Math.max(64, maxTokens - MIN_CLIP_CHARS));
 	const budget = Math.max(0, maxTokens - reserved);
 	if (memory.length * memoryRate + context.length * contextRate <= budget) {
 		return { text: memory, contextText: context, maxTokens, clipped: false };
@@ -309,11 +362,9 @@ function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: str
 }
 
 /** Run the consolidation pass. Callers own persisting the returned artifacts. */
-function cleanMemory(text: string): string {
-	const withoutFence = text.replace(/^```(?:markdown)?\s*/i, "").replace(/\s*```$/, "").trim();
-	const body = withoutFence.replace(/^# Project Memory\s*/i, "").trim();
-	return `# Project Memory\n\n${body}`.slice(0, MAX_MEMORY_CHARS).trimEnd() + "\n";
-}
+/** Info about the newest memory write, so explicit commands can point at the backup. */
+type LastWriteInfo = { backup?: string; repaired: boolean };
+const lastWrite = new Map<string, LastWriteInfo>();
 
 /**
  * Register the consolidation hooks and commands. Registered after the archive hooks so the
@@ -342,6 +393,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		let wroteMemory = false;
 		try {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
+			// A new pass must not let an explicit command quote the previous pass's backup or repair.
+			lastWrite.delete(projectRoot);
 			if (!force) {
 				const { enabled } = await memoryEnabled(ctx);
 				if (!enabled) return "unchanged";
@@ -359,12 +412,17 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let backup: string | undefined;
 			let storedPoisoned = false;
 			if (memoryChanged) {
-				// Always keep the bytes that are on disk right now, whatever this pass believed earlier.
-				const snapshot = await backupMemoryBeforeWrite(memoryFile(projectRoot));
+				// Always keep the bytes that are on disk right now, whatever this pass believed
+				// earlier; the lock keeps another process from replacing them mid-write.
+				const snapshot = await withMemoryLock(memoryFile(projectRoot), async () => {
+					const kept = await backupMemoryBeforeWrite(memoryFile(projectRoot));
+					await writeAtomic(memoryFile(projectRoot), normalizeMemoryDocument(memoryText));
+					return kept;
+				});
 				backup = snapshot.path;
 				storedPoisoned = snapshot.poisoned;
-				await writeAtomic(memoryFile(projectRoot), cleanMemory(memoryText));
 				wroteMemory = true;
+				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
 				}
@@ -442,7 +500,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const memory = await loadMemory(projectRoot);
-			if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
+			if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
+			else if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
 			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
 			else notify(ctx, `Project memory: ${memory.source}`);
 		},
@@ -451,16 +510,18 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	pi.registerCommand("memory-learn", {
 		description: "Consolidate durable facts and the session context from this project session",
 		handler: async (_args, ctx) => {
+			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const report = await consolidate(ctx, true, true);
-			notify(ctx, consolidateReply(report), report === "failed" || report === "clipped" ? "warning" : "info");
+			notify(ctx, consolidateReply(report, lastWrite.get(projectRoot)), report === "failed" || report === "clipped" ? "warning" : "info");
 		},
 	});
 
 	pi.registerCommand("context-update", {
 		description: "Alias for /memory-learn: rewrite project memory and context now",
 		handler: async (_args, ctx) => {
+			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const report = await consolidate(ctx, true, true);
-			notify(ctx, consolidateReply(report), report === "failed" || report === "clipped" ? "warning" : "info");
+			notify(ctx, consolidateReply(report, lastWrite.get(projectRoot)), report === "failed" || report === "clipped" ? "warning" : "info");
 		},
 	});
 }
@@ -476,11 +537,12 @@ const CLIPPED_NOTICE_NO_WRITE =
 	"Project memory and context were updated, but existing content was shortened to fit the model output budget; review MEMORY.md, CONTEXT.md and the .agents/memory backups if older details matter.";
 
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
-export function consolidateReply(report: ConsolidateReport): string {
+export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo): string {
 	if (report === "failed") return "Project memory update failed; see .agents/memory/errors.log.";
-	if (report === "clipped") return CLIPPED_NOTICE_NO_WRITE;
+	if (report === "clipped") return info?.backup ? `${CLIPPED_NOTICE} Previous file: ${info.backup}.` : CLIPPED_NOTICE_NO_WRITE;
 	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
+	if (info?.repaired && info.backup) return `Project memory and context updated; the stored raw JSON reply was replaced (backup: ${info.backup}).`;
 	return "Project memory and context updated.";
 }
 
@@ -514,8 +576,11 @@ export async function consolidateProjectState(
 		}
 
 		const existing = await loadMemory(projectRoot);
+		if (existing.unreadable) {
+			await logError(projectRoot, "memory", "MEMORY.md exists but cannot be read; continuing with an empty memory (the write path fails closed).");
+		}
 		const existingContext = (await readOptional(contextFile(projectRoot))).slice(0, MAX_CONTEXT_CHARS);
-		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel);
+		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens);
 		const prompt = buildPrompt(projectRoot, fitted, conversationText(ctx.sessionManager.buildContextEntries()));
 
 		let raw: string;

@@ -1,0 +1,61 @@
+# Round 17 独立复审报告 — consolidated-memory-json-poison
+
+审查方式：只读沙箱 `/tmp/pi-context-rev17`，基准 `HEAD 9059877`；所有探针写在 `/tmp/probe-rev17/`（未写工作区、无 git 写操作）。已复跑 `node tests/run-all.mjs` → **8/8 通过（exit 0）**；另做 4 组独立探针：锁自愈矩阵（9 例）、spawn timeout 语义、dangling symlink、memory `.gitignore` 内容。审查后 `git status --porcelain` 计数与审查前一致（17 行），工作区无新增产物。
+
+## Blocking
+
+无。
+
+## Important
+
+无。round 16 六项 nit 逐一独立复核：
+
+- **N16-1 锁路径非普通文件自愈（`project-state.ts:263-266`）**：探针全部通过——目录锁 2ms 进入、目录被 rename 为 `.broken-e7cb3c8e` 且其中 `user-data.txt` 逐字节保留、自愈后再次加锁成功；FIFO 1ms、`/dev/null` symlink 1ms 自愈；dangling symlink 98ms（`open wx` EEXIST → `stat` ENOENT → `lockMtimeMs=0` → 立刻走 steal `rm` 摘链）。正常陈旧文件 65ms 被夺取并写入成功、0 残留；**新鲜外来锁等待 5038ms 超时且不被删除**（无所有权不清理）。
+- **N16-2/N16-4 跨进程用例（`tests/consolidation-test.mjs:739-756`）**：`spawn(..., { timeout: 15_000 })` 有效——独立探针用 60s 挂起子进程，1.2s 被 SIGTERM 杀死，`exit(code=null)` → `reject`，即测试失败而非挂起；残留断言 `name.startsWith("MEMORY.md.lock")` 覆盖 `.lock`/`.steal`/`.lock.broken-*`，且解析 6 行 enter/exit + depth 能发现嵌套。
+- **N16-3（`:739`）**：已用 `fileURLToPath(new URL(...))`。
+- **N16-6（`project-state.ts:437-450`）**：旧 `.broken-deadbeef` 与旧 pid `.tmp` 经 `migrateProjectState` 被回收；新鲜 `.broken-*`、非 8-hex 后缀、`plain.tmp`、`.lock`/`.steal`、用户文件均保留。
+- **N16-5（`.gitignore:5-9`）**：`git check-ignore -v` 确认 `.agents/**` 下 backup/lock/steal/broken/errors.log 全部命中，负样本 `yarn.lock`、`Cargo.lock`、`other/foo.lock` 均 **NOT-IGNORED**；memory 本地 `.gitignore` 5 条规则实测齐全。
+- **回归面无回退**：8/8；备份修剪断言被移动并加强（`tests/consolidation-test.mjs:326-351` 老化后修剪到 5 份 + 用户文件/目录不动）；`git diff` 删除行均为被新实现替代的重构，无弱化。
+
+## Nit
+
+1. **N17-1 `cleanStaleTemps` 的 `.broken-*` 回收与实际生产者不对称** — `project-state.ts:437`（`if (!entry.isFile()) continue`）vs `263-266`、`298-300`（两处 rename 都只在 `!info.isFile()` 时发生）。
+   - 事实：协议产生的 broken 产物（目录/FIFO/设备/symlink）**必然是非普通文件**，因此永远过不了 `isFile()` 闸门；探针确认 broken 目录在 migration 后仍在（`somedir.broken-1234abcd`，以及目录锁自愈产生的 `MEMORY.md.lock.broken-*` dir）。能匹配的只有恰好叫 `*.broken-<8hex>` 的用户普通文件，反而新增了删除面。影响：每个外部制造的非文件占据锁/claim 路径就留下一个永久（被 gitignore）的 broken 产物，只能人工清；有界但 N16-6 的「回收」对真正的来源无效。修复边界：明确决定「非文件 broken 是用户数据、故意保留」并写进注释；若要回收，只删 **空目录** 且更老于 cutoff（绝不递归，目录内可能含用户数据），并给该分支留测试。
+2. **N17-2 `tests/run-all.mjs:15` 的 `spawnSync` 仍无 timeout** — round 16 N16-2 的后半条未落实。影响：任何测试文件未来出现锁外死锁/挂起，CI 仍会无限等待（锁死锁主向量已被子进程 timeout 与 5s deadline 封住，风险低）。修复边界：`{ encoding: "utf8", timeout: 60_000 }`，`status === null` 时按失败上报。
+
+## Suggestion
+
+- **S17-1（承接 S16-1）**：`tryLock` 写失败清理 `rm(lockPath)`（`project-state.ts:243-251`）无 inode/所有权校验；只有在 open 与清理之间被挂起 >30s 且锁被夺取重建时才会误删新锁，概率近零，可 stat 比对 ino/dev 或 rename 摘除。
+- **S17-2**：仓库用例只覆盖「目录锁自愈」（`consolidation-test.mjs:758-765`），未覆盖 `cleanStaleTemps` 的 broken/tmp 回收。建议在附近补「旧 broken 删除 + 新鲜 broken 保留」两条断言，把 N16-6 的边界锁进回归；可选补 FIFO/symlink 一例。
+
+## Learning
+
+- 同一盲点在协议两个入口（`<lock>` 与 `<lock>.steal`）各犯一次，说明自愈/校验应作为**协议入口的统一预处理**，而不是逐路径打补丁；N16-1 的对称化修好了调用侧，但清理侧又按「文件」直觉设闸，忽略了「rename 只可能产出非普通文件」这一生产者事实。
+- `lockMtimeMs` 的「ENOENT=0」语义意外成为 dangling symlink 的自愈通道（stat 失败→视为无限陈旧→steal `rm` 摘链），与「非 ENOENT=Infinity」的 fail-closed 形成互补，探针已证实两种 symlink 行为都正确。
+
+## Praise
+
+- 四项修复均可独立复现为真：非文件锁自愈（目录/FIFO/设备/symlink）且用户数据零删除；新鲜外来锁超时不清；spawn timeout 在 1.2s 真正 kill/reject；`.gitignore` 收窄含负样本验证；memory 本地 5 条规则齐全。
+- 8/8 回归与加强后的修剪/时钟回拨/预算矩阵一致，无回退；审查前后工作区无写入（唯一磁盘上的 `.lock` mtime 16:10，早于本次审查，且被 `session-logs/.gitignore` 的 `*` 覆盖，非测试泄漏）。
+
+## Residual Risk
+
+- **R17-1**：协议 broken 非文件无回收（N17-1），被 gitignore 后只能人工清理。
+- **R17-2**：`cleanStaleTemps` 普通文件分支可能删掉用户恰好命名 `*.broken-<8hex>` 且 >1h 的文件（面很小，名字精确）。
+- **R15-1..R15-4 仍在**：steal 的 mtime 复检→`rm` 微窗口、`tryLock` 写失败清理所有权、claim 崩溃遗留至多 30s、`fileMtimeMs` stat 失败=0 影响备份轮换。ELOOP/不可读锁仍 fail-closed 到人工介入（已记录的取舍）。
+- **R17-3**：run-all 无 timeout（N17-2）；Windows/NFS 的目录/设备 rename、mtime 粒度、错误码与真实 tokenizer/供应商行为无法在本沙箱验证。
+
+## Test And QA Focus
+
+- 必跑：`node tests/run-all.mjs`（本沙箱 8/8，exit 0）。
+- 已覆盖：`tests/consolidation-test.mjs:739-765`（跨进程 timeout/0 嵌套/6 行/无残留 + 目录锁自愈）、解码安全、clip 预算矩阵、备份保留/时钟回拨、脱敏、fail-closed。
+- 建议新增：旧/新 `.broken-*` 回收断言（S17-2）；`run-all` timeout（N17-2）。
+- 可复用探针：`/tmp/probe-rev17/probe-lock.mjs`（目录/FIFO/设备/symlink/陈旧/新鲜/临时回收 9 例）、`probe-spawn.mjs`、`probe-dangling.mjs`、`probe-memgitignore.mjs`。
+
+## 无法确认点
+
+- 真实设备节点（无 root，仅测 FIFO 与指向 `/dev/null` 的 symlink）；Windows/NFS 上目录/设备 rename 与 `rm` 错误码。
+- 真实 provider tokenizer 与自适应 `maxTokens` 接受度（本轮未改该路径）。
+- 真实项目中「非文件占据锁路径」的出现概率，故无法量化 broken 产物累积速率。
+
+VERDICT: PASSED

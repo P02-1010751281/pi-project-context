@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+# project-context: local artifacts, do not commit
+.agents/**/*.memory-backup-*
+.agents/**/errors.log
+.agents/**/*.lock
+.agents/**/*.steal
+.agents/**/*.broken-*

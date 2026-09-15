@@ -66,6 +66,8 @@ export type ProjectContextConfig = HandoffSettings & {
 	forceDedupeMs: number;
 	/** Output cap for the auxiliary model calls (`llm.ts`); the handoff summary keeps its own reserve math. */
 	maxTokens: number;
+	/** Hard ceiling for the adaptive output cap when the model reports no limit of its own. */
+	maxOutputTokens: number;
 	/** Optional auxiliary-call route override; must be set together with `model`. Empty = session model. */
 	provider: string;
 	/** Optional auxiliary-call route override; must be set together with `provider`. Empty = session model. */
@@ -85,6 +87,7 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	consolidateIntervalMs: 5 * 60 * 1000,
 	forceDedupeMs: 15 * 1000,
 	maxTokens: 8192,
+	maxOutputTokens: 32_768,
 	provider: "",
 	model: "",
 	handoffAdaptive: true,
@@ -223,6 +226,7 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 		consolidateIntervalMs: positive(raw.consolidateIntervalMs, 1000) ?? DEFAULT_CONFIG.consolidateIntervalMs,
 		forceDedupeMs: positive(raw.forceDedupeMs, 0) ?? DEFAULT_CONFIG.forceDedupeMs,
 		maxTokens: positive(raw.maxTokens, MIN_AUX_MAX_TOKENS) ?? DEFAULT_CONFIG.maxTokens,
+		maxOutputTokens: positive(raw.maxOutputTokens, MIN_AUX_MAX_TOKENS) ?? DEFAULT_CONFIG.maxOutputTokens,
 		provider: route.provider,
 		model: route.model,
 

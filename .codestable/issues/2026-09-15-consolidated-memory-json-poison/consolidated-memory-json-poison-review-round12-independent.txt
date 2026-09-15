@@ -1,0 +1,68 @@
+# Round 12 独立代码审查报告（memory-json-poison review-fix 复审）
+
+## 1. Scope And Method
+
+- Diff basis：`git status`/`git diff`（未提交）；HEAD = 9059877。审查前后工作区文件清单与 diff 一致（未写工作区、未做 git 写操作）。
+- 证据：`.codestable/attention.md`、fix-note §6、review.md、round 10/11 独立记录；重点读 `project-state.ts`(694)、`consolidate.ts`(595)、`autolearn.ts`/`config.ts` diff、`tests/consolidation-test.mjs` diff，并用 `git show HEAD:` 对比旧实现。
+- 独立探针（全部在 /tmp/rev12-probe，真实加载仓库模块）：23 组解码形状、读路径零写、`.pi`/OMP/不可读；20 并发 + 2 进程 ×5 次跨进程锁、陈旧夺取、EISDIR/EACCES 释放、锁存活于 prune/迁移；800 次备份 + 老化收敛；gitignore 幂等/保留用户内容；8 个凭据样例脱敏；60k 随机 `fitMemoryInput` 网格 + `clipText` 全 limit（0..70）代理对/长度检查；`migrateProjectState` 锁内 check-then-write。
+- `node tests/run-all.mjs` → **8/8 通过**（含新增 residuals 段）。
+
+## 2. blocking
+
+- 无。
+
+## 3. important
+
+**I-1 陈旧锁夺取没有所有权判别：原持有者的 `finally` 会删掉新持有者的锁，互斥失效。**
+`project-state.ts:256-274`（`tryLock` 写 pid 后无 token 校验，`finally` 无条件 `rm(lockPath)`），夺取逻辑 `:263-265`。复现（加速时钟，等价真实 >30s）：A 持锁在 action 内 → `utimes` 老化 → B 夺取并进入 → A 结束 `finally` 删除的是 B 的锁 → C 立刻进入，`B` 仍在临界区，探针输出 `A-enter / B-enter / A-exit / lock-exists=false / C-enter`。影响：任何一次临界区超过 30s（慢 NFS、挂起恢复、调度停顿）后，「备份读取→修剪→改名」的串行保证失效，可能出现互相覆盖式丢更新（rename 原子，不会写坏字节；备份名唯一，prune 不删新鲜项）。README.md:69 与 fix-note:156 宣称「安全夺取」，实际不成立。修复边界：锁内容写唯一 token（pid+random），释放前读回比对，只在 token 匹配时 `rm`；夺取时用 rename 到自己的唯一名再创建，或比对观察到的 token 后再删；不要只凭 mtime。
+
+**I-2 `clipText` 可返回 `limit+1`，导致 round-11 的「精确修剪」空转，严格预算残差仍在。**
+`consolidate.ts:227-229`：当 `text.charCodeAt(tailStart)` 是低代理时 `tailStart -= 1` 以保完整代理对，但未补偿长度，输出由 `limit` 变 `limit+1`（头部减 1 只抵消了 head 侧的另一分支）。于是 `consolidate.ts:307-318` 的 exact trim 用 `clipTo(text, len-1)` 时可能得到同长字符串，4 次迭代零进展。确定性复现：`clipText("aaaaaaaaaaa\n\n😀aaaaaa"…)`，L=20 返回 21 字符；`fitMemoryInput` 60k 随机网格（含 emoji/西里尔/阿拉伯/引号反斜杠）在 0.001 容差下 **254/60000 越界，worst=0.400 token**（集中在 `maxTokens=1024`、`budget=400` 的代理对边界案例；我的随机捕获 case 里 `limit 446 → 输出 447`）。影响：`tokens + reserved ≤ maxTokens` 这一 fix-note 宣称已收口的不变量仍可被打破（≤~0.5 token，不会击穿 provider 上限，仅内部预算/裁剪保证失真）；同时 `clipText` 的「不超长」契约被违反。修复边界：tailStart 因低代理递减时同步把 head 减 1（或改为丢弃孤立低代理 `tailStart += 1`），并在仓库预算矩阵里加入含 emoji 的 fixture 断言 `tokens+reserved ≤ cap+0.001` 与 `clipText().length ≤ limit`。
+
+## 4. nit
+
+- **N-1 `MEMORY.md.lock` 未进 `.agents/memory/.gitignore`。** `project-state.ts:151` 只忽略 `*.memory-backup-*`/`errors.log`；崩溃遗留的锁最长 30s（无人再写则更久）会出现在 git untracked。建议补 `*.lock`（或 `MEMORY.md.lock`）。
+- **N-2 `endsWith`/缓存顺序**：`ensureMemoryGitignore` 在 `:158` 先 `add` 再尝试写，首次写失败后本进程不再重试（设计为 best-effort，可接受，但注释应写明）。
+- **N-3 `tryLock` 非 EEXIST 失败会漏锁**：`open wx` 成功但 `handle.writeFile`（`:239`）失败时异常直接抛出，0 字节锁文件留下且无清理；后续写者要等陈旧门限。修复：写失败时 `rm(lockPath)` 后重抛。
+- **N-4 不可读只在 `/memory` 提示**：`consolidate.ts:468`/`autolearn.ts:416`/`before_agent_start` 对 `unreadable` 静默当作空记忆（autolearn 会照常产出基于空 memory 的技能判定）。建议至少在 pass 日志里留一条 warning。
+- **N-5 过度脱敏轻微**：`redactSecrets` 会把 `authorization: denied by policy` 改成 `authorization: [redacted] by policy`（`project-state.ts:139-146`）。按凭据字段设计可接受，仅记录。
+
+## 5. suggestion
+
+- **S-1** 「单行引导语 + 值为完整文档」仍可解码：`Example:\n{"memory_markdown": "<真正以 # Project Memory 开头的长文档>"}` 探针判定 `poisoned=true`。这是 fix-note 明示的残余（读路径只解码，写前有备份），但可把引导语白名单收窄为已知 wrapper（如 `json:`/`reply:`/`consolidation:`）进一步降低误判面。
+- **S-2** `maxTokens ≤ 1423` 时 `reserved`（`consolidate.ts:252`）降到 1024 以下、256 时为 0，被剪 artifacts 可以吃满整个 cap，reply 的 JSON 键名/引号没有 token 余量，小 cap 下截断风险高于设计意图；建议给 scaffolding 保留一个绝对下限（如 64），或明确记录该退化。
+- **S-3** 把 I-1 的「A→B→C 三写者」场景做成仓库回归用例（可用 `utimes` 加速，无需真等 30s）。
+
+## 6. learning
+
+- 锁夺取必须做**所有权判别**（token/inode），仅凭 mtime 判断「陈旧」会把活锁当死锁；夺取后原持有者的无条件释放会连锁破坏互斥。
+- surrogate-aware 裁剪有两个独立不变量：不产生孤立代理 **和** 不超长；边界修补必须等量补偿，否则会反向破坏精确修剪这类以长度为前提的收敛逻辑。
+- 解码召回放宽（单行前缀/context 先行/无 header 值）时，约束组合（全文剩余 + 首键 + 文档形状）能挡住嵌套/短值示例，但「示例本身就是完整文档」在无磁盘标记下不可判别——mode B 的读不写使该残余可接受，写前备份是最后防线。
+
+## 7. praise
+
+- 解码路径在 23 组形状下全部符合预期：context 先行、数组/围栏、未闭合对象（末行 `LAST-LINE-42` 保真）、多行 prose/围栏示例拒绝、嵌套键拒绝、短值/无换行拒绝；`.pi`/OMP（HOME 重定向）均解码，不可读正确标记；两次 `loadMemory` 字节与目录清单零变化。
+- 锁在正常路径表现良好：20 个 in-process writer 无重叠，2 进程 ×5 次跨进程临界区 `max=1` 且时序单调，EISDIR/EACCES/action 抛错均释放，陈旧锁夺取与「新鲜锁等待 ~5s 后超时且不删活锁」符合预期，锁文件不会被 prune/`cleanStaleTemps`/迁移误删。
+- 备份保留完全符合设计：800 个新鲜备份全存活；全部老化后一次写入收敛到 5；点名备份 30 次后续写仍在；非生名用户文件/目录保留；`migrateProjectState` OMP 导入锁内二次检查、二次迁移不覆盖用户编辑。
+- `.gitignore` 保留用户已有内容且不覆盖、幂等、只写 memory 目录；8 类凭据（JWT/Bearer/sk/ghp/github_pat/AKIA/kv）全部命中且普通诊断文本不被改动；`adaptiveOutputTokens` 的 ceiling/model cap 优先级 7 组断言全对。
+
+## 8. residual-risk
+
+- I-1 的触发条件（>30s 临界区）在本地/正常 FS 上罕见，但慢盘/挂起下会真实发生；后果是丢更新而非字节损坏。
+- I-2 将严格不变量越界从 0.4 降到 0 的修复未闭环；实际影响 <0.5 token，provider 上限一般不被击穿。
+- 无磁盘标记下「整文件是 JSON 示例」仍会被当成污染解码（读写路径有备份兜底）；真实 provider 对抬高 cap 的接受度、真实 tokenizer 与 `replyTokenRate` 的偏差、Windows/NFS 的 rename/mtime 行为均未在沙箱验证。
+- 一小时内备份数上界 = 该小时写入次数 + 5（设计使然，高频写入会有临时磁盘占用）。
+
+## 9. Test And QA Focus
+
+- 给 `withMemoryLock` 加「陈旧夺取后原持有者释放不得删他人锁」与「A/B/C 三写者不重叠」回归（utimes 加速）。
+- 给预算矩阵加 emoji/代理对 fixture，断言 `tokens + reserved ≤ cap + 0.001`、`clipText().length ≤ limit`，覆盖 limit=16/17/20 与 tail 边界落在低代理的构造串。
+- 保留并固化 23 组解码形状为表驱动用例（含未闭合末行、`.pi`/OMP、prose 示例拒绝）。
+- 迁移 OMP 导入的锁内 check-then-write 已可加并发写者交错用例；`.gitignore` 建议加「用户已有 `*.memory-backup-*` 行时不追加 header」的断言。
+
+## 10. 无法确认点（沙箱限制）
+
+- 真实 provider 对 `maxTokens` 抬高的接受度、真实 tokenizer 与 `replyTokenRate` 的偏差；真实 UniField/Quantum 备份不在沙箱，仅合成夹具与 HEAD 差分。
+- Windows/NFS 的 rename 原子性、mtime 粒度与目录 readFile 错误码；EACCES 仅在 Linux uid 1000 下验证。
+
+VERDICT: CHANGES-REQUESTED

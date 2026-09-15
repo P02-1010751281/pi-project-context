@@ -51,6 +51,13 @@ created_at: 2026-09-15
   - `fix-completion: approved`；A 按建议**不在本次修改仓库文件**（`.memory-backup-*`/`errors.log`
     的忽略与脱敏留作后续独立 feature）；B 保留三份 `.poison-backup-*`；C Quantum_Matrix 记忆保持现状。
   - 授权限定范围 commit（3 个代码文件 + 本 issue 文档），不 push。
+- 2026-09-15 — owner 追加指令「残差都修复掉」「所有的问题都修复掉」：授权第二批次修复与复审。
+  - round 12..17 独立复审（沙箱只读、逐轮核验零写入）：修复解码召回（context 先行/引导语/无 header/
+    `.pi`/OMP）、跨进程写锁（token 所有权 + `<lock>.steal` 单胜者 + 非普通文件自愈 + deadline 退避）、
+    备份保龄（一小时内不轮换）、`.gitignore`/`errors.log` 脱敏、token 率（非 ASCII 码点/JSON 转义）
+    与代理对安全、`maxOutputTokens` 封顶、autolearn 自适应、不可读展示、去重、`\b`/`\f` 转义、
+    跨进程回归与根 `.gitignore` 收窄；round 15/16/17 连续 **PASSED**。
+  - `fix-completion: approved`（第二批次）；仍不 push。
 
 ## Resolved Checkpoints
 
