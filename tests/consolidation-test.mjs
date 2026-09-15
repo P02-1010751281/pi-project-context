@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -734,6 +734,86 @@ try {
 			check("a held claim cannot bypass the lock deadline", deadlineHit && Date.now() - waitStart < 8000);
 			await rm(heldClaim, { force: true });
 			await rm(heldLock, { force: true });
+
+			// A stale claim left by a crashed stealer is reclaimed together with the stale lock.
+			await writeFile(heldLock, "stale-lock\n");
+			await writeFile(heldClaim, "stale-claim\n");
+			await utimes(heldLock, agedByClaim, agedByClaim);
+			await utimes(heldClaim, agedByClaim, agedByClaim);
+			let claimRecovered = false;
+			await withMemoryLock(memory, async () => {
+				claimRecovered = true;
+			});
+			check("a stale claim is reclaimed with the stale lock", claimRecovered && !(await readdir(dir)).some((name) => name.startsWith("MEMORY.md.lock")));
+
+			// The hard ceiling bounds a sustained burst and prunes the oldest, keeping the newest.
+			await writeFile(memory, "# Project Memory\n\n## Project\n- cap.\n");
+			const capPaths = [];
+			const capBase = Date.now() - 10 * 60 * 1000;
+			for (let round = 0; round < 25; round += 1) {
+				const snapshot = await backupMemoryBeforeWrite(memory);
+				capPaths.push(snapshot.path);
+				const stamp = new Date(capBase + round * 1000);
+				await utimes(snapshot.path, stamp, stamp);
+			}
+			const kept = new Set((await readdir(path.dirname(memory))).filter((name) => /^MEMORY\.md\.memory-backup-/.test(name)));
+			check(`the backup cap keeps the newest 20 (have ${kept.size})`, kept.size === 20
+				&& capPaths.slice(0, 5).every((file) => !kept.has(path.basename(file)))
+				&& kept.has(path.basename(capPaths.at(-1))));
+
+			// Equal mtimes fall back to the name, so the lexicographically newest backups survive.
+			const tieDir = path.join(fixTmp, "tie", ".agents", "memory");
+			await mkdir(tieDir, { recursive: true });
+			await writeFile(path.join(tieDir, "MEMORY.md"), "# Project Memory\n\n## Project\n- tie.\n");
+			const tieNames = [];
+			for (let index = 0; index < 8; index += 1) {
+				const name = `MEMORY.md.memory-backup-2026-01-01T00-00-00-000Z-0000000${index}`;
+				tieNames.push(name);
+				await writeFile(path.join(tieDir, name), "old\n");
+				await utimes(path.join(tieDir, name), agedByClaim, agedByClaim);
+			}
+			await backupMemoryBeforeWrite(path.join(tieDir, "MEMORY.md"));
+			const tieEntries = await readdir(tieDir);
+			check("equal-mtime backups prune by name deterministically", tieNames.slice(0, 4).every((name) => !tieEntries.includes(name)) && tieNames.slice(4).every((name) => tieEntries.includes(name)));
+
+			// Symlinks and FIFOs at the lock or claim path heal instead of freezing every write.
+			const linkRoot = path.join(fixTmp, "symlink", ".agents", "memory");
+			await mkdir(linkRoot, { recursive: true });
+			await symlink("does-not-exist", path.join(linkRoot, "MEMORY.md.lock"));
+			let healedLink = false;
+			await withMemoryLock(path.join(linkRoot, "MEMORY.md"), async () => {
+				healedLink = true;
+			});
+			check("a dangling lock symlink heals", healedLink && !(await readdir(linkRoot)).includes("MEMORY.md.lock"));
+			const claimLinkTarget = path.join(fixTmp, "symlink-claim", ".agents", "memory");
+			await mkdir(claimLinkTarget, { recursive: true });
+			await writeFile(path.join(claimLinkTarget, "MEMORY.md.lock"), "stale\n");
+			await utimes(path.join(claimLinkTarget, "MEMORY.md.lock"), agedByClaim, agedByClaim);
+			await symlink("does-not-exist", path.join(claimLinkTarget, "MEMORY.md.lock.steal"));
+			let healedClaimLink = false;
+			await withMemoryLock(path.join(claimLinkTarget, "MEMORY.md"), async () => {
+				healedClaimLink = true;
+			});
+			const claimLinkEntries = await readdir(claimLinkTarget);
+			check("a dangling claim symlink heals", healedClaimLink && !claimLinkEntries.includes("MEMORY.md.lock") && !claimLinkEntries.includes("MEMORY.md.lock.steal"));
+			const fifoRoot = path.join(fixTmp, "fifo", ".agents", "memory");
+			await mkdir(fifoRoot, { recursive: true });
+			const fifoPath = path.join(fifoRoot, "MEMORY.md.lock");
+			let fifoAvailable = true;
+			try {
+				execFileSync("mkfifo", [fifoPath]);
+			} catch {
+				fifoAvailable = false; // No mkfifo on this platform; the probe is skipped, not passed.
+			}
+			if (fifoAvailable) {
+				let healedFifo = false;
+				await withMemoryLock(path.join(fifoRoot, "MEMORY.md"), async () => {
+					healedFifo = true;
+				});
+				check("a FIFO at the lock path heals", healedFifo && !(await readdir(fifoRoot)).includes("MEMORY.md.lock"));
+			} else {
+				check("a FIFO at the lock path heals (skipped: mkfifo unavailable)", true);
+			}
 
 			// The first lock in a new project also creates the local gitignore.
 			const freshMemoryDir = path.join(fixTmp, "fresh", ".agents", "memory");

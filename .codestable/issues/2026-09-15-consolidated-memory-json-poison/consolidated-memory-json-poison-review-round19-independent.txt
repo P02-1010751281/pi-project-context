@@ -1,0 +1,62 @@
+# CodeStable 独立审查 — round 19（锁协议加固 + 备份硬上限）
+
+审查对象：`git diff HEAD`（HEAD `ba9ad0b`），仅 `extensions/project-context/project-state.ts`（+100/−30）与 `tests/consolidation-test.mjs`（+20）。工作区只读，所有探针在 /tmp 用真实模块（jiti 加载 `project-state.ts`；内部函数探针为「仅追加 export、逻辑零改动」的 /tmp 副本）完成。
+
+## 已独立核验通过
+
+**锁协议**
+- 正常串行 / 陈旧锁回收 / 3 进程争用：12 轮 × 3 子进程真模块压力（每轮含陈旧锁，半数含陈旧 claim），`overlap-or-bad-depth=0 residue=0 → STRESS-OK`。
+- claim 独占与令牌复核（确定性单元探针，全部 OK）：并发 `acquireClaim` 仅一个 token；claim 被替换/移除后，原持有者调用 `stealStaleLock` **不删除**锁；`releaseClaim` 不删 foreign claim；自己的 claim 才删锁删 claim；观察到的陈旧锁被替换为 fresh 锁后不被误删；陈旧 claim 随陈旧锁一起回收，无残渣。
+- `releaseLock` 在 foreign claim 下不删锁（suite 覆盖 `a release without the claim leaves the lock`）；`claimStillOurs→rm` 前复核已落地。
+- 非普通文件自愈：目录 ✓（3ms 自愈，rename 为 `.broken-*`）、FIFO ✓（1ms）、**dangling symlink ✗（见 Important）**；claim 路径 dangling symlink ✗（同根因）。
+- deadline：三处失败探针分别 5011/5054/5093ms 抛 `timed out waiting for the memory write lock`，退避逻辑 unchanged，suite 的 `<8000ms` 断言通过。
+- `tryLock` 写入失败：以 `ulimit -f 0` 真探针触发 `EFBIG` → `tryLock` reject 且目录零残留（inode 校验为静态核验：仅 `current.dev+ino === handle.stat()` 才 rm；`handle.stat()` 失败则宁可留锁 30s，方向 fail-safe）。
+
+**备份硬上限**
+- 25 次连续备份 → 20；再 25 次（共 50）→ 仍 20；保留名录单调、严格最新的 20 份（间隔 6ms 写 25 次，最老保留项即第 6 份）。
+- 交互：20 份全部老化后 +1 次写 → 收敛到 5（最新 + 4），与旧「最新 5 + 一小时内」语义一致；一小时内 burst 仍不被轮换（suite `beforeBurst+7`）。
+- 轮换顺序为最老优先（mtime 降序，`index>=15` 的近期过剩先于更老者? 次序上 aged 恒删、近期按旧→新删），不会误删最新。
+- stat 失败跳过：静态核验 `try/catch` 包裹 + `candidates` 跳过，绝不 `rm`；本环境 uid 1000 无法在可写目录构造「readdir 成功而 stat EACCES」（需去掉父目录 x 位，会先阻断写路径），故未做动态探针，代码方向正确。
+
+**回归**
+- `node tests/run-all.mjs` → `All 8 tests passed`（含解码安全、clipText/预算网格、跨进程互斥、gitignore/脱敏、legacy unreadable）。
+- 无类型检查器可用（仓库无 package.json/tsconfig、无全局 tsc），jiti 全量加载无语法/运行错误。
+
+## 发现
+
+### Blocking
+无。
+
+### Important
+1. **dangling symlink 不会自愈（与声明的「目录/FIFO/dangling symlink 自愈」目标不符，且新测试未覆盖）**
+   - 复现（真模块）：
+     - `<MEMORY.md>.lock` 为 dangling symlink → `ok=false elapsed=5011ms err=timed out…`，残渣 `MEMORY.md.lock` 原样保留；
+     - `<MEMORY.md>.lock.steal` 为 dangling symlink + 陈旧锁 → 同样 5s 超时，锁永远无法被回收。
+   - 根因：`open(path,"wx")` 对 symlink 一律 `EEXIST`（POSIX O_EXCL），随后 `stat()` **跟随** symlink 抛 `ENOENT`；`tryLock`/`acquireClaim` 的 catch 把「stat 失败」等同于「文件已消失」直接 `return undefined`，于是 `info.isFile()` 的 rename-aside 分支永远不执行；`lockMtimeMs` 又把 ENOENT 映射为 0（无限陈旧），`stealStaleLock` 的 `readFile` 同样 ENOENT 提前 return。结果是该项目的每次内存写在 5s 后永久失败，需人工删链。
+   - 触发条件：内存目录中存在一个指向不存在目标的 symlink（第三方同步工具、手工操作、半失败的外部脚本；扩展自身不会创建 symlink，故非数据损坏、非攻击面扩大，但要人工介入）。
+   - 建议修复：在 `stat` 抛 ENOENT 时回退一次 `lstat`，若条目仍存在则以 `rename(..., .broken-<rand>)` 移开并 `continue`（锁与 claim 两处同修）；或统一用 `lstat` 分类。并补 dangling symlink（及 FIFO）测试。
+
+### Nit
+- `stealStaleLock` 的「连读两次比对」并未把删除对象钉在做过 mtime 判断的那个 inode 上：若锁在第一次 read 前就被替换，两次读到的是同一份新字节，比对恒等。真正兜底的是 claim 令牌复核；可改为 `stat` 取 ino/dev/mtime → read → 复核同一 ino 再 rm，语义才与注释一致。
+- `tryLock`/`acquireClaim` 的 inode 守护用 `dev+ino`，存在极小概率的 unlink 后 inode 复用别名（同设备）。`handle.stat()` 失败时宁可不清理，方向是对的。
+- `MEMORY_BACKUPS_MAX` 与 `MEMORY_BACKUPS_KEPT` 的差值语义耦合（`index < MAX-KEPT`），建议注释或断言 `MAX >= KEPT`，避免后续改常量时静默变义。
+
+### Suggestion
+- 新增测试：FIFO、dangling symlink 于 lock 与 `.steal` 两个路径的自愈；`tryLock` 写失败后「后继者锁不被误删」只能靠 inode 复用构造，建议至少保留静态注释。
+- 备份测试可再加一条「25 次后保留集合等于最新 20 个名字」，当前只断言数量与最新存在，稍弱。
+
+### Learning
+- `open(O_CREAT|O_EXCL)` 对 symlink 的 EEXIST 先于跟随；`stat` 与 `lstat` 在自愈分支里是两种语义，混用会把「永存的坏条目」误判为「瞬时消失的竞态」。
+- claim 令牌 + 每次删除前所有权复核，把 steal 的 TOCTOU 从「任意长挂起」压缩到「复核→rm 的微秒窗口」，这是无内核锁（flock/锁目录）前提下能做到的合理上界。
+
+### Praise
+- `${pid}-${uuid}` 令牌、`claimStillOurs` 前置复核、只删观察字节、`tryLock`/`acquireClaim` 的 inode 级清理，方向正确且探针可证：claim 被回收后原持有者确实不再删除任何锁（确定性单测 + 12 轮多进程压力 0 重叠 0 泄漏）。
+- 备份硬上限实测严格收敛 25→20、50→20、老化→5，且「最新保留 + 最老优先 + stat 失败不猜删」三者互不破坏。
+
+### Residual-risk
+1. **`claimStillOurs` → `rm` 的微窗口**：若进程恰在最后一次 claim 复核通过后被抢占 **>30s**，同时另一进程完成「claim 过期回收 → 删陈旧锁 → 建新锁」，原进程恢复后可能删掉后继者的 fresh 锁，导致两个写者短暂重叠。触发需「微秒级窗口内被调度器挂起 ≥30s」+ 完整并发 steal，现实概率可忽略，且比改动前窗口大幅缩小；彻底关闭需 `flock`（Node 无内建）或锁目录 + 原子 rename 协议。
+2. **mtime 检查与 read 不绑定 inode**（见 Nit），单独不可利用，与 1 组合才有意义。
+3. **stat 持续失败的后备永不轮换**（按设计 fail-safe），病态文件系统下目录可增长；不影响有备份保护的丢更新。
+4. 上述 1 与 2 只会破坏「互斥」而非「已有备份的回滚」，且需要 >30s 挂起，不属于有备份保护的丢更新路径。
+
+VERDICT: CHANGES-REQUESTED

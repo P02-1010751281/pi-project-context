@@ -58,6 +58,8 @@ created_at: 2026-09-15
     与代理对安全、`maxOutputTokens` 封顶、autolearn 自适应、不可读展示、去重、`\b`/`\f` 转义、
     跨进程回归与根 `.gitignore` 收窄；round 15/16/17 连续 **PASSED**。
   - `fix-completion: approved`（第二批次）；仍不 push。
+- 2026-09-15 — owner 追加「不要残留问题或隐患」：授权第三批次（锁协议加固 + 备份硬上限 +
+  病理路径自愈）。round 19/20 的 findings 已修，round 21 判 **PASSED**；仍不 push。
 
 ## Resolved Checkpoints
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, cp, mkdir, open, readFile, readdir, rename, rmdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, cp, lstat, mkdir, open, readFile, readdir, rename, rmdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -238,6 +238,9 @@ async function tryLock(lockPath: string): Promise<string | undefined> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			const handle = await open(lockPath, "wx", 0o600);
+			// The open handle identifies the exact file this attempt created; a write failure may
+			// only remove that file, never a successor's lock created after a long suspension.
+			const created = await handle.stat().catch(() => undefined);
 			let writeFailure: unknown;
 			try {
 				await handle.writeFile(`${token}\n`);
@@ -247,21 +250,24 @@ async function tryLock(lockPath: string): Promise<string | undefined> {
 				await handle.close().catch(() => undefined);
 			}
 			if (writeFailure) {
-				// A lock file we cannot fill must not block every later writer for the stale window.
-				await rm(lockPath, { force: true }).catch(() => undefined);
+				const current = await lstat(lockPath).catch(() => undefined);
+				if (current && created && current.ino === created.ino && current.dev === created.dev) {
+					await rm(lockPath, { force: true }).catch(() => undefined);
+				}
 				throw writeFailure;
 			}
 			return token;
 		} catch (error) {
 			if ((error as { code?: string }).code !== "EEXIST") throw error;
-			let info: Awaited<ReturnType<typeof stat>>;
+			let info: Awaited<ReturnType<typeof lstat>>;
 			try {
-				info = await stat(lockPath);
+				info = await lstat(lockPath);
 			} catch {
 				return undefined; // Vanished; the next attempt can win it.
 			}
 			if (!info.isFile()) {
-				// A directory or device at the lock path can never age into a lock: move it aside.
+				// A directory, FIFO or symlink (even a dangling one) can never age into a lock: move
+				// it aside. `lstat` is essential here: `stat` follows the link and reports ENOENT.
 				await rename(lockPath, `${lockPath}.broken-${randomUUID().slice(0, 8)}`).catch(() => undefined);
 				continue;
 			}
@@ -281,50 +287,85 @@ async function lockMtimeMs(file: string): Promise<number> {
 }
 
 /** Take the short-lived steal claim with `wx`; only one writer wins it. */
-async function acquireClaim(claimPath: string): Promise<boolean> {
+async function acquireClaim(claimPath: string): Promise<string | undefined> {
+	const token = `${process.pid}-${randomUUID()}`;
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			const handle = await open(claimPath, "wx", 0o600);
-			await handle.close();
-			return true;
+			const created = await handle.stat().catch(() => undefined);
+			try {
+				await handle.writeFile(`${token}\n`);
+			} catch {
+				// A claim we cannot fill is not ours to hold; remove only the exact file we created.
+				const current = await lstat(claimPath).catch(() => undefined);
+				if (current && created && current.ino === created.ino && current.dev === created.dev) {
+					await rm(claimPath, { force: true }).catch(() => undefined);
+				}
+				return undefined;
+			} finally {
+				await handle.close().catch(() => undefined);
+			}
+			return token;
 		} catch (error) {
 			if ((error as { code?: string }).code !== "EEXIST") throw error;
-			let info: Awaited<ReturnType<typeof stat>>;
+			let info: Awaited<ReturnType<typeof lstat>>;
 			try {
-				info = await stat(claimPath);
+				info = await lstat(claimPath);
 			} catch {
-				return false; // Vanished between open and stat; the next attempt can win it.
+				return undefined; // Vanished between open and stat; the next attempt can win it.
 			}
 			if (!info.isFile()) {
-				// A directory or device at the claim path can never age into staleness: move it aside.
+				// A directory, FIFO or symlink (even a dangling one) can never age into staleness.
 				await rename(claimPath, `${claimPath}.broken-${randomUUID().slice(0, 8)}`).catch(() => undefined);
 				continue;
 			}
-			// A claim left by a crashed stealer must not block stealing forever.
+			// A claim left by a crashed stealer must not block stealing forever, but only the exact
+			// inode and bytes inspected may be removed; a claim that replaced them belongs to someone else.
 			if (Date.now() - info.mtimeMs > MEMORY_LOCK_STALE_MS) {
-				await rm(claimPath, { force: true }).catch(() => undefined);
+				const observed = await readFile(claimPath, "utf8").catch(() => undefined);
+				if (observed === undefined) continue;
+				const after = await lstat(claimPath).catch(() => undefined);
+				if (!after || !after.isFile() || after.ino !== info.ino || after.dev !== info.dev) continue;
+				const current = await readFile(claimPath, "utf8").catch(() => undefined);
+				if (current === observed) await rm(claimPath, { force: true }).catch(() => undefined);
 				continue;
 			}
-			return false;
+			return undefined;
 		}
 	}
-	return false;
+	return undefined;
+}
+
+/** True while the claim file still carries this writer's token. */
+async function claimStillOurs(claimPath: string, token: string): Promise<boolean> {
+	return (await readFile(claimPath, "utf8").catch(() => "")).trim() === token;
+}
+
+/** Release a claim only while it is still ours; a reclaimed claim belongs to its new holder. */
+async function releaseClaim(claimPath: string, token: string): Promise<void> {
+	if (await claimStillOurs(claimPath, token)) await rm(claimPath, { force: true }).catch(() => undefined);
 }
 
 /**
- * Remove a stale lock with a single winner: every stealer first takes `<lock>.steal`, so two writers
- * cannot both pass the age check and then delete each other's freshly created lock.
+ * Remove a stale lock with a single winner: every stealer first takes `<lock>.steal` with its own
+ * token, so two writers cannot both pass the age check and then delete each other's lock. Every
+ * destructive step re-checks that we still own the claim, which closes the race for cooperating
+ * writers except for a suspension between that final check and the unlink; no kernel-atomic
+ * alternative is available through node:fs.
  */
-async function stealStaleLock(lockPath: string): Promise<void> {
-	const claimPath = `${lockPath}.steal`;
-	if (!(await acquireClaim(claimPath))) return;
-	try {
-		if (Date.now() - (await lockMtimeMs(lockPath)) > MEMORY_LOCK_STALE_MS) {
-			await rm(lockPath, { force: true }).catch(() => undefined);
-		}
-	} finally {
-		await rm(claimPath, { force: true }).catch(() => undefined);
-	}
+async function stealStaleLock(lockPath: string, claimPath: string, claimToken: string): Promise<void> {
+	const before = await lstat(lockPath).catch(() => undefined);
+	if (!before || !before.isFile()) return; // Non-regular paths heal in tryLock.
+	if (Date.now() - before.mtimeMs <= MEMORY_LOCK_STALE_MS) return;
+	// Only the exact inode and bytes inspected may be removed; a lock replaced meanwhile is not ours.
+	const observed = await readFile(lockPath, "utf8").catch(() => undefined);
+	if (observed === undefined) return;
+	const after = await lstat(lockPath).catch(() => undefined);
+	if (!after || !after.isFile() || after.ino !== before.ino || after.dev !== before.dev) return;
+	const current = await readFile(lockPath, "utf8").catch(() => undefined);
+	if (current !== observed) return;
+	if (!(await claimStillOurs(claimPath, claimToken))) return;
+	await rm(lockPath, { force: true }).catch(() => undefined);
 }
 
 /** Remove the lock only while it still carries this writer's token; a stolen lock belongs to its thief. */
@@ -332,12 +373,15 @@ async function releaseLock(lockPath: string, token: string): Promise<void> {
 	const claimPath = `${lockPath}.steal`;
 	// Only the claim holder may delete: without it a stealer owns the lock's fate, and a delete
 	// could unlink the thief's freshly created lock. Leaving our own lock is the safe branch.
-	if (!(await acquireClaim(claimPath))) return;
+	const claimToken = await acquireClaim(claimPath);
+	if (!claimToken) return;
 	try {
 		const current = (await readFile(lockPath, "utf8").catch(() => "")).trim();
-		if (current === token) await rm(lockPath, { force: true }).catch(() => undefined);
+		if (current === token && await claimStillOurs(claimPath, claimToken)) {
+			await rm(lockPath, { force: true }).catch(() => undefined);
+		}
 	} finally {
-		await rm(claimPath, { force: true }).catch(() => undefined);
+		await releaseClaim(claimPath, claimToken);
 	}
 }
 
@@ -359,7 +403,15 @@ export async function withMemoryLock<T>(target: string, action: () => Promise<T>
 		if (token) break;
 		if (Date.now() >= deadline) throw new Error(`timed out waiting for the memory write lock at ${lockPath}`);
 		if (Date.now() - (await lockMtimeMs(lockPath)) > MEMORY_LOCK_STALE_MS) {
-			await stealStaleLock(lockPath);
+			const claimPath = `${lockPath}.steal`;
+			const claimToken = await acquireClaim(claimPath);
+			if (claimToken) {
+				try {
+					await stealStaleLock(lockPath, claimPath, claimToken);
+				} finally {
+					await releaseClaim(claimPath, claimToken);
+				}
+			}
 		}
 		// Always back off: a stale lock whose claim is held must not spin a core to the deadline.
 		await sleep(40 + Math.floor(Math.random() * 60));
@@ -696,8 +748,11 @@ function decodePoisonedMemory(current: string): string | undefined {
 
 /** Number of newest memory backups kept per project. */
 const MEMORY_BACKUPS_KEPT = 5;
-/** Backups younger than this are never pruned, so a backup named in a notice stays reviewable. */
+/** Backups younger than this are never pruned, so a backup named in a notice stays reviewable
+ * until roughly MEMORY_BACKUPS_MAX further writes have pushed it past the hard ceiling. */
 const MEMORY_BACKUP_MIN_AGE_MS = 60 * 60 * 1000;
+/** Hard ceiling on backups, so a sustained burst cannot grow the directory without bound. */
+const MEMORY_BACKUPS_MAX = Math.max(MEMORY_BACKUPS_KEPT, 20);
 
 /** Escape a literal string for use inside a RegExp. */
 function escapeRegExp(text: string): string {
@@ -736,13 +791,18 @@ export async function backupMemoryBeforeWrite(target: string): Promise<{ path?: 
 		for (const entry of await readdir(directory, { withFileTypes: true })) {
 			if (entry.name === keep || !entry.isFile()) continue;
 			if (!generated.test(entry.name)) continue;
-			candidates.push({ name: entry.name, mtime: await fileMtimeMs(path.join(directory, entry.name)) });
+			try {
+				candidates.push({ name: entry.name, mtime: (await stat(path.join(directory, entry.name))).mtimeMs });
+			} catch {
+				// A backup whose time cannot be read must never be deleted on a guess.
+			}
 		}
-		candidates.sort((left, right) => right.mtime - left.mtime);
+		candidates.sort((left, right) => (right.mtime - left.mtime) || right.name.localeCompare(left.name));
 		const pruneBefore = Date.now() - MEMORY_BACKUP_MIN_AGE_MS;
-		for (const stale of candidates.slice(MEMORY_BACKUPS_KEPT - 1)) {
-			// Recent backups survive the count limit; only the aged excess is rotated away.
-			if (stale.mtime > pruneBefore) continue;
+		for (const [index, stale] of candidates.slice(MEMORY_BACKUPS_KEPT - 1).entries()) {
+			// Recent backups survive the count limit, up to the hard ceiling; beyond that even the
+			// recent excess is rotated, so a burst cannot grow the directory without bound.
+			if (stale.mtime > pruneBefore && index < MEMORY_BACKUPS_MAX - MEMORY_BACKUPS_KEPT) continue;
 			try {
 				await rm(path.join(directory, stale.name), { force: true });
 			} catch {

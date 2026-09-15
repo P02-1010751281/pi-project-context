@@ -4,9 +4,9 @@ issue: 2026-09-15-consolidated-memory-json-poison
 status: passed
 reviewer: subagent
 reviewed: 2026-09-15
-round: 18
+round: 21
 lane_a_state: completed
-lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..18 完整记录：consolidated-memory-json-poison-review-round{1..18}-independent.txt"
+lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..21 完整记录：consolidated-memory-json-poison-review-round{1..21}-independent.txt"
 lane_a_reason: "独立上下文 reviewer，分别在 /tmp/pi-context-revN 沙箱副本中审查；沙箱与真实仓库均核验无写入"
 lane_b_state: unavailable
 lane_b_ref: ""
@@ -41,6 +41,9 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
 | 16 | **PASSED** | 无 blocking / 无 important；nit：锁路径为目录时同类冻结、跨进程用例无 timeout/泄漏断言、`.broken-*` 无回收、根 `.gitignore` 过宽 | 已修 nit：`tryLock` 非普通文件自愈、spawn timeout + 残留断言 + `fileURLToPath`、`cleanStaleTemps` 回收 `.broken-*`、根规则收窄到 `.agents/**`；round 17 确认 |
 | 17 | **PASSED** | 无 blocking / 无 important；nit：`.broken-*` 回收对非文件来源无效（且新增删除面）；`run-all.mjs` 无 timeout | 已修 nit：只删「空目录且超龄」的 broken 产物（含用户数据/非目录一律保留）、`run-all` 加 60s timeout；8/8 通过，闭合 |
 | 18 | **PASSED** | 无 blocking / 无 important；residual：legacy `.pi`/OMP 不可读此前静默；`migrateProjectState` OMP 导入同类静默 | 已修：`readMemorySource` 覆盖 `.pi`/OMP 回退（unreadable 上报），OMP 迁移不可读时记 `errors.log`；8/8 通过 |
+| 19 | changes-requested | IMP：dangling symlink 在 lock/claim 路径不再自愈（`stat` 跟随链接误判 ENOENT，5s 永久超时）；nit：steal 未钉 inode、常量耦合 | 修复：EEXIST 分类改 `lstat`、非 regular 一律移开；steal 用 inode+bytes+claim 三重复查；`MAX=max(KEPT,20)`；补 symlink/FIFO/上限断言 |
+| 20 | changes-requested | IMP：FIFO 用例是永真断言（catch 吞掉失败）；nit：claim 回收未钉 inode、`tryLock` 清理用 `stat` | 修复：mkfifo 探测与断言分离、claim 回收 inode 钉定、清理统一 `lstat`、备份同 mtime 按名 tie-break |
+| 21 | **PASSED** | 无 blocking / 无 important；nit：`acquireClaim` 清理仍用 `stat`、FIFO 缺失为带标注 OK、stat 失败跳过无覆盖 | 已修 nit：清理统一 `lstat`、新增同 mtime 确定性断言；残余为 node:fs 无内核原子（flock）的 check→unlink 悬挂窗，注释已如实声明 |
 
 ## 3. 当前状态（round 11 复审后）
 
@@ -61,6 +64,7 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
 - round 16 判 **PASSED**；其 nit（锁路径非文件自愈、测试 timeout/残留断言、`.broken-*` 回收、根 .gitignore 收窄）已修，round 17 复审确认中。
 - round 17 判 **PASSED**（无 blocking/important）；最后两个 nit 已以本地测试收口，review gate 关闭。
 - round 18 判 **PASSED**（legacy 未读来源可见性补全）；OMP 迁移同类静默已同步收口，最终闭合。
+- round 19/20/21：锁协议病理矩阵（symlink/FIFO/目录/inode/claim 令牌）与备份硬上限加固完成；round 21 PASSED，review gate 关闭。
 
 ## 4. Focused Closure（无则写 none）
 

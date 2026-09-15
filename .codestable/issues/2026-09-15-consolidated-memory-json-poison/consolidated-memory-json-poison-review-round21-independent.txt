@@ -1,0 +1,56 @@
+# Round-21 独立复审报告
+
+审查范围：工作区 diff vs `ba9ad0b`（`project-state.ts` +138/-41 净改动，`consolidation-test.mjs` +69/-1），全部探针在 `/tmp/probe21` 副本中执行，工作区未写入（`git status` 与初始一致）。
+
+## 核验证据（独立复跑）
+
+| 项目 | 结果 |
+|---|---|
+| `node tests/run-all.mjs` | **8/8 passed** |
+| `consolidation-test.mjs` 连跑 3 次 | 3× `ALL OK`（~7.0–7.2s，无 flake） |
+| FIFO 断言判别力（注入变体：`!info.isFile() && false`） | 原版 3ms 治愈；变体 **5032ms 后抛 lock deadline** → 测试会以异常失败，非永真 |
+| mkfifo 不可用（`PATH=/nonexistent`） | exit 0，183 个 OK，其中打印 `OK a FIFO at the lock path heals (skipped: mkfifo unavailable)` |
+| 病理矩阵（lock/claim × dangling/→file/→dir/dir/FIFO，共 10 例） | **10/10 PASS**：均进入临界区，lock 与 claim 0 残留 |
+| 备份尾数 | 25 个同 mtime 近期文件 → 恰好保留 20（淘汰字典序最小 6 个 `[0..5]`）；25 个 2h 旧文件 → 保留 5（最新 4 + 新 keep）；仿前缀用户文件存活 |
+| 多进程 | 3 子进程 6 行 enter/exit，`lockDepth=0`、0 嵌套、lock 残留 0（测试断言，4 次复跑均过） |
+| 令牌/令牌撤销 | 「stolen 锁不被原 owner 释放」「无 claim 的 release 留下锁」「held claim 不绕过 5s deadline」全过 |
+
+## blocking
+
+无。
+
+## important
+
+无。
+
+## nit
+
+1. **`project-state.ts:300` 的写失败清理仍用 `stat`**（`acquireClaim`），而 Nit-2 要求的 `tryLock` 同类清理（:253）已改 `lstat`。触发条件：claim 在写失败与清理之间被换成符号链接（需对手方介入）；`stat` 会跟随链接比较目标 inode。影响可忽略（`rm` 删除的是链接本身，且窗口极窄），但属 Nit-2 精神下的漏改，建议统一为 `lstat`。
+2. **mkfifo 缺失分支是「带标注的 OK」，不是 skip 状态**：`check(..., true)` 计入 pass（exit 0 / 全绿）。触发条件：宿主无 `mkfifo`（精简容器、Windows、不支持 FIFO 的文件系统）。影响：FIFO 治愈回归在这些宿主上不会使套件变红，仅靠 label 提示。与 round-20 要求的字面语义（「mkfifo 失败才跳过并标注」）一致，但若 owner 要真正的 skip 计数，需给 harness 增加 skipped 分类。
+3. 备份的 `stat` 失败跳过分支（:794-797 的 catch）无直接测试覆盖，仅代码审查确认 fail-safe。属不可稳定复现的竞态，优先级低。
+
+## suggestion
+
+- 在套件中补一条同 mtime tie-break 断言（当前仅探针级验证），可把「确定性淘汰」钉进 CI。
+- 可选：为平台条件测试引入 skip 计数，使 `8/8` 与「实际执行数」可区分。
+
+## learning
+
+- 协作式文件锁在 `node:fs` 下已接近上限：`O_EXCL` 建锁 + `handle.stat()` 钉 inode + 写后 `lstat` 复核 + token 归属复核，能把误删压到「30s 悬挂窗」这一内核不可原子化的残余；注释如实声明残余比假装完美更可信。
+- 可用性探测与行为断言分离是平台条件测试的正确形态；但「跳过」若没有独立状态，绿色套件会掩盖未执行路径。
+
+## praise
+
+- round-20 四项修复均**实质落地**：claim 回收做了 `lstat(ino/dev)` → read → lstat 复查 → 字节复查；释放路径在 rm 前复核 token；`lstat` 修复了 dangling symlink 被 `stat` 误判 ENOENT 的漏洞；备份硬上限 + 同 mtime 文件名 tie-break 使突发写入有界且淘汰确定。
+- 注释与实现一致：`MEMORY_BACKUP_MIN_AGE_MS` 的「约 MAX 次后续写入后越顶」经模拟准确（备份存活 19 次、第 20 次写入淘汰）。
+- 测试质量高：consolidation 183 项断言，含跨进程 0 重叠/0 泄漏、deadline、令牌归属、目录/Link/FIFO 治愈；变异探针证明 FIFO 用例有真实判别力。
+
+## residual-risk
+
+1. **最终 check→unlink 的悬挂窗**（已在 `stealStaleLock` 注释中声明）：`releaseLock`、`stealStaleLock`、`acquireClaim` 回收的删除都无法与复核原子化；若进程恰在末次复核与 `rm` 之间悬挂 >30s，被判定陈旧的 claim/lock 可能被删一次，允许并发进入。触发需极端时序；`node:fs` 无 compare-and-unlink，属接受项。
+2. **类型变更 TOCTOU 可致 `readFile` 阻塞**：`releaseLock`（:378）、`claimStillOurs`（:337）、`stealStaleLock`/`acquireClaim` 的读在类型检查之后打开；若非协作进程在检查与 open 之间把文件换成无写端的 FIFO，`readFile` 会永久阻塞（deadline 不覆盖该处）。静态 FIFO/链接在任意路径均可治愈（已矩阵验证），本项仅对「飞行中替换为 FIFO」的恶意/异常对手成立，属残余风险。缓解可用 `O_NONBLOCK` 打开后 `fstat`。
+3. `MEMORY_LOCK_WAIT_MS=5s < STALE=30s`：崩溃的 claim 持有者会使本次写入以 deadline 失败、需下一轮恢复（测试有意断言此语义）。可接受但值得知悉。
+
+上述 residual 均有明确触发条件与影响，无一是本次改动引入的可达 correctness 缺陷。
+
+VERDICT: PASSED

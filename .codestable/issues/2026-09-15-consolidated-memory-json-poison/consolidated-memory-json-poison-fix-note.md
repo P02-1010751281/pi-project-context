@@ -185,4 +185,14 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
   - round 18 复审 **PASSED**：补上 `loadMemory` 对 legacy `.pi`/OMP 来源的不可读区分
     （`readMemorySource`：仅 ENOENT 视为缺失，其余报 `unreadable` 并返回该来源路径），
     `migrateProjectState` 的 OMP 导入对不可读来源改记 `errors.log` 而非静默跳过；新增 legacy 不可读回归。
+  - owner 追加「不要残留问题或隐患」后的 **round 19..21 加固批次**：
+    锁/claim 的 EEXIST 分类改用 `lstat`（dangling symlink 不再被 `stat` 误判 ENOENT 而永久冻结），
+    非普通文件（目录/FIFO/symlink）统一 `rename` 移开自愈；claim 令牌化 + 每次删除前
+    `claimStillOurs` 复核；`stealStaleLock` 用 `lstat(ino/dev) → read → lstat 复查 → 字节复查 →
+    claim 复查` 钉住删除对象；`tryLock`/`acquireClaim` 写失败清理按「自己创建的 inode」判定；
+    备份新增硬上限 20（自守护 `max(KEPT,20)`，一小时内近期备份优先保留、超限后最老优先淘汰，
+    同 mtime 按名字 tie-break），修剪前 `stat` 失败的后备跳过不猜删。新增 symlink/FIFO/上限/
+    tie-break 回归；round 21 判 **PASSED**（无 blocking/important）。唯一记录的残余是
+    「最后复核 → rm」之间无法与内核原子化的悬挂窗（node:fs 不暴露 flock），触发需 >30 秒
+    进程暂停 + 并发，影响仅瞬时互斥（写路径原子改名 + 每次覆盖前备份，不产生损坏）。
 - 两个项目的存量数据不受影响（已修复的 UniField / Quantum_Matrix `MEMORY.md` 保持原样）。

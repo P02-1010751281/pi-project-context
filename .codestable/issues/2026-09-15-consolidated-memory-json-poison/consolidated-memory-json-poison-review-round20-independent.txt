@@ -1,0 +1,50 @@
+核验完成：`git diff HEAD` 仅含 `project-state.ts` 与 `consolidation-test.mjs` 两文件（154+/39−），全量 `node tests/run-all.mjs` **8/8 通过**。独立探针（真实模块 + 多进程）结果：
+
+- lock/claim 病理矩阵 10/10：dangling symlink、symlink→文件、symlink→目录、FIFO、目录，位于 lock 与 `.steal` 两处，全部 ≤ 超时前自愈且无残留；
+- fresh 外来 claim + stale lock：坚守 deadline（~5s）且不误删；stale claim 可回收；
+- 4 进程 × 4 轮互斥 + 8 进程 × 25 轮 stale claim/lock 争用：0 overlap、0 timeout、锁清理干净；
+- 备份 50 轮：恰保留最新 20、最新与第 20 新在、最老 30 删；全部老化后收敛为 5（新增 + 最新 4）；伪造/symlink 备份名与用户文件不被误删。
+
+以下为复审结论。
+
+## blocking
+无。
+
+## important
+1. **FIFO 自愈测试是「永真测试」，掩盖被测回归**（`tests/consolidation-test.mjs:788-797`）：
+   ```js
+   try {
+     execFileSync("mkfifo", [fifoPath]);
+     let healedFifo = false;
+     await withMemoryLock(...);          // 抛错（含 5s 超时/冻结）也走 catch
+     check("a FIFO at the lock path heals", healedFifo && ...);
+   } catch {
+     check("a FIFO at the lock path heals", true);   // ← 任何失败都判 OK
+   }
+   ```
+   触发条件：withMemoryLock 因任何原因失败（超时、EACCES、非 Linux、以及**将来 FIFO 处理被回退**）都会进入 catch 并报 OK。影响：该用例无法为它声称守护的「FIFO 不再冻结锁」提供证据（对比 dangling 两个用例的断言是有效且能失败的）。产品行为经我的独立探针确认正确，故仅为测试证据链缺口。修复：只把 `execFileSync` 的可用性探测包在 try 里，`withMemoryLock` 的失败必须让用例失败。
+
+## nit
+1. `acquireClaim` 的 stale 回收（`project-state.ts:319-324`）是「两次 readFile 比较后 rm」，未像 `stealStaleLock` 那样用 `lstat` 钉 ino/dev。触发：两进程同时回收同一 stale claim，第二者的 rm 可能落在第一者重建 claim 之后，删掉活 claim。影响：仅弱化 claim 互斥（幸存 stealer 的 `claimStillOurs` 会失败而放弃删除锁，或 release 留下锁到 stale），**不会**误删新 lock（lock 侧有 inode+bytes+ownership 复查），无数据损坏。建议照抄 `stealStaleLock` 的 lstat→ino/dev→字节复查模式。
+2. `tryLock` 写失败清理用 `stat`（跟随链接）而全文其余用 `lstat`（`project-state.ts:253`）。此处置因 `rm` 只摘目录项且比对的是自己刚创建的 regular inode，实际无误删；但语义不统一，附近改用 `lstat` 更稳。
+
+## suggestion
+1. 备份排序同毫秒并列时按文件名 tie-break，使 cap 淘汰确定性（`keep` 已被排除，最新备份永远安全，并列只影响同毫秒文件，风险极低）。
+2. `MEMORY_BACKUP_MIN_AGE_MS` 上方注释承诺「notice 里的备份可复查」，在 >20 次/小时爆发下会被硬上限打破；notice 引用的是刚写入的最新备份（自身 prune 排除），只有后续 20 次写入才会删它。可在 notice/注释中说明该边界。
+
+## learning
+基于路径的 unlink 互斥无法做到「校验所有权 + 删除」原子；inode/bytes 钉住目标已把竞态压到「校验与 rm 之间」这一个调度窗口，要彻底闭合需 fd 级锁（flock）或 rename 式钉定回收。
+
+## praise
+- `lstat` 分类 + 非 regular 统一 `rename` 移开，干净地覆盖 dangling symlink（不再 ENOENT 误判）、symlink、FIFO、目录，消除了确定性冻结；
+- `stealStaleLock` 的 `lstat(ino/dev) → read → lstat 复查 → 字节复查 → claim 复查` 链条、token 化的 claim、`releaseClaim` 不删他人 claim，防御纵深到位；
+- `MEMORY_BACKUPS_MAX = Math.max(KEPT, 20)` 自守护，且统计失败时「不猜不删」；
+- 新增 cap 测试有判别力（旧代码会保留 25 → 必失败），25 轮边界 20/21 断言准确。
+
+## residual-risk
+1. **claim 所有权复查与 `rm(lockPath)` 非原子**（`project-state.ts:363-364`）。触发：stealer 恰在 `claimStillOurs` 通过后被挂起（GC/调度/VM 暂停），期间另一 stealer 回收 claim（claim 老化 >30s，或经由上面 nit-1 的竞态更快拿到活 claim）、删旧锁、建新锁并进入临界区，恢复后前者的 `rm` 删掉新锁。影响：**仅互斥瞬时失效**——可能两个 writer 并发；写路径为 `writeAtomic`（rename）+ 每次覆盖前备份，不会产生撕裂文件，最坏是备份/最后写入基于兄弟进程中间态（lost update 窗口），有备份兜底。`stealStaleLock` 注释「cannot unlink the successor's lock」严格来说不成立。建议：把 claim 复查紧贴 rm、注释改为「显著收窄竞态」；长期以 flock 闭合。
+2. 备份硬上限对 notice 引用路径的时效性影响（见 suggestion-2）：仅影响诊断路径可用性，不算数据丢失。
+
+综合：round-19 三个 findings 均已实质修复并经独立验证；产品代码未发现 blocking/important 缺陷，唯一 important 是新增 FIFO 用例的永真断言，属于「验证证据」缺口，按 owner「不残留隐患」的标准应修一行后重跑。
+
+VERDICT: CHANGES-REQUESTED
