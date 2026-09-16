@@ -82,7 +82,8 @@ tags: [handoff, i18n, replay]
 - 已提交并 **已 push**（`origin` 双远端：Forgejo + GitHub 镜像）：
   `5b9b9ad feat(handoff): follow the conversation language and drop stale prompts from the replay`
   （含 `config.ts`/`handoff.ts`/`README.md`/`tests/handoff-test.mjs` 与新 issue 目录），后续 `2964141`（污染备份
-  清理记录）、`f1565dc`（提交哈希）、`6d8b81b`（自动触发断言改轮询）；远端 `master` = `6d8b81b`。
+  清理记录）、`f1565dc`（提交哈希）、`6d8b81b`（自动触发断言改轮询）、`96b666d`（本部署记录）；双远端 `master`
+  = `96b666d`，发布代码仍是 tag `v0.1.4` 指向的 `6d8b81b`。
 - 发布 tag（已 push）：`v0.1.3`（`e4d48c4`，记忆日志化 + 写锁加固，此前一直是本地未发布）与
   `v0.1.4`（`6d8b81b`，本 issue 的 handoff 改动）。
 - **已安装副本已切到 v0.1.4 并生效**：`settings.json` 的 pin 改为 `…pi-project-context.git@v0.1.4`，

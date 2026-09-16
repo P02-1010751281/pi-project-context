@@ -84,13 +84,15 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
 
 ## 5. 遗留事项
 
-- **安装包未更新**：运行中的 pi 仍用 `~/.pi/agent/git/.../pi-project-context` 的 ad81a11
-  （v0.1.2）。本次改动需 commit（并按需打 tag/更新安装）后才会对会话生效。
+- **安装包**：**已解决**——本 issue 的修复随 `v0.1.3`（`e4d48c4`，annotated tag 已 push 到 Forgejo + GitHub 镜像两远端）
+  发布；2026-09-16 安装包 pin 切到 `v0.1.4`（`6d8b81b`），此后新会话运行的就是含本修复的代码。
 - **备份文件**：UniField 1 个、Quantum_Matrix 2 个 `.poison-backup-*`，已于 2026-09-16 逐份核对后删除（见 §7）。
-- **顺手发现**：`autolearn.ts:424` / `autolearn.ts:438` 仍用固定的 `config.maxTokens`，
-  超长技能内容可能发生同类截断（不在本 issue 范围，建议另开 issue）。
-- **自愈是静默的**：只有备份文件留痕，没有通知；如需可见性可后续增强。
-- **已知 nit**：`readJsonStringField` 未映射 `\b`/`\f` 转义（沿用原实现的既有行为）。
+- **autolearn 固定输出上限**：**已解决**——`autolearn.ts:428` 改用 `adaptiveOutputTokens(...)`（v0.1.3 自适应预算），
+  不再使用固定 `config.maxTokens`，超长技能内容不再被同类截断。
+- **自愈可见性**：**部分解决**——consolidation 读到污染记忆时会 warn 一次
+  （`consolidate.ts:509`，文案说明下次 consolidation 会先备份再重写）；解码本身仍无写副作用（owner 批准的 B 方案）。
+  `/project-context` 命令输出目前不含 poison 字段，仅作可选后续增强。
+- **已知 nit**：**已解决**——`readJsonStringAt` 已映射 `\b`/`\f` 转义（`project-state.ts`）。
 - 旧进程（PID 370858 / 378387）已退出，污染写入来源消失。
 
 ## 6. 代码审查与 review-fix 状态（2026-09-15，round 1..5）
