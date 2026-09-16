@@ -1,0 +1,67 @@
+# 第三轮独立审查报告（pi-project-context @ e4d48c4 + 工作树 diff）
+
+## 结论
+
+- **原 B-1 已彻底修复**：`planReplayWindow` 无任何回填，切片起点严格等于 `findCutPoint`（含既有 turnStart 对齐）的结果；真实会话与合成用例均证明丢弃切片首个提示词**不会**产生孤儿 toolResult；`droppedTokens` 与 kept 精确互补，无 I-1 式位移/重复计数。`node tests/run-all.mjs` 9/9 通过。
+- **但仍有 2 个 important 级别的发现（其中一个对 Anthropic/Gemini 路由可升级为 blocking），以及 N-3 未完成**：
+  1. **I-3（新回归，Important；Anthropic/Gemini 场景下 equivalent to blocking）**：当切片首条正好是上一代 handoff 提示词时，过滤后重放块以 **assistant(toolCall)** 开头。这正是真实会话 `01a0a7a9` 的切点形态；旧代码此处是 user 开头，新代码把它删掉后成了 assistant 开头。pi 的 `transformMessages` 不修复前导角色，Anthropic Messages API 要求首条为 user → 400。
+  2. **I-2a（Important，I-2 修复的边界漏洞）**：`runHandoff` 把**已过滤掉提示词的** `keptMessages` 传给 `resolveLanguage`，而切片边界上的提示词既不在 `olderEntries`（左闭右开）也不在 kept 里 → `promptLanguage` 看不到它，rule ③ 失效；同时 `status` 用全分支消息会显示 `auto(zh)`，与实际产出 `en` 不一致。已用最小复现：同一会话 `runHandoff view -> en`，`status/full view -> zh`。
+  3. **N-3（docs 未按最终代码重写）**：analysis/fix-note 仍是 round-1 内容（CJK≥10、直接 `filterReplayEntries`、30 项断言），mtime 09:06 早于代码/测试的 09:23。
+
+---
+
+## Findings
+
+### I-3（Important；对原生 Anthropic/部分 Gemini 路由可视为 blocking）— 切片首条提示词被丢弃后重放以 assistant 开头
+- 位置：`extensions/project-context/handoff.ts:286-293`（`planReplayWindow` 只过滤不改起点）、`handoff.ts:737-742`（先 `turnStartIndex` 左移到该提示词，再被过滤）、`handoff.ts:579-593`（`replayEntries` 原样写入）。
+- 证据（真实会话 `2026-09-16T00-41-35-029Z_01a0a7a9…jsonl`，keep=20k）：
+  - `findCutPoint → firstKeptEntryIndex=91`（assistant），`isSplitTurn=true, turnStartIndex=80`；80 正是其自身 handoff 提示词 `b3806dc0`（`len=7601 chars, sha256=2fbe4159f558`）。
+  - 新代码过滤后 `keptEntries=43`（24889 tokens），`droppedEntries=1`（1901 tokens），**首个重放消息 role=assistant 且带 toolCall**（`7f0a46ae`）。
+  - 新会话消息序列实测为 `assistant(toolCall), toolResult, assistant, toolResult, …`，随后才是 `user(handoffPrompt)`（脚本 `/tmp/rev3-transform.mjs`、`/tmp/rev3-transform2.mjs`）。
+  - 对照基线 `git show HEAD:extensions/project-context/handoff.ts`（`:467-468`）：基线此处保留该提示词，首条是 user，因此这是本次修复引入的回归。
+  - pi 自身不补救：`pi-ai/dist/api/transform-messages.js` 第二遍只补 orphan toolCall 的合成 toolResult，不补前导 user；`anthropic-messages.js` 把 system 放 `params.system`，`messages` 首条即 assistant → 违反 Anthropic「首条必须 user」。OpenAI 兼容路由（本仓库实测用的 deepseek）可容忍。
+- 建议：`planReplayWindow`/`runHandoff` 在过滤后若首条非 user，插入一条极简 user 锚点（或把边界上的提示词替换成一行占位而非整条删除，如「（上一会话交接提示词已省略）」）；补一个断言「过滤后首个消息 role=user」的测试。若明确不支持 Anthropic/Gemini，也应在 fix-note 写明并接受。
+
+### I-2a（Important）— 边界提示词对 `promptLanguage` 不可见，rule ③ 在该场景失效且 status 与实际不一致
+- 位置：`handoff.ts:781` `resolveLanguage([...olderMessages, ...keptMessages], …)`；`handoff.ts:749-751`（`olderEntries` 不含 `firstKeptIndex`，`keptMessages` 来自已过滤的 `replay.entries`）；`handoff.ts:103-112` `promptLanguage`。
+- 复现（`/tmp/rev3-promptlanguage-hole.mjs`）：
+  - 会话形态：older=[英文 user/assistant] + **zh 提示词（切点处）** + kept=[assistant,"ok","1+2+3"]；
+  - `runHandoffView -> en`（提示词被过滤且不在 older）；`statusView -> zh`；`fullView -> zh`。
+  - 即：状态栏 `lang auto (zh)`，实际 handoff 会生成 en 脚手架——正是 I-2/N-2 要消除的病症，只是搬到了边界路径。链式场景更糟：若最新 zh 提示词被过滤、older 里还有更老的 en 提示词，rule ③ 会拿**更旧**的 en 提示词当依据。
+- 建议：传给 `resolveLanguage` 的消息集改为未过滤的切片消息（`languageSamples` 已用 `isHandoffPromptText` 把提示词排除在 rule ①/② 之外，所以不会污染 CJK/Latin 判定），或单独把被丢弃的提示词条目追加给 `promptLanguage` 用；并补「提示词位于切点」的回归测试。
+
+### N-3（docs 未更新，与最终代码不一致）
+- `analysis.md:40,58`：仍写 `CJK ≥10 → zh`，代码是 `LANGUAGE_CJK_MIN=2` + `LANGUAGE_LATIN_MIN=20` + `promptLanguage` 三级规则（`handoff.ts:86-99,487-495`）。
+- `fix-note.md:24`：仍写 `LANGUAGE_CJK_MIN=10`。
+- `fix-note.md:30-31`：仍写 `const keptEntries = filterReplayEntries(allEntries.slice(firstKeptIndex))`「estimatedAfter 随之使用过滤后的切片」，未提 `planReplayWindow`/`droppedTokens` 与 `baselineNow` 的第四次减法（`handoff.ts:742,790`）。
+- `fix-note.md:19`：「共 30 项断言」，实际 `tests/handoff-test.mjs` 有 64 处 `check(`（mtime 09:23 vs docs 09:06）。
+- 建议：按最终实现重写 analysis §2/§4 与 fix-note §1-3/§5，至少覆盖三级规则、`planReplayWindow`+`droppedTokens`、以及 I-3/I-2a 两个新边界。
+
+### 测试覆盖（对应问题 4）
+- 已覆盖且正确：`detectHandoffLanguage`、zh/en 渲染变体、真实 legacy 文本识别（我另用真实 7601 字符原文验证 `isHandoffPromptText=true`）、引用前缀/后缀不误伤、大小写敏感、config 三层解析、命令持久化。
+- 缺口/风险：
+  - `tests/handoff-test.mjs:171-179` 的 rule ③ 测试把 scaffold 直接放进 `resolveLanguage` 输入，而**生产路径恰好在边界场景把它过滤掉** → 测试掩盖 I-2a。
+  - `handoff-test.mjs:125`（start=3 → 只剩 `p4` assistant）实际固化了 assistant-first 输出，却没有任何「首个重放消息应为 user」断言 → I-3 不可见。
+  - `handoff-test.mjs:127` 只断言 `droppedTokens > 0`，未断言 `droppedTokens == sliceTokens - keptTokens`（I-1 的防回归点）。
+  - `handoff-test.mjs:240` status 测试只查 `includes("lang auto")`，未构造 `auto (zh)` 续接场景（N-2 的验收点）。
+
+---
+
+## 问题 1/2/3 的直接验证结果（证据）
+
+1. **B-1/I-1（脚本 `/tmp/rev3-real.mjs`）**
+   - `01a0a7a9`：`firstKept=80`，切片起点未被移动；kept 是切片子序列 43/43；`droppedTokens=1901 == slice(26790) - kept(24889)`，且等于被删条目的逐消息 `estimateTokens` 和；过滤后所有 toolResult 的 `toolCallId` 均能在重放块内找到 toolCall → **无孤儿 toolResult**。
+   - `01a0a7b1`：切点 114→turnStart 95，切片内无提示词，`droppedTokens=0`。
+   - 合成「切片首条即提示词」：`[u0, prompt, a1(tc1), t1, a2] → [a1,t1,a2]`，toolCall/toolResult 保持配对（唯一副作用即 I-3 的 assistant-first）。
+2. **I-2 三级规则（`/tmp/rev3-real.mjs` + 补充）**：`[zh scaffold,"继续"/"好"/"ok"/"1+2+3"]→zh`（继续走 rule ①，其余走 rule ③）；`[zh scaffold, 英文实句]→en`；无提示词无 CJK→en；无提示词仅 1 个 CJK（"好"）→en；引用变体不再被当成 label。前缀匹配无重叠，`messageText`/`isHandoffPromptText` 均 trim，大小写敏感（改大小写不会被误认，也不会误触发 rule ③）。**缺陷即 I-2a（可见性），不在匹配逻辑本身。**
+3. **分区等式（`/tmp/rev3-real.mjs`）**：`baselineNow` 的减法与过滤前 `usage - older - keptBefore` 完全相等（示例 5万/100万 tokens），非 clamp 时 `older+kept+dropped+baseline == usage`；真实会话中 `dropped == slice-kept` 精确成立。分区在「不回填」下成立。
+
+## 残余风险
+
+- **I-3 未修**：OpenAI 兼容路由可用，原生 Anthropic/部分 Gemini 首请求会失败；建议至少在文档标注支持范围。
+- **语言启发式**：1 个 CJK（"好"）且无可见 prompt 时回退 en；实质性英文（≥20 拉丁字母）会把中文会话翻成 en（设计如此）；I-2a 使短 ASCII 续接链可能丢掉 zh 标签。
+- **keep 预算变成上界**：被丢弃提示词不补位，`keptTokens` 可明显小于 `handoffKeepTokens`（真实例：切片 26790 → kept 24889 仍可接受；极端链式提示词下会更小）。
+- `firstKeptIndex=0` 仍会静默 return（`olderMessages` 为空），但触发条件要求 `usage ≥ baseline+keep+target`，实际可达性低，且非本次回填引入。
+- docs 未重写（N-3），审计追溯会与代码事实不符。
+
+未修改仓库任何文件；验证脚本均写在 `/tmp`（`rev3-real.mjs`、`rev3-promptlanguage-hole.mjs`、`rev3-transform2.mjs`、`rev3-legacy2.mjs`、`rev3-status.mjs`）。

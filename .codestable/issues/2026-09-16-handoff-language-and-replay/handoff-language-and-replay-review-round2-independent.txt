@@ -1,0 +1,123 @@
+# 第二轮独立审查报告
+
+**审查对象**：`/tmp/pi-context-rev-handoff2`（HEAD `e4d48c4` + 工作树改动）；已跑 `node tests/run-all.mjs` → **9/9 passed**。
+
+## 一、结论
+
+- **仍有 1 个 blocking（不能合入）**：`planReplayWindow` 的回填把 `firstKeptIndex` 左移时**不再保证 turn 对齐**，在真实会话上可复现重放切片以**孤儿 toolResult 开头**（其 toolCall 在切片外），新会话首轮模型请求可能直接 400/失败（详见 B-1）。
+- **2 个 important**：
+  - `planReplayWindow` 回填循环按“累计重数”计数（每轮把已在切片里的 prompt 再数一遍），导致回填量最多 ×4，且可把 `firstKeptIndex` 推到 0，使 `runHandoff` 静默 no-op（I-1）；
+  - 续接会话（keep 很小/为 0）里短中文回复会因“提示词被排除采样 + CJK 阈值 4”翻回英文（I-2）。
+- 第一轮 **I-1（预算）、I-3（误杀）、N-3（zh “over threshold”）、N-6（缩进）验证通过**；I-2 自锁已解除，但见上述新翻转路径；N-2 的“回填”修法本身有缺陷。
+
+---
+
+## 二、第一轮问题逐项复核
+
+### I-1 预算分区：✅ 已修复
+用真实会话 `01a0a7a9` 复刻 `runHandoff` 数学（`/tmp/repro/partition.mjs`）：
+
+```
+olderTokens 68568 + keptTokens 27482 + droppedTokens 1901 = 97951
+allContextTokens = 97951（完全相等）
+baselineNow = usage(127951) − older − kept − dropped = 30000 = 注入的 baseline（diff 0）
+```
+即 `usage = baseline + older + kept + dropped` 成立；refill 后 older/kept 边界变化自洽（`older` 由 post-refill 的 `firstKeptIndex` 重新切片，`droppedTokens` 只统计 slice 内提示词）。残余只有 compaction 记账（见 §四）。
+
+### I-2 语言自锁：✅ 解除，但引入新翻转路径
+- 真实两个会话 `resolveLanguage(...)` 都判 `zh`；测试 `injected prompts do not poison` 通过。
+- 但 `/tmp/repro/lang.mjs`：
+  ```
+  [zh 提示词, "继续"] -> en
+  [zh 提示词, "好"]   -> en
+  [zh 提示词, "ok"]   -> en
+  [zh 提示词 only]    -> en
+  ```
+  因为提示词被排除后，keep=0 的续接会话里唯一的中文信号就是提示词本身；`继续`=2 个 CJK < `LANGUAGE_CJK_MIN=4`（handoff.ts:86），`recent` 总长又 <40 → 回退 `texts`（仍只有这几条）→ en。这是相对第一轮修正版的**新翻转路径**（旧版把提示词的 CJK 计入所以稳定 zh）。
+
+### I-3 误杀：✅ 修复
+`isHandoffPromptText` 三重条件（前缀 + 标题 + **结尾 closing**，handoff.ts:193-199）。真实会话 `01a0a7b1`（`/tmp/repro/filter-real.mjs`）：
+```
+DROPPED 4aa9fa40 user  "This session continues ..."      ← 旧重放提示词
+DROPPED a64d4dd5 user  "This session continues ..."      ← guard 结尾（wait）提示词
+user quote kept: true                                     ← entry 85「补，但是…+引用」保留
+```
+旧格式/两种 closing/前缀带 `over threshold` 均覆盖；残余假阴性见 §四。
+
+### N-2 回填：❌ 修法引入 B-1 与 I-1（见下）
+
+### N-3 / N-6：✅
+`buildHandoffPrompt` 使用 `text.percentUnknown`（handoff.ts:215），zh 下不再出现 “over threshold”；statusText 新块为 tab 缩进（handoff.ts:488-490）。
+
+---
+
+## 三、Findings
+
+### B-1 (blocking) — 回填破坏 turn 对齐，重放切片可以孤儿 toolResult 开头
+- 位置：`extensions/project-context/handoff.ts:266-279`（`planReplayWindow`），消费点 `handoff.ts:723-726`、`handoff.ts:837`（`replayEntries(sessionManager, keptEntries)`）。
+- 理由：原 `findCutPoint` + `isSplitTurn/turnStartIndex`（`handoff.ts:711-720`）保证起点是 turn 起点（user 类消息）；新回填只做 `start -= dropped`，可能在 turn 中间落地。真实会话 `01a0a7a9`（`/tmp/repro/real-session.mjs`）：
+  ```
+  findCutPoint firstKeptIndex: 80 entry: b3806dc0 user   ← 原切点=提示词（turn 起点）
+  planReplayWindow firstKeptIndex: 76
+  first replayed: f9e1aca1 message toolResult            ← 其 toolCall 是 index 75 的 74f1e41e，已被排除
+  ORPHAN TOOLRESULT: true
+  ```
+  pi-ai 对 toolResult 无条件转 `{role:"tool", tool_call_id}`（`pi-ai/dist/api/openai-completions.js:1063-1089`），`transform-messages.js:125-190` 只补“孤儿 tool_call”，**不删孤儿 tool_result**；OpenAI 兼容端会报 “tool message must be a response to a preceding tool_calls”，Anthropic 端 tool_use_id 对不上同样 400。新会话 `setup` 先重放孤儿，再 `sendUserMessage`，首轮即可能失败。
+- 建议：
+  1. 每次左移后重新对齐：`start = findTurnStartIndex(allEntries, start, 0)`（pi 已导出，返回 -1 时才用原值），宁可多带一个完整 turn 也不产生孤儿；
+  2. 回填按 **本轮新暴露的 prompt 数**或 token 预算计算（见 I-1），不要按累计数；
+  3. 在 `tests/handoff-test.mjs:114-128` 加一条 “keep 起点前紧邻 assistant(toolCall)/toolResult” 的回归断言（当前测试全是 user/assistant 文本条目，掩盖了该问题）。
+
+### I-1 (important) — 回填按累计计数，量级超标且可推平 `older`
+- 位置：`handoff.ts:268-272`。
+- 理由：`dropped = allEntries.slice(start).filter(...)` 每轮把**已经在切片里的 prompt 重新数一遍**；prompt 直到最后才被 filter 掉，所以初始切片只要含 1 个 prompt，`dropped` 永不归零，循环必然跑满 4 轮，总位移 = d0+d1+d2+d3。
+  - 合成最小例（`/tmp/repro/plan-edge.mjs` case1）：1 个 prompt、`firstKeptIndex=5` → 期望回填 1 条，实际 `start=1`（回填 4 条）。
+  - 真实会话说 `keptTokens` 由 24889 → 27482（配置 `handoffKeepTokens=20000`），4 条额外条目 +2593 tokens；条目很大时（如 3k tokens/条的 toolResult）会更多。
+  - 可达的坏结果（`/tmp/repro/overshift-reachable.mjs`）：`findCutPoint` 给出 `firstKeptIndex=4`、`olderTokens=12004 (≥MIN_SUMMARIZE_TOKENS=8000)`，回填后 `start=0`、older 为空 → `handoff.ts:736` 静默 return，自动交棒实际停止工作。
+- 建议：只统计每轮“新进入切片的 prompt”（用上一轮 `start` 作为本轮新增区间上界），或直接按 `handoffKeepTokens` 的真实 token 预算向前扩展并对齐 turn；不要用条目个数近似。
+
+### I-2 (important) — 短中文续接会话翻回 en（含 status 显示）
+- 位置：`handoff.ts:86`、`handoff.ts:462-476`。
+- 理由：见 §二 I-2；`resolveLanguage` 在所有非提示词用户样本 CJK<4 时返回 en。对“上一会话已交接、keep=0/很小、用户只用「继续/好/同意」”的中文场景，autohandoff 的脚手架会切回英文，违反需求 1 的 auto 语义。
+- 建议：
+  - 当 `texts.length === 0` 或 CJK 不足时，用“最近一条被识别的 handoff 提示词的语言”（由 `HANDOFF_PROMPT_PREFIXES/HEADINGS` 判定）作为兜底，而不是直接 en；
+  - 或把阈值改为比例式（如 CJK≥2 且 CJK 占非空白字符 >30% 即 zh），避免 2 字回复必须攒够 4 字；
+  - 补一条 `[zh scaffold, "继续"] === "zh"` 的回归测试（现有测试把 `["B C A","好"] → en` 固化了，没有覆盖续接会话）。
+
+### N-1 (notable) — `firstKeptIndex` 被推到 0 时无通知、无冷却
+- 位置：`handoff.ts:723-726`（start=0）+ `handoff.ts:736`（`if (!olderMessages.some(...)) return;`）。
+- 理由：`/tmp/repro/overshift-reachable.mjs` 证明 start 可到 0；此时 `olderMessages=[]`，在任何 `notify` 之前直接 return，`cooldownUntil` 不设置、`inFlight` 在 finally 复位。自动触发会在之后每次 settle 静默重试、永远不生效，用户看不到原因（`/auto-handoff now` 同样无反馈）。
+- 建议：若回填会得到 start=0，则回退到原 `findCutPoint` 结果（保留 ≥1 条 older）；否则至少 `notify(..., "warning")` 并设置冷却。
+
+### N-2 (notable) — 新 zh 续接会话的 status 显示 `lang auto (en)`
+- 位置：`handoff.ts:488-490`。
+- 证据（`/tmp/repro/status-fresh.mjs`）：
+  ```
+  STATUS : ... lang auto (en) ...   ← 只有 zh 提示词 + assistant 回复时
+  STATUS2: ... lang auto (zh) ...   ← 加一条真实中文用户消息后
+  ```
+- 原因与 I-2 相同（提示词被排除）；虽不影响 `runHandoff` 结果，但会误导用户以为语言配置没生效。建议与 I-2 的兜底同修。
+
+### N-3 (notable) — 变更文档与代码不一致
+- `.codestable/issues/2026-09-16-handoff-language-and-replay/handoff-language-and-replay-fix-note.md` / `analysis`（untracked）仍写“CJK ≥10”“前缀+标题两条件”“回填被丢弃条目的数量”，与最终代码（`LANGUAGE_CJK_MIN=4`、三重条件、累计回填）不符；readme 的 `handoffLanguage` 描述与代码一致。建议同步更新，避免后续审查被误导。
+- 另外 `tests/handoff-test.mjs` 是 untracked，若 commit 时只 `git add -u` 会漏掉测试；B-1 的回归用例也应一并补。
+
+---
+
+## 四、残余风险（不阻塞，但建议记录）
+
+1. **compaction 记账**：当 `olderEntries` 含 compaction 条目时，其 summary token 既不在 `olderTokens`（被 filter），也不在 `keptTokens/droppedTokens`，会滞留 `baselineNow`，使 `estimatedAfter` 偏高（保守，pre-existing）。
+2. **识别与格式强耦合**：`HANDOFF_PROMPT_PREFIXES/HEADINGS/CLOSINGS` 是硬编码常量；将来改脚手架文案必须同步更新，否则历史提示词漏杀。可在启动时从 `SCAFFOLDING` 派生 closing（已做）并对前缀加注释/测试锁定。
+3. **I-3 残余假阴性**：用户在 draft 中编辑正文但保留 preamble/标题/closing 时，整条仍被判定为提示词并从重放剔除（其编辑内容不会带入）；引用式“前加/后加”已保留。
+4. **摘要标题依赖模型**：zh 语言指令能否覆盖 pi 的 “Use this EXACT format” 只在探针里验证，弱模型可能仍输出英文标题。
+5. **语言启发式**：`recent 8 条 <40 字符则回退全会话` 会把很早的英文样本拉回来；反之长英文粘贴可压过少量中文。显式 `lang zh/en` 是兜底。
+
+## 附：最小复现脚本
+均在 `/tmp/repro/`：
+- `real-session.mjs <session.jsonl>` → B-1 孤儿 toolResult（真实会话）。
+- `overshift-reachable.mjs` → I-1 回填过量 + N-1 start=0 静默 return。
+- `plan-edge.mjs` → 回填计数语义（1 个 prompt 位移 4）。
+- `partition.mjs` → I-1 分区等式 = 精确成立。
+- `lang.mjs` / `status-fresh.mjs` → I-2 翻转与 status 误显示。
+- `filter-real.mjs` → I-3 真实数据剔除/保留验证。
+- `kept-delta.mjs` → 真实 keptTokens 24889→27482。

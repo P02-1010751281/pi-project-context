@@ -39,6 +39,7 @@
  *   /auto-handoff keep 20k|0     recent tokens carried over verbatim (persisted)
  *   /auto-handoff send|draft     auto-send the continuation, or leave it in the editor
  *   /auto-handoff guard wait|draft|send|skip  pending-question behavior (default wait)
+ *   /auto-handoff lang auto|zh|en  scaffolding language (default auto = conversation)
  *   /auto-handoff now            hand off right now (force)
  *
  * Settings live in `<project>/.agents/memory/project-context.json` (see config.ts); the
@@ -75,6 +76,297 @@ const SUMMARY_OUTPUT_RESERVE_TOKENS = 32_768;
 const SUMMARY_FOCUS =
 	"This summary covers the older part of the previous session; its most recent messages are carried over separately. " +
 	"Preserve exact file paths, function names, commands, error messages, and unfinished work. Keep it concise.";
+
+/**
+ * pi's summarization prompt demands an EXACT section format, so models keep copying its English
+ * headings even when the focus line asks for another language (observed on deepseek-flash). Map the
+ * fixed heading set deterministically instead of relying on the model to translate the template.
+ */
+const SUMMARY_HEADINGS: Record<HandoffLanguage, Record<string, string>> = {
+	zh: {
+		"## Goal": "## 目标",
+		"## Constraints & Preferences": "## 约束与偏好",
+		"## Progress": "## 进展",
+		"### Done": "### 已完成",
+		"### In Progress": "### 进行中",
+		"### Blocked": "### 受阻",
+		"## Key Decisions": "## 关键决策",
+		"## Next Steps": "## 下一步",
+		"## Critical Context": "## 关键上下文",
+	},
+	en: {
+		"## 目标": "## Goal",
+		"## 约束与偏好": "## Constraints & Preferences",
+		"## 进展": "## Progress",
+		// Model-side translations observed in real summaries (TUI run, 2026-09-16).
+		"## 进度": "## Progress",
+		"### 已完成": "### Done",
+		"### 进行中": "### In Progress",
+		"### 受阻": "### Blocked",
+		"### 阻塞": "### Blocked",
+		"## 关键决策": "## Key Decisions",
+		"## 下一步": "## Next Steps",
+		"## 关键上下文": "## Critical Context",
+	},
+};
+
+/** Localize the headings pi's template prescribes; only exact heading lines outside code fences are touched. */
+export function localizeSummaryHeadings(text: string, language: HandoffLanguage): string {
+	const headings = SUMMARY_HEADINGS[language];
+	let fence: string | undefined;
+	return text
+		.split("\n")
+		.map((line) => {
+			const trimmed = line.trim();
+			const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+			if (fenceMatch) {
+				// Track fenced code blocks so heading-shaped lines inside them stay untouched.
+				if (fence === undefined) fence = fenceMatch[1][0];
+				else if (trimmed.startsWith(fence)) fence = undefined;
+				return line;
+			}
+			if (fence !== undefined) return line;
+			const mapped = headings[trimmed];
+			if (!mapped) return line;
+			const indent = line.slice(0, line.indexOf(trimmed));
+			return `${indent}${mapped}`;
+		})
+		.join("\n");
+}
+
+/** Languages the handoff scaffolding can be rendered in; `auto` resolves from the conversation. */
+export type HandoffLanguage = "zh" | "en";
+
+/** CJK ideographs; user messages are the most reliable signal of the conversation language. */
+const CJK_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
+/** CJK characters needed in the user messages before auto-detection picks Chinese. */
+const LANGUAGE_CJK_MIN = 2;
+/** Latin letters that make a sample set count as substantial English. */
+const LANGUAGE_LATIN_MIN = 20;
+const LATIN_PATTERN = /[A-Za-z]/g;
+
+function countMatches(samples: string[], pattern: RegExp): number {
+	let count = 0;
+	for (const sample of samples) count += sample.match(pattern)?.length ?? 0;
+	return count;
+}
+
+/** `auto` language rule: enough Chinese in the user's own messages means Chinese scaffolding. */
+export function detectHandoffLanguage(samples: string[]): HandoffLanguage {
+	return countMatches(samples, CJK_PATTERN) >= LANGUAGE_CJK_MIN ? "zh" : "en";
+}
+
+/** Language of the newest recognized continuation prompt, if the conversation has one. */
+function promptLanguage(messages: AgentMessage[]): HandoffLanguage | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message.role !== "user") continue;
+		const text = messageText(message);
+		if (!isHandoffPromptText(text)) continue;
+		if (text.startsWith(HANDOFF_PROMPT_PREFIXES[1])) return "zh";
+		if (text.startsWith(HANDOFF_PROMPT_PREFIXES[0])) return "en";
+	}
+	return undefined;
+}
+
+/** The summary focus passed to pi's compaction summarizer, in the resolved language. */
+function summaryFocus(language: HandoffLanguage): string {
+	return language === "zh"
+		? `${SUMMARY_FOCUS} Write the whole summary in Simplified Chinese, including the section headings.`
+		: `${SUMMARY_FOCUS} Write the whole summary in English, including the section headings.`;
+}
+
+/** Localized scaffolding for the continuation prompt and the archived handoff document. */
+interface HandoffScaffolding {
+	preamble: (percentText: string) => string;
+	percentUnknown: string;
+	carryKept: string;
+	carrySummaryOnly: string;
+	verify: string;
+	guardWaiting: string;
+	summaryHeading: string;
+	detailsHeading: string;
+	detailSessionId: (sessionId: string) => string;
+	detailTranscript: (file: string) => string;
+	detailIndex: string;
+	detailLookup: string;
+	pendingHeading: string;
+	closingContinue: string;
+	closingPaused: string;
+	documentTitle: (sessionId: string) => string;
+	documentCreated: (iso: string) => string;
+	documentProject: (root: string) => string;
+	documentLog: (rel: string) => string;
+	documentIndex: string;
+}
+
+const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
+	en: {
+		preamble: (percentText) => `This session continues work handed off from a previous session (${percentText} of its context window had been used).`,
+		percentUnknown: "over threshold",
+		carryKept: "The handoff summary below covers the earlier part of that session; its most recent messages were carried over verbatim.",
+		carrySummaryOnly: "The handoff summary below is the only context carried from that session.",
+		verify: "Verify the current state of files with tools before re-applying changes, and do not redo completed work.",
+		guardWaiting: "The previous session stopped while waiting for the user's answer, so the decision is still open.",
+		summaryHeading: "## Handoff Summary",
+		detailsHeading: "## Previous session details",
+		detailSessionId: (sessionId) => `- Previous session id: ${sessionId}`,
+		detailTranscript: (file) => `- Raw transcript (JSONL): ${file}`,
+		detailIndex: "- The project session index (.agents/memory/session-logs/INDEX.md) links the Markdown log for that id.",
+		detailLookup: "If a needed detail is missing from this summary, look it up there (grep, do not load whole files).",
+		pendingHeading: "## Pending question (waiting for the user)",
+		closingContinue: "Continue the task from where it left off.",
+		closingPaused: "The task is paused on the pending question above. Do not choose an option or start work on the user's behalf; wait for their answer.",
+		documentTitle: (sessionId) => `# Handoff from pi session ${sessionId}`,
+		documentCreated: (iso) => `- Created: ${iso}`,
+		documentProject: (root) => `- Project: ${root}`,
+		documentLog: (rel) => `- Session log: ${rel}`,
+		documentIndex: "- Session index: .agents/memory/session-logs/INDEX.md",
+	},
+	zh: {
+		preamble: (percentText) => `本会话接手上一会话（其上下文窗口已用 ${percentText}）。`,
+		percentUnknown: "阈值以上",
+		carryKept: "下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。",
+		carrySummaryOnly: "上一会话只留下下面的交接摘要，没有原文带入。",
+		verify: "动手前先用工具核对文件当前状态，不要重做已完成的工作。",
+		guardWaiting: "上一会话停在等你回答的问题上，这个决定仍未决。",
+		summaryHeading: "## 交接摘要",
+		detailsHeading: "## 上一会话信息",
+		detailSessionId: (sessionId) => `- 上一会话 id：${sessionId}`,
+		detailTranscript: (file) => `- 原始记录（JSONL）：${file}`,
+		detailIndex: "- 项目会话索引 .agents/memory/session-logs/INDEX.md 里有该 id 的 Markdown 日志。",
+		detailLookup: "摘要里缺的细节去那里查（用 grep，不要把整个文件读进来）。",
+		pendingHeading: "## 待用户回答的问题",
+		closingContinue: "从上次中断处继续。",
+		closingPaused: "任务停在上面的问题上。不要替用户选选项或开工，等用户回答。",
+		documentTitle: (sessionId) => `# pi 会话 ${sessionId} 的交接文档`,
+		documentCreated: (iso) => `- 生成时间：${iso}`,
+		documentProject: (root) => `- 项目：${root}`,
+		documentLog: (rel) => `- 会话日志：${rel}`,
+		documentIndex: "- 会话索引：.agents/memory/session-logs/INDEX.md",
+	},
+};
+
+/** Preamble prefixes of generated continuation prompts (one per scaffolding language). */
+const HANDOFF_PROMPT_PREFIXES = [
+	"This session continues work handed off from a previous session (",
+	"本会话接手上一会话（",
+];
+/** Section headings that only generated continuation prompts contain. */
+const HANDOFF_PROMPT_HEADINGS = ["## Handoff Summary", "## Previous session details", "## 交接摘要", "## 上一会话信息"];
+/** Closing lines every generated prompt ends with. */
+const HANDOFF_PROMPT_CLOSINGS = [
+	SCAFFOLDING.en.closingContinue,
+	SCAFFOLDING.en.closingPaused,
+	SCAFFOLDING.zh.closingContinue,
+	SCAFFOLDING.zh.closingPaused,
+];
+
+/**
+ * True for a message the handoff itself generated. The preamble, a section heading and the
+ * closing line must all match, so a user message quoting the prompt (or quoting it and adding
+ * their own text) is not mistaken for one and stays in the carried-over conversation.
+ */
+export function isHandoffPromptText(text: string): boolean {
+	const trimmed = text.trim();
+	if (!trimmed) return false;
+	if (!HANDOFF_PROMPT_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return false;
+	if (!HANDOFF_PROMPT_HEADINGS.some((heading) => trimmed.includes(heading))) return false;
+	return HANDOFF_PROMPT_CLOSINGS.some((closing) => trimmed.endsWith(closing));
+}
+
+export interface HandoffPromptParts {
+	language: HandoffLanguage;
+	percent: number | null;
+	keptTokens: number;
+	guardWaiting: boolean;
+	pendingQuestion?: string;
+	summaryWithIndex: string;
+	previousSessionId: string;
+	previousSessionFile?: string;
+}
+
+/** Assemble the user message that opens the replacement session (pure; unit-tested). */
+export function buildHandoffPrompt(parts: HandoffPromptParts): string {
+	const text = SCAFFOLDING[parts.language];
+	const percentText = parts.percent === null ? text.percentUnknown : fmtPct(parts.percent);
+	const detailLines = [
+		text.detailSessionId(parts.previousSessionId),
+		...(parts.previousSessionFile ? [text.detailTranscript(parts.previousSessionFile)] : []),
+		text.detailIndex,
+		text.detailLookup,
+	];
+	const pendingLines = parts.guardWaiting ? ["", text.pendingHeading, "", parts.pendingQuestion ?? "", ""] : [];
+	return [
+		text.preamble(percentText),
+		parts.keptTokens > 0 ? text.carryKept : text.carrySummaryOnly,
+		text.verify,
+		...(parts.guardWaiting ? [text.guardWaiting] : []),
+		"",
+		text.summaryHeading,
+		"",
+		parts.summaryWithIndex,
+		"",
+		text.detailsHeading,
+		...detailLines,
+		...pendingLines,
+		parts.guardWaiting ? text.closingPaused : text.closingContinue,
+	].join("\n");
+}
+
+/**
+ * Stand-in for a dropped continuation prompt. It keeps the replay block's user-first shape (a
+ * block that opens with an assistant message is rejected by Anthropic/Gemini routes) and is
+ * ignored by language sampling.
+ */
+export const REPLAY_MARKER = "[handoff prompt omitted]";
+
+/**
+ * Messages carried into the replacement session: stale continuation prompts become
+ * {@link REPLAY_MARKER}. Replayed verbatim a prompt reads as a fresh instruction and opens the
+ * new session with a summary of an already-superseded state; dropping it entirely would let the
+ * block start with an assistant message, which some providers reject.
+ */
+export function replayMessagesFor(entries: SessionEntry[]): AgentMessage[] {
+	const messages: AgentMessage[] = [];
+	for (const entry of entries) {
+		for (const message of sessionEntryToContextMessages(entry)) {
+			if (!isReplayableRole(message.role)) continue;
+			messages.push(
+				message.role === "user" && isHandoffPromptText(messageText(message))
+					? ({ ...message, content: [{ type: "text", text: REPLAY_MARKER }] } as AgentMessage)
+					: message,
+			);
+		}
+	}
+	return messages;
+}
+
+export interface HandoffDocumentParts {
+	language: HandoffLanguage;
+	previousSessionId: string;
+	projectRoot: string;
+	sessionLogRel: string;
+	summaryWithIndex: string;
+	createdAt?: string;
+}
+
+/** The archived `.agents/memory/HANDOFF.md` document (pure; unit-tested). */
+export function buildHandoffDocument(parts: HandoffDocumentParts): string {
+	const doc = SCAFFOLDING[parts.language];
+	return [
+		doc.documentTitle(parts.previousSessionId),
+		"",
+		doc.documentCreated(parts.createdAt ?? new Date().toISOString()),
+		doc.documentProject(parts.projectRoot),
+		doc.documentLog(parts.sessionLogRel),
+		doc.documentIndex,
+		"",
+		parts.summaryWithIndex.trim(),
+		"",
+	].join("\n");
+}
+
 /** Stay this far below a cost tier edge so streaming growth cannot cross it. */
 const TIER_EDGE_MARGIN = 4_000;
 const SUMMARY_TIMEOUT_MS = 180_000;
@@ -225,6 +517,42 @@ function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold
 	return { tokens, label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})` };
 }
 
+/** Recent user messages decide `auto`; the whole session is the fallback when they are too short. */
+const LANGUAGE_SAMPLE_MESSAGES = 8;
+const LANGUAGE_SAMPLE_MIN_CHARS = 40;
+
+/** User texts for the `auto` decision: injected prompts excluded, recent messages preferred. */
+function languageSamples(messages: AgentMessage[]): string[] {
+	const texts = messages
+		.filter((message) => message.role === "user")
+		.map(messageText)
+		.filter((text) => text.length > 0 && text !== REPLAY_MARKER && !isHandoffPromptText(text));
+	if (texts.length === 0) return [];
+	const recent = texts.slice(-LANGUAGE_SAMPLE_MESSAGES);
+	return recent.join("").length >= LANGUAGE_SAMPLE_MIN_CHARS ? recent : texts;
+}
+
+/**
+ * Messages the `auto` language decision samples: the older part plus the raw carried slice —
+ * prompts included, because `languageSamples` filters them itself and `promptLanguage` needs the
+ * one sitting on the cut point. Exported so tests pin this wiring (a marker-substituted slice
+ * would hide it).
+ */
+export function languageMessagesFor(olderMessages: AgentMessage[], carriedMessages: AgentMessage[]): AgentMessage[] {
+	return [...olderMessages, ...carriedMessages];
+}
+
+/** Resolve the scaffolding language: explicit config wins, `auto` follows the user's own messages. */
+export function resolveLanguage(messages: AgentMessage[], configured: ProjectContextConfig["handoffLanguage"]): HandoffLanguage {
+	if (configured !== "auto") return configured;
+	const samples = languageSamples(messages);
+	if (detectHandoffLanguage(samples) === "zh") return "zh";
+	// Substantive English wins; short replies ("ok", "1+2+3") carry the previous continuation
+	// prompt's language forward so they cannot flip a Chinese session back to English.
+	if (countMatches(samples, LATIN_PATTERN) >= LANGUAGE_LATIN_MIN) return "en";
+	return promptLanguage(messages) ?? "en";
+}
+
 function statusText(ctx: ExtensionContext): string {
 	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
 	const usage = ctx.getContextUsage();
@@ -235,7 +563,10 @@ function statusText(ctx: ExtensionContext): string {
 		else if (config.handoffAdaptive) thresholdLabel = "auto (no room at this window)";
 	}
 	const target = config.handoffAdaptive ? ` · target ${fmtTokens(config.handoffTargetTokens)}` : "";
-	return `Auto handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · context ${usageText(ctx)}`;
+	const language = config.handoffLanguage === "auto"
+		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLanguage)})`
+		: config.handoffLanguage;
+	return `Auto handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
 }
 
 interface FileOps {
@@ -303,18 +634,15 @@ function isReplayableRole(role: string): boolean {
 	return role === "user" || role === "assistant" || role === "toolResult" || role === "custom" || role === "bashExecution";
 }
 
-/** Replay recent entries verbatim into the replacement session. Never throws. */
+/** Replay the carried-over messages verbatim (stale prompts replaced by a marker). Never throws. */
 function replayEntries(sessionManager: SessionManager, entries: SessionEntry[]): number {
 	let appended = 0;
-	for (const entry of entries) {
-		for (const message of sessionEntryToContextMessages(entry)) {
-			if (!isReplayableRole(message.role)) continue;
-			try {
-				sessionManager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
-				appended += 1;
-			} catch {
-				// A malformed historical message must not abort the handoff.
-			}
+	for (const message of replayMessagesFor(entries)) {
+		try {
+			sessionManager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
+			appended += 1;
+		} catch {
+			// A malformed historical message must not abort the handoff.
 		}
 	}
 	return appended;
@@ -381,6 +709,7 @@ async function generateHandoffSummary(
 	auth: SummaryAuth,
 	messages: AgentMessage[],
 	previousSummary: string | undefined,
+	language: HandoffLanguage,
 ): Promise<string> {
 	const primary: NonNullable<ExtensionContext["thinkingLevel"]> = config.handoffSummaryThinking === "session"
 		? (ctx.thinkingLevel ?? "off")
@@ -400,13 +729,13 @@ async function generateHandoffSummary(
 				auth.apiKey,
 				cleanHeaders(auth.headers),
 				AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
-				SUMMARY_FOCUS,
+				summaryFocus(language),
 				previousSummary,
 				attempt.thinking,
 				undefined,
 				auth.env,
 			);
-			return text;
+			return localizeSummaryHeadings(text, language);
 		} catch (error) {
 			lastError = error;
 			// Retry only token-cap truncations; aborts/provider errors should surface as-is.
@@ -452,7 +781,10 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 
 		const allEntries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
-		if (allEntries.length === 0) return;
+		if (allEntries.length === 0) {
+			notify(ctx, "Auto handoff skipped: this session has no messages yet.", "warning");
+			return;
+		}
 
 		// Older context gets summarized; the recent tail is carried over verbatim.
 		let firstKeptIndex = allEntries.length;
@@ -464,20 +796,34 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 				firstKeptIndex = cut.turnStartIndex;
 			}
 		}
+		// Stale continuation prompts are replaced by a marker on replay: verbatim they read as a
+		// fresh instruction and open the new session with an already-superseded state.
+		const keptSlice = allEntries.slice(firstKeptIndex);
 		const olderEntries = allEntries.slice(0, firstKeptIndex);
-		const keptEntries = allEntries.slice(firstKeptIndex);
 		// If the older span starts with a previous compaction, let the summarizer update it
 		// instead of feeding the old summary in as ordinary conversation.
 		const previousCompaction = [...olderEntries].reverse().find((entry) => entry.type === "compaction");
 		const olderMessages = olderEntries
 			.filter((entry) => entry.type !== "compaction")
 			.flatMap(sessionEntryToContextMessages);
-		const keptMessages = keptEntries.flatMap(sessionEntryToContextMessages);
+		// Language sampling sees the raw slice (prompts included; `languageSamples` filters them
+		// itself), while the replay and its token budget use the marker-substituted messages.
+		const carriedMessages = keptSlice.flatMap(sessionEntryToContextMessages);
+		const keptMessages = replayMessagesFor(keptSlice);
 
-		// Skip when there is nothing real to summarize (e.g. only a previous compaction summary).
-		if (!olderMessages.some((message) => message.role === "user" || message.role === "assistant")) return;
+		// Skip when there is nothing real to summarize (e.g. only a previous compaction summary,
+		// or a single huge turn that the turn-aligned cut keeps whole). The command path is
+		// user-initiated, so say why instead of returning silently.
+		if (!olderMessages.some((message) => message.role === "user" || message.role === "assistant")) {
+			// Auto can land here on every settle once one turn fills the keep window; back off
+			// so the warning does not repeat with each turn.
+			if (autoTriggered) cooldownUntil = Date.now() + RETRIGGER_COOLDOWN_MS;
+			notify(ctx, "Auto handoff skipped: nothing older than the recent window to summarize.", "warning");
+			return;
+		}
 
 		const olderTokens = olderMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const sliceTokens = carriedMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		// Floor: below this the summary saves too little and drops too much detail.
 		if (!force && olderTokens < MIN_SUMMARIZE_TOKENS) return;
@@ -502,14 +848,16 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 		const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 
-		const summary = await generateHandoffSummary(ctx, requestModel, auth, olderMessages, previousCompaction?.summary);
+		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLanguage);
+		const summary = await generateHandoffSummary(ctx, requestModel, auth, olderMessages, previousCompaction?.summary, language);
 
 		const { readFiles, modifiedFiles } = computeFileLists(collectFileOps(olderEntries));
 		const summaryWithIndex = `${summary}${formatFileOperations(readFiles, modifiedFiles)}`;
 		const summaryTokens = Math.ceil(summaryWithIndex.length / 4);
 		if (!force && usage && usage.tokens !== null && threshold) {
-			// Baseline = system prompt, tool schemas, and injected memory/context.
-			const baselineNow = Math.max(0, usage.tokens - olderTokens - keptTokens);
+			// Baseline = system prompt, tool schemas, and injected memory/context. The stale prompts
+			// replaced by markers are still part of the measured usage, so subtract the raw slice.
+			const baselineNow = Math.max(0, usage.tokens - olderTokens - sliceTokens);
 			const estimatedAfter = baselineNow + keptTokens + summaryTokens + 1_500;
 			if (estimatedAfter >= threshold.tokens) {
 				notify(
@@ -528,40 +876,18 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		const guardDraft = guardWaiting && config.handoffGuard === "draft";
 		const useDraft = config.handoffMode === "draft" || guardDraft;
 		const percentText = usage && usage.percent !== null ? fmtPct(usage.percent) : "over threshold";
-		const carryLine = keptTokens > 0
-			? "The handoff summary below covers the earlier part of that session; its most recent messages were carried over verbatim."
-			: "The handoff summary below is the only context carried from that session.";
 		const previousSessionId = ctx.sessionManager.getSessionId();
 		const previousSessionFile = ctx.sessionManager.getSessionFile();
-		const detailLines = [
-			`- Previous session id: ${previousSessionId}`,
-			previousSessionFile ? `- Raw transcript (JSONL): ${previousSessionFile}` : undefined,
-			"- The project session index (.agents/memory/session-logs/INDEX.md) links the Markdown log for that id.",
-			"If a needed detail is missing from this summary, look it up there (grep, do not load whole files).",
-		].filter((line): line is string => line !== undefined);
-		const pendingLines = guardWaiting
-			? ["", "## Pending question (waiting for the user)", "", pendingQuestion ?? "", ""]
-			: [];
-		const closingLine = guardWaiting
-			? "The task is paused on the pending question above. Do not choose an option or start work on the user's behalf; wait for their answer."
-			: "Continue the task from where it left off.";
-		const handoffPrompt = [
-			`This session continues work handed off from a previous session (${percentText} of its context window had been used).`,
-			carryLine,
-			"Verify the current state of files with tools before re-applying changes, and do not redo completed work.",
-			...(guardWaiting
-				? ["The previous session stopped while waiting for the user's answer, so the decision is still open."]
-				: []),
-			"",
-			"## Handoff Summary",
-			"",
+		const handoffPrompt = buildHandoffPrompt({
+			language,
+			percent: usage && usage.percent !== null ? usage.percent : null,
+			keptTokens,
+			guardWaiting,
+			pendingQuestion,
 			summaryWithIndex,
-			"",
-			"## Previous session details",
-			...detailLines,
-			...pendingLines,
-			closingLine,
-		].join("\n");
+			previousSessionId,
+			previousSessionFile: previousSessionFile || undefined,
+		});
 
 		// A new prompt can arrive while the handoff summary is being generated.
 		// Replacing the session now would abort that run and leave its user message
@@ -579,17 +905,13 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		if (handoffRoot) {
 			try {
 				const logRel = path.posix.join(".agents/memory/session-logs", safeSessionId(previousSessionId), "session.md");
-				const document = [
-					`# Handoff from pi session ${previousSessionId}`,
-					"",
-					`- Created: ${new Date().toISOString()}`,
-					`- Project: ${handoffRoot}`,
-					`- Session log: ${logRel}`,
-					"- Session index: .agents/memory/session-logs/INDEX.md",
-					"",
-					summaryWithIndex.trim(),
-					"",
-				].join("\n");
+				const document = buildHandoffDocument({
+					language,
+					previousSessionId,
+					projectRoot: handoffRoot,
+					sessionLogRel: logRel,
+					summaryWithIndex,
+				});
 				await writeAtomic(path.join(memoryDir(handoffRoot), "HANDOFF.md"), document);
 			} catch {
 				// Persisting the handoff document must never block the session switch.
@@ -600,7 +922,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		const result = await ctx.newSession({
 			parentSession,
 			setup: async (sessionManager) => {
-				replayEntries(sessionManager, keptEntries);
+				replayEntries(sessionManager, keptSlice);
 			},
 			withSession: async (replacementCtx) => {
 				try {
@@ -702,7 +1024,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("auto-handoff", {
-		description: "Fresh session when context hits the threshold (status|on|off|auto|<ratio>|target|keep|thinking|send|draft|guard|now)",
+		description: "Fresh session when context hits the threshold (status|on|off|auto|<ratio>|target|keep|thinking|send|draft|guard|lang|now)",
 		handler: async (args, ctx) => {
 			if (!configRoot) await syncConfig(await getProjectRoot(pi, ctx.cwd).catch(() => undefined));
 			const arg = args.trim().toLowerCase();
@@ -794,6 +1116,21 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				);
 				return;
 			}
+			if (head === "lang" || head === "language") {
+				if (value !== "auto" && value !== "zh" && value !== "en") {
+					notify(ctx, "Usage: /auto-handoff lang auto|zh|en", "warning");
+					return;
+				}
+				config.handoffLanguage = value;
+				await saveConfig();
+				notify(
+					ctx,
+					value === "auto"
+						? "Handoff scaffolding language: auto (follows the conversation)."
+						: `Handoff scaffolding language: ${value}.`,
+				);
+				return;
+			}
 			if (head === "now" || head === "run" || head === "force") {
 				await runHandoff(pi, "force", ctx);
 				return;
@@ -810,7 +1147,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
 				return;
 			}
-			notify(ctx, `Unknown option "${arg}". Usage: /auto-handoff [on|off|auto|<ratio>|target <tokens>|keep <tokens>|thinking off|session|send|draft|guard <wait|draft|send|skip>|now|status]`, "warning");
+			notify(ctx, `Unknown option "${arg}". Usage: /auto-handoff [on|off|auto|<ratio>|target <tokens>|keep <tokens>|thinking off|session|send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now|status]`, "warning");
 		},
 	});
 }

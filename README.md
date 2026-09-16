@@ -95,7 +95,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 
 ## 配置
 
-配置在 `<project>/.agents/memory/project-context.json`，字段名与 dsh 插件一致（只有存储方式和 pi 独有的 `handoffMode`/`handoffGuard` 不同）：
+配置在 `<project>/.agents/memory/project-context.json`，字段名与 dsh 插件一致（只有存储方式和 pi 独有的 `handoffMode`/`handoffGuard`/`handoffLanguage` 不同）：
 
 ```json
 {
@@ -119,14 +119,15 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
   "handoffKeepTokens": 20000,
   "handoffSummaryThinking": "off",
   "handoffMode": "send",
-  "handoffGuard": "wait"
+  "handoffGuard": "wait",
+  "handoffLanguage": "auto"
 }
 ```
 
 - 每个功能独立开关，默认全开；命令动词仍是 pi 侧的 `archive|memory|autolearn|handoff`（`FEATURE_FIELDS` 映射到上表字段）：`/project-context on|off archive|memory|autolearn|handoff|all`。
 - autolearn 自动 pass 门禁与 dsh 相同：`MEMORY.md`/`CONTEXT.md` 有新内容（mtime 晚于上次 pass）且（累计用户轮 ≥ `autolearnTurns` 或距上次 ≥ `autolearnIntervalMs`）；`autolearnAt` 持久化，重启不会重复跑已消化的材料。
 - consolidation 节奏：`consolidateTurns` / `consolidateIntervalMs` 控制自动整理，`forceDedupeMs` 抑制紧邻的强制重复调用。
-- handoff：`handoffAdaptive=true` 用自适应阈值，false 时用 `handoffThresholdRatio`（0.1–0.95）；`handoffTargetTokens`/`handoffKeepTokens` 控制移交量与保留量；`handoffMode`（send/draft）与 `handoffGuard`（wait/draft/send/skip）是 pi 独有——dsh 无编辑器，改用 `handoffPendingQuestion: defer|wait`。
+- handoff：`handoffAdaptive=true` 用自适应阈值，false 时用 `handoffThresholdRatio`（0.1–0.95）；`handoffTargetTokens`/`handoffKeepTokens` 控制移交量与保留量；`handoffMode`（send/draft）与 `handoffGuard`（wait/draft/send/skip）是 pi 独有——dsh 无编辑器，改用 `handoffPendingQuestion: defer|wait`；`handoffLanguage`（auto/zh/en）控制交接提示词与 `HANDOFF.md` 的语言，`auto` 按用户消息判中/英，摘要正文也按该语言输出。
 - 辅助调用（整理 / 沉淀 / 交接摘要）默认用会话模型；`provider`/`model` 成对设置后改走指定路由（解析不到或未授权时退回会话模型，各警告一次），`maxTokens`（默认 8192，下限 256）是整理/沉淀调用的输出上限；输入超预算时 `maxTokens` 可按各 artifact 的 token 率自动抬高，但不超过模型自身上限与 `maxOutputTokens`（默认 32768）。用 `/project-context model <provider>/<id>|off`、`/project-context max-tokens <n>|default` 修改，`status` 显示当前路由与上限。
 - 平台差异：dsh 的交接摘要同样吃 `maxTokens`；pi 的交接摘要复用宿主 `generateSummaryWithUsage`，上限是 reserve 语义（`min(0.8 × reserve, 模型自身上限)`，重试时 reserve 翻倍），不随 `maxTokens` 变化。
 - 开关管**自动行为**（写盘 / LLM 调用 / 换会话；`memory` 开关同时管 MEMORY、CONTEXT 的注入）；显式命令不受开关限制；`--no-project-context` 本轮全关且不改配置。
@@ -142,7 +143,7 @@ extensions/project-context/           # 单一扩展（12 个模块，无运行�
 | `/context` | 显示 context / 会话索引 / 日志路径 |
 | `/session-log` | 立即写会话存档；`import <session.jsonl\|目录>…` 回填已结束的历史会话 |
 | `/autolearn` | 立即跑技能学习；`list` / `approve <name>` / `reject <name>` / `on` / `off` |
-| `/auto-handoff` | 阀门状态与参数：`auto`、`0.6`、`target 64k`、`keep 20k`、`thinking off`、`guard wait`、`send`/`draft`、`now` |
+| `/auto-handoff` | 阀门状态与参数：`auto`、`0.6`、`target 64k`、`keep 20k`、`thinking off`、`guard wait`、`lang auto\|zh\|en`、`send`/`draft`、`now` |
 
 Flags：`--no-project-context`、`--handoff-ratio 0.4|auto|off`、`--no-auto-handoff`。
 

@@ -1,0 +1,92 @@
+# 独立审查报告：handoff 语言与重放过滤
+
+## 结论
+
+**无 blocking。** 核心目标达成且经真实数据验证：
+
+- 真实旧提示词（`01a0a7a9` entry 81，`len=7601`、`sha256` 前 12 位 `2fbe4159f558`）实测 `isHandoffPromptText === true`；对真实重放切片 `prev.slice(81)`（44 条）跑 `filterReplayEntries` 只丢掉 `b3806dc0`，真实对话 43 条全部保留。
+- en 脚手架与旧版**逐字节一致**（我用 HEAD 的旧装配逻辑对 `buildHandoffPrompt` 三种组合做了等值断言，均 `true`）；`HANDOFF.md` 的 en 文档头字面量也与旧版相同。
+- `node tests/run-all.mjs` → 9/9 通过。审查全程只读，脚本都写在 `/tmp`。
+
+但有 3 个 important：语言采样被旧提示词污染（自锁）、`isHandoffPromptText` 会误杀"引用后追加内容"、`estimatedAfter` 预算被过滤后的 `keptTokens` 反向污染。详见下。
+
+---
+
+## Findings
+
+### I-1（预算失真）`extensions/project-context/handoff.ts:685-687`（配合 `:641`、`:653-654`）
+`baselineNow = max(0, usage.tokens - olderTokens - keptTokens)` 用的是**过滤后**的 `keptTokens`，于是被丢掉的旧提示词 token 被算进了 baseline：
+
+`estimatedAfter = baselineNow + keptTokens + summaryTokens + 1500 = usage - olderTokens + summaryTokens + 1500`（`keptTokens` 完全约掉，过滤的收益=0，且虚高恰为被丢 token 数）。
+
+- 真实旧提示词 7601 字符 ≈ 1900 tokens。举例：`usage=90k, older=60k`，keep 窗口 20k 含 1.9k 提示词；过滤后 `baselineNow=11.9k`（实际 baseline 10k + 1.9k），`estimatedAfter` 比真实新会话虚高 1.9k。若 threshold 落在两者之间，会误报 "too close to the threshold" 而跳过；且每次 `agent_settled` 重算结果相同，会**持续跳过**，与"过滤让新会话更小"的意图相反。
+- `notify` 里的 `kept ~X recent` 用的是过滤后值，是准确的；只有 skip 判定被污染。
+
+建议：`baselineNow` 用 `allEntries`（或过滤前的 keep 切片）计算，或显式 `droppedTokens = preKept - keptTokens` 后从估算里扣除。
+
+### I-2（语言采样污染/自锁）`handoff.ts:678`、`handoff.ts:645-648`、`handoff.ts:390-393`、`handoff.ts:405-407`
+`resolveLanguage([...olderMessages, ...keptMessages])` 里 `olderMessages` **没有过滤**。旧 handoff 提示词本身是 user 消息，会参与 CJK 计数：
+
+- 实测真实 zh 提示词（`01a0a7b1` entry 47）含 **1198 个 CJK**；`detectHandoffLanguage([该提示词, "continue with the English task", "please implement item 2", "what is the status"]) === "zh"`，而后三条英文单独判定是 `en`。即用户切回英文后仍被判 zh；又因为 zh 提示词会被写进后续会话，形成自锁（auto 一旦 zh，几乎不可能回 en）。
+- 反向也一样：旧 en 提示词若 summary 里有中文（真实 entry 81 含 9 个 CJK），会和非提示词的 1 个 CJK 凑到阈值。
+- 判定规则是**累计计数**而非比例/最近样本，少量中文（粘贴的中文日志、注释）就能翻转。
+- `statusText` 用的是 `ctx.sessionManager.getBranch()`（未过滤、且含 pi compaction 已移出上下文的旧条目），与 `runHandoff` 的采样集不同，可能出现 status 显示 `zh` 而实际 run 判 `en`。
+
+建议：采样时排除 `isHandoffPromptText` 命中的 user 消息（把 `filterReplayEntries` 的思路复用到语言采样），并让 `statusText` 与 `runHandoff` 共用同一采样函数（基于 `buildContextEntries` + 过滤）。这比调 `LANGUAGE_CJK_MIN` 更治本。
+
+### I-3（误杀真实内容）`handoff.ts:182-187`
+"preamble 前缀 + 任一标题"对**整段引用后追加用户自己的话**仍成立，整条 user entry 被从重放剔除，且因为它在 kept 区，不会被摘要补偿：
+
+- 实测 `isHandoffPromptText(en + "\n\n顺便问一下，这个 HANDOFF.md 为什么没人看？") === true` → 用户的追问从新会话上下文里消失（旧会话日志里还在，但新会话模型看不到）。
+- 同样命中 `draft` 模式：用户把生成的草稿留着、在末尾补一句指令再发送，下次 handoff 会把这整条丢掉。
+
+建议：增加尾部结构校验，例如要求同时满足 `trimmed.endsWith(closingContinue/closingPaused)` 或"必须包含 `## Previous session details` 与 `- Previous session id:`（zh 对应段落）"，这样"引用 + 追加"会因结尾不是 closing 句而放行；更稳妥的是注入时把提示词条目标记进 custom entry 元数据、按标记过滤。
+
+### N-1（漏杀）`handoff.ts:182-187`，测试 `tests/handoff-test.mjs:91`
+漏杀方向同样存在：用户在开头补字（实测 `"为什么我上一会话结束时出现了这个？\n" + en → false`）、修改过标题、或外层包了引用/代码块，旧提示词会**原样重放**，即本次要修的 bug 在该路径仍在。测试第 91 行把 prepend 情形固化为"非提示词"（对普通引用是对的），但没有任何说明/测试覆盖 draft 编辑路径。建议补测试并在文档里写明该取舍。
+
+### N-2（keep 配额不回收）`handoff.ts:628-641`
+过滤发生在 `findCutPoint` **之后**，被丢提示词占用的 keep 配额不回收：配置 `keep 20k`、提示词约 1.9k tokens 时，实际逐字携带只有 ~18k。方向安全，但与配置承诺不符。建议对过滤后的列表重跑 `findCutPoint`（或把 `firstKeptIndex` 前移补足）——顺带也会修正 I-1 的 baseline。
+
+### N-3（zh 里的英文残留）`handoff.ts:704` + `handoff.ts:148`
+`usage.percent === null` 时 `percentText = "over threshold"`，zh 渲染为「本会话接手上一会话（其上下文窗口已用 over threshold）。」这是脚手架里唯一漏网的英文（notify 英文是既定决定，不算）。建议 zh 文案用「阈值以上/未知」。
+
+### N-4（简繁）`handoff.ts:84-92`、`handoff.ts:96-100`
+CJK 计数同时命中繁体中文（实测 `detectHandoffLanguage(["這是一段繁體中文的對話..."]) === "zh"`），但脚手架与摘要指令都是"Simplified Chinese"。繁中用户会拿到简体输出。可接受，但建议在文档或指令层面明确。
+
+### N-5（en 的 summary focus 不再逐字节一致）`handoff.ts:96-100`
+可见脚手架与 `HANDOFF.md` 确实逐字节一致；但传给 summarizer 的 focus 从 `SUMMARY_FOCUS` 变成 `SUMMARY_FOCUS + " Write the whole summary in English, including the section headings."`，摘要产物不保证与旧版一致。符合需求，但测试只查 shape（`tests/handoff-test.mjs:66-71`），没有字节快照，建议补一条 en prompt 的 golden 断言防回归。
+
+### N-6（格式）`handoff.ts:965`
+`if (head === "now" ...)` 缩进比同级块少一层（2 tabs vs 3 tabs），无功能影响，但 review 时刺眼，顺手修。
+
+### N-7（提交范围）
+`tests/handoff-test.mjs` 是**未跟踪**文件；同一工作树里还混着 `.codestable/issues/2026-09-15-consolidated-memory-json-poison/` 两个文件的无关改动（另一 issue 的备份清理记录）。若用 `git commit -am`，新测试不会入库；建议分开提交并显式 `git add tests/handoff-test.mjs`。
+
+---
+
+## 测试缺口（tests/handoff-test.mjs）
+
+现有 36 条断言覆盖了纯函数与命令，但以下场景漏测：
+
+1. **没有 runHandoff 级集成测试**：`filterReplayEntries` 是否真的接到 `replayEntries(sessionManager, keptEntries)`（`handoff.ts:756`）、切点边界是否丢真实对话、I-1 的预算交互，全部只靠读代码；wiring 写反了单测照样绿。
+2. **auto 配置的运行期解析**：`resolveLanguage` 未导出，没有任何测试证明 `handoffLanguage:"auto"` 的会话真能产出 zh；`status` 也只断言含 `lang auto`，没断言 `auto (zh)`。
+3. **HANDOFF.md** 的 zh/en 文档头完全没测（唯一本地化但零覆盖的 surface）。
+4. **"over threshold" 回退在 zh 下的渲染**没测。
+5. **误杀场景**（引用后追加、draft 末尾补字）没测，只测了 prepend 不命中。
+6. **多代旧提示词连续重放**（一个 keep 窗口里两条以上）没测。
+7. **真实 7601 字节提示词**没做 hash/长度断言；测试用的是手工简化字面量（功能等价，但"真机证据"强度打折）。
+8. **config 优先级**没测：flat 有效值是否压过 nested/global、nested 非法值回退、全局 `~/.pi/agent/auto-handoff.json` 的 `language`（该分支零覆盖）。
+9. **命令边界**没测：`language` 别名、缺 value、大小写输入。
+10. **detect 边界**：空数组、中英混杂的比例场景没测。
+
+---
+
+## 残余风险
+
+- older 区的旧提示词仍进摘要输入（analysis §4 已接受），摘要可能复述已被取代的状态；这是"不重放但会被概括"的残余泄漏。
+- 标题语言依赖模型服从 focus 指令，无后处理；指令不生效时会中英混排。
+- 被用户 prepend/改标题的旧提示词漏杀（N-1）；更早版本或其它扩展的同形文本不识别。
+- CJK 启发式对日语汉字会话会判成 zh（只支持 zh/en）；繁中降级为简体（N-4）。
+- keep 配额不回收（N-2）+ 预算虚高（I-1）在阈值临界点可能让 handoff 持续跳过。
+- 语言采样自锁（I-2）只影响双语用户，但一旦发生很难自愈，除非显式 `/auto-handoff lang en`。

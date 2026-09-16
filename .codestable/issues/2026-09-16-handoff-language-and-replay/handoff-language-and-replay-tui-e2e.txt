@@ -1,0 +1,101 @@
+# C2：真 TUI 自动交棒实跑证据（2026-09-16）
+
+驱动：pexpect 起真实 TUI（`pi -ne -ns -e <repo>/extensions/project-context/index.ts --provider deepseek --model deepseek-flash --thinking off`），
+scratch 项目 /tmp/pc-tui2（config: handoffEnabled=true, handoffAdaptive=true, handoffTargetTokens=30000, handoffKeepTokens=2000, handoffLanguage=auto）。
+驱动日志 /tmp/tui-e2e4.log，pty 原始输出 /tmp/tui-e2e4-transcript.txt。
+
+## 驱动日志（含每轮 toolResult 大小与自动触发）
+```text
+startup
+root session: 2026-09-16T04-25-46-592Z_01a0a876-b35f-75f9-8623-62939aa4acb6.jsonl
+after small turn: entries=5
+after small turn: entries=7
+big1.md attempt 1: entries=15 lastToolResult=25303 chars
+big1.md attempt 2: entries=18 lastToolResult=51570 chars
+waiting for the automatic handoff ...
+NEW SESSION: 2026-09-16T04-26-03-907Z_01a0a876-f703-75f9-8623-629931d602a5.jsonl
+child entries=22
+SCREEN: [>7u──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────                                                                                                                                                      ───────────────────────────────────────────────────────────────────────────────────────────────
+---- screen tail ----
+[>7u──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────                                                                                                                                                      ───────────────────────────────────────────────────────────────────────────────────────────────
+closed
+```
+
+## 扩展 notify（从 pty 输出提取）
+```text
+Auto handoff: continued in a fresh session (previous was 3.4% full, summary ~94, kept ~32.0k recent).                                                ]8;;
+Auto handoff: summarizing ~34 of context, keeping ~32.0k recent...                                                                                   ]8;;]8;;                                                                                                                                           
+Auto handoff: summarizing ~34 of context, keeping ~32.0k recent...                                                                                   ]8;;]9;4;3[Extensions]                                                                                                                             
+```
+
+## 会话链（源 → 子）
+```text
+==========================================================================================
+2026-09-16T04-25-46-592Z_01a0a876-b35f-75f9-8623-62939aa4acb6.jsonl
+  [3] user      '先记一条：本次真机验证的目标是 TUI 自动交棒。用一句话中文确认，不要提问。'
+  [4] assistant '本次真机验证的目标是 TUI 自动交棒。'
+  [5] user      '再记一条：第二个检查点是自动交棒后注入提示词的摘要标题必须是中文。用一句话中文确认，不要提问。'
+  [6] assistant '第二个检查点是自动交棒后注入提示词的摘要标题必须是中文。'
+  [7] user      '请用 read 工具完整读取 big1.md（不要传 limit 或 offset 参数，必须读到文件结尾），然后用一句话中文概括。不要写文件，不要提问。'
+  [8] assistant tools=read ''
+  [9] toolResult 'section 1.1: the quick brown fox jumps over the lazy dog; record 1-1 documents module 1 '
+  [10] assistant tools=read ''
+  [11] toolResult 'section 1.363: the quick brown fox jumps over the lazy dog; record 1-363 documents modul'
+  [12] assistant tools=read ''
+  [13] toolResult 'section 1.724: the quick brown fox jumps over the lazy dog; record 1-724 documents modul'
+  [14] assistant 'big1.md 是一份共 900 条记录的长文本清单，每条按 section 1.x 编号，格式统一为“the quick brown fox jumps over the l'
+  [15] user      '请用 read 工具完整读取 big1.md（不要传 limit 或 offset 参数，必须读到文件结尾），然后用一句话中文概括。不要写文件，不要提问。'
+  [16] assistant tools=read ''
+  [17] toolResult 'section 1.1: the quick brown fox jumps over the lazy dog; record 1-1 documents module 1 '
+==========================================================================================
+2026-09-16T04-26-03-907Z_01a0a876-f703-75f9-8623-629931d602a5.jsonl
+  [3] user      '请用 read 工具完整读取 big1.md（不要传 limit 或 offset 参数，必须读到文件结尾），然后用一句话中文概括。不要写文件，不要提问。'
+  [4] assistant tools=read ''
+  [5] toolResult 'section 1.1: the quick brown fox jumps over the lazy dog; record 1-1 documents module 1 '
+  [6] assistant tools=read ''
+  [7] toolResult 'section 1.363: the quick brown fox jumps over the lazy dog; record 1-363 documents modul'
+  [8] assistant tools=read ''
+  [9] toolResult 'section 1.724: the quick brown fox jumps over the lazy dog; record 1-724 documents modul'
+  [10] assistant 'big1.md 是一份共 900 条记录的长文本清单，每条按 section 1.x 编号，格式统一为“the quick brown fox jumps over the l'
+  [11] user      '本会话接手上一会话（其上下文窗口已用 3.4%）。\n下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。\n动手前先用工具核对文件当前状态，不要重做已完成的工作。'
+  [12] assistant tools=bash,bash ' '
+  [13] toolResult '总计 384\ndrwxr-xr-x    4 user user    140  9月16日 11:04 .\ndrwxrwxrwt 3434 root root 118180 '
+  [14] toolResult '总计 572\ndrwxr-xr-x    2 user user     80  9月16日 12:26 .\ndrwxrwxrwt 3434 root root 118180 '
+  [15] assistant tools=bash,bash ' '
+  [16] toolResult '# Session Index\n\n- [01a0a82c-c86b-77bf-a1cd-13e22a1a11cf](01a0a82c-c86b-77bf-a1cd-13e22a'
+  [17] toolResult '总计 576\ndrwx------ 2 user user     80  9月16日 12:26 .\ndrwx------ 7 user user    180  9月16日'
+  [18] assistant tools=bash,bash ' '
+  [19] toolResult '# pi 会话 01a0a876-b35f-75f9-8623-62939aa4acb6 的交接文档\n\n- 生成时间：2026-09-16T04:26:03.904Z\n- 项目'
+  [20] toolResult '4:{"type":"message","id":"58aa2f72","parentId":"23ef540c","timestamp":"2026-09-16T04:25:'
+  [21] assistant '核对完毕：上一会话（01a0a876-b35f…）已记录两条检查点并在读 big1.md 时触发了自动交棒，当前会话正是交棒后的新会话，big1.md 已完整读完。\n\n- **'
+```
+
+## 子会话注入提示词（前 12 行）
+```text
+本会话接手上一会话（其上下文窗口已用 3.4%）。
+下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。
+动手前先用工具核对文件当前状态，不要重做已完成的工作。
+
+## 交接摘要
+
+## 目标
+- 进行真机验证，验证目标是 TUI 自动交棒功能。
+
+## 约束与偏好
+- 用户要求记录事项时，助手须用一句话中文确认，且不要提问。
+
+```
+
+## .agents/memory/HANDOFF.md 标题
+```text
+# pi 会话 01a0a876-b35f-75f9-8623-62939aa4acb6 的交接文档
+## 目标
+## 约束与偏好
+## 进展
+### 已完成
+### 进行中
+### 受阻
+## 关键决策
+## 下一步
+## 关键上下文
+```

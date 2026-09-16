@@ -1,0 +1,65 @@
+# 第五轮独立审查报告
+
+审查对象：`/tmp/pi-context-rev-handoff5`（工作树未提交，基线 e4d48c4）。全程只读；`git status --porcelain` 审查前后一致，临时脚本/变异副本仅写在 `/tmp`。
+
+## 结论
+
+**无 blocking、无 important。** 本轮三项新改动（无操作交棒 warn + auto 冷却、`localizeSummaryHeadings` 确定性映射、对应测试）实现正确、语义与既有约定一致；`node tests/run-all.mjs` **9/9**（复跑两次）。仅有 2 个 minor + 3 个 N 级发现（其中 2 个是既有测试接线缺口）。
+
+## 已验证（本轮重点）
+
+**标题映射（handoff.ts:85-122、:726）**
+- 映射集与 pi 宿主模板逐项一致（比对 `dist/bundle/chunks/chunk-JVUZSMYM.js:684-704` 的 `SUMMARIZATION_PROMPT`：Goal/Constraints & Preferences/Progress/`### Done`/`### In Progress`/`### Blocked`/Key Decisions/Next Steps/Critical Context，层级无误配）。zh/en 表逐键互为逆映射，我对全部 9 项做了 round-trip，完全对称。
+- 只改 trim 后等值行：行内引用（`- 参见 ## Goal 一节`）、blockquote（`> ## Goal`）、列表项（`- ## Goal`）、带多余空格的 `  ###  Blocked  ` 均不受影响；前导缩进保留（`  ## Goal` → `  ## 目标`）。`line.indexOf(trimmed)` 安全（trim 后首字符必为 `#`，前面只可能是空白）。
+- 不影响 `<read-files>`：`formatFileOperations` 在 `summaryWithIndex` 组装时（:843）追加，不经过映射。
+- 一致性 OK：映射发生在 `generateHandoffSummary` 返回前（每次 token-cap 重试的返回值都经过 :726），`summaryTokens`、`buildHandoffPrompt`、`HANDOFF.md` 全部消费同一个已本地化字符串，无估算/文件不一致。
+- 代码块是唯一盲区（见 Finding 2）。
+
+**冷却语义（handoff.ts:805-810）**
+- 仅 `autoTriggered` 时写 `cooldownUntil`；`/auto-handoff now`（force）不读冷却。运行时实测：同一短会话连调两次 `now` → 2 条 warning 通知。
+- 冷却只被 `maybeTrigger` 读取（:952），30s 硬过期；手动 `now` 完全绕过。延迟上界为 30s+1 个 settle，不会长期停摆。
+- `inFlight` 在所有路径（含两个新 early return）都由 `runHandoff` 的 `finally` 复位（:957）；`pi.sendUserMessage` 同步抛错的 catch 也复位。无永久停摆路径。
+
+**notify 约定**：两条新文案均为 `Auto handoff skipped: …` + `"warning"`，与 busy/no-model/guard=skip/预算跳过既有约定一致。
+
+**测试非恒真（变异验证）**，在 /tmp 副本上：
+| 变异 | 结果 |
+|---|---|
+| 空会话 notify 删除 | FAIL（1 项） |
+| older 空分支 cooldown 删除（保留 notify） | FAIL（backs off 断言） |
+| 整个 older 空分支 notify+cooldown 删除 | FAIL（3 项） |
+| `localizeSummaryHeadings` 退化为 identity | FAIL（4 项） |
+| en 方向映射删除（`SUMMARY_HEADINGS["zh"]`） | FAIL（en 往返断言） |
+| filler 缩短（阈值不再跨越） | FAIL（2 项） |
+| 解除 `secondTurn.parentId` 链接 | FAIL（2 项） |
+
+说明 mock 的 `getContextUsage` 未被阈值公式遮蔽（filler≈12.8k token 确实驱动 `resolveThreshold`），parent 链串联也确实是 `buildContextEntries` 生效的必要条件。
+
+**回归抽查**：marker 替换、`isHandoffPromptText` 三重条件、语言三级规则、`sliceTokens`/`estimatedAfter`、`buildHandoffDocument` 文档头逻辑未在本轮被触碰，测试全绿；config.ts 仅新增 `handoffLanguage` 解析/注释同步（:13 已含 `handoffLanguage`，round 4 的 N-1 已消解），`entryIsHandoffPrompt` 死代码已删（round 4 N-2 关闭）。
+
+## Findings
+
+**F1（Minor）`handoff.ts:97-108` — en 反向映射不覆盖模型自产的中文标题变体**
+en 表只认自己写出的规范译法（`## 进展`/`### 受阻`），但仓库自带的真机证据 `.codestable/issues/2026-09-16-handoff-language-and-replay/handoff-language-and-replay-summary-headings-e2e.txt:26,40` 显示模型会输出 `## 进度`/`### 阻塞`。实测 `localizeSummaryHeadings("## 进度","en")` 原样返回。当 `handoffLanguage=en` 且 UPDATE 模式继承中文旧摘要（或模型只翻译不照抄模板）时，标题会残留中文，与“确定性”承诺有落差。建议：en 表补上实见变体（`"## 进度": "## Progress"`、`"### 阻塞": "### Blocked"` 等），或 zh 方向先做变体→规范中文归一，再做 en 翻译。影响低（zh 主方向不受影响，因为变体本身已是中文）。
+
+**F2（Minor）`handoff.ts:111-122` — 无 fenced-code 感知**
+恰好等于模板标题的代码块行会被改：实测 `"```md\n## Goal\n```"` → `"```md\n## 目标\n```"`。摘要是模型输出、进 prompt 的文本，概率极低，但属“正文/代码块可能被误改”的边界。建议：映射时跟踪 ```/~~~ 围栏状态并跳过围栏内行；或在注释/analysis 中显式记为接受的残余风险。
+
+**F3（N，测试接线缺口）`handoff.ts:726` 的 `localizeSummaryHeadings` 调用点未被测试**
+把 `return localizeSummaryHeadings(text, language)` 改成 `return text`，78 项断言全绿（变异验证）。纯函数覆盖很好，但应用点无回归保护。建议给 `generateHandoffSummary` 加一个可注入的 summarizer 参数（默认 `generateSummaryWithUsage`），测试用 fake 返回英文标题摘要并断言出口已本地化；若不做，至少在测试头注明该调用点未接线。
+
+**F4（N）`tests/handoff-test.mjs:309` — 空会话通知只断言文案、未断言级别**
+把 `handoff.ts:773` 的 `"warning"` 改成 `"info"`，测试仍全绿（变异验证）；而 keep 窗口分支（:322-327）断言了 `"warning"`。建议补 `String(emptyCtx.notifications.at(-1)?.[1]) === "warning"`。
+
+**F5（N，既有缺口，round 4 N-4 残留）`handoff.ts:839` 调用点未钉住**
+把 `languageMessagesFor(olderMessages, carriedMessages)` 改成 `keptMessages`（即 round 3 修过的 I-2a 类 bug），78 项全绿。`languageMessagesFor` 本身有测试，但 runHandoff 实际传参无回归保护。建议抽 `resolveLanguageForHandoff(older, carried, configured)` 并以“older 英文 + 切点中文提示词 + kept 短 ASCII”为输入直接测。
+
+## 残余风险（不构成阻塞）
+
+1. 语言启发式边界（仅 1 个 CJK→en、≥20 拉丁字母翻转中文会话、日语汉字误判 zh、识别与脚手架字面量强耦合）——round 4 已记录，未变。
+2. 30s 冷却会把“跳过后条件已变化”的合法自动交棒最多推迟一个 settle；手动 `now` 不受影响。可接受。
+3. 映射行会丢尾随空白/把 CRLF 归一为 LF（仅标题行），无实际影响。
+4. 单轮超大导致 older 为空属 pre-existing 设计边界，本轮把静默变可见，方向正确。
+5. 治理性小漂移：`handoff-language-and-replay-fix-note.md:70` 仍写“76 项断言”，实际 `tests/handoff-test.mjs` 为 78 个 check；同文件称“映射在真机生效”，但 `summary-headings-e2e.txt` 那次的标题多为非规范变体（`进度`/`阻塞`），无法区分映射与模型自译，真正隔离映射的是单测里的真机英文标题样本。建议同步文档表述，避免证据过度归因。
+
+验证脚本：`/tmp/check-localize.mjs`、`/tmp/check-now.mjs`，变异副本 `/tmp/handoff-mut2`。

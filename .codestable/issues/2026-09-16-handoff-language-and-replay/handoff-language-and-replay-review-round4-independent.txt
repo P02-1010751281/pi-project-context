@@ -1,0 +1,73 @@
+## 结论
+
+**无 blocking、无 important。** 第三轮 3 项遗留（I-3 重放块 assistant 起始、I-2a 切点提示词对 `promptLanguage` 不可见、N-3 文档漂移）全部验证关闭；`node tests/run-all.mjs` 9/9。全程只读：结束时 `git status --porcelain` / `git diff --stat` 与开始时完全一致，脚本只写在 `/tmp`。
+
+---
+
+## 验证结果（具体证据）
+
+### 1) 真实旧提示词确实被替换为 marker
+真实会话 `~/.pi/agent/sessions/--run-media-user-…-Projects-pi-project-context--/2026-09-16T00-41-35-029Z_01a0a7a9-7235-7763-95f3-5bdc121f5eff.jsonl`：
+
+- `buildContextEntries` = 124 条；`findCutPoint(keep=20000)` → `firstKeptEntryIndex=91`、`isSplitTurn=true`、`turnStartIndex=80`，turn 对齐后 `firstKept=80`；`allEntries[80].id=b3806dc0`，即原始 1-based entry 81。
+- 该消息 `len=7601`、`sha256` 前 12 位 `2fbe4159f558` ✓；`all[80]` 正是切点。
+- 切片 44 entry / 44 message；`replayMessagesFor` 后仍是 44 条（计数不变），`REPLAY_MARKER` 恰 1 个，重放块首条 `role=user`、文本 `[handoff prompt omitted]`，原始提示词文本不再出现；**其余 43 条消息逐字节完全相同**（`JSON.stringify` 全等，marker 仅换 content，role/timestamp 保留）。
+- 配对：切片内 `toolCall=20`、`toolResult=20`，无孤儿 toolResult、也无悬空 toolCall。
+- 同一逻辑在链式会话 `01a0a7b1`（branch 内 2 条历史提示词）上也成立：切片内提示词条数 == marker 数，消息数不变，配对完整。
+
+### 2) 预算分区自洽，原 I-1 失真已消除
+真实会话数值：`olderTokens=71161`、`sliceTokens=26790`、`keptTokens=24895`；`prompt=1901`、`marker=6`，故 `slice-kept=1895 == 1901-6` 精确成立。
+
+- 对 usage 50k/300k/1M：`baselineNow = usage-older-slice`，且 `estimatedAfter = baselineNow+kept+summary+1500 = usage-older-slice+kept+summary+1500`；未 clamp 时 `older + kept + (slice-kept) + baseline == usage` 精确成立。
+- 旧公式 `usage-older-kept` 会恰好多算 `delta=1895`（提示词减去 marker 的净收益）；新公式把这 1895 真实计入“会被释放”，`keptTokens` 里 marker 的 6 token 也只计一次。
+- 负分区（`usage<older+slice`）时 `Math.max(0, …)` 生效、`estimatedAfter` 仍含 marker。结论：**无新的 I-1 类失真**；唯一残留是 compaction 记账（见残余风险，pre-existing、偏保守，且两个真实侦察会话 older 内均无 compaction：leak=0）。
+
+### 3) 语言三级规则与边界
+构造「短英文 older + 切点 zh 提示词 + kept 短 ASCII 回复」，按 `runHandoff` 真实调用式 `resolveLanguage([...olderMessages, ...carriedMessages], "auto")` → **zh**（rule ③ 生效）；若按修复前的 `keptMessages`（已替换）视角 → en，证明 I-2a 确实已修。
+
+- `status` 视角（`buildContextEntries(...).flatMap(sessionEntryToContextMessages)`）与 runHandoff 视角在真实会话上 user 文本序列完全一致（3/3），两者都判 zh。
+- marker 不参与采样：`[zh, marker]` → zh；仅 marker → en 兜底。
+- 实质英文能翻：zh 提示词 + "please implement item 2 and run the tests" → en；显式 `zh`/`en` 覆盖对话。guarded 提示词（wait/draft 结尾）、`percent=null`、无 transcript、summary-only 变体均能被识别并替换。
+- `summaryFocus` 的语言指令经 pi `compaction.js:493` 的 `Additional focus:` 会追加进摘要提示词，路径真实可达（`handoff.ts:669`）。
+- en 渲染对 HEAD 旧装配逻辑 **24/24 组合逐字节一致**（percent 16/9.5/null × kept 0/20k × guard × file）。
+
+### 4) 文档/测试一致性
+- `LANGUAGE_CJK_MIN=2`、`LANGUAGE_LATIN_MIN=20`、最近 8 条/总长 ≥40、`REPLAY_MARKER` 字面量、`sliceTokens`/`carriedMessages`/`replayMessagesFor`、`baselineNow` 公式在 analysis §2、fix-note §2 与代码逐项一致；fix-note 已不再声称“30 项断言”，实际 `tests/handoff-test.mjs` 共 63 个 check、全部 OK；`9/9` 属实。
+- report §5 验收标准（zh 脚手架+标题、zh/en 锁定、真实 `2fbe4159f558` 可识别替换、测试通过、部署说明）全部满足。
+- 仅剩 N 级不一致（见下）。
+
+---
+
+## Findings（均为 N）
+
+**N-1 `extensions/project-context/config.ts:13` — 模块注释未同步新字段**
+注释仍写“pi-only `handoffMode`/`handoffGuard` differ”，漏了本轮新增的 `handoffLanguage`（README:98 已补）。建议在该行加 ``/`handoffLanguage` ``。
+
+**N-2 `extensions/project-context/handoff.ts:260` — 死代码**
+`entryIsHandoffPrompt()` 全仓无引用（仅定义），是上一版过滤方案的残留。建议删除，避免误导（当前替换逻辑只用 `replayMessagesFor` 内的 `messageText`+`isHandoffPromptText`）。
+
+**N-3 `tests/handoff-test.mjs:9` — 测试头注释过时**
+写“filtered out of the verbatim replay slice”，实现是“替换为 marker”。建议改为 “replaced by the omission marker”。
+
+**N-4 测试未钉住 runHandoff 的调用点接线（I-2a 的防回归缺口）**
+`handoff.ts:777` 传 `carriedMessages`（未替换切片）、`handoff.ts:851` 重放 `keptSlice`，这是 I-2a 的修复关键；但现有测试都是把 scaffold 直接喂给导出的 `resolveLanguage`（如 `tests/handoff-test.mjs:174`），若日后有人把调用点改回 `keptMessages`，测试仍会全绿（第三轮 bug 恰是这种 caller 侧问题）。建议：把该组合表达式抽成一个导出小函数（如 `languageMessagesFor(older, slice)`）并测试，或加一个以「older+含提示词切片」为输入、断言 zh 的测试并注释对应 `handoff.ts:777`。
+
+**N-5 文档引用了尚未存在的文件**
+`analysis.md:61-62`、`fix-note.md:7,48` 引用 `handoff-language-and-replay-review.md` 且写“round 1–4”，但目录中只有 round1–3；本次终审报告写入该文件后即可消解。若本次不落盘，应把引用改为 round1–3。
+
+**N-6（可选，化妆性问题）`handoff.ts` `buildHandoffPrompt`（SCAFFOLDING.en.zh carryKept 选行，`handoff.ts:241-244`）**
+`carryKept` 行由 `keptTokens > 0` 选择；若切片实际只剩 marker（会话在 handoff 提示词后没有后续消息、又被迫重跑 handoff 的极端形态），提示词会宣称“most recent messages carried over verbatim”。现实中 handoff 需 `ctx.isIdle()`，该形态基本不可达，可忽略或改为按“非 marker 重放条数”选行。
+
+---
+
+## 残余风险（不构成本轮阻塞）
+
+1. **compaction 记账（pre-existing）**：`olderEntries` 里的 compaction 的 summary token 既不在 `olderTokens`（被 `handoff.ts:738-741` 过滤），也不在 kept，会滞留 `baselineNow`，令 `estimatedAfter` 偏高 → 偏保守地跳过 handoff。真实两会话 older 内无 compaction，未触发；analysis §4 已记录。
+2. **语言启发式边界**：仅 1 个 CJK 且无提示词可循 → en；≥20 拉丁字母会翻转中文会话（设计如此）；繁中输出简体、日语汉字可能误判 zh；识别与 `HANDOFF_PROMPT_PREFIXES/HEADINGS/CLOSINGS` 字面量强耦合，改脚手架文案需同步改识别。
+3. **引用误判的极端形态**：用户整段引用旧提示词、且结尾又恰好重复 closing 行（如 `prompt + "\nContinue the task from where it left off."`）仍会被当提示词替换（我的 fuzz 验证为 true）；只引用不追加则必被替换，无法区分。
+4. **keep 预算为上界**：被替换的提示词原文不补位（防破坏 turn 对齐），`keptTokens` 可明显低于 `handoffKeepTokens`（真实例 slice 26790→kept 24895，>20k 源于 turn 对齐）。
+5. **older 里的旧提示词仍进入摘要输入**（不重放），可能影响摘要措辞/焦点；文档已记录。
+6. **摘要标题语言依赖模型服从** focus 指令，未做标题后处理；`estimatedAfter` 仍是估算（`estimateTokens`、usage 快照时点、1500 的脚手架裕量），skip 判定可能偏保守/偏乐观 1–2k token 量级。
+7. 部署说明仍是事实：安装 ref `v0.1.2`，工作树改动未提交，新代码尚未生效。
+
+**验证脚本**（均在 /tmp，未写仓库）：`/tmp/rev4-real.mjs`、`/tmp/rev4-chain.mjs`、`/tmp/rev4-budget.mjs`、`/tmp/rev4-en-golden.mjs`；测试 `node tests/run-all.mjs`。

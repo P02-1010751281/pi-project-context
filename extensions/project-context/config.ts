@@ -10,7 +10,7 @@ import { memoryDir, readOptional, writeAtomic } from "./project-state.ts";
  * tuned without touching global config.
  *
  * Field names are shared with the dsh plugin (the two repos keep the same config
- * surface; only the storage and the pi-only `handoffMode`/`handoffGuard` differ).
+ * surface; only the storage and the pi-only `handoffMode`/`handoffGuard`/`handoffLanguage` differ).
  *
  * Backward compatibility, read-only until the next save:
  *   - the pre-unification nested layout (`features.*`, `autolearn.*`, `handoff.*`)
@@ -45,6 +45,8 @@ export type HandoffSettings = {
 	handoffMode: "send" | "draft";
 	/** pi-only: behavior when the last assistant message asks the user a question. */
 	handoffGuard: "wait" | "draft" | "send" | "skip";
+	/** pi-only: language of the handoff prompt scaffolding; "auto" follows the conversation language. */
+	handoffLanguage: "auto" | "zh" | "en";
 };
 
 export type ProjectContextConfig = HandoffSettings & {
@@ -97,6 +99,7 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	handoffSummaryThinking: "off",
 	handoffMode: "send",
 	handoffGuard: "wait",
+	handoffLanguage: "auto",
 };
 
 /** Don't hand off unless at least this much context is actually replaced by the summary. */
@@ -180,6 +183,10 @@ function guardOf(value: unknown): HandoffSettings["handoffGuard"] | undefined {
 	return value === "wait" || value === "draft" || value === "send" || value === "skip" ? value : undefined;
 }
 
+function languageOf(value: unknown): HandoffSettings["handoffLanguage"] | undefined {
+	return value === "auto" || value === "zh" || value === "en" ? value : undefined;
+}
+
 /** Defaults from the previous, split configuration files (read once, never written back). */
 async function legacyDefaults(projectRoot: string): Promise<{
 	autolearnEnabled?: boolean;
@@ -251,6 +258,7 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 			?? DEFAULT_CONFIG.handoffSummaryThinking,
 		handoffMode: modeOf(raw.handoffMode) ?? modeOf(handoff.mode) ?? modeOf(global.mode) ?? DEFAULT_CONFIG.handoffMode,
 		handoffGuard: guardOf(raw.handoffGuard) ?? guardOf(handoff.guard) ?? guardOf(global.guard) ?? DEFAULT_CONFIG.handoffGuard,
+		handoffLanguage: languageOf(raw.handoffLanguage) ?? languageOf(handoff.language) ?? languageOf(global.language) ?? DEFAULT_CONFIG.handoffLanguage,
 	};
 	cache.set(projectRoot, config);
 	return config;

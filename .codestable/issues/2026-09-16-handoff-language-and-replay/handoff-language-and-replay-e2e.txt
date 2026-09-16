@@ -1,0 +1,64 @@
+# 端到端实跑证据（RPC 真机，2026-09-16）
+
+命令：`pi --mode rpc -ne -ns -nt --thinking off -e <repo>/extensions/project-context/index.ts --provider deepseek --model deepseek-flash --session-dir /tmp/pc-handoff-e2e-sessions`
+项目：/tmp/pc-handoff-e2e（config: handoffKeepTokens=50, handoffLanguage=auto, autoConsolidate/autoLearn=false）
+
+## 驱动输出（含扩展 notify）
+```text
+initial: 2026-09-16T02-36-51-886Z_01a0a812-fd2e-7380-aa9e-6b6e96819228.jsonl
+EVENT: settled (#1)
+turn 1 settled
+EVENT: settled (#2)
+turn 2 settled
+--- handoff #1 ---
+NOTIFY[info]: Auto handoff: summarizing ~61 of context, keeping ~72 recent...
+EVENT: settled (#3)
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 0.1% full, summary ~141, kept ~72 recent).
+handoff #1 -> 2026-09-16T02-37-00-518Z_01a0a813-1ee6-7380-aa9e-6b75e313128e.jsonl
+--- handoff #2 ---
+NOTIFY[info]: Auto handoff: summarizing ~72 of context, keeping ~54 recent...
+EVENT: settled (#4)
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 0.1% full, summary ~150, kept ~54 recent).
+handoff #2 -> 2026-09-16T02-37-06-300Z_01a0a813-357c-7380-aa9e-6b7cc3dca5fb.jsonl
+sessions: 2026-09-16T02-36-51-886Z, 2026-09-16T02-37-00-518Z, 2026-09-16T02-37-06-300Z
+```
+
+## 会话链路（session 文件消息摘要）
+```text
+==========================================================================================
+2026-09-16T02-36-51-886Z_01a0a812-fd2e-7380-aa9e-6b6e96819228.jsonl
+  [3] user      '请用大约 200 字的中文介绍紫色键盘的历史与用途，直接给正文，不要使用工具。'
+  [4] assistant '紫色键盘在历史上并非主流标配，早期多为客制化圈子中的实验配色。机械键盘复兴后，紫色键帽（如紫白配色、紫外光色）因辨识度高而流行，常被玩家用于点缀Esc、方向键或WASD区域。用途上，它首先服务于视觉分'
+  [5] user      '请用大约 200 字的中文介绍蓝色文件夹的归档规则，直接给正文，不要使用工具。'
+  [6] assistant '蓝色文件夹通常用于归档需要长期保存或频繁查阅的文件，其规则核心是“分类明确、层级简洁、命名统一”。首先按业务或主题划分一级目录，如合同、财务、人事、项目；二级目录再按时间或编号细分，如“2024年度”'
+==========================================================================================
+2026-09-16T02-37-00-518Z_01a0a813-1ee6-7380-aa9e-6b75e313128e.jsonl
+  [3] user      '请用大约 200 字的中文介绍蓝色文件夹的归档规则，直接给正文，不要使用工具。'
+  [4] assistant '蓝色文件夹通常用于归档需要长期保存或频繁查阅的文件，其规则核心是“分类明确、层级简洁、命名统一”。首先按业务或主题划分一级目录，如合同、财务、人事、项目；二级目录再按时间或编号细分，如“2024年度”'
+  [5] user      '本会话接手上一会话（其上下文窗口已用 0.1%）。\n下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。\n动手前先用工具核对文件当前状态，不要重做已完成的工作。\n\n## 交接摘要\n\n#'
+  [6] assistant '蓝色文件夹归档规则的核心是“分类明确、层级简洁、命名统一”。按业务或主题设一级目录，如合同、财务、人事、项目；二级目录按年份或编号细分。文件命名建议用“日期_类别_名称”，便于排序检索。同夹只放同类文'
+==========================================================================================
+2026-09-16T02-37-06-300Z_01a0a813-357c-7380-aa9e-6b7cc3dca5fb.jsonl
+  [3] user      '[handoff prompt omitted]'
+  [4] assistant '蓝色文件夹归档规则的核心是“分类明确、层级简洁、命名统一”。按业务或主题设一级目录，如合同、财务、人事、项目；二级目录按年份或编号细分。文件命名建议用“日期_类别_名称”，便于排序检索。同夹只放同类文'
+  [5] user      '本会话接手上一会话（其上下文窗口已用 0.1%）。\n下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。\n动手前先用工具核对文件当前状态，不要重做已完成的工作。\n\n## 交接摘要\n\n#'
+  [6] assistant '上一会话的任务已完成：蓝色文件夹归档规则的约 200 字中文正文已输出。\n\n本会话核对结论：无需重做，也没有待办事项。若需继续，请给出新的具体指令（例如调整字数、改写风格或补充某类归档细则）。'
+```
+
+## HANDOFF.md（节选）
+```text
+# pi 会话 01a0a813-1ee6-7380-aa9e-6b75e313128e 的交接文档
+
+- 生成时间：2026-09-16T02:37:06.298Z
+- 项目：/tmp/pc-handoff-e2e
+- 会话日志：.agents/memory/session-logs/01a0a813-1ee6-7380-aa9e-6b75e313128e/session.md
+- 会话索引：.agents/memory/session-logs/INDEX.md
+
+## 目标
+- 用户要求用约 200 字中文介绍蓝色文件夹的归档规则，直接输出正文，不使用工具。
+
+## 约束与偏好
+- 使用中文回答。
+- 篇幅约 200 字。
+- 直接给出正文，不要调用或使用工具。
+```
