@@ -1,0 +1,70 @@
+All verification complete. Writing up the review.
+
+---
+
+# Lane A 聚焦复审 — switches-test m3 修复增量
+
+## 结论：**minor**（无 blocking / important；m3 修复有效且稳健）
+
+增量确实把 m3 从「无检出力」修成「有检出力」，且未引入假红。仅有 1 条既有（pre-existing，非本次增量引入）的覆盖缺口值得记录。
+
+---
+
+## 发现
+
+### 1. minor（既有缺口，非本次增量引入）
+**文件**：`extensions/project-context/autolearn.ts:406`（`if (archived.size === 0 && !force) return;`）
+
+**问题**：该「无归档会话则跳过」闸门目前**在全部 9 个测试中都没有检出力**。把它变异为恒假后 `node tests/run-all.mjs` 仍全绿。这条缺口与 m3 是同类的（探针被更前面的闸门吸收），但本次增量未触碰、也未声称覆盖它。
+
+**建议**：不阻塞本轮（本次任务明确只审 m3/switch 闸门）。但可登记为下一条 residual：在 `autolearn-test.mjs` 增加一个「有新材料 + due，但归档目录为空 → 不调用模型」的正面断言，或让 switches 的探针在 `on all` 之后重开一次开关再关，从而让 archived 闸门在开关开着的窗口里被观测。
+
+**证据**：`/tmp/revA` 变异 archived 闸门 → `run-all` 全部 9 个测试 `ok`；同一变异在 switches（开关全程 off）→ `ALL OK`。
+
+---
+
+### 2. minor（健壮性观察，非缺陷）
+**文件**：`tests/switches-test.mjs:44-47`
+
+**问题**：`learnCalls` 的判别用整个 prompt 做子串匹配 `prompt.includes("Maintain durable project memory")`，其余一律记为 autolearn。本测试内可靠（两个 prompt 首行互斥：consolidate `"Maintain durable project memory and ..."`，autolearn `"Maintain project-specific skills ..."`），且本测试 MEMORY.md 固定不含该串。但判别是**全文子串**而非首行前缀；若将来测试素材的 MEMORY.md 正文里出现该短语，autolearn 调用会被误判为 consolidation（假绿）。
+
+**建议**：可改为首行判定（`prompt.startsWith("Maintain project-specific skills")` 才算 autolearn），或按调用来源而非文本。非阻塞。
+
+**证据**：`grep` 确认全仓仅 consolidate.ts:335 与 autolearn.ts:197 两处 prompt 首行；`completeText` 仅被这两处调用（handoff 走 `getApiKeyAndHeaders`，不经过 `complete`）。
+
+---
+
+### 3. 无问题但值得确认：`off autolearn` 提前的副作用
+`tests/switches-test.mjs:63-66` 提前调用未影响任何其它检查。闸门轨迹对比：
+
+- **旧测试**：`session_start`（首次 settle 前）命中 `GATE changed=true` → `GATE archived-empty return`，即旧测试里 autolearn 在开关打开窗口被 archived 闸门吸收——正是 m3 的成因。
+- **新测试**：全程 8 次 autolearn 入口**全部**命中 `GATE switch-off return`，没有任何一次到达 archived/due 闸门。
+
+因此新探针把开关闸门与其它闸门彻底解耦，是真正的「只在开关闸门被破坏时才红」。副作用检查全部通过：`off autolearn` 提前后，memory 段的重复 `off autolearn`（line 90）变为冗余但无害；`--no-project-context`、`off all/on all`、legacy `autolearn.json`、nested config 断言全部照常绿。
+
+`autolearnAt` 在正确代码全程保持 `0`（无 pass 发生），探针处 `archived sessions=[sw-session]`、`MEMORY updated=true`、`autolearnAt=0` —— 证实注释「其它闸门是开的」准确。
+
+---
+
+## 已验证清单
+
+| 验证 | 方法 | 结果 |
+|---|---|---|
+| 基线稳定性 | `node tests/switches-test.mjs` ×5 + ×30 | 全部 `ALL OK`（35/35 绿） |
+| **m3 复现**（旧测试无检出力） | 旧测试 + switch 闸门变异 | 旧探针 `OK autolearn off: no scheduled pass`，仅 `memory off does not call the model` 红 → 复现 m3 |
+| **检出力：switch 闸门** | 变异 `if (!config.autoLearn && !force) return;` → 恒假，跑新测试 | `FAIL autolearn off: no scheduled pass` + `FAIL memory off does not call the model`（2 FAILURES）→ 探针变红，符合预期 |
+| 探针红的机制 | 加 `learnCalls` 调试 + 闸门轨迹 | 第二次 settle（`on memory`）放行 autolearn 使 `learnCalls=1`；累计判定抓住它（首个 settle 被 archived 闸门吸收，但计数累计） |
+| **检出力：archived 闸门变异** | 恒假，新测试 | `ALL OK`（绿）—— 因开关 off 时该闸门不可达，**预期绿，非假红** |
+| **检出力：changed/due 闸门变异** | 恒假，新测试 | `ALL OK`（绿）—— 同上，**预期绿** |
+| due/changed 闸门的既有覆盖 | autolearn-test + due 变异 | `FAIL no automatic call without new material`、`FAIL new material alone does not skip the interval` → due/changed 在开关开的场景仍有检出力 |
+| archived 闸门的既有覆盖 | archived 变异 + `run-all` | **9/9 全绿 → 无任何测试覆盖（发现 #1）** |
+| 无假红 | 正确代码 ×5、×30、负载下 | 全部绿；`learnCalls` 全程 = 0 |
+| `learnCalls` 判别可靠性 | `grep completeText` + prompt 首行比对 | 仅 consolidate/autolearn 两处调用 `complete`；两 prompt 首行互斥；无第三来源 |
+| 副作用 | 新旧测试闸门轨迹对比 + 全量断言 | 旧测试 session_start 被 archived 吸收；新测试全部止于 switch；其它段断言不受影响 |
+| `autolearnAt` 时间线 | 探针处 dump 配置 | `autolearnAt: 0`，`autoLearn: false`，注释准确 |
+| **复跑 run-all** | 空载 #1 | All 9 tests passed |
+| | 空载 #2 | All 9 tests passed |
+| | 负载（8 个 busy loop） | All 9 tests passed |
+| 沙箱只读 | `git status` / `git diff` | 仅 `tests/switches-test.mjs` +11/−1；`autolearn.ts` 无改动；变异全部在 `/tmp/revA` |
+
+**总结**：m3 已真正修复——switch 闸门被单独变异时该探针必定变红，archived/due 变异时保持预期的绿，无假红，全套稳定通过。唯一遗留是 `archived.size === 0` 闸门全仓无覆盖（既有、非本轮引入，minor）。

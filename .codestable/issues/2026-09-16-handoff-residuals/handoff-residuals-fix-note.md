@@ -10,7 +10,7 @@ tags: [handoff, tests, flakiness]
 
 # handoff 记录在案残余 修复记录
 
-触发：owner 指令「残余处理掉」（2026-09-16）。三条残余全部收口；`git diff --stat` = 6 files, +395/−103。
+触发：owner 指令「残余处理掉」（2026-09-16）。三条残余全部收口；后按 owner 指令「做了」又关闭了 m3（测试缺口）。`git diff --stat`（v0.1.5 前）= 6 files, +395/−103；m3 增量另计 +11/−1。
 
 ## 1. 改动文件
 
@@ -61,6 +61,7 @@ tags: [handoff, tests, flakiness]
 
 ## 6. 残余与已知边界
 
-- **m3（pre-existing，未修）**：`switches-test.mjs` 的 `autolearn off: no scheduled pass` 同时被「开关 off / archived=0 / changed / due」多道闸门保护，只变异 autolearn 开关时该负断言仍绿（同轮 `memory off does not call the model` 会红）。修法 = 给该 tmp 会话预置最小 archive 与新素材，使探针只依赖开关；属另一子系统的测试设计，未纳入本次范围。
+- **m3（已于本轮修复，round 5 复审确认）**：`switches-test.mjs` 的负断言 `autolearn off: no scheduled pass` 原本同时被「开关 off / archived=0 / changed / due」多道闸门保护，只变异 autolearn 开关时仍绿。修法：`off autolearn` 提前到第一次 settle 之前；模型桩新增按提示词区分的 `learnCalls`；探针改为**累计**判定（`stayedQuiet(() => learnCalls > 0)`），使开关闸门与其它闸门彻底解耦。变异开关 → 探针红；变异 archived/due 闸门 → 预期绿（无假红）；`learnCalls` 全程 0。改动 +11/−1。
+- **m4（pre-existing，未修，round 5 新发现）**：`autolearn.ts` 的 `if (archived.size === 0 && !force) return;` 闸门目前在全部 9 个测试文件中**都无检出力** —— 变异为恒假后 `run-all` 仍 9/9 全绿（与 m3 同类：探针被更靠前的闸门吸收）。建议修法：在 `autolearn-test.mjs` 加一条「有新材料 + due + 开关 on，但归档目录为空 ⇒ 不调用模型」的正面断言；修法明确、成本小，属另一子系统测试设计，需单独一轮复审。
 - **孤儿结果为有损剔除**：内容进摘要（模型摘要可能压缩细节），回放不含它；这是为 provider 结构合法性付的代价，已在 analysis 记录。
 - **轮内切分有意的语义变化**：见 §2；若 owner 认为「整轮回放」更可取，可用 `handoffKeepTokens: 0`（summary-only）或回退该 commit 的切点逻辑。

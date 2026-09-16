@@ -37,12 +37,15 @@ try {
 	const ctx = makeCtx(tmp, { sessionManager: makeSessionManager(entries, "sw-session"), getContextUsage: () => ({ tokens: 150_000, contextWindow: 200_000, percent: 75 }) });
 
 	let modelCalls = 0;
+	let learnCalls = 0;
 	ctx.modelRegistry.complete = async (_model, context) => {
 		modelCalls += 1;
 		const prompt = context.messages[0].content[0].text;
 		if (prompt.includes("Maintain durable project memory")) {
 			return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- Switch test project updated.", context: { title: "Switch test", summary: "updated", key_points: [], open_tasks: [] } }) }] };
 		}
+		// Any other completion is an autolearn pass (its prompt asks for a skill).
+		learnCalls += 1;
 		return { content: [{ type: "text", text: JSON.stringify({ skill: null }) }] };
 	};
 
@@ -57,6 +60,10 @@ try {
 	const initial = await status();
 	check("all features on by default", ["archive=on", "memory=on", "autolearn=on", "handoff=on"].every((item) => initial.includes(item)));
 	check("status shows the config path", initial.includes("project-context.json"));
+	// Turn the autolearn switch off before the first settle: with it off from the start, any
+	// autolearn completion in this test is a switch violation, which makes the probe below a
+	// cumulative check instead of one that a mutated gate can satisfy earlier and hide.
+	await command.handler("off autolearn", ctx);
 
 	console.log("\n=== archive switch ===");
 	await command.handler("off archive", ctx);
@@ -96,9 +103,12 @@ try {
 	);
 
 	console.log("\n=== autolearn switch ===");
+	// The switch has been off since before the first settle, and its other gates (new material, an
+	// archived session) are open, so this probe fails whenever a pass ran anywhere in this test —
+	// including one that an earlier settle would otherwise have absorbed.
 	const beforeManual = modelCalls;
 	await runHandlers(pi, "agent_settled", ctx);
-	check("autolearn off: no scheduled pass", await stayedQuiet(() => modelCalls === beforeManual + 1));
+	check("autolearn off: no scheduled pass", await stayedQuiet(() => learnCalls > 0));
 	await pi.commands.get("autolearn").handler("", ctx);
 	check("manual /autolearn still runs", modelCalls === beforeManual + 1);
 
