@@ -65,3 +65,30 @@ tags: [handoff, tests, flakiness]
 - **m4（pre-existing，未修，round 5 新发现）**：`autolearn.ts` 的 `if (archived.size === 0 && !force) return;` 闸门目前在全部 9 个测试文件中**都无检出力** —— 变异为恒假后 `run-all` 仍 9/9 全绿（与 m3 同类：探针被更靠前的闸门吸收）。建议修法：在 `autolearn-test.mjs` 加一条「有新材料 + due + 开关 on，但归档目录为空 ⇒ 不调用模型」的正面断言；修法明确、成本小，属另一子系统测试设计，需单独一轮复审。
 - **孤儿结果为有损剔除**：内容进摘要（模型摘要可能压缩细节），回放不含它；这是为 provider 结构合法性付的代价，已在 analysis 记录。
 - **轮内切分有意的语义变化**：见 §2；若 owner 认为「整轮回放」更可取，可用 `handoffKeepTokens: 0`（summary-only）或回退该 commit 的切点逻辑。
+
+## 7. 发布记录（v0.1.5）
+
+| 项 | 值 |
+|---|---|
+| 代码提交 | `093dbf3`（三残余 + 4 轮复审产物）、`98aeedf`（m3 修复 + 第 5 轮产物） |
+| 注解 tag | `v0.1.5` → tag 对象 `79b8c8f`，指向 `98aeedf` |
+| 远端 | Forgejo + GitHub 镜像的 `master` 均为 `98aeedf`；tag 两处均有（推送时镜像出现过一次瞬时断连，重试后成功） |
+| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.4` → `@v0.1.5`（备份 `/tmp/settings.json.before-v0.1.5-20260916-090918`，1452 B）；`pi update --extensions`（非 `pi update`，避免误升 CLI） |
+| 已装副本 | `/home/user/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `98aeedf`，工作树干净，`handoff.ts` 含 `SPLIT_TURN_MARKER`×4 / `droppedOrphans`×6（`git describe` 因无本地 tag 对象显示 `v0.1.0-26-g98aeedf`，按 commit 核对）。`pi list` 显示 `@v0.1.5` |
+
+### 真机 A/B（证据：`handoff-residuals-midturn-e2e.txt`）
+
+场景：turn 1 用 `read` 读 ~60 KB 文件（单轮 toolResult ≈ 12.8k token）+ turn 2 小轮，`handoffKeepTokens=50`，`/auto-handoff now`。
+
+| | 旧代码 `e71e693` | 新代码（已装 v0.1.5） |
+|---|---|---|
+| 结果 | `skipped: nothing older…`，**不交棒**，无 `HANDOFF.md` | `summarizing ~12.8k … keeping ~14 recent`，**交棒成功** |
+| 新会话回放 | — | 含 `SPLIT_TURN_MARKER`，不含大 toolResult |
+| 附带复核 | — | 脚手架为中文（v0.1.4 的 `handoffLanguage: auto` 仍生效） |
+
+注：新代码那一跑**不带 `-e`/`-ne`**，走 settings 已装包，因此这条同时也是「部署生效」的证明。RPC 路径不触发 TUI 自动阈值，故用 `/auto-handoff now`（force，同一条 `runHandoff`）；自动阈值路径已由早前的 pexpect 真 TUI 跑验证。
+
+### 未在本轮完成
+
+- 运行中的 pi 进程（pid 2309794，启动于 09-15 14:33）仍跑旧代码：重启后才吃到 v0.1.5（含 journal 折入）。
+- **m4**（见 §6）未修。

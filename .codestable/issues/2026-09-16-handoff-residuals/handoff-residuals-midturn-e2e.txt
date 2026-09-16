@@ -1,0 +1,73 @@
+# 真机 A/B 证据：首轮超大时能否交棒（2026-09-16，v0.1.5 发布后）
+
+## 场景
+
+- 项目：`/tmp/pc-midturn-{new,old}`，config `handoffKeepTokens: 50, autoConsolidate/autoLearn=false, handoffLanguage: auto`。
+- 驱动：`node /tmp/midturn-e2e.mjs {new|old}`（RPC 模式 + 真实 deepseek-flash + 真实 session 文件；`--tools read`）。
+- 轮次：turn 1「用 read 工具读取 `/tmp/pc-midturn-big.txt`（约 60 KB，read 工具截断到 50 KB ⇒ 单轮 toolResult ≈ 12.8k token）」，turn 2「再说一句 ok」（小轮），随后 `/auto-handoff now`。
+- 这正是残余 R1 的失败几何：**大部分上下文落在同一轮** ⇒ keep 预算的切点落在该轮内部。
+- 差异：`new` 不带 `-e`/`-ne`（跑 **settings 已装包 v0.1.5**，同时验证部署）；`old` 用 `git archive e71e693` 的预修复代码 + `-ne -e <tree>/extensions/project-context/index.ts`。
+
+## 结果对照
+
+| | old（`e71e693`，预修复） | new（已装 v0.1.5，`98aeedf`） |
+|---|---|---|
+| 扩展通知 | `Auto handoff skipped: nothing older than the recent window to summarize.`（warning） | `Auto handoff: summarizing ~12.8k of context, keeping ~14 recent...` → `continued in a fresh session (previous was 2.7% full, summary ~175, kept ~14 recent).` |
+| 会话切换 | ❌ 无（120s 后仍是原 session） | ✅ `01a0a97e-aeeb…` → `01a0a97e-ccf1…` |
+| 新会话回放 | — | 含 `[turn prefix summarized during handoff]`（`SPLIT_TURN_MARKER`），**不含** 50 KB 大 toolResult |
+| `HANDOFF.md` | ❌ 未生成 | ✅ 已生成，标题/字段为中文（`# pi 会话 … 的交接文档`） |
+| 会话文件 | 1 个（107145 B） | 2 个（107120 B → 4028 B） |
+
+## 输出（`node /tmp/midturn-e2e.mjs new`，节选）
+
+```text
+MODE=new initial=2026-09-16T09-14-06-956Z_01a0a97e-aeeb-71d1-bad9-c18d17a125d8.jsonl
+EVENT: settled (#1)
+turn 1 settled (huge tool result)
+EVENT: settled (#2)
+turn 2 settled (small)
+NOTIFY[info]: Auto handoff: summarizing ~12.8k of context, keeping ~14 recent...
+EVENT: settled (#3)
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 2.7% full, summary ~175, kept ~14 recent).
+handoff switched -> 2026-09-16T09-14-14-641Z_01a0a97e-ccf1-71d1-bad9-c1934eff72bd.jsonl
+RESULT: switched=true
+SESSIONS:
+  2026-09-16T09-14-06-956Z_01a0a97e-aeeb-71d1-bad9-c18d17a125d8.jsonl
+    messages=6 bytes=107120
+    has SPLIT_TURN_MARKER=false
+    has REPLAY_MARKER=false
+    has big tool output=false
+  2026-09-16T09-14-14-641Z_01a0a97e-ccf1-71d1-bad9-c1934eff72bd.jsonl
+    messages=6 bytes=4028
+    has SPLIT_TURN_MARKER=true
+    has REPLAY_MARKER=false
+    has big tool output=false
+HANDOFF.md exists=true
+HANDOFF.md head: # pi 会话 01a0a97e-aeeb-71d1-bad9-c18d17a125d8 的交接文档 |  | - 生成时间：2026-09-16T09:14:14.641Z
+```
+
+## 输出（`node /tmp/midturn-e2e.mjs old`，节选）
+
+```text
+MODE=old initial=2026-09-16T09-36-15-479Z_01a0a992-f476-77ea-b507-4ba1840f5d07.jsonl
+EVENT: settled (#1)
+turn 1 settled (huge tool result)
+EVENT: settled (#2)
+turn 2 settled (small)
+NOTIFY[warning]: Auto handoff skipped: nothing older than the recent window to summarize.
+no switch after 120s (session still 2026-09-16T09-36-15-479Z_01a0a992-f476-77ea-b507-4ba1840f5d07.jsonl)
+RESULT: switched=false
+SESSIONS:
+  2026-09-16T09-36-15-479Z_01a0a992-f476-77ea-b507-4ba1840f5d07.jsonl
+    messages=6 bytes=107145
+    has SPLIT_TURN_MARKER=false
+    has REPLAY_MARKER=false
+    has big tool output=false
+HANDOFF.md exists=false
+```
+
+## 附注
+
+- `new` 侧的中文脚手架同时复核了 v0.1.4 的语言修复（`handoffLanguage: auto` → zh）仍生效。
+- RPC（非 TUI）路径不触发 `maybeTrigger` 的自动阈值，因此这里用 `/auto-handoff now`（force）走同一条 `runHandoff`；自动阈值路径此前已由 pexpect 真 TUI 验证（见 `handoff-language-and-replay-tui-e2e.txt`）。
+- 报告未列出完整原始 JSONL（约 107 KB/会话）；关键判定字段（`SPLIT_TURN_MARKER` / 大 toolResult / 会话数）已逐项列出。
