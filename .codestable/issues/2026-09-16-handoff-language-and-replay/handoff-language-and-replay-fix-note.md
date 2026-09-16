@@ -85,12 +85,17 @@ tags: [handoff, i18n, replay]
   清理记录）、`f1565dc`（提交哈希）、`6d8b81b`（自动触发断言改轮询）、`96b666d`（本部署记录）；双远端 `master`
   = `96b666d`，发布代码仍是 tag `v0.1.4` 指向的 `6d8b81b`。
 - 发布 tag（已 push）：`v0.1.3`（`e4d48c4`，记忆日志化 + 写锁加固，此前一直是本地未发布）与
-  `v0.1.4`（`6d8b81b`，本 issue 的 handoff 改动）。
+  `v0.1.4`（**重打后指向 `7b424ab`**，tag 对象 `d86ad46`；原指向 `6d8b81b`，owner 要求把部署记录纳入 tag）。
 - **已安装副本已切到 v0.1.4 并生效**：`settings.json` 的 pin 改为 `…pi-project-context.git@v0.1.4`，
   `pi update --extensions` 把 `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context`
-  置于 `6d8b81b`；真 TUI（不带 `-e`）实跑 `/auto-handoff lang zh|auto` 验证命令与
+  置于 `7b424ab`（重打后重跑一次）；真 TUI（不带 `-e`）实跑 `/auto-handoff lang zh|auto` 验证命令与
   `handoffLanguage` 写盘生效（v0.1.4 独有）。`settings.json` 改动前的备份在
   `/tmp/settings.json.before-v0.1.4-<stamp>`。
+- **记忆/上下文同步（2026-09-16 13:10/13:18）**：新代码首次写入建了 journal baseline（`.agents/memory/memory.jsonl`，
+  2 条 `replace`，与当时 render 逐字符一致，folded 17582 / render 17582）；本会话（旧进程跑旧代码）的后续事实
+  通过**设计中的 external-edit 入口**补入（`MEMORY.md` 发布条目 + `CONTEXT.md` 按当前 renderer 格式重写），
+  新代码 `loadMemory` 已按「内容不同且 mtime 更新」采纳（`source` 指向 `MEMORY.md`），将在下一次写入时折入 journal。
+  `master` 此后仍可能再领先 tag 一个 docs 提交（本次记录），属既定安排。
 
 ## 5. 残余风险
 
