@@ -118,3 +118,12 @@ fix-note 与五轮独立审查均已完成；blocking 未清时按协议不能�
 - 选 B：按新设计实施（decode-only + 写入端备份），更新分析/fix-note/测试，再走完整独立复审。
 - 选 A：实施 round-5 建议的加固 + 并发取舍，再走完整独立复审。
 - 选 C：把两项写入 residual risk 与 fix-note，进入 fix 完成确认。
+
+## 2026-09-16 — 污染备份清理（owner 授权）
+
+- owner 指示：「检查修复，确认没问题了可以删」；本次不涉及代码改动。
+- 执行：逐份字节级解码比对（临时项目走真实 `loadMemory()` 污染解码）+ 现记忆健康度核对，
+  确认三份 `.poison-backup-*` 的实质事实均已被现记忆覆盖（细节与哈希见 fix-note §7），随后删除。
+- 结果：两项目无残留备份文件；`loadMemory()` 均 `poisoned=false`、`damaged=0`（15055 / 14784 字符）。
+- 未做：未 commit / 未 push 任何仓库改动；UniField 工作树记忆（+85/−3 vs HEAD）保持现状，
+  C2（是否补回 HEAD 的 E74 结论后提交）仍待 owner 决定。

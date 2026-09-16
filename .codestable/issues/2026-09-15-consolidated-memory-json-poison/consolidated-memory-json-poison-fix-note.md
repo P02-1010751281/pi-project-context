@@ -86,7 +86,7 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
 
 - **安装包未更新**：运行中的 pi 仍用 `~/.pi/agent/git/.../pi-project-context` 的 ad81a11
   （v0.1.2）。本次改动需 commit（并按需打 tag/更新安装）后才会对会话生效。
-- **备份文件**：UniField 1 个、Quantum_Matrix 2 个 `.poison-backup-*`，确认内容后可删除。
+- **备份文件**：UniField 1 个、Quantum_Matrix 2 个 `.poison-backup-*`，已于 2026-09-16 逐份核对后删除（见 §7）。
 - **顺手发现**：`autolearn.ts:424` / `autolearn.ts:438` 仍用固定的 `config.maxTokens`，
   超长技能内容可能发生同类截断（不在本 issue 范围，建议另开 issue）。
 - **自愈是静默的**：只有备份文件留痕，没有通知；如需可见性可后续增强。
@@ -208,3 +208,22 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
     独立性验证：round 22/23 的 findings（mtime 判别器恒真、半行吞并、normalization 口径分叉导致死代码）全部修复，
     round 24 判 **PASSED**（无 blocking/important）。
 - 两个项目的存量数据不受影响（已修复的 UniField / Quantum_Matrix `MEMORY.md` 保持原样）。
+
+## 7. 污染备份清理（2026-09-16，owner 授权「检查修复，确认没问题了可以删」）
+
+- 核对方法：把每份 `.poison-backup-*` 字节原样复制进临时项目的 `.agents/memory/MEMORY.md`，
+  用真实 `loadMemory()`（含污染解码路径）取出文本，再与两项目现记忆做逐行 + 关键词比对；
+  同时核对现记忆自身健康度（`poisoned` / `damaged` / 字符数）。
+- 结论：三份备份的实质事实均已在现记忆中，逐行差异只是措辞与结构重排：
+  - Quantum_Matrix 备份的 9-15 事实（32×32 +43.64、64×64 Khazad r16=746 vs 366、登记表 61 行）
+    见现记忆第 103 行更新记录；`302 passed`、`6f4a108`、`结构化基准` 关键词命中。
+  - UniField 备份的「`config` 里不含 `lr`」子句见现记忆第 145 行。
+  - 仓库内另有可追溯记录（`git grep`：`302 passed` 命中 3 文件、`6f4a108` 命中 2 文件）。
+- 删除清单（size / sha256 前 16 位）：
+  - `24027` / `cdd6ee977003adeb` — `UniField/.agents/memory/MEMORY.md.poison-backup-20260915`
+  - `24296` / `80b8571e6ef1f245` — `Quantum_Matrix/.agents/memory/MEMORY.md.poison-backup-20260915`
+  - `24396` / `66b9c8dfb4627565` — `Quantum_Matrix/.agents/memory/MEMORY.md.poison-backup-2026-09-15T06-58-06-299Z`
+- 删除后核对：两项目无残留 `poison-backup` / `backup` 类文件；`loadMemory()` 均 `poisoned=false`、
+  `damaged=0`，字符数维持 15055 / 14784 不变。
+- 边界说明：备份里存的是模型回复的 JSON 信封原文，删除后不可再取回原始字节；已确认解码事实不丢失，
+  且这批数据只影响记忆文本，不影响任何代码路径。
