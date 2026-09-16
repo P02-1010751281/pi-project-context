@@ -74,9 +74,13 @@ tags: [handoff, i18n, replay]
 
 ## 4. 部署状态
 
+- 已提交（本地，未 push）：`5b9b9ad feat(handoff): follow the conversation language and drop stale prompts from the replay`
+  （含 `config.ts`/`handoff.ts`/`README.md`/`tests/handoff-test.mjs` 与新 issue 目录）；后续 docs 提交 `2964141`
+  记录污染备份清理。
 - 已安装 pi 包仍为 `ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git@v0.1.2`，
-  **新代码未生效**；工作树改动未提交（owner 控制）。
-- 生效路径：① push + `pi update`（owner 操作）；② 本地 `pi -e <repo>/extensions/project-context/index.ts`。
+  **新代码未生效**；未打新 tag（owner 未要求）。
+- 生效路径：① push + `pi update`（owner 操作，可顺带打 `v0.1.4`）；② 本地
+  `pi -e <repo>/extensions/project-context/index.ts`。
 
 ## 5. 残余风险
 
