@@ -4,9 +4,9 @@ issue: 2026-09-15-consolidated-memory-json-poison
 status: passed
 reviewer: subagent
 reviewed: 2026-09-15
-round: 21
+round: 24
 lane_a_state: completed
-lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..21 完整记录：consolidated-memory-json-poison-review-round{1..21}-independent.txt"
+lane_a_ref: "独立 pi CLI 进程（ephemeral session、只读沙箱副本），round 1..24 完整记录：consolidated-memory-json-poison-review-round{1..24}-independent.txt"
 lane_a_reason: "独立上下文 reviewer，分别在 /tmp/pi-context-revN 沙箱副本中审查；沙箱与真实仓库均核验无写入"
 lane_b_state: unavailable
 lane_b_ref: ""
@@ -44,6 +44,9 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
 | 19 | changes-requested | IMP：dangling symlink 在 lock/claim 路径不再自愈（`stat` 跟随链接误判 ENOENT，5s 永久超时）；nit：steal 未钉 inode、常量耦合 | 修复：EEXIST 分类改 `lstat`、非 regular 一律移开；steal 用 inode+bytes+claim 三重复查；`MAX=max(KEPT,20)`；补 symlink/FIFO/上限断言 |
 | 20 | changes-requested | IMP：FIFO 用例是永真断言（catch 吞掉失败）；nit：claim 回收未钉 inode、`tryLock` 清理用 `stat` | 修复：mkfifo 探测与断言分离、claim 回收 inode 钉定、清理统一 `lstat`、备份同 mtime 按名 tie-break |
 | 21 | **PASSED** | 无 blocking / 无 important；nit：`acquireClaim` 清理仍用 `stat`、FIFO 缺失为带标注 OK、stat 失败跳过无覆盖 | 已修 nit：清理统一 `lstat`、新增同 mtime 确定性断言；残余为 node:fs 无内核原子（flock）的 check→unlink 悬挂窗，注释已如实声明 |
+| 22 | changes-requested | IMP：外部编辑 mtime 判别器恒真（自家渲染被反复 adoption、journal 重复记录）；IMP：半行尾部吞掉下一条 append；nit：轮换 rename→重写窗口会让 journal 路径消失 | 修复：内容同口径归一 + 双条件判别；append 前补换行；轮换改「临时文件 → 归档 → 替换 + 回滚」；归档加后缀并补年轻保护测试 |
+| 23 | changes-requested | BLOCKING：内容相等分支因「折叠带尾换行 vs 渲染 trim」成为死代码，round-22 修复未生效（normalization 口径分叉） | 修复：抽出 `memoryComparisonKey` 单点收口，读/写共用；新增「内容相同 + mtime 新 ⇒ 不采信、条目线性」负例 |
+| 24 | **PASSED** | 无 blocking / 无 important；nit：轮换临时名不被 gitignore/清理覆盖、README 树注释陈旧 | 已修：临时名改 `.tmp`（gitignore + `cleanStaleTemps` 覆盖）、`/memory` 对无可用记录 journal 给出重建提示、adoption 记 `errors.log`、文档同步 |
 
 ## 3. 当前状态（round 11 复审后）
 
@@ -65,6 +68,7 @@ lane_b_reason: "ocr CLI 未安装（which ocr 为空）"
 - round 17 判 **PASSED**（无 blocking/important）；最后两个 nit 已以本地测试收口，review gate 关闭。
 - round 18 判 **PASSED**（legacy 未读来源可见性补全）；OMP 迁移同类静默已同步收口，最终闭合。
 - round 19/20/21：锁协议病理矩阵（symlink/FIFO/目录/inode/claim 令牌）与备份硬上限加固完成；round 21 PASSED，review gate 关闭。
+- round 22/23/24：记忆 journal 化（append-only 权威 + 派生渲染，与会话存档同构）；round 24 PASSED，review gate 再次关闭。
 
 ## 4. Focused Closure（无则写 none）
 

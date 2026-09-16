@@ -22,7 +22,7 @@ pi install git:github.com/P02-1010751281/pi-project-context
    ▼
 session.jsonl（唯一权威）──► session.md（全量渲染，人读）──► INDEX.md（每会话一行）
    │
-   ├─ ② 整理（1 次调用，节流）  raw 对话 + MEMORY/CONTEXT ─► CONTEXT.md + MEMORY.md ─► 每轮注入
+   ├─ ② 整理（1 次调用，节流）  raw 对话 + MEMORY/CONTEXT ─► CONTEXT.md + memory.jsonl ─► MEMORY.md（渲染）─► 每轮注入
    │
    ├─ ③ 沉淀（1 次调用，低频）  MEMORY/CONTEXT + 索引 ─► skills/<name>/SKILL.md
    │                            └ 证据不足（<2 个已存档会话）─► memory/skill-candidates/<name>.md
@@ -45,14 +45,16 @@ session.jsonl（唯一权威）──► session.md（全量渲染，人读）�
 <project>/.agents/
 ├── skills/<name>/SKILL.md          # ③ 沉淀的项目技能（description 常驻，body 按需加载）
 └── memory/
-    ├── MEMORY.md                   # ② 长期记忆（每轮注入）
+    ├── MEMORY.md                   # ② 长期记忆渲染（人读 + 每轮注入，可由 memory.jsonl 重建）
+    ├── memory.jsonl                # ② 长期记忆唯一权威：append-only 记录（replace / append）
     ├── CONTEXT.md                  # ② 工作态：摘要 / 关键点 / open tasks（每轮注入）
     ├── HANDOFF.md                  # ④ 最近一次交接摘要（含旧存档指针）
     ├── project-context.json        # 功能开关与参数（dsh 侧在 ~/.dsh/settings.yaml）
     ├── skill-candidates/<name>.md  # ③ 待确认候选（approve 后转正）
     ├── errors.log                  # 各阶段捕获的异常（凭据样串先脱敏）；单条截断 8000 字符，>1MB 轮换保留最新 64k
     ├── MEMORY.md.memory-backup-*   # 覆盖前写的字节级备份（mtime 保留最新 5 份，一小时内不轮换）
-    ├── .gitignore                  # 首次写出本地产物时生成：忽略备份、errors.log、锁文件
+    ├── memory-log-*.jsonl          # 轮换前的 journal 归档（保留最新 5 份，一小时内不删）
+    ├── .gitignore                  # 首次写出本地产物时生成：忽略 journal/归档/临时文件、备份、errors.log、锁文件
     └── session-logs/
         ├── INDEX.md                # ① 机械索引：每会话一行，按 id 去重、只留最新 200 行
         ├── .gitignore              # 首次写出时生成，忽略整个目录
@@ -64,11 +66,12 @@ session.jsonl（唯一权威）──► session.md（全量渲染，人读）�
 ### 失败与恢复
 
 - **存量污染（旧版本 bug）**：旧实现可能把模型回复原样写进 `MEMORY.md`。读取端只**内存解码**（`memory_markdown` 为对象的首键或次键、前缀为 JSON/围栏/单行引导语、值确为文档），不写盘、不建备份、不记日志；下一次正常整理覆盖前先写字节级备份再改写。
+- **记忆与存档同构**：`memory.jsonl` 是 append-only 唯一权威，`MEMORY.md` 是它的渲染（可重建、人读、注入与外部编辑入口）。读取以 journal 折叠为准；渲染内容（归一后）与折叠不同、且 mtime 晚于 journal 时视为外部编辑（手改/旧版本写入）并优先采信，下一次写入先把该字节收进 journal 再追本次结果（同一 mtime tick 内的外部编辑会被 journal 覆盖）。journal 损坏行跳过并计数到 `errors.log`；整份 journal 无可用记录时 fail closed，不悄悄回退旧渲染。
 - **每次覆盖前备份**：`backupMemoryBeforeWrite` 读当前磁盘字节（字节保真）后写 `.memory-backup-<stamp>-<rand>`；目标存在但读不了（非 ENOENT）时 fail closed，pass 报 failed 并留 `errors.log`，绝不覆盖。
-- **保留策略**：按 mtime 保留最新 5 份；一小时内新建的备份不轮换，通知里点名的备份在下一次整理后仍在。修剪只删除本扩展生成的完整名字，用户文件/目录/符号链接不受影响。
-- **写入串行**：`MEMORY.md.lock`（`wx` 独占）把“备份读取 → 修剪 → 原子改名”串起来，跨进程也不会互相覆盖；超过 30 秒的陈旧锁由 `<lock>.steal` 声明单胜者后夺取，释放时按唯一 token 校验，`谁拿到的锁谁释放`。
+- **保留策略**：按 mtime 保留最新 5 份；一小时内新建的备份不轮换，通知里点名的备份在下一次整理后仍在。修剪只删除本扩展生成的完整名字，用户文件/目录/符号链接不受影响。journal 超过 512KB 时在锁内折成一条 `replace`，旧文件改名归档（保留最新 5 份，改名前失败则放弃轮换）。
+- **写入串行**：`MEMORY.md.lock`（`wx` 独占）把“追加 journal → 轮换 → 原子改名渲染”串起来，跨进程也不会互相覆盖；超过 30 秒的陈旧锁由 `<lock>.steal` 声明单胜者后夺取，释放时按唯一 token 校验，`谁拿到的锁谁释放`。
 - **输出预算自适应**：按每个 artifact 自身的 token 率分配（非 ASCII 记 1 token/字符，含 emoji/西里尔等；`"`/`\` 计 JSON 转义开销），两侧各有下限，被剪时写备份并告警。模型自身上限未知时，自适应上限受 `maxOutputTokens`（默认 32768）封顶。
-- **本地产物不外泄**：备份与 `errors.log` 由 `.agents/memory/.gitignore` 忽略；`errors.log` 落盘前脱敏 `sk-`/`ghp_`/JWT/Bearer 等凭据样串。
+- **本地产物不外泄**：`memory.jsonl`、归档、备份与 `errors.log` 由 `.agents/memory/.gitignore` 忽略；`errors.log` 落盘前脱敏 `sk-`/`ghp_`/JWT/Bearer 等凭据样串。
 
 已结束的历史会话用 `/session-log import <session.jsonl|目录>…` 回填，与实时路径共用同一渲染器与索引（逐字节保留原文、幂等、无模型调用）。旧数据在 `session_start` 自动迁移：`<project>/.pi/{MEMORY.md,CONTEXT.md,session-logs,skills}`、`.agents/memory/skills`（中间版本布局）、旧索引 `.agents/memory/session-index.md`（链接自动改写）、OMP `~/.omp/agent/memories/<encoded-project>/`（只读导入）；遇到文件/目录类型冲突时两侧都保留并在通知里点名，失败留到下个会话重试。
 

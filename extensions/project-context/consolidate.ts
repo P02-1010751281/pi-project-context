@@ -14,8 +14,8 @@ import {
 	memoryFile,
 	memoryDir,
 	migrateProjectState,
-	normalizeMemoryDocument,
 	notify,
+	recordMemoryDocument,
 	readJsonStringField,
 	readOptional,
 	withMemoryLock,
@@ -413,10 +413,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let storedPoisoned = false;
 			if (memoryChanged) {
 				// Always keep the bytes that are on disk right now, whatever this pass believed
-				// earlier; the lock keeps another process from replacing them mid-write.
+				// earlier; the lock keeps another process from replacing them mid-write. The journal
+				// is the source of truth: this pass appends its document, then MEMORY.md is rendered.
 				const snapshot = await withMemoryLock(memoryFile(projectRoot), async () => {
 					const kept = await backupMemoryBeforeWrite(memoryFile(projectRoot));
-					await writeAtomic(memoryFile(projectRoot), normalizeMemoryDocument(memoryText));
+					await recordMemoryDocument(projectRoot, memoryText);
 					return kept;
 				});
 				backup = snapshot.path;
@@ -500,8 +501,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const memory = await loadMemory(projectRoot);
-			if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
+			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
+				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");
+			} else if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
 			else if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
+			else if (memory.damaged) notify(ctx, `Project memory: ${memory.source} (${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log).`, "warning");
 			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
 			else notify(ctx, `Project memory: ${memory.source}`);
 		},
@@ -578,6 +582,9 @@ export async function consolidateProjectState(
 		const existing = await loadMemory(projectRoot);
 		if (existing.unreadable) {
 			await logError(projectRoot, "memory", "MEMORY.md exists but cannot be read; continuing with an empty memory (the write path fails closed).");
+		} else if (existing.damaged) {
+			// Skipped journal lines are otherwise invisible: the fold silently dropped them.
+			await logError(projectRoot, "memory", `memory journal has ${existing.damaged} unusable line(s); they were skipped`);
 		}
 		const existingContext = (await readOptional(contextFile(projectRoot))).slice(0, MAX_CONTEXT_CHARS);
 		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens);

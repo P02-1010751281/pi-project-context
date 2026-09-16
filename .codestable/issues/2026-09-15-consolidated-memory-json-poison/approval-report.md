@@ -60,6 +60,8 @@ created_at: 2026-09-15
   - `fix-completion: approved`（第二批次）；仍不 push。
 - 2026-09-15 — owner 追加「不要残留问题或隐患」：授权第三批次（锁协议加固 + 备份硬上限 +
   病理路径自愈）。round 19/20 的 findings 已修，round 21 判 **PASSED**；仍不 push。
+- 2026-09-15 — owner 指示「那做了呗，统一一下」：授权把记忆写入与会话存档同构（append-only journal +
+  派生渲染）。round 22/23 的 findings 已修，round 24 判 **PASSED**；仍不 push。
 
 ## Resolved Checkpoints
 

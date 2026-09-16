@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -351,6 +351,95 @@ try {
 			check("pruning leaves user files and directories alone", (await readFile(keepMe, "utf8")) === "user copy" && (await readFile(nestedName, "utf8")) === "user nested" && (await readdir(backupDirectory)).length === 0 && afterUserFiles === 5);
 		} finally {
 			await rm(healTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== the memory journal is the source of truth and MEMORY.md its render ===");
+	{
+		const { appendMemoryOp, foldMemoryJournal, loadMemory, memoryJournalFile, readMemoryJournal, recordMemoryDocument } = await loadNamespace(`${PC}/project-state.ts`);
+		const journalTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-journal-"));
+		const journalMemory = path.join(journalTmp, ".agents/memory/MEMORY.md");
+		const journalFile = memoryJournalFile(journalTmp);
+		const aged = new Date(Date.now() - 10 * 60 * 1000);
+		try {
+			await mkdir(path.dirname(journalMemory), { recursive: true });
+			await writeFile(journalMemory, "# Project Memory\n\n## Project\n- legacy render.\n");
+			const legacy = await loadMemory(journalTmp);
+			check("without a journal the render is read directly", !legacy.unreadable && legacy.text.includes("- legacy render.") && legacy.source.endsWith("MEMORY.md"));
+
+			await recordMemoryDocument(journalTmp, "# Project Memory\n\n## Project\n- from journal.\n");
+			const state = await readMemoryJournal(journalFile);
+			check("the first write keeps the previous document as the journal base", state.entries.length === 2 && state.entries[0].op === "replace" && state.entries[0].text.includes("- legacy render.") && state.entries[1].text.includes("- from journal."));
+			check("the render is regenerated from the journal", (await readFile(journalMemory, "utf8")).includes("- from journal."));
+			await utimes(journalMemory, aged, aged);
+			const read = await loadMemory(journalTmp);
+			check("once the journal exists it is the source of truth", read.source === journalFile && read.text.includes("- from journal.") && !read.text.includes("- legacy render."));
+
+			// Our own render is always newer than the journal but content-identical: it must not be
+			// mistaken for an external edit, in the read path or in the write path.
+			const futureStamp = new Date(Date.now() + 60_000);
+			await utimes(journalMemory, futureStamp, futureStamp);
+			const identical = await loadMemory(journalTmp);
+			check("a content-identical render does not shadow the journal", identical.source === journalFile && identical.text.includes("- from journal."));
+			const beforeAdopt = (await readMemoryJournal(journalFile)).entries.length;
+			await utimes(journalMemory, futureStamp, futureStamp);
+			await recordMemoryDocument(journalTmp, "# Project Memory\n\n## Project\n- second write.\n");
+			const linear = await readMemoryJournal(journalFile);
+			check("repeated writes add one record each without adopting our own render", linear.entries.length === beforeAdopt + 1 && linear.entries.filter((entry) => entry.text.includes("- from journal.")).length === 1);
+
+			await appendMemoryOp(journalFile, "append", "## Added\n- appended fact.");
+			await utimes(journalMemory, aged, aged);
+			const appended = await loadMemory(journalTmp);
+			check("append records extend the folded document", appended.text.includes("- second write.") && appended.text.includes("- appended fact."));
+
+			// A torn last line from a crash is skipped, and the pass can report the damage.
+			await writeFile(journalFile, `${(await readFile(journalFile, "utf8")).trimEnd()}\n{"op":"replace",\n`);
+			await utimes(journalMemory, aged, aged);
+			const torn = await loadMemory(journalTmp);
+			check("a torn journal line is skipped and reported", torn.damaged === 1 && torn.text.includes("- appended fact."));
+
+			// A journal with no usable record must fail closed, not fall back to a stale render.
+			await writeFile(journalFile, "not json\n");
+			const broken = await loadMemory(journalTmp);
+			check("a journal with no usable record reports unreadable", broken.unreadable === true && broken.text === "");
+
+			// A render newer than the journal is a hand edit: it is read, and the next write adopts it.
+			await writeFile(journalFile, `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: "# Project Memory\n\n## Project\n- journal doc.\n" })}\n`);
+			await writeFile(journalMemory, "# Project Memory\n\n## Project\n- hand edit.\n");
+			const future = new Date(Date.now() + 60_000);
+			await utimes(journalMemory, future, future);
+			const handEdit = await loadMemory(journalTmp);
+			check("a render newer than the journal is honored", handEdit.text.includes("- hand edit.") && handEdit.source.endsWith("MEMORY.md"));
+			await utimes(journalMemory, future, future);
+			await recordMemoryDocument(journalTmp, "# Project Memory\n\n## Project\n- consolidated.\n");
+			const adopted = await readMemoryJournal(journalFile);
+			check("the next write adopts a hand edit into the journal", adopted.entries.some((entry) => entry.text.includes("- hand edit.")) && adopted.entries.at(-1).text.includes("- consolidated."));
+			check("the adopted render is replaced by the new document", (await readFile(journalMemory, "utf8")).includes("- consolidated."));
+
+			// Rotation collapses an oversized journal into one replacement, archiving the old bytes.
+			await appendMemoryOp(journalFile, "append", `## Big\n- ${"x".repeat(300_000)}\n`);
+			await appendMemoryOp(journalFile, "append", `## Bigger\n- ${"y".repeat(300_000)}\n`);
+			const archiveAge = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			for (let index = 0; index < 7; index += 1) {
+				const archive = path.join(path.dirname(journalFile), `memory-log-2026-01-0${(index + 1) % 10}T00-00-00-000Z-0000000${index}.jsonl`);
+				await writeFile(archive, "archived\n");
+				await utimes(archive, archiveAge, archiveAge);
+			}
+			for (const day of ["11", "12", "13", "14", "15"]) {
+				const archive = path.join(path.dirname(journalFile), `memory-log-2026-01-${day}T00-00-00-000Z-000000${day}.jsonl`);
+				await writeFile(archive, "young\n");
+			}
+			await utimes(journalMemory, aged, aged);
+			await recordMemoryDocument(journalTmp, "# Project Memory\n\n## Project\n- after rotation.\n");
+			const rotated = await readMemoryJournal(journalFile);
+			const archives = (await readdir(path.dirname(journalFile))).filter((name) => name.startsWith("memory-log-"));
+			check("rotation collapses the journal into one replacement", rotated.entries.length === 1 && rotated.entries[0].text.includes("- after rotation.") && (await stat(journalFile)).size < 10_000);
+			check(`rotation archives the old bytes, prunes aged excess and keeps young ones (have ${archives.length})`, archives.length === 6
+				&& ["01", "02", "03", "04", "05", "06", "07"].every((day) => !archives.some((name) => name.includes(`-2026-01-${day}T`)))
+				&& ["11", "15"].every((day) => archives.some((name) => name.includes(`-2026-01-${day}T`))));
+			check("the rotated render still matches the journal", foldMemoryJournal(rotated.entries) === await readFile(journalMemory, "utf8"));
+		} finally {
+			await rm(journalTmp, { recursive: true, force: true });
 		}
 	}
 

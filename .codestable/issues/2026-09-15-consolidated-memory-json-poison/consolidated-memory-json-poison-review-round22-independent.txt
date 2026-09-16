@@ -1,0 +1,72 @@
+# Round-22 独立复审报告
+
+审查范围：`git diff HEAD`（`6818935`）的 4 个文件（`project-state.ts` +163/-4，`consolidate.ts` +8/-5，`README.md` +9/-4，`tests/consolidation-test.mjs` +75/-1）；工作区只读，全部探针写在 `/tmp/probe22*.mjs`。工作区 `git status` 与初始一致。
+
+## 核验证据（独立复跑）
+
+| 项目 | 结果 |
+|---|---|
+| `node tests/run-all.mjs` | **8/8 passed**（含新增 journal 用例） |
+| `/tmp/verify-lock13.mjs` | `rounds=400 overlapping=0 leaked=0` |
+| `/tmp/verify-budget11.mjs` | `cases=60000 invariantFail=0 zeroed=0 floorFail=0 wasteFail=0`，clipText 违约 0 |
+| 折叠语义 | replace 覆盖 / append 追加 / append 在 replace 前被丢弃 / 空 text 跳过；`normalize` 幂等；全空 ⇒ `""` 全 PASS |
+| 损坏行 | 半行 + 非 JSON + 合法 JSON 但 op/text 类型错，共 4 坏行 → `damaged=4`，2 条好记录保留；全坏 journal ⇒ `unreadable=true, text=""`，**不**回退渲染 PASS |
+| 外部编辑 | 渲染 mtime 晚于 journal 且为污染信封 ⇒ 解码后采信（`poisoned=true`）；等于 ⇒ journal 胜；崩溃窗（只 append 未渲染）⇒ journal 胜 PASS |
+| adoption | 手改渲染 + 下一次写 ⇒ journal 历史含该字节、末条为本次结果、渲染=本次结果 PASS |
+| 迁移 | 无 journal + 旧 `MEMORY.md` 为污染信封 ⇒ journal 基线已解码，全文无 `memory_markdown` 原始信封 PASS |
+| OMP 导入 | 真实 `migrateProjectState` + `HOME` 隔离：`importedMemory=true`，journal 无信封，`loadMemory` 可读 PASS |
+| 轮换 | 600KB → 折叠后 104B；归档名 `memory-log-<ISO>.jsonl` 且含旧字节；7 个 2h 旧档 + 新档 → 恰留 5（01–03 删除、07 保留）；折叠后渲染 === fold PASS |
+| rename 失败 | 用固定 Date + 预建同名目录强制 `rename` 失败：不抛错、journal 字节只增不减、渲染照写、障碍移除后下次轮换正常 PASS |
+| `.gitignore` | 首写自动生成并含 `memory.jsonl`、`memory-log-*.jsonl` PASS |
+
+## blocking
+
+无。
+
+## important
+
+1. **「渲染 mtime > journal ⇒ 外部编辑」这个判别器在自家写入后恒为真，journal 实际不是读取权威**（`project-state.ts:995` 先渲染？——实为 992 追加后 995 渲染；`loadMemory:1016`、`recordMemoryDocument:987` 两处都只比 mtime）。
+   正常一次 `recordMemoryDocument` 后探针实测：render mtime `…296.88` > journal `…293.85`，于是 `loadMemory` 返回 `source=MEMORY.md`，走的是「外部编辑」分支，而不是折叠分支。后果：
+   - 每次成功写入后的下一次读取都把自家渲染当外部编辑；下一次写入再把它作为重复 `replace` 收进 journal。实测 fresh 项目第二次写入后 `entries=3`，内容为 `[- one., - one., - two.]`，即每条写入多一条重复历史，journal 体积翻倍、轮换更频繁；
+   - README（`README.md:69`）与设计文档的「读取以 journal 折叠为准 / mtime 晚于 journal ⇒ 只能是手改或旧版本」在真实运行中不成立；新增测试之所以断言 `source === journalFile`，是因为用例先 `utimes(journalMemory, aged, aged)` 把渲染人为改旧（`consolidation-test.mjs:377`），并未覆盖真实时序；
+   - 内容本身不丢（自家渲染 == fold，且 adoption 可自愈），因此不阻塞，但「唯一权威」名不副实，且 external-edit 分支失去判别力（无法区分真手改与自家渲染）。
+   建议：判定改为「渲染内容（经 `decodePoisonedMemory` 归一）与 `foldMemoryJournal` 不同 ⇒ 外部编辑」，mtime 仅作快速预筛；或在 `recordMemoryDocument` 里仅在内容不同时 adoption。这样既保留真手改采信，又消除重复记录。
+
+2. **半行（无换行结尾）会吞掉紧随其后的第一条合法 append**（`appendMemoryOp:863` 直接用 `open(...,"a")` 追加，不保证换行边界）。
+   探针：journal 末尾为 `{\"op\":\"replace\",\"te`（无 `\n`），再 `appendMemoryOp` 一条合法记录后，`readMemoryJournal` 返回 `damaged=1`，**新记录不在 `entries` 里**——坏行与好行被拼成同一行 JSON，`damaged` 计数也少算一条。触发条件是崩溃/ENOSPC 留下半行（测试已承认「半行」存在，但只验证了「跳过」，没验证「后续 append 不受污染」）。在扩展自身路径里最终能被「渲染较新」兜住，但 journal 作为权威在这一窗口丢了一条合法记录。
+   建议：`appendMemoryOp` 写前检查文件尾字节，非 `\n` 则先补 `\n`（调用方持锁，无并发问题）。
+
+## nit
+
+1. `rotateMemoryJournalIfNeeded:914` 先 `rename` 归档、再 `writeAtomic` 写回折叠结果。若 `rename` 成功后 `writeAtomic` 失败（ENOSPC/权限），journal 路径直接消失，`recordMemoryDocument` 抛出，旧字节只留在归档里；下次 `loadMemory` 静默走 legacy 渲染路径。建议先写折叠临时文件、再换入，降低「归档成功但重建失败」窗口（见 residual-risk 1）。
+2. 两张同名归档的碰撞窗口：连续两次轮换落在同一毫秒会让 `rename` 覆盖前一个归档（POSIX file-over-file）。实际几乎不可达，但可加 `O_EXCL` 风格的存在性检查。
+3. 渲染被清空（空文件且 mtime 更新）时 `loadMemory:1017-1021` 与 `recordMemoryDocument:988` 都因 `if (external)`/`if (decoded)` 落到 journal，等于「清空 MEMORY.md 无法清空记忆」。这可能是刻意的 fail-safe，但与「渲染较新就采信」字面不一致，建议注释说明。
+4. `consolidation-test.mjs:401` 的 `2026-01-0${index + 1 % 10}` 因优先级实为 `index + (1 % 10)`，7 次迭代恰好是 01–07，结果正确但意图易误读；另外「一小时内不删」只被动的由新归档自身覆盖，没有独立的「超过 5 份但年轻 ⇒ 保留」断言（备份侧具备同类测试）。
+
+## suggestion
+
+- 补一条断言：`recordMemoryDocument` 之后**不做任何 utimes**，`loadMemory().source === journalFile` 且 journal 无重复 adoption——当前实现会失败，正好把 important-1 钉进 CI。
+- 补一条 torn-line 续写断言（append 后新记录可解析）。
+- 可选：渲染与 journal 折叠一致时跳过 adoption，journal 体积立即减半，也让「轮换保留 5 份」的实际时间跨度翻倍。
+- `damaged` 目前只在整理时写一次 `errors.log`；可在 `/memory` 提示里附带 journal 路径（现仅提示 `memory.source`，损坏场景下 source 就是 journal，已够用）。
+
+## learning
+
+- 用「派生文件是否比源文件新」判断外部编辑，只有在**先写派生、后写源**时才成立；一旦顺序反过来（先追加权威、后渲染），判别器在所有正常写入后恒为真，退化成「总是采信派生」。可靠做法是内容比较（或记录内容哈希），mtime 只能当预筛。
+- append-only 日志在任何「跳过损坏行」的宽容策略下，都必须先保证行边界（补换行/截断半行），否则一条半行会把下一条合法记录一起污染，损坏从「跳过一行」升级为「连续吞行」。
+
+## praise
+
+- 折叠语义干净：replace 覆盖、append 追加、先 append 后 replace 会被覆盖、空 text 跳过、`normalize` 幂等；迁移与 adoption 都会解码污染信封，journal 内实测无原始 `memory_markdown`。
+- fail-closed 做得完整：journal 全坏 ⇒ `unreadable`，不回退旧渲染；journal 权限/目录异常 ⇒ 读取 unreadable、写入抛错；`migrateProjectState` 的 OMP 导入已统一走 `recordMemoryDocument` 并受锁与 journal 存在性双重检查。
+- 轮换的 rename-失败分支确实保住历史（定向探针验证字节只增不减），归档名正则收得很紧、只删本扩展生成的文件，年龄保护 + 5 份上限均符合 README。
+- 三条既有回归线（锁病理矩阵 400 轮 0 重叠/0 泄漏、解码安全、预算 6 万例 0 违约）与 run-all 8/8 均未退化；README 的结构图、`.gitignore`、失败与恢复三处描述与实现基本同步。
+
+## residual-risk
+
+1. **轮换的「rename 成功、重建失败」窗口**：journal 路径暂时不存在，活跃权威退化为归档 + 旧渲染，直到下一次写入 adoption 才恢复；一次整理的记忆可能仅存于归档。概率低（需 ENOSPC/权限在窗口内变化），无测试覆盖。
+2. **轮换与追加并发**（设计已接受）：另一次 append 落在被 rename 走的 inode 上，记录留在归档、不在折叠视图；两进程恰在轮换窗口才会触发。
+3. **mtime 粒度/时钟**：粗粒度文件系统（NFS/FAT）或系统时间回拨下，「等于 ⇒ journal 胜」会把秒内手改吞掉；若 important-1 改为内容比较可一并消除。
+4. 无 `fsync`：append 与渲染均为 page-cache 语义，断电时 journal 可能落后于渲染（此时按现有比较会采信渲染，内容仍是本次结果，属可接受）。
+
+VERDICT: CHANGES-REQUESTED

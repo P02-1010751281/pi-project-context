@@ -67,6 +67,11 @@ export function memoryFile(projectRoot: string): string {
 	return path.join(memoryDir(projectRoot), "MEMORY.md");
 }
 
+/** Append-only source of truth for the consolidated memory; `MEMORY.md` is its derived render. */
+export function memoryJournalFile(projectRoot: string): string {
+	return path.join(memoryDir(projectRoot), "memory.jsonl");
+}
+
 export function contextFile(projectRoot: string): string {
 	return path.join(memoryDir(projectRoot), "CONTEXT.md");
 }
@@ -148,7 +153,7 @@ export function redactSecrets(text: string): string {
 
 /** Lines every project's memory dir ignores locally, written next to its first local artifact. */
 const MEMORY_GITIGNORE_HEADER = "# project-context: local artifacts, do not commit";
-const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "errors.log", "*.lock", "*.steal", "*.broken-*"];
+const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "errors.log", "*.lock", "*.steal", "*.broken-*", "memory.jsonl", "memory-log-*.jsonl", "memory.jsonl.*.tmp"];
 const gitignoreEnsured = new Set<string>();
 
 /** Keep backups and the error log out of the project's commits, once per process (best effort;
@@ -581,12 +586,14 @@ export async function migrateProjectState(projectRoot: string): Promise<Migratio
 			}
 			const raw = loaded.text.trim();
 			if (!raw) continue;
-			// Lock and re-check, so a concurrent writer's file is never replaced unbacked.
+			// Lock and re-check, so a concurrent writer's state is never replaced unbacked. The
+			// import enters through the journal, which is what readers trust once it exists.
 			await withMemoryLock(memoryFile(projectRoot), async () => {
 				if (await pathExists(memoryFile(projectRoot))) return;
+				if ((await readMemoryJournal(memoryJournalFile(projectRoot))).entries.length > 0) return;
 				const decoded = decodePoisonedMemory(raw);
 				const text = decoded ? decoded.trim() : raw;
-				await writeAtomic(memoryFile(projectRoot), text.endsWith("\n") ? text : `${text}\n`);
+				await recordMemoryDocument(projectRoot, text);
 				importedMemory = true;
 			});
 			break;
@@ -754,6 +761,11 @@ const MEMORY_BACKUP_MIN_AGE_MS = 60 * 60 * 1000;
 /** Hard ceiling on backups, so a sustained burst cannot grow the directory without bound. */
 const MEMORY_BACKUPS_MAX = Math.max(MEMORY_BACKUPS_KEPT, 20);
 
+/** Collapse the journal once it grows past this; the previous file is archived, never deleted. */
+const MEMORY_JOURNAL_ROTATE_BYTES = 512 * 1024;
+/** Archived journals kept as evidence; the same age floor as backups protects the newest. */
+const MEMORY_JOURNAL_ARCHIVES_KEPT = 5;
+
 /** Escape a literal string for use inside a RegExp. */
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -826,7 +838,7 @@ export function normalizeMemoryDocument(value: string): string {
 	return `# Project Memory\n\n${body}`.slice(0, MAX_MEMORY_CHARS).trimEnd() + "\n";
 }
 
-export type LoadedMemory = { text: string; source: string; poisoned: boolean; unreadable?: boolean };
+export type LoadedMemory = { text: string; source: string; poisoned: boolean; unreadable?: boolean; damaged?: number };
 
 /** Read one memory source, distinguishing "absent" from "exists but unreadable". */
 async function readMemorySource(file: string): Promise<{ text: string; unreadable: boolean }> {
@@ -844,8 +856,227 @@ function legacyMemory(text: string, source: string): LoadedMemory {
 	return { text: text.slice(0, MAX_MEMORY_CHARS), source, poisoned: false };
 }
 
+/** One journal record: a whole-document replacement or an appended fragment. */
+export type MemoryJournalEntry = { op: "replace" | "append"; text: string };
+
+/** Comparison key for "does this render still equal what the journal folds to?" — both normalized. */
+function memoryComparisonKey(render: string): string {
+	return normalizeMemoryDocument(decodePoisonedMemory(render.trim()) ?? render);
+}
+
+/** Append one record with a single `write` call; the file is append-only by construction. */
+export async function appendMemoryOp(file: string, op: MemoryJournalEntry["op"], text: string): Promise<void> {
+	await mkdir(path.dirname(file), { recursive: true });
+	const entry = `${JSON.stringify({ ts: new Date().toISOString(), op, text })}\n`;
+	// A crash or a full disk can leave a torn last line; terminate it first, or the new record
+	// would be glued onto it and parsed as damage instead of being recorded.
+	let torn = false;
+	try {
+		const info = await stat(file);
+		if (info.size > 0) {
+			const reader = await open(file, "r");
+			try {
+				const tail = Buffer.alloc(1);
+				await reader.read(tail, 0, 1, info.size - 1);
+				torn = tail[0] !== 0x0a;
+			} finally {
+				await reader.close();
+			}
+		}
+	} catch {
+		// No file yet (or it vanished): there is no torn tail to repair.
+	}
+	const handle = await open(file, "a", 0o600);
+	try {
+		await handle.write(torn ? `\n${entry}` : entry);
+	} finally {
+		await handle.close();
+	}
+}
+
+/** Read the journal in file order, tolerating a torn or hand-edited line without losing the rest. */
+export async function readMemoryJournal(file: string): Promise<{ entries: MemoryJournalEntry[]; damaged: number; unreadable: boolean }> {
+	let raw: string;
+	try {
+		raw = await readFile(file, "utf8");
+	} catch (error) {
+		if ((error as { code?: string }).code === "ENOENT") return { entries: [], damaged: 0, unreadable: false };
+		return { entries: [], damaged: 0, unreadable: true };
+	}
+	const entries: MemoryJournalEntry[] = [];
+	let damaged = 0;
+	for (const line of raw.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const parsed = JSON.parse(trimmed) as { op?: unknown; text?: unknown };
+			if ((parsed.op === "replace" || parsed.op === "append") && typeof parsed.text === "string") {
+				entries.push({ op: parsed.op, text: parsed.text });
+			} else {
+				damaged += 1;
+			}
+		} catch {
+			damaged += 1; // A partially written last line from a crash is skipped, not fatal.
+		}
+	}
+	return { entries, damaged, unreadable: false };
+}
+
+/** Apply journal records in order: a replacement supersedes the document, an append extends it. */
+export function foldMemoryJournal(entries: readonly MemoryJournalEntry[]): string {
+	let document = "";
+	for (const entry of entries) {
+		const text = entry.text.trim();
+		if (!text) continue;
+		document = entry.op === "replace" ? text : document ? `${document}\n\n${text}` : text;
+	}
+	return document ? normalizeMemoryDocument(document) : "";
+}
+
+/** Collapse an oversized journal into one replacement, archiving the previous bytes first. */
+async function rotateMemoryJournalIfNeeded(projectRoot: string): Promise<void> {
+	const file = memoryJournalFile(projectRoot);
+	let size: number;
+	try {
+		size = (await stat(file)).size;
+	} catch {
+		return;
+	}
+	if (size <= MEMORY_JOURNAL_ROTATE_BYTES) return;
+	const state = await readMemoryJournal(file);
+	if (state.unreadable || state.entries.length === 0) return;
+	const folded = foldMemoryJournal(state.entries);
+	if (!folded) return;
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const archive = path.join(memoryDir(projectRoot), `memory-log-${stamp}-${randomUUID().slice(0, 8)}.jsonl`);
+	// The `.tmp` suffix keeps an orphaned rotation file inside the reclamation rules (the name
+	// matches `cleanStaleTemps` and the memory-dir gitignore).
+	const collapsed = path.join(memoryDir(projectRoot), `memory.jsonl.${Date.now()}.${randomUUID()}.tmp`);
+	const record = `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: folded })}\n`;
+	try {
+		// Prepare the replacement first: a failure here leaves the journal exactly as it was.
+		await writeAtomic(collapsed, record);
+	} catch {
+		return;
+	}
+	try {
+		await rename(file, archive);
+	} catch {
+		await rm(collapsed, { force: true }).catch(() => undefined);
+		return;
+	}
+	try {
+		await rename(collapsed, file);
+	} catch {
+		// Put the original back rather than leaving the journal path empty.
+		await rename(archive, file).catch(() => undefined);
+		await rm(collapsed, { force: true }).catch(() => undefined);
+		return;
+	}
+	await pruneMemoryJournalArchives(projectRoot);
+}
+
+/** Keep the newest archived journals; anything younger than an hour is never pruned. */
+async function pruneMemoryJournalArchives(projectRoot: string): Promise<void> {
+	const generated = /^memory-log-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.jsonl$/;
+	try {
+		const directory = memoryDir(projectRoot);
+		const candidates: Array<{ name: string; mtime: number }> = [];
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (!entry.isFile() || !generated.test(entry.name)) continue;
+			try {
+				candidates.push({ name: entry.name, mtime: (await stat(path.join(directory, entry.name))).mtimeMs });
+			} catch {
+				// An unreadable archive must never be deleted on a guess.
+			}
+		}
+		candidates.sort((left, right) => (right.mtime - left.mtime) || right.name.localeCompare(left.name));
+		const pruneBefore = Date.now() - MEMORY_BACKUP_MIN_AGE_MS;
+		for (const stale of candidates.slice(MEMORY_JOURNAL_ARCHIVES_KEPT)) {
+			if (stale.mtime > pruneBefore) continue;
+			try {
+				await rm(path.join(directory, stale.name), { force: true });
+			} catch {
+				// One unremovable archive must not stop the others.
+			}
+		}
+	} catch {
+		// Pruning is best effort; an extra archive is harmless.
+	}
+}
+
+/**
+ * Record one consolidated document: keep a pre-journal project's current memory as the journal's
+ * base, append the new replacement, collapse the journal when it grew too large and render
+ * `MEMORY.md`. Callers hold the memory lock and have already backed up the current render.
+ */
+export async function recordMemoryDocument(projectRoot: string, text: string): Promise<void> {
+	const file = memoryJournalFile(projectRoot);
+	const base = await readMemoryJournal(file);
+	if (base.unreadable) throw new Error(`memory journal exists but cannot be read: ${file}`);
+	if (base.entries.length === 0) {
+		// First journal write for this project: start history from the memory it has today. The
+		// legacy read path also decodes a stored reply, so the journal never stores raw JSON.
+		const existing = await loadMemory(projectRoot);
+		if (existing.unreadable) throw new Error(`memory exists but cannot be read: ${existing.source}`);
+		if (existing.text.trim()) await appendMemoryOp(file, "replace", normalizeMemoryDocument(existing.text));
+	} else {
+		// Adopt an external edit (hand edit or an older build) before appending this pass: its bytes
+		// enter the journal's history instead of being silently overwritten. A render that merely
+		// equals the fold is our own output, and one that is older and differs is a torn write
+		// window (journal already ahead), so neither is adopted.
+		const foldedView = foldMemoryJournal(base.entries);
+		const renderRaw = await readOptional(memoryFile(projectRoot));
+		if (renderRaw.trim()) {
+			const external = memoryComparisonKey(renderRaw);
+			const renderInfo = await stat(memoryFile(projectRoot)).catch(() => undefined);
+			const journalInfo = await stat(file).catch(() => undefined);
+			if (external && external !== foldedView && renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
+				await appendMemoryOp(file, "replace", external);
+				// Keep a trace of which pass folded in an edit that was made outside the extension.
+				await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
+			}
+		}
+	}
+	await appendMemoryOp(file, "replace", normalizeMemoryDocument(text));
+	await rotateMemoryJournalIfNeeded(projectRoot);
+	await ensureMemoryGitignore(memoryDir(projectRoot));
+	await writeAtomic(memoryFile(projectRoot), normalizeMemoryDocument(text));
+}
+
 export async function loadMemory(projectRoot: string): Promise<LoadedMemory> {
 	const target = memoryFile(projectRoot);
+	// The journal is the source of truth once it exists; `MEMORY.md` below is the old layout and
+	// stays readable for projects that never wrote a journal.
+	const journal = memoryJournalFile(projectRoot);
+	const journalState = await readMemoryJournal(journal);
+	if (journalState.unreadable) return { text: "", source: journal, poisoned: false, unreadable: true };
+	// Content that yields no usable record means the journal cannot be reconstructed; report it
+	// instead of silently showing a render that the journal has already superseded.
+	if (journalState.entries.length === 0 && journalState.damaged > 0) return { text: "", source: journal, poisoned: false, unreadable: true };
+	if (journalState.entries.length > 0) {
+		const folded = foldMemoryJournal(journalState.entries);
+		if (!folded) return { text: "", source: journal, poisoned: false, unreadable: true };
+		// Our own writes append to the journal and render afterwards, so a newer render proves
+		// nothing by itself. The render only wins when its content differs from the fold *and* it is
+		// newer than the journal: that is an external edit (a hand edit or an older build), and
+		// `recordMemoryDocument` adopts those bytes into the journal on the next write.
+		const view = folded;
+		const renderRaw = await readOptional(target);
+		if (renderRaw.trim()) {
+			// Both sides are compared in normalized form: `foldMemoryJournal` returns a normalized
+			// document, so a raw trimmed render would never compare equal and the mtime would
+			// silently become the only rule (adopting our own output as if it were an edit).
+			const external = memoryComparisonKey(renderRaw);
+			const renderInfo = await stat(target).catch(() => undefined);
+			const journalInfo = await stat(journal).catch(() => undefined);
+			// An empty key means the render was cleared by hand; the journal stays authoritative.
+			if (external && external !== view && renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
+				return { text: external, source: target, poisoned: Boolean(decodePoisonedMemory(renderRaw.trim())), damaged: journalState.damaged };
+			}
+		}
+		return { text: view, source: journal, poisoned: false, damaged: journalState.damaged };
+	}
 	let raw = "";
 	try {
 		raw = await readFile(target, "utf8");

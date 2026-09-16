@@ -1,0 +1,72 @@
+# Round 23 独立复审报告
+
+沙箱只读，探针写 `/tmp`。核验方式：`git diff HEAD` + jiti 加载真实模块探针 + 官方测试 + 既有 lock/budget 探针。
+
+## BLOCKING
+
+**B23-1｜IMP-R22-1 实际未修复：内容相等判定恒为假，判别器仍等价于"只看 mtime"**
+
+`extensions/project-context/project-state.ts:1021-1027`（写路径）与 `:1055-1063`（读路径）：
+
+- `foldedView` / `view` 是 `foldMemoryJournal(...)` 的输出，经 `normalizeMemoryDocument` **必带结尾 `\n`**；
+- `renderText` 是文件内容 `.trim()` 后的串，**无结尾 `\n`**；`external` 同样被 `.trim()`。
+
+因此 `renderText !== foldedView`、`external !== view` 在内容完全一致时也**恒真**，"内容相等即不采信"的短路分支永远不可达，真正的开关只剩 `renderInfo.mtimeMs > journalInfo.mtimeMs` —— 正是 round-22 要求消除的 mtime 判别器。
+
+确定性探针（`/tmp/probe23b.mjs`，内容与折叠完全一致，仅把渲染 mtime 调新）：
+
+```
+equal content, newer render -> source: MEMORY.md        # 应为 memory.jsonl
+entries after 2 writes: 3 ["first","first","second"]     # 期望 2 条；出现自家渲染被 adoption
+6 sequential writes: entries = 7 … ["step-0","step-0","step-1"…]
+loadMemory sources: {"MEMORY.md":1,"memory.jsonl":5}     # 正常写入后 source 不应是 MEMORY.md
+```
+
+`/tmp/probe23.mjs` 亦复现（3 次写入 → 4 条，多出重复 `replace`）。是否触发取决于 journal append 与 render write 是否落在同一 mtime tick，故为间歇性：真机上只要两操作跨 tick（慢盘/锁竞争/轮换）就必然自 adoption。
+
+后果：验证项 1 不成立（条目非"每次 1 条新替代 + 首次基线"、`loadMemory` source 可为 MEMORY.md）；journal 重复历史、写入量约 2×、轮换更频繁。无数据丢失，但本轮定向修复目标未达成。
+
+**建议修法**：两侧统一归一后比较，例如 `renderText !== foldedView.trim()`、`external !== view.trim()`（或统一 `normalizeMemoryDocument(decoded)` 后比较）；`external !== view` 与 `renderText !== foldedView` 可合并为一个判别函数，避免两处再次漂移。
+**建议补测**：命中即本轮漏测——`tests/consolidation-test.mjs:374` 在断言 "source of truth" 前先 `utimes(aged)` 把渲染调老，恰好绕开了该 bug；需新增「渲染内容与折叠一致 + mtime 更新 ⇒ 不得 adoption、source 仍为 journal」与「连续两次 `recordMemoryDocument` 条目线性」。
+
+## IMPORTANT
+
+**I23-1｜回归覆盖缺口与本缺陷同源**：新测试外部编辑场景只覆盖"内容不同 + mtime 新"（:394-404），没有"内容相同 + mtime 新"的负例；`source of truth` 断言依赖人为 aging。修复 B23-1 时两者必须一起补，否则无法防回归。
+
+## NIT
+
+- README「渲染文件 mtime 晚于 journal 时视为外部编辑」与 design doc:24 仍描述 mtime 单一规则，未写"内容相等不采信"；恰恰与当前行为一致而与修复意图不一致。修 B23-1 后需同步文档措辞（并注明轮换判别仍靠 mtime）。
+- design doc:28 写归档名 `memory-log-<stamp>.jsonl`，实现为 `memory-log-<stamp>-<8hex>.jsonl`（README 用通配符，无误）。文档可补后缀说明。
+- `project-state.ts:1055` 的 `folded.slice(0, MAX_MEMORY_CHARS)` 冗余（`foldMemoryJournal` 已经 `normalizeMemoryDocument` cap）。
+
+## 已验证通过（真实探针）
+
+- **半行修复**：尾部撕裂行后追加新记录，`damaged=1`、新记录独立成行可读、`damaged` 经 `loadMemory` 传播（`/tmp/probe23.mjs` D）。
+- **真外部编辑 / 污染**：手改（内容不同 + mtime 新）被采信且下一次写入作为 `replace` 收进历史；污染 JSON 解码采信（`poisoned=true`），adoption 后 journal 内无原始 JSON（probe C/E）。
+- **崩溃窗口**：journal 在前、渲染旧且不同 ⇒ journal 胜（probe B）。
+- **轮换**：折叠为 1 条、渲染与 fold 逐字节一致、新归档保留旧 journal 字节、7 个老化归档按 mtime 剪除、5 个年轻归档受保护（archives=6）；`writeAtomic(collapsed)` 失败路径（目录只读注入）journal 不丢、内容不变、渲染仍写（probe E/F）。
+- **回归**：`node tests/run-all.mjs` 8/8；`/tmp/verify-lock13.mjs` 400 轮 `overlapping=0 leaked=0`；`/tmp/verify-budget11.mjs` 60000 例 `invariantFail=0 zeroed=0 floorFail=0 wasteFail=0`。
+- `migrateProjectState` 的 journal 再检查、`.gitignore` 新增行、`/memory`/errors.log 的 damaged 提示与实现一致。
+
+## SUGGESTION
+
+- 把"外部编辑判别"提取为 `externalRenderVsFold(render, folded)` 单一函数，读/写两路径共用，杜绝 trim/cap 口径再次分叉。
+- 轮换第 2/3 步 rename 失败注入：jiti 下 `fs.promises.rename` 打桩不生效（探针实测 `renameCalls=0`），可将 rename 作为可注入依赖（模块级 `const fsOps`）或在测试中直接测 `rotateMemoryJournalIfNeeded` 导出版本，兑现"失败路径不丢 journal"的单测。
+
+## LEARNING
+
+- 归一化产物与磁盘原文比较时，必须两侧同口径 trim/normalize；只 trim 一侧会让"相等"分支成为死代码，测试若靠 `utimes` 制造分支更会掩盖它。
+- 当验收标准含"内容相等即不采信"时，负例（相等 + mtime 更新）应与正例同等优先。
+
+## PRAISE
+
+- 追加先于渲染、读以 journal 为准的崩溃一致性方向正确；半行补 `\n` 与 damaged 计数、轮换"临时折叠 → 归档 → 替换 + 回滚"编排、归档随机会后缀都经探针验证有效。
+- 轮换归档的年轻保护与容量上限逻辑正确，`fold === render` 的最终一致性有实测证据。
+
+## RESIDUAL-RISK
+
+- **mtime 粒度**：修好内容比较后，真外部编辑若与 journal 追加落在同一 tick（粗粒度文件系统甚至可差 1s），仍会被 journal 覆盖；属设计既有残余，建议文档明示。
+- **轮换回滚极限窗口**：若 `rename(archive, file)` 回滚也失败（代码 `.catch(() => undefined)`），journal 路径短暂缺失，归档字节仍在、旧历史不再参与折叠；下一次写入会以渲染为新基线。概率极低，但当前无法用单测证明。
+- 轮换窗口并发追加落归档 inode 的残余（design 已接受，未变）。
+
+VERDICT: CHANGES-REQUESTED

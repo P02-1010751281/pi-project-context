@@ -195,4 +195,16 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
     tie-break 回归；round 21 判 **PASSED**（无 blocking/important）。唯一记录的残余是
     「最后复核 → rm」之间无法与内核原子化的悬挂窗（node:fs 不暴露 flock），触发需 >30 秒
     进程暂停 + 并发，影响仅瞬时互斥（写路径原子改名 + 每次覆盖前备份，不产生损坏）。
+  - owner 要求「统一一下」后的 **journal 化批次（round 22..24）**：`MEMORY.md` 从唯一副本改为派生渲染，
+    新增 `.agents/memory/memory.jsonl` 作为 append-only 唯一权威（`replace`/`append` 记录，单次 `write` 落一行）：
+    - 读取 `loadMemory`：journal 存在 ⇒ 按序折叠；不存在 ⇒ 旧路径（含污染解码），老项目零迁移。
+    - 外部编辑：归一后内容不同 **且** 渲染 mtime 晚于 journal 才采信（`memoryComparisonKey` 单点收口），
+      下一次写入把该字节作为一条 `replace` 收进历史并记 `errors.log`；自家渲染（内容相同）不再被误 adoption。
+    - 损坏容忍：坏行/半行跳过并计入 `LoadedMemory.damaged`（整理写 `errors.log`、`/memory` 提示）；
+      半行尾部在追加前补换行；整份 journal 无可用记录时 fail closed（`/memory` 给出重建指引）。
+    - 轮换：>512KB 锁内折成一条 `replace`，旧文件归档为 `memory-log-<stamp>-<8hex>.jsonl`（保留 5 份，
+      一小时内保护）；采用「临时文件 → 归档 → 替换 + 回滚」，任一步失败不让 journal 路径消失。
+    - OMP legacy 导入改走同一入口；`.gitignore` 覆盖 journal/归档/轮换临时文件。
+    独立性验证：round 22/23 的 findings（mtime 判别器恒真、半行吞并、normalization 口径分叉导致死代码）全部修复，
+    round 24 判 **PASSED**（无 blocking/important）。
 - 两个项目的存量数据不受影响（已修复的 UniField / Quantum_Matrix `MEMORY.md` 保持原样）。

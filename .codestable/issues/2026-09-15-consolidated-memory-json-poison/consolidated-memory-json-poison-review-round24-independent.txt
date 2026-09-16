@@ -1,0 +1,40 @@
+## Round 24 复审（HEAD 6818935 + 未提交改动）
+
+### 独立核验（真实模块，探针写 /tmp）
+- `/tmp/rev24-probe.mjs`：**28/28 PASS**（A1–A8 负例、B1–B8 正例、C1–C2 崩溃窗口、D1–D2 半行、E1–E8 轮换/归档/失败/年轻保护/gitignore）。
+- `/tmp/rev24-edge.mjs`：空 journal（0 字节）正确回退读渲染；首次写入基线+新记录=2 条；损坏-only journal 行为见 residual。
+- 回归：`node tests/run-all.mjs` **8/8 passed**；`/tmp/verify-lock13.mjs` rounds=400 leaked=0；`/tmp/verify-budget11.mjs` invariantFail=0 worstWaste=156.2。工作区未改动。
+
+### 关键结论（round-23 blocking 已消除）
+- 读/写两侧都经 `memoryComparisonKey`（decode → normalize）同口径比较：`loadMemory` 与 `recordMemoryDocument` 均以「归一后 ≠ 折叠结果」且「render mtime > journal mtime」为命中条件（project-state.ts:863, 1029, 1066）。
+- 探针实证：内容相同 + mtime 未来/相等/仅新 1ms/更旧 ⇒ `source === memory.jsonl`；连续 5 次写入严格 +5 条，自家渲染零 adoption、零重复 replace；崩溃窗口（journal 已追加、渲染旧且不同）journal 胜；polluted 渲染被解码后采信且 journal 内不含 `memory_markdown` 原始信封；空渲染不清空记忆；torn 行 damaged=1 且 appendMemoryOp 先补 `\n` 保新记录可读。
+- 轮换：>512KB 折叠为 1 条 replace、旧字节归档、render==fold；年轻归档（<1h）永不修剪，且我最初用 9 位后缀命名的文件**未被** prune——反向验证了「只删本扩展生成的确切名字」。E7 证实发布失败时 journal 已提交记录、渲染保持旧值，符合不变量 4。
+- `parseConsolidated` 的 `looksLikeJsonReply` 保证新写入不会把原始 JSON 回复塞进 journal，与「journal 永不存 raw JSON」一致（consolidate.ts:108-116）。
+
+### Findings
+
+**blocking**：无。
+
+**important**：无。
+
+**nit**
+1. 轮换临时名 `memory.jsonl.collapsed-<8hex>` 不被 `.gitignore`（只精确匹配 `memory.jsonl`）覆盖，也不匹配 `cleanStaleTemps` 的 `\.\d+…\.tmp$`。若恰在 `writeAtomic(collapsed)` 与 rename 之间崩溃，会留下含完整记忆的孤儿文件、可能被 `git add -A` 误提交，且不清理。建议复用 `.tmp` 后缀或把 `memory.jsonl.collapsed-*` 加入 gitignore/cleanStaleTemps。
+2. README 目录树里 `.gitignore` 行仍写「忽略备份、errors.log、锁文件」，未同步 journal/归档（下方 bullet 已同步，仅树内注释陈旧）。
+
+**suggestion**
+1. 为 `damaged-only` journal（entries=0 且 damaged>0）设计一次性自愈：写路径可把损坏文件归档后以渲染/备份为基线重建，或至少在 `/memory` 提示中给出「删除 memory.jsonl」的具体命令，避免永久卡死。
+2. 可在 `recordMemoryDocument` 采用时记录 adopted 来源到 `errors.log`，便于诊断「哪次外部编辑被收编」。
+
+**learning**
+- 内容相等分支曾因「折叠带尾换行 vs 渲染 trim」成为死代码；本次把归一化提取为单一函数、两侧共用，是消除此类口径漂移的正确模式。
+- mtime 判据无法单独承担因果：写入顺序（先 journal 后渲染）保证自家渲染恒更新，必须叠加内容差异才能区分「外部编辑」与「自家输出」。
+
+**praise**
+- `memoryComparisonKey` 单点收口 + 注释直指 round-23 死代码成因，修复精准；负例测试直接断言 `source === journal` 与条目线性，锁死回归面。
+- 轮换的「先写 collapsed，任一步失败回滚/放弃」与损坏行「跳过计数 + fail closed」的取舍在文档、实现、测试三处一致。
+
+**residual-risk**
+- 仅损坏行的 journal（例如首次 append 即被截断）叠加完好的渲染时：`loadMemory` 返回 unreadable/空文本，写路径持续抛错，需人工删除 `memory.jsonl` 才能恢复；渲染内容不会被静默回退。设计文档已声明 fail closed，属已知取舍，但用户可见症状是「记忆为空 + 整理一直失败」。
+- 同一 mtime tick 外部编辑被 journal 覆盖、轮换并发追加落入归档 inode、mtime 型判别本身（编辑器保留 mtime/时钟回拨）仍为本设计已接受残余，文档已注明。
+
+VERDICT: PASSED
