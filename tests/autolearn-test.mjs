@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, makeCtx, makePi, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, makeCtx, makePi, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Autolearn tests against a temp project with synthetic archived sessions:
@@ -141,16 +141,15 @@ try {
 		automaticCalls += 1;
 		return { content: [{ type: "text", text: JSON.stringify({ skill: null, inspect: [] }) }] };
 	};
-	const settle = async () => {
+	const quietAfterSettle = async (timeoutMs = 150) => {
 		await runHandlers(pi, "agent_settled", ctx);
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		// The automatic pass is fire-and-forget: a negative probe needs a bound, not a fixed sleep.
+		return !(await waitUntil(() => automaticCalls > 0, timeoutMs));
 	};
-	await settle();
-	check("no automatic call without new material", automaticCalls === 0);
+	check("no automatic call without new material", await quietAfterSettle());
 	// New material alone is not enough: the interval (30 min) and the turn count (20) still hold.
 	await writeFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\n\nTouched.\n");
-	await settle();
-	check("new material alone does not skip the interval", automaticCalls === 0);
+	check("new material alone does not skip the interval", await quietAfterSettle());
 	const tuned = JSON.parse(await readFile(configFile, "utf8"));
 	check("dsh-compatible turn/interval defaults", tuned.autolearnTurns === 20 && tuned.autolearnIntervalMs === 1_800_000);
 } finally {

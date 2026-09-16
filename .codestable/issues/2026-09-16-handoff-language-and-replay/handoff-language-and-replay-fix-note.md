@@ -57,8 +57,11 @@ tags: [handoff, i18n, replay]
 - `node tests/run-all.mjs` → **9/9 通过**；`tests/handoff-test.mjs` 共 **79** 项断言（含自动触发冷却、
   标题映射，映射样本取自真机 English-heading 摘要；围栏内标题不改、en 变体映射均已覆盖）。
 - 稳定性：全套 ×16 与单个测试 ×60（含 4×CPU 负载）均通过；提交后曾出现一次未复现的 1/9 失败
- （未捕获到具体测试），因此把本轮新加的 20ms 定时窗口改为轮询式等待（`waitFor`）以消除脆弱点；
-  pre-existing 的 `consolidation-test.mjs` 10/20/30ms 等待未动，已记入 review 残余。
+ （未捕获到具体测试），因此把本轮新加的 20ms 定时窗口改为轮询式等待（`waitFor`）以消除脆弱点。
+
+> **10/20/30ms 等待已清理（2026-09-16）**：`consolidation-test.mjs` 的 4 处固定竞态窗口换成确定性嵌套竞争，
+> `switches-test.mjs`/`autolearn-test.mjs` 的同类 sleep 一并条件化；见
+> `.codestable/issues/2026-09-16-handoff-residuals/`。
 - 探针注意：验证 **settings 安装包**是否生效时**不能带 `-ne`（`--no-extensions`）**——它会整包禁用，
   只留显式 `-e`；本次曾因此误判「已装包未加载」，去掉 `-ne` 后真 TUI 立即验证通过。
 - 真机探针：pi 原始 compaction 提示词 + 中文语言指令 → 标题与正文全中文。
@@ -105,5 +108,8 @@ C2 实跑同时暴露一个 **pre-existing** 设计边界（非本次改动引�
 大部分上下文落在**同一轮**里（例如首轮就读入多个大文件、后续都是小轮次），`findCutPoint` 的切点会落在
 该轮内部，turn 对齐又把切点拉回该轮起点，于是 older 为空、没有可摘要的内容 —— 自动交棒会一直跳过。
 真机数据：源会话 54k token，其中单轮 4×12.8k toolResult，`handoffKeepTokens=2000` 时 older=0。
-先前是静默跳过；现在会 warn 一次（auto 路径 30s 冷却），用户能看到原因。真正的修复需要在轮内切分
-（需为孤儿 toolCall/toolResult 配对补齐，风险高），本 issue 不做。
+先前是静默跳过；现在会 warn 一次（auto 路径 30s 冷却），用户能看到原因。
+
+> **已修复（2026-09-16）**：轮内切分已落地 —— 切点不再回退到轮起点，被切掉的前缀进摘要，回放块由
+> `SPLIT_TURN_MARKER` 保持 user-first，孤儿 toolResult 按 `toolCallId` 剔除并折入摘要。
+> 见 `.codestable/issues/2026-09-16-handoff-residuals/`（report / analysis / fix-note / review，4 轮独立复审）。

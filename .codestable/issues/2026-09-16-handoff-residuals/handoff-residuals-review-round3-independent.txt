@@ -1,0 +1,60 @@
+All checks complete. Let me write the review.
+
+---
+
+# Lane A — 第 3 轮增量复审结论
+
+## 结论：**minor**（无 blocking / important）
+
+四项增量修复方向正确、闭合可达；N1、N4、flake 三项我实测确认有效。N3 的**修复本身是对的**（结构性合法、比回放孤儿 toolResult 好），但其**理由注释不成立**，存在一个可达的信息丢失反例。属净改善但不无损，建议改注释/记录，不阻塞。
+
+---
+
+## 发现
+
+### m1. N3 理由注释错误：孤儿 toolResult 的内容并非必然已进摘要（可达反例）
+- **位置**：`extensions/project-context/handoff.ts:355-357`（注释）/ `:360`（`while` 丢弃）；另见 `.codestable/issues/2026-09-16-handoff-residuals/handoff-residuals-analysis.md:35-37,67`
+- **问题**：注释断言「Leading orphan results are dropped … the prefix summary already carries their content」。这不成立。当 `branch_summary` 条目插在「带 toolCall 的 assistant」与其 toolResult 之间时（`sessionManager.branchWithSummary(assistantWithToolCallId, …)` 会产生该形状），`findCutPoint` 的切点可落在该 `branch_summary` 上，于是 **toolCall 在摘要前缀、toolResult 在 kept slice**。此时：
+  - `replayMessagesFor` 把 keptSlice 头部的孤儿 result 丢弃；
+  - 摘要输入（`olderMessages`）只含前缀里 toolCall 的 arguments，**不含 result 内容**；
+  ⇒ 结果内容既不在回放也不在摘要，被静默丢弃。分析文档「配对天然成立…其结果在其后一并保留」的前提（切点永不在 toolResult 上）只保证「切点不是 toolResult」，不能保证「result 必与前缀里的 call 同侧」。
+- **反例证据（真实 `findCutPoint` + `runHandoff` 端到端）**：
+  - `findCutPoint(entries, 0, len, 7)` 得 `firstKeptEntryIndex=2`（条目 `b1`），prefix=`[u1,a1]`，kept=`[b1,t1,a2]`；
+  - 端到端跑 `/auto-handoff now`，stub summarizer 收到 roles=`user,assistant`，`JSON.stringify` 中 **不含** `ORPHAN_RESULT_SECRET`；`captured.replay` roles=`user,assistant`，也不含该字符串。
+  - 对照：现有钉住用例 `pinEntries` 的切点 `firstKeptEntryIndex=3`（`p4`），toolResult `p3` 确实落在前缀里 → 那条 `check("the dropped tool output never enters the replay")` 在该场景下是对的，但只覆盖「result 在前缀」这一侧。
+- **变异验证（请求项 1）**：
+  - 去掉 `while (messages[0]?.role === "toolResult") messages.shift();` → `FAIL a filtered summary entry drops the orphan result and opens user-first` 与 `FAIL a slice holding only orphan results replays nothing`（红）。
+  - 构造「call 在 kept、result 也在 kept」（`[assistant+toolCall, toolResult]`）→ roles=`user,assistant,toolResult`，`PAIRED_RESULT` 保留，**未误丢**；`[user, toolResult, assistant+toolCall, toolResult]` 同样保留，说明 `while` 只吃头部、不过度丢弃。
+- **建议**：把注释改成承认这是**有损**取舍（该 result 既不入摘要也不入回放），或把孤儿 result 的文本并入摘要输入（例如把它归入 `olderMessages`）；至少不要声称「已进摘要」。R1 验收标准「被切掉的前缀进入摘要 / 配对不破」在此形状下应补充说明。
+
+### m2. N1 混合回合仍是概率性捕获（8/10），非确定性
+- **位置**：`tests/consolidation-test.mjs:727-731`、`:808-812`
+- **问题**：`withMemoryLock` 在到达 `tryLock` 前有多个 fs await（`mkdir`/`ensureMemoryGitignore`/`open`），follower 的异步前导可能晚于 holder 的让出窗口到达。用「`setTimeout(0)` 让出后强制进入」的旁路变异实测：**新混合回合捕获 8/10，旧 `setImmediate`-only 捕获 0/10**（改进确实有效），但仍有 2/10 逃逸。注释「must land inside this window」偏强。
+- **正确锁无误红**：未变异版本连跑 15 次 consolidation 全绿（0/15 假红）。
+- **建议**：如需确定性，可让 follower 先完成一次 `tryLock` 预热点或直接在 holder 内显式等待 follower 已进入 `tryLock` 竞争后再让出；否则把注释降级为「高概率覆盖」。
+
+### m3. `switches-test` 的 autolearn 负向探针被多重闸门过定（pre-existing，非本轮引入）
+- **位置**：`tests/switches-test.mjs:101`（`autolearn off: no scheduled pass`）
+- **问题**：该负断言同时被「开关 off」「`archived.size===0`」「`changed/due`」多道闸门保护。只变异 autolearn 开关（忽略它）时该探针 **仍绿**；只有把 `archived`/`changed`/`due` 一并旁路后才变红。也就是说它不能独立证明「开关生效」。
+- **非本轮回归**：增量未触及该逻辑；`stayedQuiet` 本身是有效的有界负断言（archive 变异 10/10 捕获）。
+- **建议**：给该 tmp 写入一个最小 archive，使探针真正依赖开关。
+
+---
+
+## 已验证清单（本轮实际执行）
+
+1. **N3 语义**
+   - 阅读 `findValidCutPoints`/`isCutPointMessage`/`isTurnStartMessage`/`sessionEntryToContextMessages`/`serializeConversation`：确认切点不在 toolResult、toolResult 内容经 `convertToLlm`+`serializeConversation` 以 `[Tool result]:` 进入摘要输入。
+   - 构造可达反例：`branchWithSummary(assistantWithToolCall)` 形状 → keep=7 时 `keptSlice=[branch_summary, toolResult, assistant]`。
+   - 端到端（真实 `runHandoff` + stub summarizer）：摘要输入与 replay 均不含孤儿 result 文本 → **证实信息丢失**（m1）。
+   - 变异去掉丢弃逻辑 → 两条新断言变红；构造配对切片 → 不误丢。
+2. **N1**
+   - `setTimeout(0)` 旁路变异：新测试 8/10 红，旧 `setImmediate`-only 0/10 红 → 增量有效但非确定（m2）。
+   - 正确锁：consolidation 连跑 15 次 0 假红；hard bypass（完全不锁）→ 新断言红，证明非空转。
+3. **flake**
+   - 24×CPU hog（load 峰 ~26）下：`switches-test` ×15、`autolearn-test` ×15 全绿；`run-all.mjs` ×5 全绿；`handoff-test` ×12 全绿。
+   - 负向探针变异：archive 关闭被忽略 → `no archive written while off` 重负载 10/10 红；autolearn 闸门全旁路 → `no automatic call without new material` / `new material alone does not skip the interval` 红。
+4. **空载** `run-all.mjs`：额外 3 次全绿（另加负载期 5 次），共 9/9。
+5. **其他**：单调时长（consolidation 7.0s、switches 1.5s，远低于 60s 超时）；`makeSessionManager.appendMessage`/`waitUntil` 异步谓词无死锁/泄漏；`__handoffStub` 在 finally 清理；沙箱仓库 `git status`/`git diff --stat` 与进入时一致，未改动。
+
+**未闭合项**：m1（注释/有损语义）建议修注释或补摘录；m2 若要求确定性需加强；m3 为测试质量备注。

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Feature-switch tests: every feature has an on/off switch in project-context.json,
@@ -15,15 +15,8 @@ function check(label, value) {
 	console.log(`${value ? "OK  " : "FAIL"} ${label}`);
 	if (!value) failures += 1;
 }
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(predicate, timeoutMs = 1000) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (await predicate()) return true;
-		await sleep(20);
-	}
-	return false;
-}
+/** Bounded negative probe: settle handlers are fire-and-forget, so "nothing happened" needs a bound. */
+const stayedQuiet = async (predicate, timeoutMs = 150) => !(await waitUntil(predicate, timeoutMs));
 const configPath = path.join(tmp, ".agents/memory/project-context.json");
 const readConfig = () => readFile(configPath, "utf8").then((raw) => JSON.parse(raw)).catch(() => undefined);
 
@@ -70,13 +63,15 @@ try {
 	check("off persisted", (await readConfig())?.archiveEnabled === false);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "turn_end", ctx);
-	await sleep(80);
 	const logDir = path.join(tmp, ".agents/memory/session-logs/sw-session");
-	check("no archive written while off", !(await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")));
+	check(
+		"no archive written while off",
+		await stayedQuiet(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).length > 0),
+	);
 
 	await command.handler("on archive", ctx);
 	await runHandlers(pi, "turn_end", ctx);
-	check("archive written after on", await waitFor(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).includes("turn 0")));
+	check("archive written after on", await waitUntil(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).includes("turn 0")));
 
 	console.log("\n=== memory switch ===");
 	await command.handler("off autolearn", ctx); // isolate the model-call checks below
@@ -89,19 +84,21 @@ try {
 	check("memory off injects nothing", skipped.every((result) => result === undefined));
 	const callsBefore = modelCalls;
 	await runHandlers(pi, "agent_settled", ctx);
-	await sleep(80);
-	check("memory off does not call the model", modelCalls === callsBefore);
+	check("memory off does not call the model", await stayedQuiet(() => modelCalls === callsBefore + 1));
 
 	await command.handler("on memory", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
-	check("memory on consolidates", await waitFor(() => modelCalls === callsBefore + 1));
-	check("MEMORY.md rewritten", (await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8")).includes("Switch test project updated."));
+	check("memory on consolidates", await waitUntil(() => modelCalls === callsBefore + 1));
+	// The write lands after the model call resolves: wait for the file, not for the counter.
+	check(
+		"MEMORY.md rewritten",
+		await waitUntil(async () => (await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8")).includes("Switch test project updated.")),
+	);
 
 	console.log("\n=== autolearn switch ===");
 	const beforeManual = modelCalls;
 	await runHandlers(pi, "agent_settled", ctx);
-	await sleep(80);
-	check("autolearn off: no scheduled pass", modelCalls === beforeManual);
+	check("autolearn off: no scheduled pass", await stayedQuiet(() => modelCalls === beforeManual + 1));
 	await pi.commands.get("autolearn").handler("", ctx);
 	check("manual /autolearn still runs", modelCalls === beforeManual + 1);
 
@@ -111,13 +108,12 @@ try {
 	await command.handler("off handoff", ctx);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
-	await sleep(50);
-	check("off: no handoff triggered", pi.sentMessages.length === 0);
+	check("off: no handoff triggered", await stayedQuiet(() => pi.sentMessages.length > 0));
 
 	await command.handler("on handoff", ctx);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
-	check("on: handoff trigger sent", await waitFor(() => pi.sentMessages.length === 1));
+	check("on: handoff trigger sent", await waitUntil(() => pi.sentMessages.length === 1));
 	check("trigger is the force-auto command", pi.sentMessages[0] === "/auto-handoff force-auto");
 
 	console.log("\n=== --no-project-context (one run) ===");
@@ -127,8 +123,12 @@ try {
 	await runHandlers(pi2, "session_start", ctx2);
 	check("disabled notice shown", String(ctx2.notifications.at(-1)?.[0] ?? "").includes("--no-project-context"));
 	await runHandlers(pi2, "turn_end", ctx2);
-	await sleep(80);
-	check("no archive written", !(await readFile(path.join(tmp, ".agents/memory/session-logs/sw-disabled/session.jsonl"), "utf8").catch(() => "")));
+	check(
+		"no archive written",
+		await stayedQuiet(async () =>
+			(await readFile(path.join(tmp, ".agents/memory/session-logs/sw-disabled/session.jsonl"), "utf8").catch(() => "")).length > 0,
+		),
+	);
 	const disabledInject = await runHandlers(pi2, "before_agent_start", ctx2, { systemPrompt: "base" });
 	check("no injection", disabledInject.every((result) => result === undefined));
 

@@ -42,19 +42,30 @@ const alias = {
 const loaderUrl = `${PI}/dist/core/extensions/loader.js`;
 
 let jitiModule;
-async function loadJiti() {
+async function loadJiti(aliases) {
 	if (!jitiModule) jitiModule = await import(`${PI}/node_modules/jiti/lib/jiti-static.mjs`);
-	return jitiModule.createJiti(loaderUrl, { moduleCache: false, alias });
+	return jitiModule.createJiti(loaderUrl, { moduleCache: false, alias: aliases ? { ...alias, ...aliases } : alias });
 }
 
-export async function loadDefault(file) {
-	const jiti = await loadJiti();
+export async function loadDefault(file, aliases) {
+	const jiti = await loadJiti(aliases);
 	return jiti.import(file, { default: true });
 }
 
-export async function loadNamespace(file) {
-	const jiti = await loadJiti();
+export async function loadNamespace(file, aliases) {
+	const jiti = await loadJiti(aliases);
 	return jiti.import(file);
+}
+
+/** Poll until a condition holds (bounded); waits in this suite never sleep a fixed slice.
+ * Async predicates are supported so file effects can be awaited without a fixed delay. */
+export async function waitUntil(predicate, timeoutMs = 2_000, stepMs = 10) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await predicate()) return true;
+		await new Promise((resolve) => setTimeout(resolve, stepMs));
+	}
+	return await predicate();
 }
 
 /** Minimal pi API mock: records hooks/commands/flags and answers flags from `flags`. */
@@ -93,6 +104,11 @@ export function makeSessionManager(entries, id = "test-session") {
 		getEntries: () => entries,
 		getSessionFile: () => "",
 		getLeafId: () => entries.at(-1)?.id ?? null,
+		// Handoff's replay appends into the replacement session; keep it observable in tests.
+		appendMessage: (message) => {
+			entries.push(message);
+			return message?.id ?? String(entries.length);
+		},
 	};
 }
 
@@ -130,15 +146,31 @@ export async function runHandlers(pi, event, ctx, eventArg = {}) {
 
 /** Minimal valid session entries for projection tests. */
 export function messageEntry(id, role, text, timestamp) {
+	return contentEntry(id, role, [{ type: "text", text }], timestamp);
+}
+
+/** Session entry with explicit content blocks (tool calls, tool results, images, ...). */
+export function contentEntry(id, role, content, timestamp, parentId = null) {
 	return {
 		type: "message",
 		id,
-		parentId: null,
+		parentId,
 		timestamp,
 		message: {
 			role,
-			content: [{ type: "text", text }],
+			content,
 			timestamp: Date.parse(timestamp),
 		},
+	};
+}
+
+/** Session entry for a tool result; `toolCallId` must match the assistant's tool call. */
+export function toolResultEntry(id, toolCallId, text, timestamp, parentId = null) {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp,
+		message: { role: "toolResult", toolCallId, content: [{ type: "text", text }], timestamp: Date.parse(timestamp) },
 	};
 }

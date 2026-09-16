@@ -1,18 +1,13 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
- * (`auto`), an explicit `lang` config wins, and carried-over continuation prompts are replaced
- * by an omission marker in the verbatim replay slice.
- *
- * Known coverage gap (recorded, deliberately not pinned here): the `runHandoff` call sites —
- * `localizeSummaryHeadings` inside `generateHandoffSummary` and
- * `languageMessagesFor(olderMessages, carriedMessages)` — are covered only through their pure
- * functions, so a mutation at the call site keeps this file green (review round 5, F3/F5).
- * Pinning them needs an injectable summarizer plus a `newSession` mock in the harness.
+ * (`auto`), an explicit `lang` config wins, carried-over continuation prompts are replaced
+ * by an omission marker in the verbatim replay slice, and the `runHandoff` call sites are pinned
+ * through a stubbed summarizer plus a `newSession` mock (review round 5, F3/F5).
  */
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-"));
@@ -23,15 +18,8 @@ function check(label, value) {
 }
 const configPath = path.join(tmp, ".agents/memory/project-context.json");
 const readConfig = () => readFile(configPath, "utf8").then((raw) => JSON.parse(raw)).catch(() => undefined);
-/** Poll instead of sleeping a fixed slice: trigger delivery is a setTimeout(0) on the event loop. */
-async function waitFor(predicate, timeoutMs = 2000) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (predicate()) return true;
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	return predicate();
-}
+/** Verbatim reply for the stubbed summarizer: English template headings, localized by the code. */
+const PINNED_SUMMARY = ["## Goal", "- 做完了。", "", "## Critical Context", "- pinned summary body."].join("\n");
 
 try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
@@ -119,13 +107,15 @@ try {
 		messageEntry("e1", "user", "那做了呗，统一一下", "2026-09-16T00:41:39.660Z"),
 		messageEntry("e2", "user", legacy, "2026-09-16T00:41:39.844Z"),
 		messageEntry("e3", "assistant", "按交接要求先核对当前实际状态。", "2026-09-16T00:41:44.876Z"),
-		messageEntry("e4", "toolResult", "=== HEAD ===\ne4d48c4", "2026-09-16T00:41:57.106Z"),
+		contentEntry("e3a", "assistant", [{ type: "toolCall", id: "tc9", name: "bash", arguments: { command: "git log" } }], "2026-09-16T00:41:45.000Z"),
+		toolResultEntry("e4", "tc9", "=== HEAD ===\ne4d48c4", "2026-09-16T00:41:57.106Z"),
 		messageEntry("e5", "user", zh, "2026-09-16T00:41:58.000Z"),
 	];
 	const kept = handoff.replayMessagesFor(entries);
 	check("stale continuation prompts are replaced by the marker", kept.filter((message) => message.content?.[0]?.text === handoff.REPLAY_MARKER).length === 2);
 	check("the raw prompt text never reaches the replay", !kept.some((message) => (message.content?.[0]?.text ?? "").includes("## Handoff Summary")));
-	check("real conversation stays in the slice", kept.filter((message) => message.content?.[0]?.text !== handoff.REPLAY_MARKER).length === 3);
+	// e1, e3, the tool call and its paired result stay; the two prompts become markers.
+	check("real conversation stays in the slice", kept.filter((message) => message.content?.[0]?.text !== handoff.REPLAY_MARKER).length === 4);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
@@ -371,15 +361,204 @@ try {
 	});
 	await runHandlers(auto, "session_start", autoCtx);
 	await runHandlers(auto, "agent_settled", autoCtx);
-	await waitFor(() => auto.sentMessages.includes("/auto-handoff force-auto"));
+	await waitUntil(() => auto.sentMessages.includes("/auto-handoff force-auto"));
 	check("the threshold triggers the scheduled handoff", auto.sentMessages.includes("/auto-handoff force-auto"));
 	await auto.commands.get("auto-handoff").handler("force-auto", autoCtx);
 	check("the scheduled handoff explains the skip", String(autoCtx.notifications.at(-1)?.[0] ?? "").includes("nothing older than the recent window"));
 	await runHandlers(auto, "agent_settled", autoCtx);
-	// Negative assertion: give the scheduled trigger time to run before checking it did not.
-	await new Promise((resolve) => setTimeout(resolve, 300));
+	// Negative assertion: a pending setTimeout(0) trigger runs before this timer, so one flush is enough.
+	await new Promise((resolve) => setTimeout(resolve, 0));
 	check("a skipped auto handoff backs off instead of retrying every settle", auto.sentMessages.length === 1);
+
+	console.log("\n=== replay block shape (mid-turn cut) ===");
+	// The keep-budget cut can land inside a turn, so the slice opens on an assistant message, which
+	// Anthropic/Gemini routes reject; it gets a user-role stand-in for the summarized prefix.
+	const turnEntries = [
+		contentEntry("k0", "user", [{ type: "text", text: "原始请求" }], "2026-09-16T00:43:00.000Z"),
+		contentEntry(
+			"k1",
+			"assistant",
+			[{ type: "text", text: "先看实现。" }, { type: "toolCall", id: "tc1", name: "bash", arguments: { command: "cat x" } }],
+			"2026-09-16T00:43:01.000Z",
+		),
+	];
+	const midTurn = handoff.replayMessagesFor([turnEntries[1], toolResultEntry("k2", "tc1", "输出", "2026-09-16T00:43:02.000Z")]);
+	check("a mid-turn slice opens with the split-turn marker", midTurn[0]?.role === "user" && midTurn[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER);
+	check("the tool call and its result stay paired after the marker", midTurn[1]?.content?.[1]?.type === "toolCall" && midTurn[2]?.content?.[0]?.text === "输出");
+	check("a slice that already opens with a user message gets no split marker", handoff.replayMessagesFor([turnEntries[0]])[0]?.content?.[0]?.text === "原始请求");
+	// A cut can land on a summary entry that the replay filters out, exposing a tool result whose
+	// call lives in the summarized prefix: the orphan is dropped and the block still opens user-first.
+	const filteredInputs = [
+		contentEntry("s0", "branchSummary", [{ type: "text", text: "分支摘要" }], "2026-09-16T00:44:00.000Z"),
+		contentEntry("s1", "toolResult", [{ type: "text", text: "结果" }], "2026-09-16T00:44:01.000Z"),
+		contentEntry("s2", "assistant", [{ type: "text", text: "继续。" }], "2026-09-16T00:44:02.000Z"),
+	];
+	const orphanInbox = [];
+	const filteredHead = handoff.replayMessagesFor(filteredInputs, orphanInbox);
+	check(
+		"a filtered summary entry drops the orphan result and opens user-first",
+		filteredHead[0]?.role === "user" &&
+			filteredHead[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER &&
+			filteredHead.map((message) => message.role).join(",") === "user,assistant",
+	);
+	check("the dropped orphan result is handed back for the summary", orphanInbox.length === 1 && orphanInbox[0]?.content?.[0]?.text === "结果");
+	check(
+		"a slice holding only orphan results replays nothing",
+		handoff.replayMessagesFor([contentEntry("s3", "toolResult", [{ type: "text", text: "结果" }], "2026-09-16T00:44:03.000Z")]).length === 0,
+	);
+	// An orphan in the middle of a slice (its call is not part of it) is dropped as well, while a
+	// result whose call is kept stays paired.
+	const midOrphans = [];
+	const midSlice = handoff.replayMessagesFor(
+		[
+			contentEntry("q0", "user", [{ type: "text", text: "用户" }], "2026-09-16T00:45:00.000Z"),
+			toolResultEntry("q1", "gone", "孤儿结果", "2026-09-16T00:45:01.000Z"),
+			contentEntry("q2", "assistant", [{ type: "toolCall", id: "keep1", name: "bash", arguments: {} }], "2026-09-16T00:45:02.000Z"),
+			toolResultEntry("q3", "keep1", "配对结果", "2026-09-16T00:45:03.000Z"),
+		],
+		midOrphans,
+	);
+	check(
+		"a mid-slice orphan is dropped and handed back",
+		midOrphans.length === 1 && midOrphans[0]?.content?.[0]?.text === "孤儿结果" && !JSON.stringify(midSlice).includes("孤儿结果") && JSON.stringify(midSlice).includes("配对结果"),
+	);
+	const bashEntry = {
+		type: "message",
+		id: "s9",
+		parentId: null,
+		timestamp: "2026-09-16T00:44:04.000Z",
+		message: { role: "bashExecution", command: "ls", output: "", timestamp: Date.parse("2026-09-16T00:44:04.000Z") },
+	};
+	check("a bash turn start needs no split marker", handoff.replayMessagesFor([bashEntry])[0]?.role === "bashExecution");
+
+	console.log("\n=== runHandoff call sites ===");
+	// Pins what the pure-function tests cannot: which slice feeds the summarizer, which language
+	// directive it gets, that the reply's headings are localized before they reach the prompt, and
+	// that the replay is the post-cut slice. The summarizer lives in pi's SDK, so it is shadowed by
+	// a stub that re-exports the real module. (The raw-vs-marker distinction inside the carried slice
+	// is behaviourally equivalent here, so it is deliberately not asserted; see analysis R2.)
+	const stubCalls = [];
+	globalThis.__handoffStub = (messages, meta) => {
+		stubCalls.push({ messages, ...meta });
+		return { text: PINNED_SUMMARY, usage: undefined };
+	};
+	const sdkStub = path.join(tmp, "sdk-stub.mjs");
+	await writeFile(
+		sdkStub,
+		`export * from ${JSON.stringify(path.join(PI, "dist", "index.js"))};\n` +
+			"export async function generateSummaryWithUsage(messages, model, reserve, apiKey, headers, signal, focus, previousSummary, thinking) {\n" +
+			"\treturn globalThis.__handoffStub(messages, { focus, previousSummary, thinking });\n" +
+			"}\n",
+	);
+	const stubAlias = { "@earendil-works/pi-coding-agent": sdkStub };
+
+	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 50, handoffTargetTokens: 8_000, autoConsolidate: false }));
+	const toolOutput = "tool output line that was read earlier in this turn. ".repeat(200);
+	const pinEntries = [
+		contentEntry("p1", "user", [{ type: "text", text: "Please make the memory journal append-only and add tests for it." }], "2026-09-16T00:50:00.000Z"),
+		contentEntry(
+			"p2",
+			"assistant",
+			[{ type: "text", text: "Reading the current implementation first." }, { type: "toolCall", id: "pc1", name: "bash", arguments: { command: "cat extensions/project-context/project-state.ts" } }],
+			"2026-09-16T00:50:01.000Z",
+			"p1",
+		),
+		toolResultEntry("p3", "pc1", toolOutput, "2026-09-16T00:50:02.000Z", "p2"),
+		contentEntry("p4", "assistant", [{ type: "text", text: "看完了，我来改。" }], "2026-09-16T00:50:03.000Z", "p3"),
+		contentEntry("p5", "user", [{ type: "text", text: "好，动手。" }], "2026-09-16T00:50:04.000Z", "p4"),
+	];
+	const captureNewSession = (store) => async (options) => {
+		const replacement = makeSessionManager([], "handoff-pin-next");
+		await options.setup(replacement);
+		store.replay = replacement.entries.slice();
+		const replacementCtx = makeCtx(tmp, { sessionManager: replacement });
+		store.notifications = replacementCtx.notifications;
+		replacementCtx.sendUserMessage = (text) => {
+			store.prompt = text;
+		};
+		await options.withSession(replacementCtx);
+		return { cancelled: false };
+	};
+	const captured = { replay: [], prompt: undefined };
+	const pinPi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`, stubAlias))(pinPi);
+	const pinCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(pinEntries, "handoff-pin"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	pinCtx.newSession = captureNewSession(captured);
+	await runHandlers(pinPi, "session_start", pinCtx);
+	await pinPi.commands.get("auto-handoff").handler("now", pinCtx);
+
+	check("the forced handoff switches sessions", captured.replay.length > 0 && captured.prompt !== undefined);
+	check(
+		"the summarizer receives the cut-off turn prefix",
+		stubCalls.length === 1 && stubCalls[0].messages.some((message) => JSON.stringify(message.content ?? "").includes("tool output line")),
+	);
+	check("the carried slice is not re-summarized", !stubCalls[0]?.messages.some((message) => JSON.stringify(message.content ?? "").includes("我来改")));
+	check("the summary call carries the conversation language", String(stubCalls[0]?.focus ?? "").includes("Simplified Chinese"));
+	check("the model's headings are localized before they reach the prompt", String(captured.prompt).includes("## 目标") && !String(captured.prompt).includes("## Goal"));
+	check("the prompt carries the summary body and the previous session", String(captured.prompt).includes("- 做完了。") && String(captured.prompt).includes("handoff-pin"));
+	check(
+		"the replay is the post-cut slice, opening user-first",
+		captured.replay[0]?.role === "user" &&
+			captured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER &&
+			captured.replay.map((message) => message.role).join(",") === "user,assistant,user",
+	);
+	check("the dropped tool output never enters the replay", !JSON.stringify(captured.replay).includes("tool output line"));
+	check("the continuation is announced", String(captured.notifications?.at(-1)?.[0] ?? "").includes("continued in a fresh session"));
+	const handoffDoc = await readFile(path.join(tmp, ".agents/memory/HANDOFF.md"), "utf8").catch(() => "");
+	check("the archived handoff document carries the localized summary", handoffDoc.includes("## 目标") && handoffDoc.includes("- 做完了。"));
+
+	// An orphan result (its call left in the summary prefix) must not vanish: it leaves the replay
+	// but its content is folded into the summary input.
+	const orphanEntries = [
+		contentEntry("o1", "user", [{ type: "text", text: "先看实现，再改。" }], "2026-09-16T01:00:00.000Z"),
+		contentEntry(
+			"o2",
+			"assistant",
+			[{ type: "text", text: "读取实现。" }, { type: "toolCall", id: "oc1", name: "bash", arguments: { command: "cat x" } }],
+			"2026-09-16T01:00:01.000Z",
+			"o1",
+		),
+		{ type: "branch_summary", id: "o3", parentId: "o2", timestamp: "2026-09-16T01:00:02.000Z", summary: "分支摘要 branch summary filler. ".repeat(60) },
+		toolResultEntry("o4", "oc1", "孤儿结果 ORPHAN_SECRET", "2026-09-16T01:00:03.000Z", "o3"),
+		contentEntry("o5", "assistant", [{ type: "text", text: "继续改。" }], "2026-09-16T01:00:04.000Z", "o4"),
+		contentEntry("o6", "user", [{ type: "text", text: "好。" }], "2026-09-16T01:00:05.000Z", "o5"),
+	];
+	const orphanCaptured = { replay: [], prompt: undefined };
+	const orphanCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(orphanEntries, "handoff-orphan"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	orphanCtx.newSession = captureNewSession(orphanCaptured);
+	const stubsBefore = stubCalls.length;
+	await runHandlers(pinPi, "session_start", orphanCtx);
+	await pinPi.commands.get("auto-handoff").handler("now", orphanCtx);
+	check("the orphan scenario still hands off", orphanCaptured.prompt !== undefined);
+	check("the orphan result reaches the summary", stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("ORPHAN_SECRET")));
+	check("the orphan cut keeps only the tail of the turn", !stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("继续改")));
+	check("the orphan replay carries the kept tail", orphanCaptured.replay.map((message) => message.role).join(",") === "user,assistant,user");
+	check("the orphan result never enters the replay", !JSON.stringify(orphanCaptured.replay).includes("ORPHAN_SECRET"));
+	check("the orphan replay opens user-first", orphanCaptured.replay[0]?.role === "user" && orphanCaptured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER);
 } finally {
+	delete globalThis.__handoffStub;
 	await rm(tmp, { recursive: true, force: true });
 }
 

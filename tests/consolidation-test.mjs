@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * End-to-end test of the settle/shutdown path in one extension:
@@ -710,16 +710,33 @@ try {
 			check("a skill-sized need raises the cap", adaptiveOutputTokens(8192, 21000, {}, 32768) === 21000);
 
 			// The write lock serializes writers, steals stale locks, and never leaks its file.
+			// Contention is deterministic rather than timed: the followers are started from inside the
+			// holder's critical section, so a mutex that fails to serialize runs them right there.
 			let active = 0;
-			let overlapped = false;
-			const runLocked = () => withMemoryLock(memory, async () => {
-				active += 1;
-				if (active > 1) overlapped = true;
-				await new Promise((resolve) => setTimeout(resolve, 30));
-				active -= 1;
+			let insideLock = false;
+			let overlaps = 0;
+			const followers = [];
+			await withMemoryLock(memory, async () => {
+				insideLock = true;
+				for (let index = 0; index < 2; index += 1) {
+					followers.push(withMemoryLock(memory, async () => {
+						active += 1;
+						if (insideLock || active > 1) overlaps += 1;
+						active -= 1;
+					}));
+				}
+				// Yield across both the check and the timer phase, several turns deep: a mutex bypass that
+				// defers the critical section by a few event-loop turns must still land inside this window.
+				// (No in-process window can defeat an arbitrarily delaying bypass; the cross-process probe
+				// below is the authority for real mutual exclusion.)
+				for (let turn = 0; turn < 3; turn += 1) {
+					await new Promise((resolve) => setImmediate(resolve));
+					await new Promise((resolve) => setTimeout(resolve, 0));
+				}
+				insideLock = false;
 			});
-			await Promise.all([runLocked(), runLocked(), runLocked()]);
-			check("the write lock serializes writers", !overlapped && !(await readdir(dir)).includes("MEMORY.md.lock"));
+			await Promise.all(followers);
+			check("the write lock serializes writers", overlaps === 0 && followers.length === 2 && !(await readdir(dir)).includes("MEMORY.md.lock"));
 			const stale = path.join(dir, "MEMORY.md.lock");
 			await writeFile(stale, "stale");
 			await utimes(stale, new Date(Date.now() - 2 * 60 * 60 * 1000), new Date(Date.now() - 2 * 60 * 60 * 1000));
@@ -754,36 +771,53 @@ try {
 				thiefEntered = true;
 				await thiefHeld;
 			});
-			for (let attempt = 0; attempt < 300 && !thiefEntered; attempt += 1) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
+			await waitUntil(() => thiefEntered, 3_000);
 			releaseOriginal();
 			await originalRun;
 			let thirdEntered = false;
-			const thirdRun = withMemoryLock(memory, async () => {
-				thirdEntered = true;
-			});
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			let thirdAttempted = false;
+			const thirdRun = (() => {
+				thirdAttempted = true;
+				return withMemoryLock(memory, async () => {
+					thirdEntered = true;
+				});
+			})();
+			await waitUntil(() => thirdAttempted, 1_000);
+			// The thief still holds the lock: a few event-loop turns must not let the third run in.
+			for (let tick = 0; tick < 3; tick += 1) await new Promise((resolve) => setImmediate(resolve));
 			const thirdBlocked = !thirdEntered;
 			releaseThief();
 			await thiefRun;
 			await thirdRun;
 			check("a stolen lock is not released by its original holder", thiefEntered && thirdBlocked && thirdEntered);
 
-			// A stale lock plus concurrent writers never lets two critical sections overlap.
+			// A stale lock plus writers started inside the (just stolen) critical section: the lock must
+			// not be shared with them. That a stale entry is claimed exactly once is covered by the
+			// neighbouring steal tests (and the cross-process probe), not by this overlap check.
 			const crashedLock = path.join(dir, "MEMORY.md.lock");
 			await writeFile(crashedLock, "crashed\n");
 			await utimes(crashedLock, new Date(Date.now() - 2 * 60 * 60 * 1000), new Date(Date.now() - 2 * 60 * 60 * 1000));
 			let concurrent = 0;
+			let insideSteal = false;
 			let contendedOverlap = false;
-			const contended = [0, 1, 2].map(() => withMemoryLock(memory, async () => {
-				concurrent += 1;
-				if (concurrent > 1) contendedOverlap = true;
-				await new Promise((resolve) => setTimeout(resolve, 20));
-				concurrent -= 1;
-			}));
-			await Promise.all(contended);
-			check("a stale lock is stolen exactly once under contention", !contendedOverlap && !(await readdir(dir)).includes("MEMORY.md.lock"));
+			const contenders = [];
+			await withMemoryLock(memory, async () => {
+				insideSteal = true;
+				for (let index = 0; index < 2; index += 1) {
+					contenders.push(withMemoryLock(memory, async () => {
+						concurrent += 1;
+						if (insideSteal || concurrent > 1) contendedOverlap = true;
+						concurrent -= 1;
+					}));
+				}
+				for (let turn = 0; turn < 3; turn += 1) {
+					await new Promise((resolve) => setImmediate(resolve));
+					await new Promise((resolve) => setTimeout(resolve, 0));
+				}
+				insideSteal = false;
+			});
+			await Promise.all(contenders);
+			check("writers started while a stolen lock is held never overlap", !contendedOverlap && contenders.length === 2 && !(await readdir(dir)).includes("MEMORY.md.lock"));
 
 			// A release that cannot take the claim must leave the lock for the claimed stealer.
 			const heldLock = path.join(dir, "MEMORY.md.lock");

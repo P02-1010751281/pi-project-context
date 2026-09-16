@@ -1,0 +1,82 @@
+Sandbox unchanged. Let me clean up my /tmp copies aren't required, but confirm I didn't write into the repo.
+
+Now writing the final review.
+
+---
+
+# Lane A — 第 4 轮增量复审
+
+## 结论：**minor**（无 blocking / important）
+
+m1 的修复**真实闭合**：用第 3 轮同一 `branch_summary` 反例形状，孤儿 toolResult 内容现在**确实进入摘要**、回放结构合法、切点几何正确；去掉折入或去掉收集器的变异均红灯。m2 的混合让出对**真实串行化失败**捕获 10/10~12/12，正确锁 0 假红，可视为已闭合（注释合理地降级为「跨进程探针才是权威」）。剩余均为**测试外文档/注释**层的 minor，以及一处**当前不可达路径**上的记账偏差。
+
+---
+
+## 发现
+
+### 1. `replayMessagesFor` 的 JSDoc 重复（minor）
+- **文件:行**：`extensions/project-context/handoff.ts:337-343` 与 `:344-354`
+- **问题**：本轮增量在原注释上就地改写（337–343），又**新增**了一块几乎相同的注释（344–354），两块紧贴同一 `export function`。第一块内容已被第二块完全覆盖，成为死注释；TS 会把两个块都当文档注释，实际附加给符号的是最后的块，前者纯属噪声，也容易让后续读者误以为有两个不同语义段落。
+- **建议**：删除前一块（337–343）。
+- **证据**：`git diff HEAD -- extensions/project-context/handoff.ts` 头部——`-export function replayMessagesFor(entries: SessionEntry[]): AgentMessage[] {` 处新增了一个 `/** … */` 块，而原块仅被改写保留；`awk` 输出确认两块 337/344 起头、正文逐字相同。
+
+### 2. 切点注释仍复述第 3 轮被证伪的前提（minor）
+- **文件:行**：`extensions/project-context/handoff.ts:826-830`（另 `:325-327` `SPLIT_TURN_MARKER` 注释）
+- **问题**：注释写「pi's cut points never sit on a tool result, **so a kept result always follows its call**」。这正是第 3 轮 m1 证伪的命题：当 `branch_summary` 插在「带 toolCall 的 assistant」与其 toolResult 之间时，切点可落在 `branch_summary` 上，kept result 的 call 就留在前缀里。本轮新增的 `droppedOrphans` 折入正是为处理该形状——注释却仍断言它不会发生，与紧随其后的实现自相矛盾。
+- **建议**：把该句改为「切点不在 toolResult 上，但可落在 summary 条目上而把某个 result 与其前缀中的 call 分开；这种孤儿结果由 `droppedOrphans` 收进摘要」（即引用新机制）。
+- **证据**：`findCutPoint(entries,0,len,8)` 在 `[u1, a1(toolCall), branch_summary, toolResult, a2, u2]` 上得 `firstKeptEntryIndex=2`（落在 `branch_summary`）→ kept=`[branch_summary, toolResult(call 在前缀), …]`。
+
+### 3. `estimatedAfter` / `baselineNow` 对孤儿结果**双重扣减**（minor；当前路径不可达）
+- **文件:行**：`extensions/project-context/handoff.ts:847-851`（折入）、`:865-866`（`olderTokens`/`sliceTokens`）、`:900-901`（`baselineNow = usage.tokens - olderTokens - sliceTokens`）
+- **问题**：折入把 `droppedOrphans` 追加进 `olderMessages`，于是 `olderTokens` 含孤儿；而 `sliceTokens` 来自 `carriedMessages = keptSlice.flatMap(...)`，**本就含同一孤儿**（孤儿来自 keptSlice）。`baselineNow` 因此把孤儿 token 从 `usage.tokens` 里扣了两次，`estimatedAfter` 被低估恰好一个孤儿量（实测大 toolResult 时 ≈10k token）。方向是让跳过闸门**更松**（更倾向交接），且 `olderTokens` 还参与 `MIN_SUMMARIZE_TOKENS` 下限，口径不一致。
+- **当前影响**：`runHandoff` 仅有两个调用点（`:1175` `now/run/force`、`:1179` `force-auto`），二者 `force===true`，故 `:897` 的 `!force &&` 闸门与 `:900` 的 `estimatedAfter` 判断当前为**死路径**——此偏差暂不可达。若日后新增非 force 触发即会生效。
+- **建议**：`olderTokens` 用「折入前」的 older 计算（另存变量），或把 `estimatedAfter` 改为 `usage.tokens - olderTokensPrefix - sliceTokens + keptTokens + summaryTokens + 1500`；至少加注释说明孤儿只应扣一次。
+- **证据**：`/tmp/probe_acct4.mjs`（真实 `findCutPoint`+`replayMessagesFor`）在 cut 落在 `branch_summary`、孤儿 10000 token 时打印 `TRUE baseline 1000000 -> correct estimatedAfter 1002012, post-fix 992012, offset 10000`。
+
+### 4. 折入只清**头部**孤儿，切片中部仍有悬空 toolResult（minor；可达性低）
+- **文件:行**：`extensions/project-context/handoff.ts:367-370`
+- **问题**：`while (messages[0]?.role === "toolResult")` 只丢开头连续孤儿。若被保留的 user/assistant 消息之后仍有一个「call 在前缀」的 toolResult（`[user, toolResult(orphan), assistant(toolCall), toolResult(paired)]`），该孤儿会原样留在回放里，成为无匹配 call 的悬空结果（strict provider 可能 400），且不会进 `droppedOrphans`。要触发需要「call 与 result 之间插入 user/custom/bashExecution 之类可切条目」的非常规条目序，真实会话中不易出现。
+- **建议**：若想彻底，可对「无匹配 call 且不在调用其前缀/本切片」的 toolResult 一律收集并从回放移除，而非只看头部。
+- **证据**：`/tmp/probe3.mjs` `mixed` 例：输入 `[user, toolResult(ORPHAN), assistant+toolCall, toolResult(PAIRED)]` → 回放 `user,toolResult,assistant,toolResult`，`dropped` 为空，`ORPHAN` 仍在回放。
+
+### 5. `switches-test` 的 autolearn 负断言仍被多闸门过定（m3 复现，pre-existing）
+- **文件:行**：`tests/switches-test.mjs:101`
+- **问题**：复活 m3。只把 `if (!config.autoLearn && !force) return;`（`autolearn.ts:385`）变异为恒假时，`autolearn off: no scheduled pass` **仍绿**（另有 `changed`/`due`/`archived.size` 闸门兜底），只有同轮 `memory off does not call the model` 变红。
+- **建议**：给该 tmp 会话预置一个最小 archive/新素材，使该负探针真正只依赖 autolearn 开关。
+- **证据**：`/tmp/mutSwitch` 运行 `node tests/switches-test.mjs` → `FAIL memory off does not call the model` 而 `OK autolearn off: no scheduled pass`。
+
+### 6. `.codestable` 分析文档与实现漂移（minor）
+- **文件:行**：`.codestable/issues/2026-09-16-handoff-residuals/handoff-residuals-analysis.md:74-77`（R3 方案）、`:35-37`（R1「配对天然成立」）
+- **问题**：R3 描述的是「all-attempted 屏障（每 writer 自增 `attempts`，持锁者 `waitUntil(attempts===3)`）」，但 `consolidation-test.mjs:713-739` 实际实现为「在持锁者临界区内起 follower」，二者不同；R1 仍写「配对天然成立… 其结果在其后一并保留」，即本轮已被 `droppedOrphans` 修正的旧前提。
+- **建议**：更新 R1/R3 文字以匹配当前实现（尤其是孤儿结果的处理），避免后续读者被引导。
+- **证据**：`grep attempts tests/consolidation-test.mjs` 无命中；`grep "配对天然成立" analysis` 命中。
+
+---
+
+## 已验证清单（本轮实际执行）
+
+1. **m1 端到端复现（第 3 轮同一形状）** — `/tmp/probe_cut.mjs` + `/tmp/probe_e2e.mjs`
+   - 真实 `findCutPoint` 确认几何：`[u1,a1(toolCall),branch_summary,b1,toolResult,ORPHAN_RESULT_SECRET,a2,u2]`，`keep=8` → `firstKeptEntryIndex=2`（落在 `branch_summary`），prefix 含 call、kept 含 result。**结论：切点几何重现成功**。
+   - 端到端 `runHandoff now`（stub summarizer + `newSession` 捕获）：摘要输入含 `ORPHAN_RESULT_SECRET`（**是**）、不含 kept 尾部 `继续改`（切点几何正确）、`captured.replay` roles=`user,assistant,user`、回放不含孤儿。**结论：m1 已闭合**。
+2. **变异验证（请求项 1）**
+   - `mutA`（删 `...droppedOrphans` 折入）→ `FAIL the orphan result reaches the summary`。
+   - `mutB`（收集器不 push）→ `FAIL the dropped orphan result is handed back for the summary` + `FAIL the orphan result reaches the summary`。
+   - `mutC`（回放不丢孤儿）→ 6 条 FAIL；`mutD`（不插 SPLIT_TURN_MARKER）→ 6 条 FAIL；`mutNoCollector`（调用点不传收集器）→ `FAIL the orphan result reaches the summary`。**结论：新断言全部红灯可检**。
+3. **折入副作用检查（请求项 2）**
+   - 重复：端到端确认孤儿**不在**回放（`replay contains ORPHAN_RESULT_SECRET: false`），且摘要输入中唯一条 `toolResult` 即该孤儿 → 无双份。
+   - 记账：发现双重扣减（发现 3），实测 offset == 孤儿 token；因 `force` 恒真，当前不可达。
+   - 语言采样：`languageSamples`/`promptLanguage` 均只取 `role==="user"`，孤儿为 toolResult → **不受影响**。
+   - 调用方：`grep replayMessagesFor` → 生产仅 `:848`（带收集器）与 `:675 replayEntries`（不带，重算一致）；测试多处。参数可选，向后兼容。
+   - 序列化：`convertToLlm`+`serializeConversation` 对尾部孤儿 toolResult 不抛错，内容以 `[Tool result]:` 进入摘要。
+4. **丢弃循环误丢分析（请求项 3）**
+   - 穷举 4 条目全排列（24 序）中出现的「误丢」全部是 result 在 call **之前**的畸形序（`[toolResult(t1), assistant(t1), …]`），真实会话不产生。
+   - 2 万条**良构**随机切片（result 恒随其 call，随机含 `branch_summary`）→ **falseDrops=0**。**结论：良构下无误丢**。
+   - 但发现切片中部孤儿不被清的边角（发现 4）。
+5. **m2 变异重测（请求项 4）**
+   - `setTimeout(0)` 完全旁路（无锁 + 延迟 action）：8/8、12/12 CAUGHT。
+   - 「lock 在 action 前释放」旁路：10/10 CAUGHT；「释放后延迟 action」旁路：12/12 CAUGHT。
+   - 对照非真旁路（仅延迟 holder 的 action、或仅延迟 `tryLock` 一次）：10/10 escaped —— 因为锁仍有效、**无真实并发**，属预期（非误报）。
+   - 正确锁：`consolidation-test` 连跑 15 次 **0 假红**；`handoff-test` 连跑 10 次 0 假红。**结论：注释与实测相符（捕获真实串行化失败可靠；无法击败任意延迟旁路）**。
+6. **m3 复现** — 见发现 5。
+7. **全量套件（请求项 5）**：`node tests/run-all.mjs` 空载 ×2 全绿；另在 16 核起 32 个 CPU hog（load≈1.8 起）下 ×2 全绿，共 4 次 9/9。
+8. **零写入**：进入/退出/跑测后 `git status --porcelain` 逐行 diff 为 0；`git diff --stat HEAD` 恒为 `6 files changed, 356 insertions(+), 99 deletions(-)`。所有变异在 `/tmp/mut*` 副本进行，沙箱未改。

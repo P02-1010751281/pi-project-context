@@ -1,0 +1,64 @@
+Note: this block's outer `withMemoryLock(memory, ...)` steals the pre-created `crashedLock` before running the action, then starts contenders inside. The contenders see a *fresh* lock (held by outer) so they wait — this no longer really tests "stolen exactly once" (only one steal happens, by the outer). The test name overstates what it verifies, but combined with the separate stale-steal test and cross-process test, `stolen exactly once` is covered. Minor naming nit.
+
+I have enough to write the review.
+
+---
+
+## 结论：**minor**
+
+四项修复全部闭合，I1/I2 在定向旁路变异下确认红灯，M1/M2 确认清理。未发现 blocking 或 important 问题。以下为 minor 观察（均不阻塞合并）。
+
+---
+
+### minor 发现
+
+**N1. `tests/consolidation-test.mjs:732,809` — 串行化断言的检出窗口只覆盖「不 yield / 微任务 yield」旁路，macrotask yield 的旁路在进程内逃逸**
+- 问题：持锁者让出的是 3 个 `setImmediate`（check 阶段），而 Node 会在进入下一个 timers 阶段前跑完全部 check 回调，所以用 `setTimeout(0)` yield 的旁路在其 3 个回合内都进不了临界区。把第 1 轮旁路改成 `await new Promise(r=>setTimeout(r,0)); return await action()` 后，`the write lock serializes writers` 仍 **OK**（探针：`overlaps=0, ticksSeen=["after","after"]`）。
+- 建议：若要收紧进程内断言，把让出改为混合回合（例如 1 个 `setImmediate` + 1 个 `setTimeout(0)` + 1 个 `setImmediate`），或断言持锁者退出前 `followers.every(unsettled)`。
+- 证据：`/tmp/rev7-probe-mut2`（慢旁路）serialize 断言 OK；同一变异下 `cross-process writers never overlap` **FAIL**，故该属性整体仍有独立覆盖，风险有限。第 1 轮原始旁路（`return await action()`，无 yield）在 `/tmp/rev7-probe-mut` 下 `overlaps=2` 且断言 **FAIL**，微任务 yield 旁路同样被检出。
+
+**N2. `tests/handoff-test.mjs` 头部声称 pin 住 `languageMessagesFor` 调用点，但「原始 slice vs marker 替换 slice」这一接线不可变异检出**
+- 问题：把 `handoff.ts:872` 的 `languageMessagesFor(olderMessages, carriedMessages)` 改成 `keptMessages`，测试 **全绿**（`/tmp/rev7-langmut`）。因为 `replayMessagesFor` 只会「新增」一条短英文 marker、不会删掉真实 user 消息，且 stale prompt 本就被 `languageSamples` 过滤，实际语言结果在这些场景下不变。
+- 建议：加一条断言，令「唯一 user 文本来自被切掉的 stale prompt、其余为 marker」的切片在两种取向下语言不同；或在测试注释中把「pin `languageMessagesFor`」限定为「pin 其被调用及传入 language 的结果」，避免过度声明。
+- 证据：`language` 参数调用点（F5）被 pin（改成 `"en"` 触发 3 个 FAIL），`localizeSummaryHeadings` 调用点（F3）被 pin（移除触发 2 个 FAIL），仅这一细粒度接线未被区分。
+
+**N3. I2 修复对「孤儿 toolResult」只修 user-first 形状，未修 tool_use/toolResult 配对**（pre-existing）
+- 问题：`handoff.ts:358-360` 在 `messages[0]` 为 `toolResult`（其 tool_call 落在被摘要前缀里）时补 `SPLIT_TURN_MARKER`，得到 `[user(marker), toolResult]`。严格 provider 仍可能因为 toolResult 无对应 tool_use 而拒绝。旧行为更差（直接以 toolResult 开头），本次改动是净改善。
+- 建议：可作为后续 issue 记录；若要在本次收口，可考虑在为孤儿 toolResult 补 marker 时同时合成一条占位 assistant toolCall，或显式丢弃该孤儿结果。
+- 证据：`handoff.ts` 无配对/孤儿处理；新测试 `a filtered summary entry cannot leave a tool result at the head` 只断言 head 为 marker、第二个为 toolResult。
+
+**N4. `tests/consolidation-test.mjs:809` 测试名「stolen exactly once」高于实际验证**（命名 nit）
+- 问题：该块的外层 `withMemoryLock` 自行偷取 `crashedLock`，contenders 只与「外层已持有的新鲜锁」竞争，本块内唯一一次 steal 由外层完成、contenders 从不偷。真正「恰好一次」由 `a stale lock is stolen and cleaned` 与跨进程测试承担。
+- 建议：改名（如 `writers started while the lock is held never overlap`）或让 contenders 也面对同一 stale 锁来真正复现多方争抢。
+- 证据：代码路径 `/tmp/rev7-nosteal`（`stealStaleLock` no-op）下该块因外层 5s 超时而硬失败，说明它确实经由 steal 路径，但争抢语义由外层独占。
+
+---
+
+### 已验证清单（实际执行）
+
+| 验证 | 方法 | 结果 |
+|---|---|---|
+| 基线 9/9 | `node tests/run-all.mjs` ×3 | 全部 `All 9 tests passed.` |
+| I1 第 1 轮同一旁路 | `/tmp/rev7-probe-mut`：`withMemoryLock` 直接 `return await action()` | `the write lock serializes writers` **FAIL**（`overlaps=2, ticksSeen=["inside","inside"]`）；`a stale lock is stolen exactly once under contention` **FAIL** |
+| I1 微任务 yield 旁路 | `/tmp/rev7-probe-mut3`：3×`await Promise.resolve()` 后 action | serialize 断言 **FAIL**（`overlaps=2`） |
+| I1 宏任务 yield 旁路 | `/tmp/rev7-probe-mut2`：`setTimeout(0)` 后 action | serialize **OK**（逃逸）；跨进程断言 **FAIL**（N1） |
+| I1 新写法定性 | 探针打印 `ticksSeen` | 正确锁下恒为 `["after","after"]`（×5 次），无假绿、无 5s 停顿（整测 ~7s） |
+| I1 steal no-op | `/tmp/rev7-nosteal`：`stealStaleLock` 立即 return | 测试超时硬失败，检出 |
+| I2 收窄 | `/tmp/rev7-copy2`：判定改回 `=== "assistant"` | `a filtered summary entry cannot leave a tool result at the head` **FAIL**（红） |
+| I2 过度插入 | `/tmp/rev7-copy3`：无角色判断，永远插 marker | 5 个 FAIL，含 `a slice that already opens with a user message gets no split marker`、`a bash turn start needs no split marker` |
+| I2 错误放宽 | `/tmp/rev7-copy4`：把 `assistant` 并入 USER_FACING_ROLES | `a mid-turn slice opens with the split-turn marker` 等 3 个 FAIL |
+| I2 角色语义 | 读 SDK `dist/core/messages.js` `convertToLlm` | `custom`/`bashExecution`(非 excludeFromContext)/`branchSummary`/`compactionSummary` 均映射 `role:"user"`；`USER_FACING_ROLES` 定义正确；被过滤角色不出现在 `isReplayableRole` 内，无双 marker |
+| I2 切点假设 | 读 SDK `findValidCutPoints`/`findCutPoint`/`findTurnStartIndex` | 切点只落在 user-like/assistant，绝不在 toolResult；注释准确 |
+| M1 | `/tmp/rev7-m1`：harness 忽略 alias，影子化失效 | 8 个干净 FAIL，无 TypeError，exit 1 |
+| M2 | `/tmp/rev7-m2`：`finally` 前抛异常 + 预置全局 | `M2-PROBE stub after finally: undefined`，清理生效 |
+| R1 正常路径 | 读 `handoff.ts:809-835` 与基线 `git show` | 仅在 `isSplitTurn` 时改变切点（有意）；非 split 路径切点与旧版一致；首消息为 user-facing 时不插 marker（测试钉住） |
+| R1 语言采样 | 读 `handoff.ts:872` + 场景脚本 | marker 只进 `keptMessages`，语言采样用 `carriedMessages`；`isHandoffPromptText`/`promptLanguage` 不受 marker 影响 |
+| R1 F3 调用点 | `/tmp/rev7-locmut`：移除 `localizeSummaryHeadings` | 2 个 FAIL |
+| R1 F5 调用点 | `/tmp/rev7-focusmut`：`language` 改成 `"en"` | 3 个 FAIL |
+| R1 语言接线细粒度 | `/tmp/rev7-langmut`：`carriedMessages`→`keptMessages` | 全绿 → 未 pin（N2） |
+| harness 回归 | 读 `messageEntry`→`contentEntry` 默认 `parentId=null` | 与旧版一致；9/9 绿 |
+| 负载复跑 | 16 核 + 24 busy-loop，改动的两文件 ×5 | consolidation/handoff 均 exit 0、0 FAIL |
+| 整体负载 | 24 busy-loop 下 `run-all.mjs` ×3 | 每次 1 个失败，均为 **未改动** 的 `switches-test.mjs` `MEMORY.md rewritten`；在 HEAD 干净 worktree 下同负载同样失败（pre-existing 计时 flake，非本次回归） |
+| 沙箱完整性 | `git status`/`git diff` | 四文件 diff 不变，`project-state.ts` 未改，无变异残留；所有变异均在 `/tmp` 副本，已清理 |
+
+**关于「复跑 9/9」**：空载 9/9 稳定通过（×4）。重度 CPU 负载下 `switches-test.mjs` 会因「`memory on consolidates` 等到 modelCalls 后立即读文件、写入尚未落盘」而偶发失败——该文件未被本次改动触及，基线同样可复现，属既有 flake，建议另行开 issue，不应记入本次审查。

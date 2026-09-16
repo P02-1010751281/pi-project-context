@@ -322,12 +322,39 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 export const REPLAY_MARKER = "[handoff prompt omitted]";
 
 /**
- * Messages carried into the replacement session: stale continuation prompts become
- * {@link REPLAY_MARKER}. Replayed verbatim a prompt reads as a fresh instruction and opens the
- * new session with a summary of an already-superseded state; dropping it entirely would let the
- * block start with an assistant message, which some providers reject.
+ * Stand-in for the summarized prefix of a split turn. The keep-budget cut can land inside a turn,
+ * and the replay block must open with a user message for Anthropic/Gemini routes to accept it.
  */
-export function replayMessagesFor(entries: SessionEntry[]): AgentMessage[] {
+export const SPLIT_TURN_MARKER = "[turn prefix summarized during handoff]";
+
+/**
+ * Roles a provider renders as a user message: a replay block may open with one of these.
+ * `custom`/`bashExecution` are turn starts that conversation conversion maps to the user role.
+ */
+const USER_FACING_ROLES = new Set(["user", "custom", "bashExecution"]);
+
+/** Tool-call ids an assistant message issued. */
+function toolCallIds(message: AgentMessage): string[] {
+	if (!Array.isArray(message.content)) return [];
+	const ids: string[] = [];
+	for (const block of message.content) {
+		if (block && typeof block === "object" && "type" in block && block.type === "toolCall" && "id" in block && typeof block.id === "string") ids.push(block.id);
+	}
+	return ids;
+}
+
+/**
+ * Messages carried into the replacement session: stale continuation prompts become
+ * {@link REPLAY_MARKER}, and a slice that opens mid-turn gets a {@link SPLIT_TURN_MARKER}
+ * stand-in. Replayed verbatim a prompt reads as a fresh instruction and opens the new session
+ * with a summary of an already-superseded state; dropping it entirely would let the block start
+ * with an assistant message, which some providers reject.
+ *
+ * Tool results whose call is not part of the slice (a mid-turn cut can separate them) cannot be
+ * replayed — providers reject a result without its call. They are handed back through
+ * `droppedOrphans` so the caller can fold their content into the summary instead of losing it.
+ */
+export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: AgentMessage[]): AgentMessage[] {
 	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
 		for (const message of sessionEntryToContextMessages(entry)) {
@@ -339,7 +366,23 @@ export function replayMessagesFor(entries: SessionEntry[]): AgentMessage[] {
 			);
 		}
 	}
-	return messages;
+	const keptCallIds = new Set(messages.flatMap(toolCallIds));
+	const replayable: AgentMessage[] = [];
+	for (const message of messages) {
+		if (message.role !== "toolResult") {
+			replayable.push(message);
+			continue;
+		}
+		const toolCallId = (message as { toolCallId?: string }).toolCallId;
+		if (typeof toolCallId === "string" && keptCallIds.has(toolCallId)) replayable.push(message);
+		else droppedOrphans?.push(message);
+	}
+	// A mid-turn cut leaves the slice opening on an assistant message, so the summarized prefix is
+	// marked with a user-facing stand-in.
+	if (replayable[0] && !USER_FACING_ROLES.has(replayable[0].role)) {
+		replayable.unshift({ role: "user", content: [{ type: "text", text: SPLIT_TURN_MARKER }], timestamp: replayable[0].timestamp } as AgentMessage);
+	}
+	return replayable;
 }
 
 export interface HandoffDocumentParts {
@@ -789,12 +832,14 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// Older context gets summarized; the recent tail is carried over verbatim.
 		let firstKeptIndex = allEntries.length;
 		if (config.handoffKeepTokens > 0) {
+			// Cut where the keep budget runs out, mid-turn included: pi cuts at conversation
+			// boundaries and never at a tool result, so the replay stays parseable — a result whose call
+			// was summarized is folded into the summary, and a slice opening on an assistant message is
+			// marked by SPLIT_TURN_MARKER. Backing the cut up to the turn start instead (the old
+			// behavior) kept the whole turn, which left nothing older to summarize whenever one turn
+			// exceeded the keep window and blocked the handoff entirely.
 			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffKeepTokens);
 			firstKeptIndex = cut.firstKeptEntryIndex;
-			// Keep whole turns so tool calls and their results replay as a pair.
-			if (cut.isSplitTurn && cut.turnStartIndex >= 0 && cut.turnStartIndex < firstKeptIndex) {
-				firstKeptIndex = cut.turnStartIndex;
-			}
 		}
 		// Stale continuation prompts are replaced by a marker on replay: verbatim they read as a
 		// fresh instruction and open the new session with an already-superseded state.
@@ -803,26 +848,29 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// If the older span starts with a previous compaction, let the summarizer update it
 		// instead of feeding the old summary in as ordinary conversation.
 		const previousCompaction = [...olderEntries].reverse().find((entry) => entry.type === "compaction");
-		const olderMessages = olderEntries
-			.filter((entry) => entry.type !== "compaction")
-			.flatMap(sessionEntryToContextMessages);
 		// Language sampling sees the raw slice (prompts included; `languageSamples` filters them
 		// itself), while the replay and its token budget use the marker-substituted messages.
 		const carriedMessages = keptSlice.flatMap(sessionEntryToContextMessages);
-		const keptMessages = replayMessagesFor(keptSlice);
+		// A result whose call was summarized cannot be replayed; the summary takes it over so the
+		// content is not lost. It stays in the raw carried slice for accounting (usage held it), while
+		// `olderTokens` counts the prefix only, so the subtraction below never double-counts it.
+		const droppedOrphans: AgentMessage[] = [];
+		const keptMessages = replayMessagesFor(keptSlice, droppedOrphans);
+		const olderPrefixMessages = olderEntries.filter((entry) => entry.type !== "compaction").flatMap(sessionEntryToContextMessages);
+		const olderMessages = [...olderPrefixMessages, ...droppedOrphans];
 
 		// Skip when there is nothing real to summarize (e.g. only a previous compaction summary,
-		// or a single huge turn that the turn-aligned cut keeps whole). The command path is
+		// or a session that already fits the keep window). The command path is
 		// user-initiated, so say why instead of returning silently.
 		if (!olderMessages.some((message) => message.role === "user" || message.role === "assistant")) {
-			// Auto can land here on every settle once one turn fills the keep window; back off
+			// Auto can land here on every settle while the session fits the keep window; back off
 			// so the warning does not repeat with each turn.
 			if (autoTriggered) cooldownUntil = Date.now() + RETRIGGER_COOLDOWN_MS;
 			notify(ctx, "Auto handoff skipped: nothing older than the recent window to summarize.", "warning");
 			return;
 		}
 
-		const olderTokens = olderMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const olderTokens = olderPrefixMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const sliceTokens = carriedMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		// Floor: below this the summary saves too little and drops too much detail.

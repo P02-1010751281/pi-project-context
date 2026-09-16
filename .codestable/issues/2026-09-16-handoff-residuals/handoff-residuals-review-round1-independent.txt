@@ -1,0 +1,96 @@
+# 独立审查报告（lane A）— `pi-project-context` 残余 R1/R2/R3
+
+## 结论
+
+**important**（共 2 条 important + 2 条 minor；无 blocking）
+
+R1 的核心修复正确且已验证能修复原始缺口；R2 的两个调用点确实可被变异检出；R3 存在一处**真实的覆盖回退**（空转屏障），另有一处防御性缺口。全量套件 9/9，含 CPU 负载复跑均绿。
+
+---
+
+## 发现
+
+### I1 (important) — R3：`lockAttempts`/`contendedAttempts` 屏障是空转的，失去对「临界区重叠」的检出能力
+- 文件：`tests/consolidation-test.mjs:715-722`（`lockAttempts`）、`tests/consolidation-test.mjs:788-796`（`contendedAttempts`）
+- 问题：计数器在调用 `withMemoryLock` **之前**同步自增，而三个 `runLocked()` / `.map()` 都在同一 tick 内完成自增。等任一 writer 真正进入临界区时 `lockAttempts === 3` 早已成立，`waitUntil` 第一次判断即返回、不产生任何等待。持锁者因此不再像旧的 30ms/20ms 那样「持有期间承受真实争用」，三个临界区实际是**严格串行**执行的。
+- 证据：
+  - 探针（instrument 真实 `withMemoryLock`）显示：`w2 ENTER@2 / w2 EXIT@2 / w3 ENTER@57 / w1 ENTER@79`——每个 writer 在自己进入前，锁从未被别的 writer 持有，无任何重叠窗口。
+  - 变异验证：把 `withMemoryLock` 整个旁路（`return await action()`），断言 `!overlapped` **仍然为真**（`overlapped:false`），即该断言对「锁失效」不再敏感；`contendedOverlap` 同样为 `false`（只剩 `MEMORY.md.lock` 残留这一半断言在报错）。
+  - 对照：旧写法的 30ms 固定持锁在同样旁路下得到 `overlapped:true`（会红灯）。
+- 影响：R3 目标（「竞争窗口真实存在，而不是靠睡够时间」）未达成；这两个断言退化为「顺序执行时不会重叠」的恒真命题。注意：整套 `consolidation-test` 对锁失效仍会因 `stale lock is stolen` 等其他断言变红，所以不是完全裸奔，但**恰好是这条串行化断言本身失去意义**。
+- 建议：屏障必须让持锁者等到「其他 writer 已实际尝试并失败」，而当前 `withMemoryLock` 不暴露重试时机，测试侧无法构造。可选：
+  1. 在 `project-state.ts` 暴露一个仅测试用的 seam（如 `__setLockRetryBackoffForTests`/`__onLockContended` hook），让测试在同进程观测到真实争用；
+  2. 或保留一个有界真实持锁（恢复到固定等待，并注释清楚这是「必须真实等待」的语义，如同 lock deadline 测试）；
+  3. 或改为「第一个进入者持有直到锁文件 mtime 被外部观察到重试」——需要 API 支持。
+  单纯在临界区内 `waitUntil(计数器===3)` 无法实现「真实争用」，建议讨论后二选一。
+
+### I2 (important) — R1：`replayMessagesFor` 的「首消息必为 user」不变量只覆盖 `assistant`，可被 `branchSummary` 丢弃后破为 `toolResult`
+- 文件：`extensions/project-context/handoff.ts:352`
+- 问题：切点可为 `branch_summary`（`isCutPointMessage` 对 `branchSummary` 返回 true），但 `replayMessagesFor` 的 `isReplayableRole`（含 `branchSummary`/`compactionSummary`）会把它过滤掉。若过滤后 `messages[0]` 变成 `toolResult`（其 toolCall 在被摘要的前缀里），`if (messages[0]?.role === "assistant")` 不会补 marker，回放块以 `toolResult` 开头——正是该修复要防的非法结构。
+- 证据：用扩展导出的函数直接复现：
+  ```
+  replayMessagesFor([branch_summary, toolResult]) → ["toolResult"]  // 无 marker
+  ```
+- 影响面：`custom`/`bashExecution`/`branchSummary`/`compactionSummary` 在 `convertToLlm` 里都会转成 user，所以真正危险的只剩「被丢弃的 summary 条目后面紧跟 toolResult」这一种。pi 的 `branchWithSummary` 把 `branch_summary` 作为 fork 点子节点追加，其后续通常是新的 user 消息，因此**实际可达性较低**（该缺口在旧代码里同样存在，非本次引入）。但修复的注释/文档明确宣称「replay block must open with a user message / repaired by SPLIT_TURN_MARKER」，与实现不完全一致。
+- 建议：把判断放宽为 `messages[0] && messages[0].role !== "user"`（对 `assistant`/`toolResult` 都补 marker；custom/bashExecution 已被 provider 视为 user，可不动），并补一条 `replayMessagesFor([branchSummary, toolResult])` 的纯函数断言。这样不变量才真正闭合。
+
+### M1 (minor) — R2：若 stub 未被影子化，断言会以未捕获异常收场而非干净失败
+- 文件：`tests/handoff-test.mjs:460`（以及依赖 `stubCalls[0]` 的后续行）
+- 问题：`check("the summarizer receives...", stubCalls.length === 1 && stubCalls[0]...` 用 `&&` 保护了自己，但下一行 `stubCalls[0].messages.some(...)` 未做 `stubCalls[0]?.` 保护。一旦影子化失效（`stubCalls` 为空），测试会抛 `TypeError` 而不是报告一条 FAIL。
+- 影响：不构成假绿（仍 exit 1），但定位困难，且会掩盖真实失败原因。
+- 建议：`stubCalls[0]?.messages.some(...)`，或先 `check("the stub served the summary", stubCalls.length === 1)` 再做后续断言。
+
+### M2 (minor) — 资源/卫生：`globalThis.__handoffStub` 未清理
+- 文件：`tests/handoff-test.mjs:388`
+- 问题：stub 与 `globalThis.__handoffStub` 在测试结束未删除。当前每个测试文件由 `run-all.mjs` 用 `spawnSync` 独立进程运行，所以无跨文件污染；但同进程内多次 `loadDefault` 会共享该全局。
+- 建议：`finally` 中 `delete globalThis.__handoffStub`；或在 `run-all` 改为 in-process 前保持现状但加注释。
+
+---
+
+## 已验证清单（实际做过的验证与结果）
+
+**R1 语义与安全**
+1. 对照宿主 `dist/core/compaction/compaction.js` 的 `findValidCutPoints`/`isCutPointMessage`/`isTurnStartMessage`：切点仅 user/assistant/bashExecution/custom/branchSummary/compactionSummary，`compaction` 条目被跳过，toolResult 永不作为切点。✅
+2. 用宿主真实 `findCutPoint` + `sessionEntryToContextMessages` 做 20000 次随机 fuzz（生成器遵守 pi「toolResult 紧跟其 call 批次」不变量）：
+   - `orphanResult = 0`（kept 中不存在其 call 在 older 的 toolResult）；
+   - `orphanCall = 0`（older 中不存在其 result 在 kept 的 toolCall）；
+   - 配对保证成立。✅
+3. 端到端复现原始缺陷场景（单轮 4×12.8k toolResult、`handoffKeepTokens=2000`）：
+   - 旧代码（恢复 `turnStartIndex` 回退）→ `Auto handoff skipped: nothing older...`，`stubCalls=0`，交接不发生；
+   - 新代码 → 交接发生，`replay roles = user,assistant,user`，首消息为 `SPLIT_TURN_MARKER`，摘要被调用 1 次。✅
+4. 自动路径（`handoffAdaptive=false, ratio=0.1`，单轮 >8k）：`agent_settled` 调度 `force-auto`，实际执行 mid-turn 切分，`olderTokens≈12.8k`，`summary msgs = user,assistant,toolResult×4`，回放 user-first。✅
+5. `SPLIT_TURN_MARKER` 误判检查：`isHandoffPromptText` 要求「前导 + 标题 + 结尾」全匹配，marker 不满足；marker 只进入 `keptMessages`，语言采样用的是原始 `carriedMessages`，故不参与语言判定；`languageSamples`/`promptLanguage` 均不会命中。✅
+6. 记账自洽：`olderTokens`/`sliceTokens` 用原始消息，`keptTokens` 含 marker（略大于 sliceTokens），`baselineNow = usage - olderTokens - sliceTokens`、`estimatedAfter` 偏保守（安全方向）；auto 路径实测未误触「too close」跳过。✅
+7. 正常路径（非 split turn）零行为变化：`isCutPointMessage(assistant)=true` 而 `isTurnStartMessage(assistant)=false` ⇒ 切在 assistant 必然 `isSplitTurn=true`；非 split 切点必为 turn-start 条目，`keptSlice[0]` 不可能是 assistant，marker 分支不触发。`handoffKeepTokens===0` 时 `keptSlice` 为空，亦不触发。✅
+8. `MIN_SUMMARIZE_TOKENS` / pending-question guard：`olderTokens < 8k` 的 auto 跳过与 `findPendingQuestion(allEntries)`（扫描全量条目）均未改动；mid-turn 切分只使 `olderTokens` 变大，不会误伤下限。✅
+9. 摘要侧安全性：`generateSummaryWithUsage` 经 `convertToLlm` + `serializeConversation` 合成单条 user 文本，mid-turn 前缀以 toolResult 开头不会触发 provider 的 tool-pairing 校验。✅
+
+**R2 变异验证（在 `/tmp` 副本上做，已复原）**
+10. 去掉 `localizeSummaryHeadings` 调用点（`return localizeSummaryHeadings(text, language)` → `return text`）：`handoff-test.mjs` **红灯**（`the model's headings are localized...`、`the archived handoff document...` 2 条 FAIL，exit 1）。✅
+11. `languageMessagesFor(olderMessages, carriedMessages)` → `languageMessagesFor(olderMessages, [])`：**红灯**（`the summary call carries the conversation language` 等 3 条 FAIL，exit 1）。✅
+12. 影子化可靠性：stub 被真实调用（`stubCalls.length===1`），且 `modelRegistry.complete` 会 throw——若 stub 失效，`captured.prompt` 为 undefined，首条断言即失败，无空转通过。`export *` + 显式导出的 ESM 优先级经 jiti alias 生效。✅
+13. 断言非空转：`PINNED_SUMMARY` 的 `## Goal`/`## Critical Context` 与 `SUMMARY_HEADINGS.en` 映射一致；`captured.prompt` 同时断言了「有 `## 目标`」与「无 `## Goal`」，覆盖替换而非仅存在。✅
+14. 另做负断言变异：把 `nothing older` 跳过分支里的 `cooldownUntil` 赋值改为恒假 → `handoff-test.mjs` 的 `a skipped auto handoff backs off...` **红灯**，证明 R3 改用的 `setTimeout(0)` 负断言确实能捕捉调度重试（timer FIFO）。✅
+
+**R3 覆盖与 flaky**
+15. `consolidation-test.mjs` 连续 5 次、`handoff-test.mjs` 连续 5 次：全绿。✅
+16. 8×CPU 全核负载下 `run-all.mjs` 全绿；另 3 轮负载下单独 `consolidation`/`handoff` 各绿。✅
+17. `waitUntil` 超时不会假绿：`thiefEntered` 超时后最终 check 会失败；`thirdAttempted` 是同步置位，`waitUntil` 无实际等待。✅
+18. 第三方阻塞负断言非空转：直接探针（旁路锁）显示 `thirdBlocked=false`，能红灯。✅
+19. 锁泄漏变异（`releaseLock` 不删锁）：`consolidation-test` 因 `timed out waiting for the memory write lock` 红灯，屏障不会假死通过。✅
+20. 跨进程锁测试（`helpers/lock-holder.mjs`，3 个真实子进程、60ms 真实持锁）与本次改动无关，行为不变。✅
+21. `setImmediate` 回合数（3 次）对「窃锁者持锁期间第三方不得进入」是充分且确定的（进入需等待 40–100ms 退避）。✅
+22. lock deadline 测试仍依赖真实 5s 超时（`<8000ms` 上界），未被条件等待替换，符合 R3 文档说明。✅
+
+**回归 / 并发 / 资源**
+23. `git diff` 仅 4 个文件、198/58 行，沙箱仓库未被本次审查改动（`git diff --stat` 与基线一致，md5 复核）；所有借用/变异均写 `/tmp` 且已复原/清理。✅
+24. `harness.mjs` 的 `contentEntry` 重构与 `messageEntry` 等价（`parentId` 默认 null），其余 8 个测试文件全绿。✅
+
+**未发现**：R1 引入孤儿 toolCall/toolResult、`keptTokens` 记账冲突、正常路径行为漂移、跨进程锁回归、测试资源泄漏。
+
+---
+
+### 修复优先级建议
+1. 先处理 **I1**（R3 屏障空转，正是本轮残余要解决的问题，且当前断言会被误认为有效）。
+2. **I2** 作为防御性闭合（放宽 marker 条件为 `role !== "user"` + 一条纯函数断言）。
+3. **M1/M2** 作为测试卫生顺手清理。
