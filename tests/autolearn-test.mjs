@@ -9,6 +9,7 @@ import { loadDefault, makeCtx, makePi, messageEntry, PC, runHandlers, waitUntil 
  *  - candidate → list → approve / reject
  *  - evidence gate and dedupe
  *  - the feature switch lives in project-context.json
+ *  - the automatic pass needs new material, a due interval and at least one archived session
  */
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-autolearn-"));
@@ -152,6 +153,39 @@ try {
 	check("new material alone does not skip the interval", await quietAfterSettle());
 	const tuned = JSON.parse(await readFile(configFile, "utf8"));
 	check("dsh-compatible turn/interval defaults", tuned.autolearnTurns === 20 && tuned.autolearnIntervalMs === 1_800_000);
+
+	console.log("\n=== I. automatic pass needs an archived session ===");
+	// A fresh project (so the config cache misses) whose material and interval are already due: the
+	// archived-session check is then the only gate that can stop the pass, which no other probe covers.
+	const tmp2 = await mkdtemp(path.join(os.tmpdir(), "pi-autolearn-empty-"));
+	try {
+		await mkdir(path.join(tmp2, ".agents/memory"), { recursive: true });
+		await writeFile(path.join(tmp2, ".agents/memory/project-context.json"), `${JSON.stringify({ autoLearn: true, autolearnAt: 0 }, null, 2)}\n`);
+		await writeFile(path.join(tmp2, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- Fresh project with no archived sessions.\n");
+		await writeFile(path.join(tmp2, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\n\nFresh project.\n");
+		const ctx2 = makeCtx(tmp2);
+		// A second instance: `pi.exec` resolves the project root from the pi's own cwd, so the fresh
+		// project needs its own registration (and its own single-flight/throttle state with it).
+		const pi2 = makePi({ cwd: tmp2 });
+		await (await loadDefault(`${PC}/index.ts`))(pi2);
+		let emptyProjectCalls = 0;
+		ctx2.modelRegistry.complete = async () => {
+			emptyProjectCalls += 1;
+			return { content: [{ type: "text", text: JSON.stringify({ skill: null, inspect: [] }) }] };
+		};
+		await runHandlers(pi2, "agent_settled", ctx2);
+		check("no automatic call without an archived session", !(await waitUntil(() => emptyProjectCalls > 0, 500)));
+		// Positive control: the same project with one archived session must call the model, so the probe
+		// above cannot pass merely because no pass can run here at all. The counter is reset first so
+		// this control cannot be satisfied by a late call that the negative probe already accounted for.
+		emptyProjectCalls = 0;
+		await mkdir(path.join(tmp2, ".agents/memory/session-logs/sess-empty"), { recursive: true });
+		await writeFile(path.join(tmp2, ".agents/memory/session-logs/sess-empty/session.jsonl"), fixture("empty"));
+		await runHandlers(pi2, "agent_settled", ctx2);
+		check("archived session opens the same gate", await waitUntil(() => emptyProjectCalls > 0, 1_500));
+	} finally {
+		await rm(tmp2, { recursive: true, force: true });
+	}
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }

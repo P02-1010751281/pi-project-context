@@ -4,7 +4,7 @@ issue: 2026-09-16-handoff-residuals
 status: passed
 path: quick
 reviewer: independent pi CLI (lane A, read-only sandbox copies)
-rounds: 5
+rounds: 6
 created_at: 2026-09-16
 ---
 
@@ -27,6 +27,7 @@ created_at: 2026-09-16
 | 3 | minor ×3 | m1 孤儿**内容丢失**（不在回放也不在摘要，附端到端反例）；m2 混合让出对 `setTimeout(0)` 旁路捕获 8/10；m3 autolearn 负断言被多闸门过定（pre-existing） | m1 修复：`droppedOrphans` 收集器 + 折入 `olderMessages`；m2 让出加深至 3×(immediate+timeout) 并降级注释；m3 记入 fix-note §6 |
 | 4 | minor ×5 | 重复 JSDoc；切点注释仍复述被证伪的前提；`baselineNow` 对孤儿双重扣减（当前 `force` 下不可达）；中段孤儿未清；m3 复现；analysis 文档漂移 | 全部修复：去重、改注释、`olderTokens` 只算前缀、孤儿按 `toolCallId` 全局剔除、analysis 更新 |
 | 5 | minor ×1 | 聚焦复审 m3 修复（增量仅 `tests/switches-test.mjs` +11/−1）：修复有效（开关闸门单独变异 → 探针红；archived/due 变异 → 预期绿；`learnCalls` 全程 0；空载 ×35 + 负载均绿）。新发现 **m4**：`archived.size === 0` 闸门全仓无覆盖（pre-existing，未修，见 fix-note §6） | m3 关闭；m4 登记为残余 |
+| 6 | minor ×3 | 聚焦复审 m4 修复（增量 `tests/autolearn-test.mjs` +34，I 段）：三变异正交矩阵复现、trace 证明负探针确实到达该闸门、模块隔离实证、空载 20/20 + 16/32 hogs 均绿、沙箱零写入（整树 md5 一致）。minor：①正/负探针共用计数器 → 建议重置；②注释误称“fresh config cache”；③fire-and-forget 与 `rm` 竞争可留 /tmp 残目录 | ①②已修（重置 + 注释纠正）；③记录为接受残余（纯 /tmp 卫生，既有模式）；复查：10/10 稳定、变异仍检出（两条红）、全套空载+负载 9/9 |
 
 ## 关键验证（复审方实际执行）
 
@@ -38,6 +39,6 @@ created_at: 2026-09-16
 
 ## 结论
 
-四条 important（I1/I2/m1 + 孤儿配对闭合）全部修复并经变异验证；minor 全部处置（第 5 轮关闭 m3）。
-仅剩 **m4**（`archived.size === 0` 闸门无覆盖，pre-existing，修法已写明）与**有损剔除/轮内截断的语义**
-（有意设计，已在 fix-note §2/§6 记录）。无 blocking。`status: passed`。
+四条 important（I1/I2/m1 + 孤儿配对闭合）全部修复并经变异验证；minor 全部处置（第 5 轮关闭 m3，第 6 轮关闭 m4）。
+第 6 轮的两个 minor 已修，一个接受（`/tmp` 残目录，纯卫生、既有 fire-and-forget 模式）；m4 探针的 500ms 灵敏度边界
+已在 fix-note §6 明示。仅剩**有损剔除/轮内截断的语义**（有意设计，已在 fix-note §2/§6 记录）。无 blocking。`status: passed`。

@@ -1,0 +1,90 @@
+The `cpu-hog.mjs` is pre-existing (not mine). Done. Here is the review.
+
+---
+
+# 复审报告 — lane A（m4 增量：`tests/autolearn-test.mjs` I 段）
+
+## 结论：**minor**
+
+新增 I 段方向正确，且**实测能唯一地检出 archived 闸门**；三处变异自检全部复现。无 blocking / important 问题。以下为若干 minor（多为测试鲁棒性与注释准确性），均不阻止合入。
+
+---
+
+## 一、检出力复核（亲自复现三变异）
+
+方法：把工作树复制到 `/tmp/rev-a`，对副本做 `sed` 变异（沙箱仓库零改动），用 `grep -E '^(OK|FAIL)'` 抓全量清单。空载 + 8 hogs + 32 hogs 三档均跑。
+
+| 变异 | 点位 | 空载 | 8 hogs | 32 hogs |
+|---|---|---|---|---|
+| archived 闸门 → `if(false && !force)` | `autolearn.ts:406` | 唯一红：`FAIL no automatic call without an archived session` | 同上 | 同上 |
+| switch `!config.autoLearn` → `if(false && !force)` | `autolearn.ts:385` | **ALL OK** | ALL OK | ALL OK |
+| changed/due `if(!changed||!due)` → `if(false)` | `autolearn.ts:399` | 仅 H 两条红 | 仅 H 两条红 | 仅 H 两条红 |
+
+- H 两条红 = `no automatic call without new material`、`new material alone does not skip the interval`；`dsh-compatible turn/interval defaults` 仍绿。I 段两条全绿。
+- 其余 A–G 全部绿，三档负载下一致，无交叉污染。
+- 与你的自检完全一致。
+
+额外用临时 trace 证明 I 段负探针**确实走到**该闸门（非提前 return）：负探针路径为 `changed=true due=true autolearnAt=0` → `archived size=0 force=false` → return；正向对照同条件但 `size=2` → 调用模型。空载模型调用发生在 `runHandlers` 返回后 **+4~14ms**（`runHandlers` 本身 +0~1ms，因为 pass 是 fire-and-forget）。
+
+---
+
+## 二、假绿风险复核
+
+排除了你列出的主要嫌疑：
+
+- **`autolearnAt:0` 被改写**：实测 `getConfig` 对 `{autoLearn:true,autolearnAt:0}` 返回 `autolearnAt=0, turns=20, interval=1800000`。`positive(0,0)` 返回 `0`（非 nullish，`??` 不落到 legacy）；`legacyDefaults` 只在 raw 为 `undefined` 时生效。→ 不会。
+- **`runIsDisabled()`**：仅由 `session_start` 的 flag 设置；I 段只触发 `agent_settled`，moduleCache:false 下为独立模块实例，`runDisabled` 保持 false。trace 证明已穿过该闸门到达 archived 检查。→ 不会。
+- **`resolveAuxModel` 失败被 warn-once 吞**：正向对照证明同一 `ctx2` 下模型确实被调用；若解析失败，正向对照会红（`makeCtx` 默认 `hasConfiguredAuth=true` 且 `model` 存在）。→ 不会。
+- **`due` 靠 interval 而非 turns**：确实靠 interval（`autolearnAt=0` ⇒ `Date.now()-0 ≥ 1.8e6`），与注释「material and interval are already due」一致，非缺陷。
+
+**残留（minor）**：正向对照与负探针**共用** `emptyProjectCalls`，且第二次 `agent_settled` 可能被 pi2 的单飞 `active` 合并。后果：在 archived 闸门被变异且 pass 到达模型延迟 >500ms 时，负探针假绿，而正向对照因计数被负探针的迟到调用「喂饱」也假绿 → 整个 I 段可全绿。实测用人为延迟验证：
+
+| 破坏闸门 + 模型前延迟 | 无 reset | 加 `emptyProjectCalls=0` |
+|---|---|---|
+| 0 / 100 / 300 ms | 负探针 FAIL（检出） | 负探针 + 正对照 FAIL（检出） |
+| **600 ms** | **ALL OK（漏检）** | **ALL OK（仍漏检）** |
+
+现实延迟 5–20ms，500ms 窗口有 ~25–100× 余量，空载/8/32 hogs 下均检出，非现实风险；但这是测试对闸门灵敏度的硬边界。建议在正向对照前加一行 `emptyProjectCalls = 0;`（实测 pristine 下 10/10、空载全绿，且让正对照语义独立）；彻底修需在第二次 settle 前 await 第一次 pass（例如暴露/轮询 `active`），成本较高，可不做。
+
+---
+
+## 三、稳定性
+
+- 正/负对照实际时延 ~5–20ms，500ms / 1500ms 界余量极大。
+- `waitUntil` 语义正确：`while(Date.now()<deadline){ if(await predicate()) return true; ...} return await predicate();`，异步谓词支持、末尾补判一次，负探针不会因轮询步长（10ms）漏判一次已发生的调用（调用会被 `emptyProjectCalls` 计数保留）。
+- 实测重复：pristine I 段空载 **20/20 绿**，16 hogs **20/20 绿**；整包 run-all 空载 ×2 + 16 hogs ×1 + 32 hogs ×1 全绿。
+
+---
+
+## 四、副作用 / 卫生
+
+- **跨测试污染**：`loadDefault`/`loadNamespace` 均为 `moduleCache:false`，实测两次调用返回不同模块实例（config / project-state / factory 全部 `=== false`）。因此第二个实例的 `config.cache`、`projectRootCache`（均按 root 键）、`throttle`、`warnedRoutes`、`runDisabled` 与首个实例互相独立；pi2 也未复用 pi 的 handler 集合。→ 无污染。
+- **`warnedRoutes` warn-once**：进程级但每注册实例独立，且 I 段未触发该路由告警。→ 无。
+- **tmp2 清理异常路径**：`finally { rm(tmp2,recursive,force) }` 覆盖异常路径，✓。
+- **fire-and-forget 与 rm 竞争（minor）**：`agent_settled` 的 archive/autolearn 均为 `void` 异步。I 段两次 `runHandlers` 后立刻 `rm(tmp2)`，在「pass 真正运行 + 高负载」下可让迟到写（`writeAtomic` 会 `mkdir(recursive)`）重建 `tmp2/.agents/memory/session-logs/INDEX.md`，留下 `pi-autolearn-empty-*` 残目录。实测 32 hogs + 破坏闸门连跑 3 次产生 3 个残目录（仅含 `INDEX.md`）；pristine 常规运行未复现。属纯 `/tmp` 卫生问题，不触及沙箱仓库，且该 fire-and-forget 模式在 H/既有 archive 中已存在。建议清理前 drain 一次（如等待一次 `waitUntil(()=>exists(sessionIndexFile)===false)` 或短 settle），可选。
+
+---
+
+## 五、代码质量
+
+- **注释不准确（minor）**：`tests/autolearn-test.mjs:167-169` 注释称第二个实例是为了「a fresh config cache」。实测 `moduleCache:false` 下 config 缓存每 `loadDefault` 本就独立，且 `getConfig` 按 root 键，复用同一 factory 也能通过（并且仍能检出 archived 变异）。第二个实例的**真实**必要性是 `pi.exec` 的 cwd，以及避免与 `pi` 共享 `registerAutolearn` 闭包里的单飞 `active`/`throttle`。建议改述为后者，避免误导后人删掉 `loadDefault` 或误信缓存说辞。
+- **重复度**：I 段内联的 `emptyProjectCalls` + model stub + `waitUntil` 与 H 的 `quietAfterSettle`/`automaticCalls` 形态重复。二者闭包对象不同（pi/ctx vs pi2/ctx2），抽公共 helper 收益有限；当前 32 行可读，不改亦可。仅建议 H 的 `quietAfterSettle(timeoutMs=150)` 与 I 的 500ms 界限口径不统一，若抽 helper 可顺带统一。
+
+---
+
+## 已验证清单
+
+1. 沙箱基线：`git status` 仅 `M tests/autolearn-test.mjs` + 预存 `?? .agents/`、`?? .codestable/...`；`git diff --stat` = 1 file, +32 行，与题目一致。
+2. 空载 `node tests/run-all.mjs`：9/9 绿 ×2。
+3. 负载 `run-all`：16 hogs（=1×CPU）绿 ×1；32 hogs（=2×CPU）绿 ×1。
+4. 变异 A（archived）：空载/8/32 hogs 均「唯一红」= `no automatic call without an archived session`。
+5. 变异 B（switch）：三档均 ALL OK（项目开关为 true，符合预期）。
+6. 变异 C（changed/due）：三档均仅 H 两条红、I 段全绿。
+7. trace 证据：负探针 `changed=true due=true at=0` → `archived size=0 force=false` return；正对照 `size=2` → model call（+4~20ms）。
+8. `getConfig({autoLearn:true,autolearnAt:0})` = `autoLearn=true, at=0, turns=20, interval=1800000`（legacy/positive 未改写）。
+9. 模块隔离：两次 `loadDefault`/`loadNamespace` 模块实例不同（防止跨实例缓存污染）。
+10. 灵敏度边界：人为延迟 0/100/300ms 仍检出；600ms 漏检（记录为 minor）。
+11. `emptyProjectCalls=0` 重置变体：pristine 空载 10/10 + 空载 20/20 绿（建议已可安全落地）。
+12. 稳定性：pristine autolearn 空载 20/20、16 hogs 20/20 绿。
+13. 残目录复现：32 hogs + 破坏闸门可留 `pi-autolearn-empty-*`（仅 INDEX.md）；pristine 常规未复现。
+14. 沙箱零写入：整树 `md5sum` 前后一致（`6edef4d3…`），`git status` 与审查开始时相同；`/tmp/pi-autolearn-*` 无残留。

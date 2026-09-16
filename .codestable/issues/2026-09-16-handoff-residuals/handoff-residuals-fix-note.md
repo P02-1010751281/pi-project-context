@@ -62,7 +62,10 @@ tags: [handoff, tests, flakiness]
 ## 6. 残余与已知边界
 
 - **m3（已于本轮修复，round 5 复审确认）**：`switches-test.mjs` 的负断言 `autolearn off: no scheduled pass` 原本同时被「开关 off / archived=0 / changed / due」多道闸门保护，只变异 autolearn 开关时仍绿。修法：`off autolearn` 提前到第一次 settle 之前；模型桩新增按提示词区分的 `learnCalls`；探针改为**累计**判定（`stayedQuiet(() => learnCalls > 0)`），使开关闸门与其它闸门彻底解耦。变异开关 → 探针红；变异 archived/due 闸门 → 预期绿（无假红）；`learnCalls` 全程 0。改动 +11/−1。
-- **m4（pre-existing，未修，round 5 新发现）**：`autolearn.ts` 的 `if (archived.size === 0 && !force) return;` 闸门目前在全部 9 个测试文件中**都无检出力** —— 变异为恒假后 `run-all` 仍 9/9 全绿（与 m3 同类：探针被更靠前的闸门吸收）。建议修法：在 `autolearn-test.mjs` 加一条「有新材料 + due + 开关 on，但归档目录为空 ⇒ 不调用模型」的正面断言；修法明确、成本小，属另一子系统测试设计，需单独一轮复审。
+- **m4（pre-existing，已于本轮修复，round 6 复审确认）**：`autolearn.ts` 的 `if (archived.size === 0 && !force) return;` 闸门原本在全部 9 个测试文件中都无检出力（变异为恒假后 `run-all` 仍 9/9 全绿）。修法：在 `tests/autolearn-test.mjs` 新增 **I 段** —— 独立 tmp 项目（`{autoLearn: true, autolearnAt: 0}`、材料/区间已到期、无归档会话）+ 第二个 pi 实例（`pi.exec` 按自身 cwd 定根，且单飞/throttle 状态不与主实例共享）+ 负探针（500ms 内不得调用模型）+ **正向对照**（放入一个归档会话后必须调用，防探针因 pass 根本跑不起来而假绿）。+34 行。
+  - 变异矩阵（round 6 三档负载复核）：变异 archived 闸门 → I 段两条红（唯一）；变异开关 → 全绿（该项目开关即 true，非本探针职责）；变异 changed/due → 仅 H 段两条红、I 段绿 ⇒ 三段探针与三道闸门一一正交，无误报。
+  - 复审 minor 已处置：正向对照前 `emptyProjectCalls = 0`（防“迟到调用喂饱对照”）；注释改为真实原因（单飞/throttle + cwd 定根，不再提“fresh config cache”）。
+  - **接受的残余（round 6 实测边界）**：若模型调用延迟 >500ms（实际 5–20ms，余量 25–100×），I 段可漏检；彻底修需暴露 pass 完成信号（`active`），成本不划算。另：`agent_settled` 的 fire-and-forget 写与 `rm(tmp2)` 竞争，在 32 hogs + 破闸门变异时可留 `/tmp/pi-autolearn-empty-*`（仅含 `INDEX.md`）—— 纯 /tmp 卫生，且该 fire-and-forget 模式在 H/archive 段已存在，pristine 常规不可复现。
 - **孤儿结果为有损剔除**：内容进摘要（模型摘要可能压缩细节），回放不含它；这是为 provider 结构合法性付的代价，已在 analysis 记录。
 - **轮内切分有意的语义变化**：见 §2；若 owner 认为「整轮回放」更可取，可用 `handoffKeepTokens: 0`（summary-only）或回退该 commit 的切点逻辑。
 
@@ -90,5 +93,5 @@ tags: [handoff, tests, flakiness]
 
 ### 未在本轮完成
 
-- 运行中的 pi 进程（pid 2309794，启动于 09-15 14:33）仍跑旧代码：重启后才吃到 v0.1.5（含 journal 折入）。
-- **m4**（见 §6）未修。
+- 运行中的 pi 进程（pid 3100210，启动于 09-16 16:36）仍跑 v0.1.4 代码：重启后才吃到 v0.1.5。
+- **m4** 已修（见 §6），但**尚未提交**：工作树内 `tests/autolearn-test.mjs` +34 行待 owner 决定是否提交/额外发布。
