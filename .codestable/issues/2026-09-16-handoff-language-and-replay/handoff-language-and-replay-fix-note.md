@@ -59,6 +59,8 @@ tags: [handoff, i18n, replay]
 - 稳定性：全套 ×16 与单个测试 ×60（含 4×CPU 负载）均通过；提交后曾出现一次未复现的 1/9 失败
  （未捕获到具体测试），因此把本轮新加的 20ms 定时窗口改为轮询式等待（`waitFor`）以消除脆弱点；
   pre-existing 的 `consolidation-test.mjs` 10/20/30ms 等待未动，已记入 review 残余。
+- 探针注意：验证 **settings 安装包**是否生效时**不能带 `-ne`（`--no-extensions`）**——它会整包禁用，
+  只留显式 `-e`；本次曾因此误判「已装包未加载」，去掉 `-ne` 后真 TUI 立即验证通过。
 - 真机探针：pi 原始 compaction 提示词 + 中文语言指令 → 标题与正文全中文。
 - **端到端真机实跑**（2026-09-16，RPC 模式 + 真实 deepseek 模型 + 真实 session 文件，脚本与完整证据见
   `handoff-language-and-replay-e2e.txt`）：scratch 项目连做两次 `/auto-handoff now`——
@@ -77,13 +79,17 @@ tags: [handoff, i18n, replay]
 
 ## 4. 部署状态
 
-- 已提交（本地，未 push）：`5b9b9ad feat(handoff): follow the conversation language and drop stale prompts from the replay`
-  （含 `config.ts`/`handoff.ts`/`README.md`/`tests/handoff-test.mjs` 与新 issue 目录）；后续 docs 提交 `2964141`
-  记录污染备份清理。
-- 已安装 pi 包仍为 `ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git@v0.1.2`，
-  **新代码未生效**；未打新 tag（owner 未要求）。
-- 生效路径：① push + `pi update`（owner 操作，可顺带打 `v0.1.4`）；② 本地
-  `pi -e <repo>/extensions/project-context/index.ts`。
+- 已提交并 **已 push**（`origin` 双远端：Forgejo + GitHub 镜像）：
+  `5b9b9ad feat(handoff): follow the conversation language and drop stale prompts from the replay`
+  （含 `config.ts`/`handoff.ts`/`README.md`/`tests/handoff-test.mjs` 与新 issue 目录），后续 `2964141`（污染备份
+  清理记录）、`f1565dc`（提交哈希）、`6d8b81b`（自动触发断言改轮询）；远端 `master` = `6d8b81b`。
+- 发布 tag（已 push）：`v0.1.3`（`e4d48c4`，记忆日志化 + 写锁加固，此前一直是本地未发布）与
+  `v0.1.4`（`6d8b81b`，本 issue 的 handoff 改动）。
+- **已安装副本已切到 v0.1.4 并生效**：`settings.json` 的 pin 改为 `…pi-project-context.git@v0.1.4`，
+  `pi update --extensions` 把 `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context`
+  置于 `6d8b81b`；真 TUI（不带 `-e`）实跑 `/auto-handoff lang zh|auto` 验证命令与
+  `handoffLanguage` 写盘生效（v0.1.4 独有）。`settings.json` 改动前的备份在
+  `/tmp/settings.json.before-v0.1.4-<stamp>`。
 
 ## 5. 残余风险
 
