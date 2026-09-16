@@ -23,6 +23,15 @@ function check(label, value) {
 }
 const configPath = path.join(tmp, ".agents/memory/project-context.json");
 const readConfig = () => readFile(configPath, "utf8").then((raw) => JSON.parse(raw)).catch(() => undefined);
+/** Poll instead of sleeping a fixed slice: trigger delivery is a setTimeout(0) on the event loop. */
+async function waitFor(predicate, timeoutMs = 2000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return true;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return predicate();
+}
 
 try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
@@ -362,12 +371,13 @@ try {
 	});
 	await runHandlers(auto, "session_start", autoCtx);
 	await runHandlers(auto, "agent_settled", autoCtx);
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	await waitFor(() => auto.sentMessages.includes("/auto-handoff force-auto"));
 	check("the threshold triggers the scheduled handoff", auto.sentMessages.includes("/auto-handoff force-auto"));
 	await auto.commands.get("auto-handoff").handler("force-auto", autoCtx);
 	check("the scheduled handoff explains the skip", String(autoCtx.notifications.at(-1)?.[0] ?? "").includes("nothing older than the recent window"));
 	await runHandlers(auto, "agent_settled", autoCtx);
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	// Negative assertion: give the scheduled trigger time to run before checking it did not.
+	await new Promise((resolve) => setTimeout(resolve, 300));
 	check("a skipped auto handoff backs off instead of retrying every settle", auto.sentMessages.length === 1);
 } finally {
 	await rm(tmp, { recursive: true, force: true });

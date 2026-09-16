@@ -56,6 +56,9 @@ tags: [handoff, i18n, replay]
   注入提示词与 `HANDOFF.md` 标题仍为中文。
 - `node tests/run-all.mjs` → **9/9 通过**；`tests/handoff-test.mjs` 共 **79** 项断言（含自动触发冷却、
   标题映射，映射样本取自真机 English-heading 摘要；围栏内标题不改、en 变体映射均已覆盖）。
+- 稳定性：全套 ×16 与单个测试 ×60（含 4×CPU 负载）均通过；提交后曾出现一次未复现的 1/9 失败
+ （未捕获到具体测试），因此把本轮新加的 20ms 定时窗口改为轮询式等待（`waitFor`）以消除脆弱点；
+  pre-existing 的 `consolidation-test.mjs` 10/20/30ms 等待未动，已记入 review 残余。
 - 真机探针：pi 原始 compaction 提示词 + 中文语言指令 → 标题与正文全中文。
 - **端到端真机实跑**（2026-09-16，RPC 模式 + 真实 deepseek 模型 + 真实 session 文件，脚本与完整证据见
   `handoff-language-and-replay-e2e.txt`）：scratch 项目连做两次 `/auto-handoff now`——
