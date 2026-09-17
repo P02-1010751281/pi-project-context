@@ -1,0 +1,12 @@
+installed build: pi-project-context.git@v0.1.7
+session: 2026-09-17T14-43-31-036Z_01a0afd2-9e5b-7611-8ac8-5fb5ec130131.jsonl
+OK   status names the legacy render when no journal exists
+OK   status dates CONTEXT.md
+OK   context age reflects the two-hour-old render
+OK   status switches to the journal once it exists
+--- status output (no journal) ---
+Memory: /tmp/pc-v017-probe/.agents/memory/MEMORY.md (47 chars)
+Context: /tmp/pc-v017-probe/.agents/memory/CONTEXT.md — updated 2026-09-17T12:43:30Z (2 h ago)
+--- status output (journal present) ---
+Memory: /tmp/pc-v017-probe/.agents/memory/memory.jsonl (48 chars)
+FAILURES: 0

@@ -92,9 +92,18 @@ tags: [residuals, gitignore, handoff, context, status]
 
 ## 9. 发布状态
 
-- 待定：本轮是 4 条残余 + 1 条静默缺陷（CONTEXT.md 停更）的修复，其中残余 2/3 有真实行为变化（会话树扁平化对超大头的处理、marker 清理时机）、
-  残余 4 新增命令输出，属「实质改动」→ 建议随 `v0.1.7` 发布（`v0.1.6` 已装副本不受影响）。
-- owner 发话后：跑发布序（双远端 push → 注解 tag → 切 pin → `pi update --extensions` → 已装副本真机探针 → 发布记录）。
+**已发布 `v0.1.7`（2026-09-17）**：
+
+| 步骤 | 结果 |
+|---|---|
+| 注解 tag | `v0.1.7` → `d4cdad3`（与 `v0.1.6` 同例：tag 指向修复提交，其后的记忆渲染提交不入 tag） |
+| 双远端 | tag + master 均已推（forgejo + GitHub 镜像） |
+| 安装 pin | `~/.pi/agent/settings.json` = `…pi-project-context.git@v0.1.7`（`pi install <source>@v0.1.7`），pin 变更提交在 `pi-config` 仓库（`chore(settings): bump pi-project-context to v0.1.7`） |
+| 已装副本 | `/home/user/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `d4cdad3`（detached at tag） |
+| 真机探针（已装包，不加 `-ne/-e`） | `4/4`：`Memory:` 无 journal 时指向 `MEMORY.md`、有 journal 时改指 `memory.jsonl`；`Context:` 指向 `CONTEXT.md` 且年龄与 2 小时前的 mtime 一致 —— 见 `recorded-residuals-e2e-installed-v0.1.7.{mjs,txt}` |
+
+之后：本轮是 4 条残余 + 1 条静默缺陷（CONTEXT.md 停更）的修复，其中残余 2/3 有真实行为变化（超大头的扁平化、marker 清理时机）、
+残余 4 新增命令输出，属「实质改动」，故随 `v0.1.7` 发布。**运行中的 pi 进程仍跑旧代码**，需重启（或下一次 handoff）才吃到 v0.1.7。
 
 ## 10. 文档一致性（复审 minor #4 / M1）
 
