@@ -102,3 +102,17 @@ tags: [handoff, session, settings, ui]
 - 真实 session 目录里一个旧探针残留（`~/.pi/agent/sessions/--tmp-pc-real-run--`，84K）已删；`~/.pi/agent/git/` 三个包克隆干净；`~/.pi/agent/extensions/` 是用户自写的 3 个扩展（`loop-guard.ts`/`model-roles.ts`/`retry-command.ts`），保留。
 - 仓库内扫描无 `*.tmp`/`*~`/`*.bak`/`*.orig`/`.DS_Store`/`*.broken-*`/`*.steal` 残留；`MEMORY.md` 备份按上限保留 5 份；`.codestable/issues/` 4 个 issue 的证据链按惯例保留，`features/2026-09-15-codex-project-context-port/` 由并行 Codex 会话持有、保留。
 - 切换前的 `settings.json` 备份改为引用 `pi-config` 仓库 git 历史（见 v0.1.4/v0.1.5/v0.1.6 三处记录的更新）。
+
+## 9. 后续收口：本 issue 记录的残余（2026-09-17）
+
+owner 追问「不是还有个残余项没修复吗？」后，本 issue 里三条「接受/未修」项已在
+`.codestable/issues/2026-09-17-recorded-residuals/` 收口（代码 + 探针 + lane A 复审）：
+
+| 本 issue 的记录 | 处置 |
+|---|---|
+| §5 R1-F5：会话头首行 >64KB 时不扁平化 | 修：`readSessionHeader` 按 chunk 读到换行（先合并再解码），上限改为约束**行长**且接受「恰好等于上限」（另加 1MB 病态上限），80KB / 恰好 1MB / 1.1MB 三种边界各有探针 |
+| §5 staging 与切换之间崩溃 → marker 残留到 TTL | 修：`reason === "new"` 且前驱不匹配即清（只有那一个前驱的继任者能消费 marker，留着无用）；原「留着等 TTL」的探针随语义变更改写 |
+| §7 接受残余（minor）：手写 header 大小写不同会再添一条 | 修：header 判定改为大小写不敏感（忽略模式仍大小写敏感），并加「别的拼写不被重复」探针 |
+
+同轮另修：`/project-context status` 新增 `Memory:`/`Context:` 两行（后者含 CONTEXT.md 更新时间），以及
+CONTEXT.md 停更的根因（prompt 未写 context 键名 + 静默丢弃）。

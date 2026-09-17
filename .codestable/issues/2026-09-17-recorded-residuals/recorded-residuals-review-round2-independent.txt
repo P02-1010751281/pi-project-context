@@ -1,0 +1,103 @@
+These two files show newer mtime only because my mutation+restore rewrote them (byte-identical, md5 match). This is the expected "mutation hygiene" pattern documented in MEMORY.md itself. No stray writes.
+
+I now have everything needed. Let me write my review conclusions.
+
+Summary of verification for each of the 3 minors:
+
+**Item 1 (1MB off-by-one)**: 
+- (a) exactly 1MB header newline at 1MB: loop `read <= MAX` allows the chunk containing the newline → newline index = 1048576, `<= MAX` → accepted. Test `cap` case passes. ✓
+- (b) 1MB+1 and 1.1MB: newline index > MAX → `return undefined` (fail-open to chaining). Tests `huge` (1.1M) and `pathological` cover. ✓
+- (c) no-newline files: < cap → parse whole; = cap → `read=1048576`, not `> MAX` → parse; > cap → `read > MAX` → undefined. ✓
+- (d) no infinite loop (bytesRead===0 breaks; read strictly increases), bounded to ~1.06MB read. ✓
+- (e) comment accurate. ✓
+
+**Item 2 (key type drift)**:
+- (a) boundaries all correct: undefined/null → not flagged, empty arrays; string/number/object → flagged; mixed array → non-string elements silently filtered (minor residual, noted).
+- (b) reasonable context not mis-flagged. ✓
+- (c) symmetry: prompt says "exactly these keys" but parser still: silently coerces non-string title → "Untitled session", accepts missing key_points/open_tasks (absent = empty), accepts extra keys. Not fully "exactly these keys" enforcement. Minor residual on symmetry, but the round-1 core drift (present-but-string) is now caught.
+
+**Item 3 (errors.log wording)**: both branches reachable, and wording matches actual write (`update` logic line 426). ✓
+
+Probes: both mutation probes correctly turned red and were restored with matching md5.
+
+Scope note: the diff contains 3 changes NOT among the 5 minors: (1) `index.ts` status command additions, (2) `project-state.ts` case-insensitive header matching, (3) `handoff.ts` restore-drops-marker-on-foreign-switch. These are additional/fairly benign and test-covered but out of the stated round-2 scope.
+
+Let me write the final report.审查完成。以下是结论。
+
+## 复审结论（closure 聚焦）
+
+### blocking / important：**无**
+
+### minor（共 2 条，另有 1 条范围提示）
+
+**M1 — 第 2 条的对称性未完全消除**：`consolidate.ts:84-96`
+- 问题：prompt 新增措辞「`context must be an object with exactly these keys: title/…/key_points/…/open_tasks`」，但 `parseContext` 只在 `key_points`/`open_tasks` **present-but-非数组**时拒绝，仍静默处理：`title` 非字符串 → 置 `"Untitled session"`；`key_points`/`open_tasks` 缺失 → 置空数组（测试 `absent lists are not flagged` 明确固化这一点）；额外键名 → 忽略。这与「exactly these keys … is discarded」的字面不完全一致。
+- 为什么只是 minor：第 1 轮的核心漂移（present-but-字符串被静默置空）**确已关闭**；残留的是「缺失 vs 额外 key、title 类型」这类更弱的对称点，都不会导致 CONTEXT.md「无痕变陈旧」（title 只进 HTML 注释，空数组是显式缺省）。若要求字面一致，需在 prompt 把「exactly these keys」改为「these keys, each with the named type; a wrong-typed present list discards the whole context」以免提示与解析器语义脱节。
+- 最小修法：改写 prompt 措辞使其与解析器实际语义一致（可选），不必改代码。
+
+**M2 — 第 2 条的「混合数组」元素静默丢弃**：`consolidate.ts:93-94`（`strings` 助手）
+- 问题：`key_points: ["a", 123]` 这类混合数组不会被 flag，`strings` 直接 `filter` 掉非字符串元素，静默丢 `123`。圆形/嵌套数组同理。
+- 为什么只是 minor：与既有行为一致（列表项本就有 `trimLine` 逐项规整），且整键为字符串的漂移已被 M 的核心分支捕获；属可接受的逐项容错，非回归。
+- 无需修，记录即可。
+
+### 范围提示（非缺陷，非本轮的 5 条 minor，务必知会 owner）
+
+本轮 `git diff` 里**混入了 3 处不在第 1 轮 5 条 minor 内的改动**，需确认是有意随本次修复打包还是漏入：
+1. `index.ts` 新增 `memoryStatusLine` / `contextStatusLine` 并接入 `project-context status` 命令（含 `humanAge`）。
+2. `project-state.ts` 把 `ensureMemoryGitignore` 的 header 匹配改为**大小写不敏感**（`toLowerCase()` 比对）。
+3. `handoff.ts::restoreHandoffSessionSettings` 改为「不同 predecessor 时**立即 clear** staging」（原为保留等 TTL）。
+
+这些都对应第 4 条 MEMORY.md 里旧写的「case-sensitive header」「accepted cosmetic residual」——即第 2 处其实**顺带修掉了** MEMORY.md 里标注的那个「大小写」残余，但 MEMORY.md 本身本轮未同步（与第 4 条「未改该文件」一致，由 consolidation 重写）。三处均有测试覆盖（`a differently cased header is not repeated`、`a foreign switch drops the stage instead of keeping it`、`status names the memory source / dates the context`），未见回归。请确认这三处属于预期改动范围。
+
+---
+
+## 逐条核验（第 1 轮 5 条 minor 处置）
+
+### 1. `readSessionHeader` 1MB off-by-one —— **已关闭** ✅
+`handoff.ts:571-596`：
+- (a) 首行恰好 1MB（换行在 1MB+1 字节）：循环 `while (read <= MAX)` 会多读一个 chunk 拿到新行字节，`newline=1048576`，`<= MAX` → 正常解析。测试 `a header exactly at the cap is still read`（`exact.length === cap`）绿。
+- (b) 1MB+1 与 1.1MB：`newline > MAX` → `return undefined` → fail-open 回旧扁平化。测试 `a header beyond the pathological cap falls back to chaining` 绿。
+- (c) 无换行单行：`< cap` 解析整行；`= cap` 时 `read=1048576`，`read > MAX` 为假 → 解析（符合注释「exactly the cap is read」）；`> cap` → `read > MAX` → undefined。边界由 `>` 而非 `>=` 决定，与注释一致。
+- (d) 无死循环：`bytesRead===0` 即 break，`read` 严格递增故 `read <= MAX` 终会退出；最多读约 1.06MB（`Buffer.concat` 每轮重拼，1MB 上限约 16 轮，O(n²) 开销可忽略）。
+- (e) 注释与实现一致。
+
+### 2. `parseContext` 键类型漂移 —— **核心关闭，对称性有残留（见 M1/M2）** ✅
+`consolidate.ts:84-96`：
+- (a) 边界验证通过：缺省/`null` 不 flag（`wrongType` 对 `undefined`/`null` 返回 false → 空数组）；字符串/数字/对象 → flag → `return undefined` → `contextUnusable`；空数组正常；混合数组不 flag（元素级静默丢弃，M2）。
+- (b) 合理 context 未被误判（`absent lists are not flagged`、`an absent or null context is not flagged` 绿）。
+- (c) `contextUnusable` 判定 `context === undefined && parsed.context !== undefined && parsed.context !== null` 正确，走 `contextUnusable` → `contextShapeWarned`（每 project 一次）+ 保留既有 CONTEXT.md / 写 placeholder。对称性见 M1。
+
+### 3. errors.log 文案分支 —— **已关闭** ✅
+`consolidate.ts:427-433`：`kept = existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written"`，与 line 426 的 `update` 实际写行为严格一致（既有无 trim 内容 → `update=undefined` 不写、保留旧文件；无既有 → `update=fallbackUpdate` 写 placeholder）。两条分支均被新测试覆盖（`an unusable context leaves the previous render in place` + `without a previous render the placeholder is written`）。
+
+### 4. MEMORY.md 过期描述 —— **本轮未改（符合处置）** ✅（清单见下）
+- 仓库内**其它面向用户/维护者文档**中与修复后行为矛盾者，仅清单：
+  - `.agents/memory/MEMORY.md`（工作树版本）仍写：第 ~53 行「read ≤64KB」；`ensureMemoryGitignore` 段「header matching is trim-based but **case-sensitive**」+「Accepted cosmetic residual: … a correct fix would need a second case-folded line set」。其中「case-sensitive」一条现在**尤其**过期，因为 `project-state.ts` 已改成大小写不敏感（见范围提示第 2 处），代码已不再匹配该描述。
+  - `README.md` line 54 的「64k」是 `errors.log` 轮换参数，与 header 读取上限**无冲突**，无需改。
+  - `.codestable/` 各 issue artifact（analysis/fix-note/review-round*.txt）里大量「64KB 截断」「case-sensitive」属**历史记录**（记录当时状态与修复轨迹），按设计不回溯改写，非矛盾。
+- 结论：唯一需后续同步的活跃文档是 `MEMORY.md` 自己，与本轮「由扩展 consolidation 重写」的处置一致，不阻断发版。
+
+### 5. `.gitignore` 删除假象 —— **确认假象** ✅
+`git status` 全套与初始一致（见下），除该条删除外**无未预期的删除/新增**；未跟踪项 `.codestable/*`、`.review-stamp` 均为沙箱制作/operator 放置，非本轮改动。
+
+---
+
+## 探针灵敏度（变异-还原）
+
+| 探针 | 变异 | 预期变红 | 实际 |
+|---|---|---|---|
+| 第 2 条（键类型漂移） | `if (false) return undefined` 替换 `wrongType(...) || ...` 守卫 | `a wrong-typed context list is flagged` | **FAIL（红）**，`FAILURES: 1`；`a context in another shape` 仍绿（该条走 `contextUnusable` 另一路径，符合正交性）|
+| 第 1 条（cap 边界） | `> SESSION_HEADER_MAX_BYTES` 改 `>=` | `a header exactly at the cap is still read` | **FAIL（红）**；`oversized`/`pathological` 仍绿 |
+
+两处变异均**预期变红**，随后还原，md5 与初始一致（`consolidate.ts = 8a35ac5557b67745f4bfe443839a4059`，`handoff.ts = fdb04452d74d0f4be401c1c490b1b334`）。
+
+## 沙箱写入声明
+
+- **最终 `git status --porcelain` 与初始完全一致**（`diff` 无输出）。初始快照已存 `/tmp/initial_status.txt`。
+- 做过变异的文件仅 2 个：`extensions/project-context/consolidate.ts`、`extensions/project-context/handoff.ts`，均**已还原且 md5 与初始一致**（数值见上）。mtime 因变异-还原而变新，属 MEMORY.md 记录的预期现象，字节内容未变。
+- 未触碰其它文件；测试产物均落在 `os.tmpdir()` 的临时目录，不在仓库内。
+
+## 最终回答
+
+- **三条 minor 是否已关闭？** 第 1 条 ✅ 已关闭；第 2 条 ✅ 核心关闭（对称性残留见 M1/M2，不影响关闭结论）；第 3 条 ✅ 已关闭。第 4 条按处置未改（MEMORY.md 待 consolidation 重写），第 5 条确认假象。
+- **可以发版吗？** **可以**。无 blocking、无 important。仅存的 M1/M2 为 minor（且 M2 无需修）；唯一需 owner 确认的是「范围提示」里三处**超出 5 条 minor 的附带改动**是否属于本次有意打包（均有测试覆盖、未见回归）。若这三处属预期，则本轮 closure 通过。

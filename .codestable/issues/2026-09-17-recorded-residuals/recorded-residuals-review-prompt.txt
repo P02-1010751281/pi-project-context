@@ -1,0 +1,44 @@
+你是独立代码复审者（lane A）。工作目录是一个只读沙箱副本（`/tmp/residuals-review`），请只读审查，不要修改任何文件
+（若为验证探针灵敏度而临时变异，必须立刻还原，并在报告里说明改了哪个文件、是否 md5 一致）。
+
+背景：这是 pi coding agent 扩展 `pi-project-context` 的源码。仓库里有一批「记录在案、此前被接受（未修）」的残余项，
+owner 现在要求把它们全部修掉，外加一条由过期渲染引出的根因调查。改动都在工作树里未提交（用 `git diff` / `git diff --stat` 看全貌，
+必要时 `git status`）。
+
+本轮改动清单（请逐条独立核验，不要相信注释与提交信息）：
+
+残余 1 —— `extensions/project-context/project-state.ts::ensureMemoryGitignore`
+  用户手写的 gitignore header 大小写不同时，旧代码会再写一条重复 header。现在改为大小写不敏感地识别 header。
+  要核验：(a) 判定是否真的只影响 header（ignore 模式本身必须保持大小写敏感——git 的语义）；(b) 文件缺失/空/只有 header/无尾换行/CRLF/二次调用/
+  用户自有行等状态下是否仍然幂等且不丢行；(c) `gitignoreEnsured` 的进程内去重是否被破坏。
+
+残余 2 —— `extensions/project-context/handoff.ts::readSessionHeader`
+  会话文件首行（session header）原先固定读 64KB，超出即 JSON.parse 失败 → 父链扁平化静默退化为旧行为。现在改为按 chunk 读到换行，
+  另有 1MB 病态上限。要核验：(a) 分块边界与 UTF-8 多字节字符被切断时是否安全（是否可能解析出错误内容或抛错）；(b) 偏移量/终止条件是否正确，
+  有没有死循环或重复读取；(c) 无换行的单行文件、空文件、非 session 头、超大（>1MB 首行）文件的行为是否符合注释声明；(d) 是否仍然只读取必要字节
+  （性能：会话文件可达几十 MB）；(e) 父链上的 `type !== "session"`/缺失/环 路径是否未被破坏。
+
+残余 3 —— `extensions/project-context/handoff.ts::restoreHandoffSessionSettings`
+  staging 与 `newSession()` 之间进程崩溃会留下 marker（原先靠 10 分钟 TTL 兜底）。现在遇到「前驱不匹配」即清掉 marker。
+  要核验：(a) 这会不会破坏正常的设置继承（正常 handoff 的 `previousSessionFile` 必须仍然命中）；(b) `/new`、`resume`、`fork`、
+  cancel、`newSession` 抛错等既有语义是否仍与测试/文档一致；(c) 清理是否 fail-open（不得因此阻断 session_start）。
+
+残余 4 —— `extensions/project-context/index.ts`（`/project-context status`）+ `consolidate.ts`
+  status 现在多两行：`Memory:` 与 `Context:`（后者含 CONTEXT.md 的更新时间与年龄）。要核验：(a) `loadMemory` 在这个只读路径上是否真的无写副作用
+  （会读 journal 折叠，注意它是否可能触发备份/写入/修复）；(b) 各状态下文案是否正确（unreadable/poisoned/damaged/空记忆/无 CONTEXT.md）；
+  (c) 年龄与时间格式是否稳定、无时区/NaN 问题；(d) 是否破坏既有命令输出断言。
+
+CONTEXT.md 根因调查 —— `consolidate.ts`
+  prompt 只描述 context 的语义、从未写出键名与类型，而 `parseContext` 要求对象含 `summary` 等键：模型若用其它形状（例如 Markdown 字符串）
+  回答，context 会被静默丢弃、CONTEXT.md 长时间不更新（本仓实测：MEMORY.md 09-17 更新过，CONTEXT.md 停在 09-16，errors.log 无任何记录）。
+  改动：(i) prompt 明确写出 context 的键与类型；(ii) `parseConsolidated` 增加 `contextUnusable` 标记（键缺失或为 null 不算）；(iii) 每个项目
+  每进程最多记一次 errors.log。要核验：(a) 标记的判定边界（absent / null / 字符串 / 数组 / 缺 summary / 多余键）；(b) 会不会把合法 context 误判为不可用，
+  或把不可用 context 当成可用；(c) 每进程一次的抑制是否会造成跨项目的误抑制或内存泄漏；(d) 新 prompt 语句是否与其他指令冲突；(e) 是否改变了既有
+  写入/备份语义（`update` 为 undefined 时 CONTEXT.md 保持不动是否仍然成立）。
+
+测试与断言（`tests/consolidation-test.mjs`、`tests/handoff-test.mjs`、`tests/switches-test.mjs`）
+  要核验：(a) 新增探针是否真的钉住了对应闸门（可自己在沙箱内做变异-还原验证，例如把修复退回去，看是否只有预期探针变红）；
+  (b) 有没有恒真断言、语义过强的断言、或依赖固定 sleep/时序的脆弱断言；(c) 有没有把既有探针改弱来「让测试通过」。
+
+输出要求：按 blocking / important / minor 分级，每条给出 `file:line`、问题、为什么、以及最小修法。若没有 blocking 就明确说没有。
+最后给出：沙箱是否被写入（列出你改动/还原过的文件与 md5 结论）、以及你对「这个 diff 是否可以发版」的判断与保留意见。

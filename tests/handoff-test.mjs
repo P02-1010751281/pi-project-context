@@ -577,6 +577,21 @@ try {
 	await writeHeader(sessionFile("cyc-a"), "cyc-a", sessionFile("cyc-b"));
 	await writeHeader(sessionFile("cyc-b"), "cyc-b", sessionFile("cyc-a"));
 	check("a parent cycle terminates", [sessionFile("cyc-a"), sessionFile("cyc-b")].includes(await handoff.resolveHandoffParentSession(sessionFile("cyc-a"))));
+	// The header is the first line and is read to its newline, so an oversized one no longer costs
+	// the whole ancestor walk (the old fixed 64KB read failed to parse and fell back to chaining).
+	const oversized = JSON.stringify({ type: "session", version: 3, id: "big", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note: "x".repeat(80_000), parentSession: sessionFile("root") });
+	await writeFile(sessionFile("big"), `${oversized}\n`);
+	check("an oversized session header still resolves to its root", (await handoff.resolveHandoffParentSession(sessionFile("big"))) === sessionFile("root"));
+	const pathological = JSON.stringify({ type: "session", version: 3, id: "huge", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note: "x".repeat(1_100_000), parentSession: sessionFile("root") });
+	await writeFile(sessionFile("huge"), `${pathological}\n`);
+	check("a header beyond the pathological cap falls back to chaining", (await handoff.resolveHandoffParentSession(sessionFile("huge"))) === sessionFile("huge"));
+	// Exactly at the cap is still a header when the file ends there: the boundary is decided by one
+	// extra byte, not by equality (`>` vs `>=` must not turn into a silent downgrade).
+	const cap = 1024 * 1024;
+	const headerFor = (note) => JSON.stringify({ type: "session", version: 3, id: "edge", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note, parentSession: sessionFile("root") });
+	const exact = headerFor("x".repeat(cap - headerFor("").length));
+	await writeFile(sessionFile("cap"), `${exact}\n`);
+	check("a header exactly at the cap is still read", exact.length === cap && (await handoff.resolveHandoffParentSession(sessionFile("cap"))) === sessionFile("root"));
 
 	const settingsEntries = [
 		contentEntry("s1", "user", [{ type: "text", text: `Please carry the session settings over. ${'filler sentence. '.repeat(200)}` }], "2026-09-17T00:10:00.000Z"),
@@ -668,7 +683,9 @@ try {
 	await stageFor({});
 	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("mid") });
 	check("a different predecessor never inherits", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
-	check("a foreign switch leaves the stage for its own handoff", await markerExists());
+	// Only that predecessor's successor can consume the stage, so anything else is a leftover (a
+	// crash between staging and `newSession()`): it is dropped now instead of waiting for the TTL.
+	check("a foreign switch drops the stage instead of keeping it", !(await markerExists()));
 
 	resetCalls();
 	await stageFor({ at: Date.now() - 11 * 60_000 });

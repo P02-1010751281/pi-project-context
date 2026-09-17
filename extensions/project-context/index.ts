@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stat } from "node:fs/promises";
 import { registerArchive } from "./archive.ts";
 import { registerAutolearn } from "./autolearn.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./config.ts";
 import { registerConsolidation } from "./consolidate.ts";
 import { registerHandoff, restoreHandoffSessionSettings } from "./handoff.ts";
-import { getProjectRoot, notify } from "./project-state.ts";
+import { contextFile, getProjectRoot, loadMemory, notify, type LoadedMemory } from "./project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.
@@ -61,6 +62,36 @@ export default function projectContext(pi: ExtensionAPI): void {
 		return `${route}, max ${config.maxTokens} tokens`;
 	}
 
+	/** What the memory injection currently uses, including how it is stored (the fix for the old bug). */
+	function memoryStatusLine(memory: LoadedMemory): string {
+		const chars = memory.text.length;
+		const size = chars === 0 ? "empty" : `${chars} chars`;
+		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
+		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;
+		if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
+		return `${memory.source} (${size})`;
+	}
+
+	/** CONTEXT.md is only rewritten when a pass returns one, so its age is the useful signal here. */
+	async function contextStatusLine(projectRoot: string): Promise<string> {
+		const file = contextFile(projectRoot);
+		try {
+			const info = await stat(file);
+			const updated = new Date(info.mtimeMs).toISOString().replace(/\.\d+Z$/, "Z");
+			return `${file} — updated ${updated} (${humanAge(Date.now() - info.mtimeMs)} ago)`;
+		} catch {
+			return "none yet (a consolidation pass that returns one writes it)";
+		}
+	}
+
+	function humanAge(ms: number): string {
+		const minutes = Math.floor(ms / 60_000);
+		if (minutes < 1) return "less than a minute";
+		if (minutes < 60) return `${minutes} min`;
+		const hours = Math.floor(minutes / 60);
+		return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
+	}
+
 	pi.registerCommand("project-context", {
 		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default",
 		handler: async (args, ctx) => {
@@ -74,6 +105,8 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Project context: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
+					`Memory: ${memoryStatusLine(await loadMemory(projectRoot))}`,
+					`Context: ${await contextStatusLine(projectRoot)}`,
 				];
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));

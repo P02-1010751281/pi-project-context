@@ -82,6 +82,17 @@ try {
 		check("truncated JSON: no memory is invented", parseConsolidated('{"memory_markdown":"# Project Memory\\n\\n- cut') === undefined);
 		check("unusable JSON: the pass fails instead of storing raw JSON", parseConsolidated('{"memory_markdown": 17, "context": {') === undefined);
 		check("plain markdown still becomes memory", parseConsolidated("still plain markdown")?.memory === "still plain markdown");
+		// A context the model shaped differently used to disappear without a trace, leaving the
+		// previous CONTEXT.md injected for days; the caller reports it instead.
+		check("a context in another shape is flagged", parseConsolidated('{"memory_markdown":"# m","context":"## Summary\\n- text"}')?.contextUnusable === true);
+		// A present-but-wrong-typed list is the narrow version of the same drift: emptying the field
+		// silently is what left CONTEXT.md stale, so the whole context is refused instead.
+		check("a wrong-typed context list is flagged", parseConsolidated('{"memory_markdown":"# m","context":{"summary":"s","key_points":"a, b"}}')?.contextUnusable === true);
+		check("absent lists are not flagged", parseConsolidated('{"memory_markdown":"# m","context":{"summary":"s"}}')?.contextUnusable === undefined && parseConsolidated('{"memory_markdown":"# m","context":{"summary":"s","open_tasks":null}}')?.contextUnusable === undefined);
+		check(
+			"an absent or null context is not flagged",
+			parseConsolidated('{"memory_markdown":"# m"}')?.contextUnusable === undefined && parseConsolidated('{"memory_markdown":"# m","context":null}')?.contextUnusable === undefined,
+		);
 	}
 
 	console.log("\n=== a reply that cannot be read never reaches MEMORY.md ===");
@@ -488,6 +499,76 @@ try {
 			}
 		} finally {
 			await rm(failureTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a context the model shapes differently is reported, not silently kept ===");
+	{
+		const shapeTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-context-shape-"));
+		try {
+			const shapeDir = path.join(shapeTmp, ".agents/memory");
+			const shapeContext = path.join(shapeDir, "CONTEXT.md");
+			await mkdir(shapeDir, { recursive: true });
+			const previous = "# Project Context\n\nLast updated: 2026-09-01T00:00:00Z\n\n## Summary\n- out of date.\n";
+			await writeFile(shapeContext, previous);
+			// Every forced pass must reach the model (the default 15s dedupe would mask a repeat).
+			await writeFile(path.join(shapeDir, "project-context.json"), JSON.stringify({ forceDedupeMs: 0 }));
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: shapeTmp });
+			await factory(pi);
+			const ctx = makeCtx(shapeTmp, {
+				model: { provider: "test", id: "context-shape", maxTokens: 32768 },
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "context-shape"),
+			});
+			let shapeCalls = 0;
+			let shapePrompt = "";
+			ctx.modelRegistry.complete = async (_model, context) => {
+				shapeCalls += 1;
+				shapePrompt = context.messages[0].content[0].text;
+				// A Markdown string is what a model reaches for when the prompt does not name the keys.
+				return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- shaped memory.", context: "## Summary\n- as markdown." }) }] };
+			};
+			await pi.commands.get("memory-learn").handler("", ctx);
+			const shapeLog = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
+			check("an unusable context leaves the previous render in place", (await readFile(shapeContext, "utf8")) === previous);
+			check("an unusable context is written to errors.log", shapeLog.includes("could not be used"));
+			await pi.commands.get("memory-learn").handler("", ctx);
+			const repeated = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
+			check("the pass really ran twice", shapeCalls === 2);
+			check("the shape note is reported once per process", repeated.split("could not be used").length - 1 === 1);
+			await pi.commands.get("project-context").handler("status", ctx);
+			const statusText = String(ctx.notifications.at(-1)?.[0] ?? "");
+			check("status names the memory source", /Memory: .*memory\.jsonl \(\d+ chars\)/.test(statusText));
+			check("status dates the context render", /Context: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(statusText));
+			// The schema drift started in the prompt: it described the context in prose only.
+			check("the prompt names the context keys", shapePrompt.includes("key_points") && shapePrompt.includes("open_tasks") && shapePrompt.includes("memory_markdown"));
+
+			// Without an existing render there is no "previous" to keep: the pass writes the placeholder,
+			// and the log says so instead of claiming a render was kept.
+			const emptyTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-context-placeholder-"));
+			try {
+				const emptyDir = path.join(emptyTmp, ".agents/memory");
+				await mkdir(emptyDir, { recursive: true });
+				await writeFile(path.join(emptyDir, "project-context.json"), JSON.stringify({ forceDedupeMs: 0 }));
+				const emptyFactory = await loadDefault(`${PC}/index.ts`);
+				const emptyPi = makePi({ cwd: emptyTmp });
+				await emptyFactory(emptyPi);
+				const emptyCtx = makeCtx(emptyTmp, {
+					model: { provider: "test", id: "context-placeholder", maxTokens: 32768 },
+					sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "context-placeholder"),
+				});
+				emptyCtx.modelRegistry.complete = async () => ({
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- placeholder case.", context: "## Summary\n- nope." }) }],
+				});
+				await emptyPi.commands.get("memory-learn").handler("", emptyCtx);
+				const emptyLog = await readFile(path.join(emptyDir, "errors.log"), "utf8").catch(() => "");
+				const placeholder = await readFile(path.join(emptyDir, "CONTEXT.md"), "utf8").catch(() => "");
+				check("without a previous render the placeholder is written", placeholder.includes("## Summary") && emptyLog.includes("placeholder context was written"));
+			} finally {
+				await rm(emptyTmp, { recursive: true, force: true });
+			}
+		} finally {
+			await rm(shapeTmp, { recursive: true, force: true });
 		}
 	}
 
@@ -1014,6 +1095,16 @@ try {
 			await ensureMemoryGitignore(bareDir);
 			const bare = await readFile(path.join(bareDir, ".gitignore"), "utf8");
 			check("a headerless ignore file gains the header once", headerCount(bare) === 1 && bare.startsWith(`node_modules/\n${header}\n`) && bare.includes("errors.log") && bare.includes("handoff-session-settings.json"));
+
+			// A hand-written header in another capitalisation is the same comment for git, so it is
+			// not duplicated by a later line being appended.
+			const casedDir = path.join(fixTmp, "cased", ".agents", "memory");
+			await mkdir(casedDir, { recursive: true });
+			const upperHeader = header.toUpperCase();
+			await writeFile(path.join(casedDir, ".gitignore"), `${upperHeader}\nmemory.jsonl\n`);
+			await ensureMemoryGitignore(casedDir);
+			const cased = await readFile(path.join(casedDir, ".gitignore"), "utf8");
+			check("a differently cased header is not repeated", cased.startsWith(`${upperHeader}\nmemory.jsonl\n`) && !cased.includes(header) && cased.includes("errors.log"));
 
 			// Errors are redacted before they land in the log.
 			await logError(fixTmp, "test", "api_key: sk-abcdef1234567890 and ghp_abcdefghijklmnop");

@@ -1,0 +1,33 @@
+你是独立代码复审者（lane A），做**closure 聚焦复审**。工作目录 `/tmp/residuals-review2` 是只读沙箱副本，请只读审查；
+若为验证探针灵敏度而临时变异，必须立刻还原并报告（含 md5 结论）。
+
+第 1 轮复审（完整 diff）结论：**无 blocking、无 important**，5 条 minor。本轮只针对「对第 1 轮 5 条 minor 的处置」核验：
+改了什么、有没有真的关掉、有没有引入回归。用 `git diff` 看全貌（代码 + 测试）。
+
+### 第 1 轮的 5 条 minor 与处置
+
+1. **`handoff.ts::readSessionHeader` 的 1MB 上限 off-by-one**（首行恰好等于上限时被误判为「无头」）。处置：把上限改成约束**行长**而不是读位置：
+   循环条件 `while (read <= SESSION_HEADER_MAX_BYTES)`，退出后 `if ((newline < 0 ? read : newline) > SESSION_HEADER_MAX_BYTES) return undefined;`。
+   要核验：(a) 首行恰好 1MB（换行在第 1MB+1 字节处）是否被正常读入；(b) 首行 1MB+1 与 1.1MB 是否仍被拒绝（fail-open 回旧行为）；
+   (c) 无换行的单行文件（< 上限、= 上限、> 上限）行为是否符合注释；(d) 是否可能无限循环或多读无益数据；(e) 是否与注释一致。
+
+2. **`consolidate.ts::parseContext` 的键类型漂移未被抓**（`key_points`/`open_tasks` 是字符串时被静默置空）。处置：present-but-非数组（`undefined`/`null` 视为缺省）即整体拒绝该 context，
+   于是走 `contextUnusable` 路径（保留既有 CONTEXT.md + errors.log 一次）。要核验：(a) 边界（缺省、null、数组、空数组、字符串、数字、对象、混合）；
+   (b) 合理 context 不被误判；(c) 该严格化与 prompt 里「exactly these keys … is discarded」的措辞是否一致（第 1 轮的对称性问题是否真的消除）。
+
+3. **errors.log 文案在「没有既有 CONTEXT.md」时不精确**（原恒写 "the previous CONTEXT.md is kept"）。处置：按 `existingContext.trim()` 分支出
+   `the previous CONTEXT.md is kept` / `only a placeholder context was written`。要核验：两条分支是否都能到达、文案是否与实际写入行为一致
+   （无既有 render 时确实会写 `fallbackUpdate` 的占位内容）。
+
+4. **`.agents/memory/MEMORY.md` 里关于本扩展的描述过期**（仍写 64KB 截断 / header 大小写敏感 / 残余未修）。处置：本轮**未**改该文件（由扩展自己的 consolidation 重写，
+   本轮只记录）。要核验：仓库里是否还有其它**面向用户/维护者的文档**（README、docs、issue artifacts）与修复后的行为矛盾 —— 只列清单，不必改。
+
+5. **`.agents/memory/session-logs/.gitignore` 显示为删除**。说明：这是沙箱制作时**故意排除 `session-logs/`** 造成的假象，不是仓库改动；请不要再报此项，
+   但请核对仓库工作树里是否有**真的**未预期的删除/新增。
+
+### 输出要求
+
+- 只列 blocking / important / minor，每条给 `file:line`、问题、为什么、最小修法；没有就明确说没有。
+- 探针灵敏度：至少对第 2 条（键类型漂移）与第 1 条（cap 边界）各做一次变异-还原验证，报告预期变红与实际结果。
+- 沙箱写入声明（最终 `git status` 与初始是否一致；动过哪些文件、md5 结论）。
+- 明确回答：这三条 minor 是否已关闭？可以发版吗？

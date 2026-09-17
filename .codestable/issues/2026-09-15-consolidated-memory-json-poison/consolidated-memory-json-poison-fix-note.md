@@ -89,9 +89,10 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
 - **备份文件**：UniField 1 个、Quantum_Matrix 2 个 `.poison-backup-*`，已于 2026-09-16 逐份核对后删除（见 §7）。
 - **autolearn 固定输出上限**：**已解决**——`autolearn.ts:428` 改用 `adaptiveOutputTokens(...)`（v0.1.3 自适应预算），
   不再使用固定 `config.maxTokens`，超长技能内容不再被同类截断。
-- **自愈可见性**：**部分解决**——consolidation 读到污染记忆时会 warn 一次
+- **自愈可见性**：**已解决**——consolidation 读到污染记忆时会 warn 一次
   （`consolidate.ts:509`，文案说明下次 consolidation 会先备份再重写）；解码本身仍无写副作用（owner 批准的 B 方案）。
-  `/project-context` 命令输出目前不含 poison 字段，仅作可选后续增强。
+  `/project-context status` 现在输出记忆来源与状态（`Memory:` 行：journal 路径与字符数，或 unreadable/poisoned/damaged 变体）
+  与 `CONTEXT.md` 的更新时间（2026-09-17 收口：`.codestable/issues/2026-09-17-recorded-residuals/`）。
 - **已知 nit**：**已解决**——`readJsonStringAt` 已映射 `\b`/`\f` 转义（`project-state.ts`）。
 - 旧进程（PID 370858 / 378387）已退出，污染写入来源消失。
 

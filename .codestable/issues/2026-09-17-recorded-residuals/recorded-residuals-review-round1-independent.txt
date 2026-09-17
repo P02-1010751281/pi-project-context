@@ -1,0 +1,102 @@
+I now have everything I need. Let me write up the review.
+
+---
+
+## 独立代码复审（lane A）报告
+
+### 结论先行
+
+**没有 blocking 问题。** 四个残残余项 + 根因调查的代码改动均正确，新增探针通过变异-还原验证确认真实钉住了对应闸门（非恒真、无改弱）。以下为 important / minor 分级发现。
+
+---
+
+### 逐条核验结果
+
+**残余 1 `ensureMemoryGitignore`（project-state.ts:174-175）— 通过**
+
+- (a) ✅ 只影响 header。diff 仅改动 `header` 计算这一行；`missing = MEMORY_GITIGNORE_LINES.filter(line => !lines.has(line))` 仍是大小写敏感的精确匹配，gitignore 模式语义未被破坏。变异验证：把 header 判断退化为 `lines.has(MEMORY_GITIGNORE_HEADER)` 后，只有探针 `a differently cased header is not repeated` 变红。
+- (b) ✅ 幂等/不丢行。文件缺失(`readOptional`→"")、空、只有 header、无尾换行(`head = existing+"\n"`)、用户自有行（原样保留在 `head`）均正确；`missing.length===0` 早退保证二次调用/跨进程幂等。
+- (c) ✅ `gitignoreEnsured` 未被触碰。
+
+**残余 2 `readSessionHeader`（handoff.ts:574-597）— 通过（1 处 minor 边界）**
+
+- (a) ✅ UTF-8 安全。我在沙箱内构造了 emoji 恰好横跨 64KB chunk 边界的 header（header 恰好 65536 字节），解析父链正确。`0x0a` 永不出现在 UTF-8 续字节中，且最终 `Buffer.concat(chunks).subarray(0, newline).toString("utf8")` 在拼接后统一解码，多字节字符不会被切断。
+- (b) ✅ 偏移量/终止条件正确，无死循环（`bytesRead===0` 即 break）；`Buffer.concat` 每轮重拼，但 64KB chunk 上限 16 轮，开销可忽略。
+- (c) ✅ 无换行单行、空文件、非 session 头、>1MB 首行均按注释声明处理。
+- (d) ✅ 常规 header 仍只读一个 64KB chunk（与原实现相当），几十 MB 会话文件不会全量读。
+- (e) ✅ 父链 `type!==session`/缺失/环 逻辑未被破坏（现有测试 `a parent cycle terminates` 等仍通过）。
+
+**残余 3 `restoreHandoffSessionSettings`（handoff.ts:497-501）— 通过**
+
+- (a) ✅ 不破坏正常继承。我核对了 pi 源码 `dist/core/agent-session-runtime.js` 的 `newSession()`：`previousSessionFile = this.session.sessionFile`（即**发起 newSession 的那个会话**），而 `options.parentSession`（`handoffParent` 祖先）只写入新会话 header、不会进入事件。因此 `event.previousSessionFile === staged.previousSessionFile`（staged 值即 `parentSession`）正常命中。匹配判断本身未改，仅把「不匹配时的 `return`」改为「`clearHandoffSessionSettings` + `return`」。
+- (b) ✅ `/new`/`resume`/`fork`/cancel/抛错语义与测试一致（`resume` 因 `reason!==new` 早退不动 marker，测试 `a resume leaves the stage alone` 通过；cancel/throw 已有显式 clear，本轮不做叠加破坏）。
+- (c) ✅ fail-open：`clearHandoffSessionSettings` 内部 `rm({force:true}).catch(()=>{})`，且调用点 `session_start` 外有 `.catch(()=>{})`，不会阻断 session_start。
+
+**残余 4 `status` 两行（index.ts:108-109）+ `loadMemory` — 通过**
+
+- (a) ✅ `loadMemory` 纯只读：仅调 `readMemoryJournal`/`foldMemoryJournal`/`readOptional`/`stat`，未触达 `rotateMemoryJournalIfNeeded`/`backupMemoryBeforeWrite`/`recordMemoryDocument`/`ensureMemoryGitignore`，无备份/写入/修复副作用。
+- (b) ✅ unreadable/poisoned/damaged/空记忆/无 CONTEXT.md 文案均正确分支。
+- (c) ✅ `toISOString().replace(/\.\d+Z$/,"Z")` 输出稳定；`mtimeMs` 来自真实 `stat`，无 NaN；未来时间戳落到 `humanAge` 的 `<1min` 分支，无异常。
+- (d) ✅ 既有断言均为 `includes`/子串判断（aux-model-test:83、handoff-test:313、switches-test:62 等），新增两行不破坏。
+
+**CONTEXT.md 根因调查（consolidate.ts）— 通过（1 处 minor 语义缺口）**
+
+- (a) ✅ 边界正确：absent→不标记、null→不标记、字符串/数组/数字/缺 summary→标记（`contextUnusable = context===undefined && parsed.context!==undefined && parsed.context!==null`）。
+- (b) ✅ 合法 context（含 `summary:string` 的对象）不被误判；不可用 shape 不会当成可用。
+- (c) ✅ `contextShapeWarned` 以 `projectRoot` 为 key，每进程每项目一次，无跨项目误抑制；Set 随进程生命周期小规模增长，无泄漏。
+- (e) ✅ `update = outcome.result.context ?? (existingContext.trim() ? undefined : fallbackUpdate(ctx))` 未变，`update===undefined` 时 CONTEXT.md 保持不动仍成立（`contextUnusable` 不改变 `context` 字段本身）。
+
+---
+
+### 发现的问题（分级）
+
+**important —— 无。**
+
+**minor：**
+
+1. **`handoff.ts:589`（`readSessionHeader` 的 1MB 上限存在 off-by-one）** — `if (newline < 0 && read >= SESSION_HEADER_MAX_BYTES) return undefined;`。当首行恰好 **等于** 1MB（换行符位于字节偏移 1048576 处，即第 17 个 chunk 的起始）时，循环在第 16 个 chunk 后 `read` 已达 MAX、换行符尚未读入，被误判为「无聊头」而退回 chaining。注释声明是「*anything larger* reads as no header」，但实现把「恰好等于上限」也算进去。pi 自己的 `readSessionHeader` 用「1 字节 EOF 探测」显式区分「恰好 MAX 后 EOF」与「还有更多字节」。**为什么要点出**：语义与注释不一致，虽 `==MAX` 的真实会话 header 几乎不可能出现，且后果是优雅降级（退回 chaining）而非崩溃。**最小修法**：循环退出后多读 1 字节探测，或在 `read >= MAX` 判定前把 `Buffer.concat` 的拼接也纳入（`read === MAX` 时若 `Buffer.concat(chunks).length` 恰好等于 MAX 且是 EOF 则允许），对齐 pi 的边界语义。
+
+2. **`consolidate.ts:118`（`contextUnusable` 判定比 prompt 声明的「exactly these keys」宽松）** — 新 prompt 说「context must be an object with exactly these keys… with other key names, is discarded」，但 `parseContext` 只强制 `summary:string`；`title` 缺失给默认值、`key_points`/`open_tasks` 若为错误类型（如字符串而非数组）被 `strings()` 静默置空、多余键被忽略，这些情况 `context` 仍「可用」且**不会**触发 `contextUnusable`/errors.log。**为什么要点出**：这不算把不可用当可用（summary 仍会落到 CONTEXT.md，不会 stale），但 prompt 与校验的严格度不对称，可能让 `key_points` 改名漂移（如模型写 `keyPoints`）继续静默丢字段——正是本次要追的同一类根因的一个更窄变体。**最小修法**：在 `parseContext` 中把 `key_points`/`open_tasks` 非数组（非 null）视为 invalid 一并返回 undefined（或单独返回一个 `shapeUnusable` 信号），或把 prompt 措辞从「exactly」改为与校验一致的「at least summary:string; key_points/open_tasks arrays」。
+
+3. **`consolidate.ts:425`（errors.log 文案在「无既有 CONTEXT.md」时轻微不精确）** — 当 context 不可用**且** `existingContext` 为空时，代码会走 `fallbackUpdate(ctx)` 写入 fallback，但日志恒写「the previous CONTEXT.md is kept」，此时并不存在「previous」。纯文案失准，无行为影响。
+
+4. **`.agents/memory/MEMORY.md:48,50`（残残余项文档已过期）** — 该 memory 文件仍写「read ≤64KB」「header matching is trim-based but case-sensitive」「Accepted cosmetic residual: … a correct fix would need a second case-folded line set」，与本次修复后的代码（读到换行至 1MB、header 大小写不敏感）矛盾，且把已修复的残余 1 仍标为「已接受未修」。属数据/文档而非源码，建议在下个 consolidation 周期随手更正。
+
+5. **`.agents/memory/session-logs/.gitignore` 被删除（本次 work tree 变更之一）** — 这是扩展运行时 `ensureLogsIgnored` 生成的产物被误提交进了仓库，删除本身是合理清理；与残余 1-4 无关，仅提示 owner 确认是有意清理而非误删。
+
+---
+
+### 探针灵敏度验证（变异-还原）
+
+我在沙箱内做了 5 处临时变异并全部还原，md5 逐一核对一致：
+
+| 变异（退回复原） | 预期变红探针 | 结果 |
+|---|---|---|
+| residual 1：header 判断还原为大小写敏感 | `a differently cased header is not repeated` | 仅此项 FAIL，其余绿 |
+| residual 2：chunk 读还原为固定 64KB | `an oversized session header still resolves to its root` | 仅此项 FAIL |
+| residual 3：mismatch 分支还原为裸 `return` | `a foreign switch drops the stage instead of keeping it` | 仅此项 FAIL |
+| residual 4：删除 `Memory:`/`Context:` 两行 | `status names the memory source` + `status dates the context render` | 两项 FAIL |
+| 根因：还原 `parseConsolidated` 去掉 `contextUnusable` | `a context in another shape is flagged` + `an unusable context is written to errors.log` + `the shape note is reported once per process` | 三项 FAIL |
+
+每个变异都**只有预期探针变红**、其余探针保持绿，证明探针一对一钉住了闸门，无恒真断言、无被其他门吸收（对照 owner 记录的 m3/m4 反例），也未发现任何既有探针被改弱。
+
+---
+
+### 沙箱写入声明
+
+- 我**没有修改任何仓库文件**（最终 `git status` 与初始快照逐字一致，仍是 10 个 tracked 修改 + 4 个 untracked 目录）。
+- 做过 5 次临时变异-还原，涉及文件与 md5（还原后=初始值）：
+  - `extensions/project-context/project-state.ts` → `3ee5be244ee30176225ed24f35a4b9ad` ✅
+  - `extensions/project-context/handoff.ts` → `d1fab706f3e87a88ba79b97008ece7d1` ✅
+  - `extensions/project-context/index.ts` → `ae24d4940dd7742b7ca65810bf62a716` ✅
+  - `extensions/project-context/consolidate.ts` → `e4f21ac38c2e4269de15bf9962579433` ✅
+- 临时 `.bak` 文件放在 `/tmp/`（沙箱外），已删除。
+
+---
+
+### 是否可发版
+
+**可以发版。** 五处改动全部正确、fail-open、无数据丢失路径，探针质量达标（变异-还原验证通过，无改弱/恒真/时序脆弱断言）。保留意见如下：
+
+- minor #1（1MB 精确边界）与 #2（key_points/open_tasks 类型漂移未被抓）是仅有的两处「语义与注释/声明的窄偏离」，均不会造成静默 stale 或崩溃，可作为 follow-up 记录进 issue 的 fix-note §7，而非发版阻断项。
+- minor #4/#5 是 memory 文档/产物过期，建议随下个 consolidation 周期顺手更正，不阻塞标签。

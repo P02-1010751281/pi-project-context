@@ -158,7 +158,9 @@ const gitignoreEnsured = new Set<string>();
 
 /** Keep backups and the error log out of the project's commits, once per process (best effort;
  * a failure is not retried in this process so a write is never blocked by housekeeping). The header
- * is written only when it is absent, so a later version that adds a line appends that line alone. */
+ * is written only when it is absent, so a later version that adds a line appends that line alone.
+ * The header is a comment, so it is recognised case-insensitively; the ignore patterns themselves
+ * stay case-sensitive because git matches them that way. */
 export async function ensureMemoryGitignore(memoryDirectory: string): Promise<void> {
 	const file = path.join(memoryDirectory, ".gitignore");
 	if (gitignoreEnsured.has(file)) return;
@@ -169,7 +171,8 @@ export async function ensureMemoryGitignore(memoryDirectory: string): Promise<vo
 		const missing = MEMORY_GITIGNORE_LINES.filter((line) => !lines.has(line));
 		if (missing.length === 0) return;
 		const head = existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
-		const header = lines.has(MEMORY_GITIGNORE_HEADER) ? "" : `${MEMORY_GITIGNORE_HEADER}\n`;
+		const wired = MEMORY_GITIGNORE_HEADER.toLowerCase();
+		const header = [...lines].some((line) => line.toLowerCase() === wired) ? "" : `${MEMORY_GITIGNORE_HEADER}\n`;
 		await writeAtomic(file, `${head}${header}${missing.join("\n")}\n`);
 	} catch {
 		// Ignoring local artifacts is best-effort; a failure must not block the write.

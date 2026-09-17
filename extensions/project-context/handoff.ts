@@ -421,8 +421,11 @@ export function buildHandoffDocument(parts: HandoffDocumentParts): string {
 export const HANDOFF_SETTINGS_FILE = "handoff-session-settings.json";
 /** A staged marker only has to survive the switch itself; anything older is a leftover. */
 const HANDOFF_SETTINGS_TTL_MS = 10 * 60_000;
-/** Session files grow to many MB; the header is the first (small) line. */
-const SESSION_HEADER_BYTES = 64 * 1024;
+/** Session files grow to many MB; the header is the first (normally small) line, read to its
+ * newline no matter how long it grew (a truncated read used to cost us the whole ancestor walk). */
+const SESSION_HEADER_CHUNK_BYTES = 64 * 1024;
+/** Refuse to buffer a pathological first line forever; anything larger reads as "no header". */
+const SESSION_HEADER_MAX_BYTES = 1024 * 1024;
 /** Bound for the ancestor walk that flattens the session tree. */
 const MAX_PARENT_HOPS = 32;
 
@@ -489,8 +492,13 @@ export async function restoreHandoffSessionSettings(
 		return;
 	}
 	// Only the session that replaced the staged one may consume it: `/new`, `resume`, and `fork`
-	// carry a different predecessor (or none), and a cancelled switch leaves the marker for the TTL.
-	if (event.previousSessionFile !== staged.previousSessionFile) return;
+	// carry a different predecessor (or none). Nothing else can ever use the marker, so an
+	// unconsumable one is dropped right away — that covers a crash between staging and the switch,
+	// which used to leave the file behind until the TTL expired.
+	if (event.previousSessionFile !== staged.previousSessionFile) {
+		await clearHandoffSessionSettings(projectRoot);
+		return;
+	}
 	await clearHandoffSessionSettings(projectRoot);
 
 	const wanted = staged.model;
@@ -566,9 +574,23 @@ async function readSessionHeader(file: string): Promise<{ parentSession?: string
 	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
 		handle = await open(file, "r");
-		const buffer = Buffer.alloc(SESSION_HEADER_BYTES);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		const line = buffer.subarray(0, bytesRead).toString("utf8").split("\n", 1)[0];
+		const buffer = Buffer.alloc(SESSION_HEADER_CHUNK_BYTES);
+		const chunks: Buffer[] = [];
+		let read = 0;
+		let newline = -1;
+		while (read <= SESSION_HEADER_MAX_BYTES) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, read);
+			if (bytesRead === 0) break;
+			chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+			read += bytesRead;
+			newline = Buffer.concat(chunks).indexOf(0x0a);
+			if (newline >= 0) break;
+		}
+		// The cap bounds the *line*, not the read position: a first line of exactly the cap is read
+		// (its newline sits one byte past it), anything longer reads as "no header". A file that ends
+		// inside the cap without a newline is a single-line session and is parsed as it is.
+		if ((newline < 0 ? read : newline) > SESSION_HEADER_MAX_BYTES) return undefined;
+		const line = Buffer.concat(chunks).subarray(0, newline < 0 ? undefined : newline).toString("utf8");
 		const parsed = JSON.parse(line) as { type?: unknown; parentSession?: unknown };
 		if (parsed?.type !== "session") return undefined;
 		return typeof parsed.parentSession === "string" && parsed.parentSession ? { parentSession: parsed.parentSession } : {};

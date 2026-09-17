@@ -1,0 +1,48 @@
+# /tmp 陈旧条目清理清单（2026-09-17，owner 指令「all」）
+# 规则：仅删 mtime > 48h 的**其它项目**临时产物；不可重算的成果（训练 checkpoint）与 48h 内的条目保留
+# 总量: 3303 项 / 2.9G
+
+## 大于 1MB 的条目（含体积）
+1.0M	/tmp/.org.chromium.Chromium.OUxRnZ
+1.3M	/tmp/guides.json
+1.3M	/tmp/.org.chromium.Chromium.ARlUN1
+1.3M	/tmp/.org.chromium.Chromium.jylIY1
+1.3M	/tmp/tree.json
+1.5M	/tmp/ciphercat-omp-X4CGmP
+1.9M	/tmp/.org.chromium.Chromium.CMblQl
+2.0M	/tmp/dsv41
+2.3M	/tmp/pi-browser-chromium-RjTFyu
+2.4M	/tmp/pi-browser-chromium-h9NwRy
+2.4M	/tmp/pi-browser-chromium-IOJ8pg
+2.5M	/tmp/pi-bash-f9734a3cc97132e3.log
+2.5M	/tmp/tree154.json
+2.9M	/tmp/ciphercat-eslint-full-latest.out
+2.9M	/tmp/ciphercat-lint.out
+3.0M	/tmp/vendor.js
+3.1M	/tmp/pi-browser-chromium-vb0WOl
+3.6M	/tmp/tmp-s4n.xpi
+4.3M	/tmp/cxs
+5.4M	/tmp/.bun-1000-ce78de25a2553a8.so
+5.4M	/tmp/pi-bash-b8dd5c2ac551e049.log
+6.2M	/tmp/ciphercat-coverage-audit-72ma7ufk
+6.2M	/tmp/ciphercat-doc-audit
+7.9M	/tmp/metacrypto-paper-v1.1.0-20260914
+7.9M	/tmp/.org.chromium.Chromium.gbNdLg
+7.9M	/tmp/.org.chromium.Chromium.iRaXcu
+11M	/tmp/.org.chromium.Chromium.dv2N5W
+11M	/tmp/.org.chromium.Chromium.Hex6X1
+14M	/tmp/.bun-1000-73b412e2ff3bc470.so
+14M	/tmp/pdfs
+14M	/tmp/pi-browser-chromium-sWkA3c
+43M	/tmp/node-compile-cache
+45M	/tmp/ciphercat-standard-check.phUwDU
+45M	/tmp/pi-browser-chromium-Uy1lLB
+58M	/tmp/academic-research-skills-audit-20260914
+77M	/tmp/ccsw
+93M	/tmp/pi-browser-chromium-BzwZzE
+617M	/tmp/ciphercat-acceptance-20260912
+626M	/tmp/ciphercat-independent-review
+1.1G	/tmp/ciphercat-readonly-cargo
+
+## 其余小条目（仅计数）
+3263 项，均 <1MB

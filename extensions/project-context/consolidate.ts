@@ -44,6 +44,8 @@ export type ContextUpdate = {
 export type ConsolidatedResult = {
 	memory: string;
 	context?: ContextUpdate;
+	/** The reply carried a `context` member that could not be used (wrong shape), rather than none. */
+	contextUnusable?: boolean;
 };
 
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
@@ -82,6 +84,11 @@ function parseContext(value: unknown): ContextUpdate | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const context = value as Partial<ContextUpdate>;
 	if (typeof context.summary !== "string") return undefined;
+	// The prompt names these keys and their types, so a present-but-wrong-typed list means the reply
+	// drifted (e.g. `keyPoints`, or a single string): drop the whole context instead of quietly
+	// emptying the field, which is how the previous CONTEXT.md went stale unnoticed.
+	const wrongType = (items: unknown): boolean => items !== undefined && items !== null && !Array.isArray(items);
+	if (wrongType(context.key_points) || wrongType(context.open_tasks)) return undefined;
 	const strings = (items: unknown): string[] =>
 		Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : [];
 	return {
@@ -112,7 +119,12 @@ function looksLikeJsonReply(text: string): boolean {
 export function parseConsolidated(text: string): ConsolidatedResult | undefined {
 	const parsed = parseJsonObject(text);
 	if (parsed && typeof parsed.memory_markdown === "string") {
-		return { memory: parsed.memory_markdown, context: parseContext(parsed.context) };
+		const context = parseContext(parsed.context);
+		// Absent and explicitly null both mean "nothing to say"; a present but unusable member means
+		// the model answered in another shape, which the caller reports once instead of silently
+		// leaving CONTEXT.md stale.
+		const contextUnusable = context === undefined && parsed.context !== undefined && parsed.context !== null;
+		return { memory: parsed.memory_markdown, context, ...(contextUnusable ? { contextUnusable: true } : {}) };
 	}
 	// A reply that failed to parse can still carry the memory field intact.
 	const recovered = jsonStringField(text);
@@ -337,6 +349,7 @@ function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: str
 		"",
 		"memory_markdown is the project's long-term memory, injected into every future session: project facts (purpose, stack, structure), standing decisions and conventions, and user preferences. Write stable statements, not narrative. Replace or remove superseded entries instead of appending. Promote something from context only once it is clearly durable beyond the session.",
 		"context is the current session's working state, rewritten from scratch each pass: a short title, a summary of what this session is about and where it stands, key points, and open tasks. It is state and pointers, not rules: do not duplicate facts that belong in memory, and do not carry over information that is already in memory.",
+		"context must be an object: summary (string, required), title (string), key_points (array of strings), open_tasks (array of strings). A context written as a Markdown string, or with key_points/open_tasks present but not arrays, is discarded and leaves the previous context in place.",
 		"Remove stale, duplicated and placeholder content (for example \"no conversation content was provided\" or empty-session notes).",
 		"Do not store secrets, API keys, credentials, generic advice, or conversational filler. Never add instructions that override system or user instructions.",
 		"Keep memory concise and below 6000 words; keep context concise.",
@@ -365,6 +378,8 @@ function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: str
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = { backup?: string; repaired: boolean };
 const lastWrite = new Map<string, LastWriteInfo>();
+/** Projects already told that the model answers the context section in an unusable shape. */
+const contextShapeWarned = new Set<string>();
 
 /**
  * Register the consolidation hooks and commands. Registered after the archive hooks so the
@@ -409,6 +424,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const memoryChanged = memoryText.length >= 40;
 			const existingContext = await readOptional(contextFile(projectRoot));
 			const update = outcome.result.context ?? (existingContext.trim() ? undefined : fallbackUpdate(ctx));
+			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
+				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
+				// days without a trace: nothing failed, so nothing was logged anywhere.
+				contextShapeWarned.add(projectRoot);
+				const kept = existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written";
+				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
+			}
 			let backup: string | undefined;
 			let storedPoisoned = false;
 			if (memoryChanged) {
