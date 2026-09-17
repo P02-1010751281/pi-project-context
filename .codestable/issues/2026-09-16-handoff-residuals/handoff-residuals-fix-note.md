@@ -76,7 +76,7 @@ tags: [handoff, tests, flakiness]
 | 代码提交 | `093dbf3`（三残余 + 4 轮复审产物）、`98aeedf`（m3 修复 + 第 5 轮产物） |
 | 注解 tag | `v0.1.5` → tag 对象 `79b8c8f`，指向 `98aeedf` |
 | 远端 | Forgejo + GitHub 镜像的 `master` 均为 `98aeedf`；tag 两处均有（推送时镜像出现过一次瞬时断连，重试后成功） |
-| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.4` → `@v0.1.5`（备份 `/tmp/settings.json.before-v0.1.5-20260916-090918`，1452 B）；`pi update --extensions`（非 `pi update`，避免误升 CLI） |
+| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.4` → `@v0.1.5`（切换前的版本见 `pi-config` 仓库 git 历史；`/tmp` 临时备份已随 2026-09-17 清理删除）；`pi update --extensions`（非 `pi update`，避免误升 CLI） |
 | 已装副本 | `/home/user/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `98aeedf`，工作树干净，`handoff.ts` 含 `SPLIT_TURN_MARKER`×4 / `droppedOrphans`×6（`git describe` 因无本地 tag 对象显示 `v0.1.0-26-g98aeedf`，按 commit 核对）。`pi list` 显示 `@v0.1.5` |
 
 ### 真机 A/B（证据：`handoff-residuals-midturn-e2e.txt`）

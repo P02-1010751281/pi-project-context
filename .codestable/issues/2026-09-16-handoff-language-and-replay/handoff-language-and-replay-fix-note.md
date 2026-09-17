@@ -92,8 +92,7 @@ tags: [handoff, i18n, replay]
 - **已安装副本已切到 v0.1.4 并生效**：`settings.json` 的 pin 改为 `…pi-project-context.git@v0.1.4`，
   `pi update --extensions` 把 `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context`
   置于 `7b424ab`（重打后重跑一次）；真 TUI（不带 `-e`）实跑 `/auto-handoff lang zh|auto` 验证命令与
-  `handoffLanguage` 写盘生效（v0.1.4 独有）。`settings.json` 改动前的备份在
-  `/tmp/settings.json.before-v0.1.4-<stamp>`。
+  `handoffLanguage` 写盘生效（v0.1.4 独有）。`settings.json` 改动前的版本见 `pi-config` 仓库 git 历史（切换前的临时备份已随 2026-09-17 的 `/tmp` 清理删除）。
 - **记忆/上下文同步（2026-09-16 13:10/13:18）**：新代码首次写入建了 journal baseline（`.agents/memory/memory.jsonl`，
   2 条 `replace`，与当时 render 逐字符一致，folded 17582 / render 17582）；本会话（旧进程跑旧代码）的后续事实
   通过**设计中的 external-edit 入口**补入（`MEMORY.md` 发布条目 + `CONTEXT.md` 按当前 renderer 格式重写），

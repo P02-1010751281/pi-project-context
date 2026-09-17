@@ -81,7 +81,7 @@ tags: [handoff, session, settings, ui]
 | 代码提交 | `8a2e6e4`（代码 + 测试 + 本 issue 全部 artifact，14 files, +1102/−34） |
 | 注解 tag | `v0.1.6` → tag 对象 `3a0a372`，指向 `8a2e6e4` |
 | 远端 | Forgejo + GitHub 镜像的 `master` 均为 `8a2e6e4`，tag 两处均有（`git ls-remote` 双远端核对） |
-| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.5` → `@v0.1.6`（备份 `/tmp/settings.json.before-v0.1.6-20260917-193654`，1452 B）；`pi update --extensions`（非 `pi update`） |
+| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.5` → `@v0.1.6`（切换前的版本见 `pi-config` 仓库 git 历史；`/tmp` 临时备份已随 2026-09-17 清理删除）；`pi update --extensions`（非 `pi update`） |
 | 已装副本 | `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `8a2e6e4`，工作树干净，`handoff.ts` 含 `handoff-session-settings.json`/`resolveHandoffParentSession`/`HANDOFF_SETTINGS_TTL_MS` ×5；`pi list` 显示 `@v0.1.6` |
 | 已装副本真机复验 | 用同一探针的模式 `old`（不传 `-ne`，即加载 settings 里已装的包）：**11/11**（切换前同一探针为 4/11）——证据 `handoff-session-continuity-e2e-installed-v0.1.6.txt` |
 
@@ -95,3 +95,10 @@ tags: [handoff, session, settings, ui]
 - **独立复审**：lane A 第 3 轮（只读沙箱 `/tmp/pc-gitignore-review`，`git status` 前后 0 行差异；复审在沙箱内做过变异-还原，沙箱文件与仓库 md5 一致）——逐项 (a)-(d) 通过，**无 blocking**；逐状态核对（文件缺失/空文件/只有 header/无尾换行/CRLF/二次调用）均为幂等且不丢行，5 处调用点与文档无旧行为依赖。
 - **接受残余（minor）**：用户手写 header 但**大小写不同**时会再添一条 header。预存行为、注释行对 gitignore 无影响；正确修正需另建一个大小写折叠的集合（与现有大小写敏感的忽略模式集合并存），不值得为此增代码。
 - **发布状态**：本改动在 `v0.1.6` 之后（master 领先已装 pin 一个 cosmetic 提交）；已装 v0.1.6 不受影响，需等下次实质改动一并发版。
+
+## 8. 收尾清理（2026-09-17）
+
+- `/tmp`：删除本项目历次评审/探针留下的 658 项沙箱与转录（`pi-context-rev*`、`rev-handoff*`、`mutA..D`/`mutLock*`/`mutSwitch`、`rev-bypass`/`rev-mut`/`rev-negmut*`/`rev-oldref*`/`rev-probe`、`laneA*`、`rev7-bud-*`、`probe8..22`、`tui-e2e*`、`handoff-*`、`settings-e2e*`、`rev-round*`、`gitignore-review-*` 等），共约 **1.6G**（`/tmp` 4.8G → 3.2G）；结论性转录与探针均已入库，被删的只是可重跑副本。保留 3 个 `settings.json.before-*` 之外的其它项目的沙箱（`ciphercat-*`、`uf-ckpt.tgz`、`ccsw` 等）未动。
+- 真实 session 目录里一个旧探针残留（`~/.pi/agent/sessions/--tmp-pc-real-run--`，84K）已删；`~/.pi/agent/git/` 三个包克隆干净；`~/.pi/agent/extensions/` 是用户自写的 3 个扩展（`loop-guard.ts`/`model-roles.ts`/`retry-command.ts`），保留。
+- 仓库内扫描无 `*.tmp`/`*~`/`*.bak`/`*.orig`/`.DS_Store`/`*.broken-*`/`*.steal` 残留；`MEMORY.md` 备份按上限保留 5 份；`.codestable/issues/` 4 个 issue 的证据链按惯例保留，`features/2026-09-15-codex-project-context-port/` 由并行 Codex 会话持有、保留。
+- 切换前的 `settings.json` 备份改为引用 `pi-config` 仓库 git 历史（见 v0.1.4/v0.1.5/v0.1.6 三处记录的更新）。
