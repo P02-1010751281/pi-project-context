@@ -3,7 +3,7 @@ import { registerArchive } from "./archive.ts";
 import { registerAutolearn } from "./autolearn.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./config.ts";
 import { registerConsolidation } from "./consolidate.ts";
-import { registerHandoff } from "./handoff.ts";
+import { registerHandoff, restoreHandoffSessionSettings } from "./handoff.ts";
 import { getProjectRoot, notify } from "./project-state.ts";
 
 /**
@@ -37,10 +37,13 @@ export default function projectContext(pi: ExtensionAPI): void {
 	});
 
 	// Registered before the feature hooks so the run-level switch is set first.
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		const disabled = pi.getFlag("no-project-context") === true;
 		setRunDisabled(disabled);
 		if (disabled) notify(ctx, "project-context: disabled for this run (--no-project-context)");
+		// A handoff stages its model/thinking before `newSession()`; restore them here, the only
+		// point after the switch where pi still lets an extension set them (the old `pi` is stale).
+		if (!disabled) await restoreHandoffSessionSettings(pi, ctx, event).catch(() => {});
 	});
 
 	// Order matters for agent_settled: archive first, then the passes, then the valve.

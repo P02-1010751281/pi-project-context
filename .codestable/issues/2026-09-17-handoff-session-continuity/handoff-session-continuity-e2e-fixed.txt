@@ -1,0 +1,41 @@
+MODE=new
+initial=2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl model=deepseek/deepseek-flash thinking=max
+EVENT: settled (#1)
+EVENT: settled (#2)
+available: deepseek/deepseek-v4-flash, deepseek/deepseek-v4-flash-vision-exp, deepseek/deepseek-v4-pro, deepseek/deepseek-flash, openai-codex/gpt-5.3-codex-spark, openai-codex/gpt-5.4, openai-codex/gpt-5.4-mini, openai-codex/gpt-5.5, openai-codex/gpt-5.6-luna, openai-codex/gpt-5.6-sol, openai-codex/gpt-5.6-terra, openai-codex/gpt-6-astra, opencode/claude-fable-5, opencode/claude-fable-5-1, opencode/claude-haiku-4-5, opencode/claude-opus-4-5, opencode/claude-opus-4-6, opencode/claude-opus-4-7, opencode/claude-opus-4-8, opencode/claude-opus-5, opencode/claude-sonnet-4, opencode/claude-sonnet-4-5, opencode/claude-sonnet-4-6, opencode/claude-sonnet-5, opencode/qwen3.5-plus, opencode/qwen3.6-plus, opencode/gemini-3-flash, opencode/gemini-3.1-pro, opencode/gemini-3.5-flash, opencode/gemini-3.5-flash-lite, opencode/gemini-3.6-flash, opencode/gemini-3.7-flash, opencode/gemini-3.8-flash, opencode/big-pickle, opencode/deepseek-v4-flash, opencode/deepseek-v4-flash-vision-exp, opencode/deepseek-v4-pro, opencode/glm-5, opencode/glm-5.1, opencode/glm-5.2, opencode/glm-5.3, opencode/glm-5.3-flash, opencode/kimi-k2.5, opencode/kimi-k2.6, opencode/kimi-k2.7-code, opencode/kimi-k3, opencode/ling-3.0-flash-fin-free, opencode/mimo-v2.5-free, opencode/minimax-m2.5, opencode/minimax-m2.7, opencode/minimax-m3, opencode/nemotron-3-ultra-free, opencode/nemotron-3.5-lightning-free, opencode/gpt-5, opencode/gpt-5-codex, opencode/gpt-5-nano, opencode/gpt-5.1, opencode/gpt-5.1-codex, opencode/gpt-5.1-codex-max, opencode/gpt-5.1-codex-mini, opencode/gpt-5.2, opencode/gpt-5.2-codex, opencode/gpt-5.3-codex, opencode/gpt-5.4, opencode/gpt-5.4-mini, opencode/gpt-5.4-nano, opencode/gpt-5.4-pro, opencode/gpt-5.5, opencode/gpt-5.5-pro, opencode/gpt-5.6-luna, opencode/gpt-5.6-sol, opencode/gpt-5.6-terra, opencode/gpt-6-astra, opencode/grok-4.5, opencode/grok-4.6, opencode/grok-build-0.1, opencode/muse-spark-1.2, opencode/muse-spark-1.2-contributor-free, opencode/muse-spark-1.3, opencode/muse-spark-1.3-contributor-free, opencode/union-alpha, opencode-go/minimax-m3, opencode-go/qwen3.8-flash, opencode-go/deepseek-v4-flash, opencode-go/deepseek-v4-flash-vision-exp, opencode-go/deepseek-v4-pro, opencode-go/glm-5.1, opencode-go/glm-5.2, opencode-go/glm-5.3, opencode-go/glm-5.3-flash, opencode-go/hy3, opencode-go/hy4-preview, opencode-go/kimi-k2.6, opencode-go/kimi-k2.7-code, opencode-go/kimi-k3, opencode-go/longcat-2.0, opencode-go/mimo-v2.5, opencode-go/mimo-v2.5-pro, opencode-go/minimax-m2.7, opencode-go/omen-alpha, opencode-go/qwen3.6-plus, opencode-go/qwen3.7-max, opencode-go/qwen3.7-plus, opencode-go/qwen3.8-max, opencode-go/gpt-5.6-luna, opencode-go/grok-4.6, opencode-go/muse-spark-1.2-contributor, opencode-go/muse-spark-1.3-contributor, opencode-go/deepseek-v4.1-flash, opencode-go/union-alpha, codecommand/deepseek/deepseek-v4-flash, codecommand/deepseek/deepseek-v4-pro, codecommand/deepseek/deepseek-v4-flash-fast, codecommand/deepseek/deepseek-v4-flash-vision-exp, codecommand/claude-sonnet-5, codecommand/claude-opus-5, codecommand/claude-haiku-4-5, codecommand/claude-fable-5, codecommand/gpt-5.4, codecommand/gpt-5.5, codecommand/gpt-5.4-mini, codecommand/gpt-5.3-codex, codecommand/gpt-5.6-luna, codecommand/gpt-5.6-sol, codecommand/gpt-5.6-terra, codecommand/google/gemini-3.5-flash, codecommand/google/gemini-3.7-flash, codecommand/google/gemini-3.6-flash, codecommand/google/gemini-3.5-flash-lite, codecommand/google/gemini-3.1-flash-lite, codecommand/zai-org/GLM-5, codecommand/zai-org/GLM-5.1, codecommand/zai-org/GLM-5.2, codecommand/zai-org/GLM-5.3, codecommand/z-ai/glm-5.3-flash, codecommand/moonshotai/Kimi-K2.5, codecommand/moonshotai/Kimi-K2.6, codecommand/moonshotai/Kimi-K2.7-Code, codecommand/moonshotai/Kimi-K3, codecommand/Qwen/Qwen3.6-Plus, codecommand/Qwen/Qwen3.7-Max, codecommand/Qwen/Qwen3.7-Plus, codecommand/Qwen/Qwen3.7-Flash, codecommand/Qwen/Qwen3.8-Max, codecommand/Qwen/Qwen3.8-Flash, codecommand/Qwen/Qwen3.8-27B, codecommand/MiniMaxAI/MiniMax-M2.5, codecommand/MiniMaxAI/MiniMax-M2.7, codecommand/MiniMaxAI/MiniMax-M3, codecommand/xai/grok-4.5, codecommand/xai/grok-4.6, codecommand/meta/muse-spark-1.2, codecommand/xiaomi/mimo-v2.5-pro, codecommand/tencent/hy4-preview, codecommand/nvidia/nemotron-3-ultra-550b-a55b, codecommand/stepfun/Step-3.7-Flash, codecommand/thinkingmachines/inkling-small, codecommand/poolside/laguna-s-2.1-free, scnet/DeepSeek-V4-Flash-0731, scnet/DeepSeek-V4-Pro-0813, scnet/GLM-5.3, scnet/GLM-5.3-Flash, scnet/Kimi-K2.7-Code, scnet/Kimi-K3, scnet/MiniMax-M3, scnet/Qwen3.8-Flash, scnet/Qwen3.8-Max
+set_model deepseek/deepseek-v4-flash -> {"id":"req-5","type":"response","command":"set_model","success":true,"data":{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash","api":"openai-completions","bas
+live session now model=deepseek/deepseek-v4-flash thinking=low
+NOTIFY[info]: Auto handoff: summarizing ~12.9k of context, keeping ~47 recent...
+EVENT: settled (#3)
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 2.7% full, summary ~147, kept ~47 recent).
+handoff 1 -> 2026-09-17T11-21-08-505Z_01a0af19-5699-7391-8a52-6d55578f4dc8.jsonl
+session2 parent=2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl
+session2 settings=[{"type":"model_change","provider":"deepseek","modelId":"deepseek-flash"},{"type":"thinking_level_change","thinkingLevel":"max"},{"type":"model_change","provider":"deepseek","modelId":"deepseek-v4-flash"},{"type":"thinking_level_change","thinkingLevel":"low"}]
+OK   handoff 1 switched sessions
+OK   handoff 1 restored the model
+OK   handoff 1 restored the thinking level
+OK   handoff 1 parented the replacement to the original session
+OK   handoff 1 consumed its staged settings
+OK   the replacement runs on the restored settings
+EVENT: settled (#4)
+NOTIFY[info]: Auto handoff: summarizing ~770 of context, keeping ~172 recent...
+EVENT: settled (#5)
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 0.2% full, summary ~221, kept ~172 recent).
+handoff 2 -> 2026-09-17T11-21-20-371Z_01a0af19-84f3-7391-8a52-6d5c101415cf.jsonl
+session3 parent=2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl
+session3 settings=[{"type":"model_change","provider":"deepseek","modelId":"deepseek-flash"},{"type":"thinking_level_change","thinkingLevel":"max"},{"type":"model_change","provider":"deepseek","modelId":"deepseek-v4-flash"},{"type":"thinking_level_change","thinkingLevel":"low"}]
+OK   handoff 2 kept the tree root as parent
+OK   handoff 2 did not chain onto the previous handoff
+OK   handoff 2 restored the model again
+OK   handoff 2 restored the thinking level again
+OK   handoff 2 consumed its staged settings
+SESSIONS:
+  2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl parent=(none) bytes=107802
+  2026-09-17T11-21-08-505Z_01a0af19-5699-7391-8a52-6d55578f4dc8.jsonl parent=2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl bytes=8032
+  2026-09-17T11-21-20-371Z_01a0af19-84f3-7391-8a52-6d5c101415cf.jsonl parent=2026-09-17T11-21-01-415Z_01a0af19-3ae6-7391-8a52-6d4f02544412.jsonl bytes=6521
+NOTIFIES:
+NOTIFY[info]: Auto handoff: summarizing ~12.9k of context, keeping ~47 recent...
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 2.7% full, summary ~147, kept ~47 recent).
+NOTIFY[info]: Auto handoff: summarizing ~770 of context, keeping ~172 recent...
+NOTIFY[info]: Auto handoff: continued in a fresh session (previous was 0.2% full, summary ~221, kept ~172 recent).
+RESULT: 11/11 checks passed

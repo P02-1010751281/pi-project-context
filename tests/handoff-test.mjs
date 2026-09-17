@@ -557,6 +557,204 @@ try {
 	check("the orphan replay carries the kept tail", orphanCaptured.replay.map((message) => message.role).join(",") === "user,assistant,user");
 	check("the orphan result never enters the replay", !JSON.stringify(orphanCaptured.replay).includes("ORPHAN_SECRET"));
 	check("the orphan replay opens user-first", orphanCaptured.replay[0]?.role === "user" && orphanCaptured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER);
+
+	// Session settings survive the switch and the pi session tree stays flat. Session files on
+	// disk give the parent chain meaning: the replacement must point at the chain root, and the
+	// staged settings must be keyed to the session that is being replaced.
+	console.log("\n=== handoff session settings + tree flattening ===");
+	const sessionDir = path.join(tmp, "sessions");
+	await mkdir(sessionDir, { recursive: true });
+	const sessionFile = (name) => path.join(sessionDir, `${name}.jsonl`);
+	const writeHeader = async (file, id, parentSession) =>
+		writeFile(file, `${JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, ...(parentSession ? { parentSession } : {}) })}\n`);
+	await writeHeader(sessionFile("root"), "root");
+	await writeHeader(sessionFile("mid"), "mid", sessionFile("root"));
+	await writeHeader(sessionFile("leaf"), "leaf", sessionFile("mid"));
+	check("a session chain resolves to its root", (await handoff.resolveHandoffParentSession(sessionFile("leaf"))) === sessionFile("root"));
+	check("a root session is its own parent", (await handoff.resolveHandoffParentSession(sessionFile("root"))) === sessionFile("root"));
+	check("a missing session file is its own parent", (await handoff.resolveHandoffParentSession(sessionFile("nope"))) === sessionFile("nope"));
+	check("an in-memory session has no parent", (await handoff.resolveHandoffParentSession(undefined)) === undefined);
+	await writeHeader(sessionFile("cyc-a"), "cyc-a", sessionFile("cyc-b"));
+	await writeHeader(sessionFile("cyc-b"), "cyc-b", sessionFile("cyc-a"));
+	check("a parent cycle terminates", [sessionFile("cyc-a"), sessionFile("cyc-b")].includes(await handoff.resolveHandoffParentSession(sessionFile("cyc-a"))));
+
+	const settingsEntries = [
+		contentEntry("s1", "user", [{ type: "text", text: `Please carry the session settings over. ${'filler sentence. '.repeat(200)}` }], "2026-09-17T00:10:00.000Z"),
+		contentEntry(
+			"s2",
+			"assistant",
+			[{ type: "text", text: "Reading the current implementation first." }, { type: "toolCall", id: "sc1", name: "bash", arguments: { command: "cat settings.ts" } }],
+			"2026-09-17T00:10:01.000Z",
+			"s1",
+		),
+		toolResultEntry("s3", "sc1", "settings output line. ".repeat(60), "2026-09-17T00:10:02.000Z", "s2"),
+		contentEntry("s4", "assistant", [{ type: "text", text: "Settings are read, carrying on." }], "2026-09-17T00:10:03.000Z", "s3"),
+		contentEntry("s5", "user", [{ type: "text", text: "好，继续。" }], "2026-09-17T00:10:04.000Z", "s4"),
+	];
+	const settingsCtx = makeCtx(tmp, {
+		sessionManager: { ...makeSessionManager(settingsEntries, "leaf"), getSessionFile: () => sessionFile("leaf") },
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		thinkingLevel: "high",
+		model: { provider: "deepseek", id: "deepseek-flash" },
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	const settingsCaptured = { parentSession: undefined, replay: [], prompt: undefined };
+	settingsCtx.newSession = async (options) => {
+		settingsCaptured.parentSession = options.parentSession;
+		const replacement = makeSessionManager([], "settings-next");
+		await options.setup(replacement);
+		settingsCaptured.replay = replacement.entries.slice();
+		const replacementCtx = makeCtx(tmp, { sessionManager: replacement });
+		replacementCtx.sendUserMessage = (text) => {
+			settingsCaptured.prompt = text;
+		};
+		await options.withSession(replacementCtx);
+		return { cancelled: false };
+	};
+	await runHandlers(pinPi, "session_start", settingsCtx);
+	await pinPi.commands.get("auto-handoff").handler("now", settingsCtx);
+
+	const markerFile = handoff.handoffSettingsFile(tmp);
+	const markerExists = () => readFile(markerFile, "utf8").then(() => true).catch(() => false);
+	const staged = JSON.parse(await readFile(markerFile, "utf8").catch(() => "{}"));
+	check("the handoff still continues in a fresh session", settingsCaptured.prompt !== undefined && settingsCaptured.replay.length > 0);
+	check("the replacement is parented to the chain root", settingsCaptured.parentSession === sessionFile("root"));
+	check(
+		"the outgoing model and thinking level are staged",
+		staged.model?.provider === "deepseek" && staged.model?.id === "deepseek-flash" && staged.thinkingLevel === "high",
+	);
+	check("the stage is keyed to the replaced session", staged.previousSessionFile === sessionFile("leaf") && typeof staged.at === "number");
+	const memoryGitignore = await readFile(path.join(tmp, ".agents/memory/.gitignore"), "utf8").catch(() => "");
+	check("the staged settings stay out of commits", memoryGitignore.includes(handoff.HANDOFF_SETTINGS_FILE));
+
+	// pi builds the replacement from its own defaults, so the staged settings are applied from the
+	// fresh extension instance's session_start (after the replay, before the continuation prompt).
+	console.log("\n=== restoreHandoffSessionSettings ===");
+	const restorePi = makePi({ cwd: tmp, thinkingLevel: "max" });
+	await (await loadDefault(`${PC}/index.ts`, stubAlias))(restorePi);
+	const restoredModel = { provider: "deepseek", id: "deepseek-flash", name: "deepseek flash" };
+	const replacementCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager([], "settings-next"),
+		model: { provider: "deepseek", id: "deepseek-lite" },
+		thinkingLevel: "max",
+		modelRegistry: { hasConfiguredAuth: () => true, find: () => restoredModel, complete: async () => { throw new Error("no model call expected"); } },
+	});
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
+	check("the replacement switches to the outgoing model", restorePi.modelCalls[0] === restoredModel);
+	check("the replacement takes the outgoing thinking level", restorePi.thinkingCalls.join(",") === "high");
+	check("the staged settings are consumed by that one switch", !(await markerExists()));
+
+	const stageFor = (overrides) =>
+		handoff.stageHandoffSessionSettings(tmp, {
+			previousSessionFile: sessionFile("leaf"),
+			model: { provider: "deepseek", id: "deepseek-flash" },
+			thinkingLevel: "high",
+			at: Date.now(),
+			...overrides,
+		});
+	const resetCalls = () => {
+		restorePi.modelCalls.length = 0;
+		restorePi.thinkingCalls.length = 0;
+	};
+
+	resetCalls();
+	await stageFor({});
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("mid") });
+	check("a different predecessor never inherits", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
+	check("a foreign switch leaves the stage for its own handoff", await markerExists());
+
+	resetCalls();
+	await stageFor({ at: Date.now() - 11 * 60_000 });
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
+	check("a stale stage is ignored", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
+	check("a stale stage is cleaned up", !(await markerExists()));
+
+	resetCalls();
+	await stageFor({});
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "resume", previousSessionFile: sessionFile("leaf") });
+	check("a resume is not the handoff successor", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
+	check("a resume leaves the stage alone", await markerExists());
+
+	resetCalls();
+	await stageFor({ model: { provider: "deepseek", id: "deepseek-lite" }, thinkingLevel: "max" });
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
+	check("settings that already match are left untouched", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
+	check("matching settings are still consumed", !(await markerExists()));
+
+	resetCalls();
+	const ghostCtx = makeCtx(tmp, {		sessionManager: makeSessionManager([], "settings-next"),
+		model: { provider: "deepseek", id: "deepseek-lite" },
+		thinkingLevel: "max",
+		modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined, complete: async () => { throw new Error("no model call expected"); } },
+	});
+	await stageFor({ model: { provider: "ghost", id: "gone" }, thinkingLevel: "low" });
+	await runHandlers(restorePi, "session_start", ghostCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
+	check(
+		"an unavailable model warns instead of breaking session start",
+		ghostCtx.notifications.some(([message, type]) => type === "warning" && message.includes("ghost/gone")),
+	);
+	check("the thinking level still applies without the model", restorePi.thinkingCalls.join(",") === "low");
+
+	resetCalls();
+	const originalSetModel = restorePi.setModel;
+	restorePi.setModel = async () => false;
+	await stageFor({});
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
+	check(
+		"a refused model switch warns",
+		replacementCtx.notifications.some(([message, type]) => type === "warning" && message.includes("no authentication")),
+	);
+	restorePi.setModel = originalSetModel;
+
+	// The stage is private but transient, so a session_start that is not its successor must stop
+	// before resolving the project root (which shells out to git).
+	const quietCwd = path.join(tmp, "quiet-cwd");
+	await mkdir(quietCwd, { recursive: true });
+	const quietPi = makePi({ cwd: quietCwd });
+	let quietExecs = 0;
+	const quietExec = quietPi.exec;
+	quietPi.exec = async (...execArgs) => {
+		quietExecs += 1;
+		return quietExec(...execArgs);
+	};
+	await stageFor({});
+	await handoff.restoreHandoffSessionSettings(quietPi, makeCtx(quietCwd, { sessionManager: makeSessionManager([], "quiet") }), { reason: "resume", previousSessionFile: sessionFile("leaf") });
+	check("a non-handoff session start stops before resolving the project root", quietExecs === 0);
+	await handoff.clearHandoffSessionSettings(tmp);
+
+	// A switch cancelled by another extension must not leave a stage behind for a later `/new`.
+	const cancelCtx = makeCtx(tmp, {
+		sessionManager: { ...makeSessionManager(settingsEntries, "leaf-2"), getSessionFile: () => sessionFile("leaf") },
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: pinCtx.modelRegistry,
+	});
+	cancelCtx.newSession = async () => ({ cancelled: true });
+	await pinPi.commands.get("auto-handoff").handler("now", cancelCtx);
+	check("a cancelled handoff clears its stage", !(await markerExists()));
+	check("a cancelled handoff keeps the session", cancelCtx.notifications.some(([message]) => message.includes("cancelled by another extension")));
+
+	// A switch that throws never produced a replacement either: the stage must be cleared too.
+	const throwCtx = makeCtx(tmp, {
+		sessionManager: { ...makeSessionManager(settingsEntries, "leaf-3"), getSessionFile: () => sessionFile("leaf") },
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: pinCtx.modelRegistry,
+	});
+	throwCtx.newSession = async () => {
+		throw new Error("switch exploded");
+	};
+	await pinPi.commands.get("auto-handoff").handler("now", throwCtx);
+	check("a failed switch clears its stage", !(await markerExists()));
+	check(
+		"a failed switch is reported to the user",
+		throwCtx.notifications.some(([message, type]) => type === "error" && message.includes("Auto handoff failed")),
+	);
 } finally {
 	delete globalThis.__handoffStub;
 	await rm(tmp, { recursive: true, force: true });

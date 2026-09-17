@@ -1,0 +1,76 @@
+I have precise line numbers. Let me do one final verification: confirm that `setThinkingLevel` on the ExtensionAPI does NOT throw (so the "silent drop" catch is defensive-only, and whether there's a more concerning silent-loss). Also check the `readSessionHeader` JSON.parse: if the first line is a huge single line (super-long session header exceeding 64KB), the parse of a truncated line would fail gracefully → returns `{}`? No, truncated JSON → `JSON.parse` throws → caught → returns undefined. So `resolveHandoffParentSession` falls back to current session. That's acceptable but means a session whose header line exceeds 64KB won't flatten (rare). Minor.
+
+Let me verify one last thing: the `readSessionHeader` uses `type: "session"` check but `parentSession` could be a non-string. It handles that. Also, does `resolveHandoffParentSession` correctly handle the case where `sessionFile` is the root (no parent)? Returns `sessionFile` (root). But wait — actually there's a subtle concern about whether the FIRST read actually happens. Let me trace `resolveHandoffParentSession("root-file")` where root-file has no parentSession:
+
+- `root = "root-file"`, `seen = {"root-file"}`
+- hop=0: readSessionHeader("root-file") → `{ parentSession: undefined }` (parsed.parentSession undefined → returns `{}`)
+- `root = "root-file"` (set to current)
+- `parent = header.parentSession` = undefined → `!parent` → break
+- return "root-file" ✓
+
+Correct.
+
+Now I have all the evidence. Let me write the final review.
+
+Summary of findings by severity:
+
+**Blocking:** None found. (I'll state "无 blocking".)
+
+**Important:**
+1. Marker file not gitignored → committed to VCS, transitive state + absolute path leak. `handoff.ts:421/442`, `project-state.ts:156`.
+2. `getProjectRoot` (git subprocess, up to 3s) runs on every session_start before the `reason === "new"` early-return. `handoff.ts:477` vs `487`.
+
+**Minor:**
+3. `setThinkingLevel` failure silently swallowed with no diagnostic → potential silent thinking-level loss (though ExtensionAPI setThinkingLevel clamps and doesn't throw in practice). `handoff.ts:516-517`.
+4. `setModel` throw conflated with "no authentication" false-return in the warning message. `handoff.ts:500-503`.
+5. `resolveHandoffParentSession` won't flatten a session whose header first line exceeds 64KB (truncated JSON parse fails → falls back to immediate parent). `handoff.ts:551-555`. Low likelihood.
+6. Failed newSession (throw, not cancel) leaves marker unconsumed for the TTL; a later manual `/new` from the still-active old session would restore settings (arguably intended continuity, but could surprise).
+
+Let me write these up concisely with file:line and evidence. I finished the review. Actually, let me reconsider finding #2 severity. The `getProjectRoot` is cached per-cwd, so it's one git spawn per cwd per process. But it runs on the very first session_start AND on fork/resume/switchSession to a different cwd. It's genuinely per-session-start for the FIRST session in a process, but the `projectRootCache` makes it cheap afterward. Still, it's a clearly avoidable 3s-capable subprocess on the hot path of every session start, and reordering the `reason === "new"` check before `getProjectRoot` is trivial. I'll keep it important-ish but could be minor. I'll class it as "important" because session_start is the very first thing and a 3s git timeout on startup would be a noticeable regression if git is slow/hung (though timeout 3000ms caps it). Actually I'll put it as "important" with note it's capped at 3s.
+
+Let me also reconsider the marker sensitivity: `previousSessionFile` is an absolute path including the username (e.g. `/home/user/projects/...`). That's mildly sensitive but mostly just noise. The main issue is committing transient state and possibly the path. I'll note it.
+
+One more: I should double-check whether `.agents/memory/` has its own committed `.gitignore` in the repo already, or if the top-level `.gitignore` is the only one. I already saw the top-level `.gitignore` (in repo) has `.agents/**/*.memory-backup-*` etc. but not the marker. And `.agents/memory/.gitignore` is generated at runtime by `ensureMemoryGitignore` (only when logError/etc. triggers). Neither ignores the marker. Confirmed.
+
+Let me write the final answer.我已完成独立复审。以下为结论，均已对照 pi dist 源码与项目文件逐行核实。
+
+## 核对过的关键事实（命令/文件证据）
+
+- `newSession()` 时序：`dist/core/agent-session-runtime.js:150-171` —— `createRuntime`（不发事件）→ `options.setup`（重放）→ `finishSessionReplacement`（`rebindSession`→`bindExtensions`→`emit(session_start)`，然后才 `withSession`）。故 `session_start` 里 setModel/setThinkingLevel 早于续接提示词，注释主张成立。
+- `session_start` 只发一次（`createRuntime` 不 emit）：`dist/main.js:576-681` + `dist/core/agent-session.js:1926`。
+- `pi.setModel` 在 `session_start` 里安全：`bindExtensions` 先 `_applyExtensionBindings`→`bindCore`（`agent-session.js:2050-2057`）再 emit，`pi` 已绑定到新会话；`setModel` 返回 false 当 `hasConfiguredAuth` 假，否则 `setModel` 可能 throw（`agent-session.js:1254-1262` 抛 `No API key`）。
+- `parentSession` 存全路径、session selector 读 `header.parentSession`：`session-manager.js:645-657`、`487-504`。
+- `cleanStaleTemps` 只删 `.tmp`/`.broken-`，不会误删 marker：`project-state.ts:485-512`。
+- 9 个测试全部通过：`node tests/run-all.mjs` → `All 9 tests passed`；`handoff-test.mjs` 新增探针全部 OK。
+
+## 发现
+
+### 无 blocking
+
+### important
+
+1. **marker 文件未被 gitignore，会随 `.agents/memory/` 提交进版本库** — `handoff.ts:421,442` 写 `<project>/.agents/memory/handoff-session-settings.json`；但 `project-state.ts:156` 的 `MEMORY_GITIGNORE_LINES` 未包含 `handoff-session-settings.json`，且 `git check-ignore` 确认该文件「not ignored」。后果：瞬态状态（含 `previousSessionFile` 绝对路径，泄露用户名/目录结构）被用户 `git add .` 误提交，且与既有「本地产物不外泄」约定（README 74 行）冲突。建议：把 `handoff-session-settings.json` 加入 `MEMORY_GITIGNORE_LINES`，并在 staging 时（像 `logError` 那样）调用 `ensureMemoryGitignore`。
+
+2. **`getProjectRoot`（git 子进程，超时 3s）在每次 `session_start` 无条件先跑，早于 `reason==="new"` 判定** — `handoff.ts:477-487`：`restoreHandoffSessionSettings` 先 `await getProjectRoot(pi, ctx.cwd)` 再读 marker、再判断 `event.reason !== "new"`。后果：每次会话启动（startup/resume/fork/switch）都多一次 `git rev-parse --show-toplevel`，启动路径首当其冲（虽然 `projectRootCache` 按 cwd 缓存，但首个会话与切换 cwd 时仍触发）。修复 trivial：把 `if (event.reason !== "new" || !event.previousSessionFile) return;` 提到 `getProjectRoot` 之前。
+
+### minor
+
+3. **`setThinkingLevel` 失败被静默吞掉，无任何诊断** — `handoff.ts:510-517` 的 catch 只有注释，无 `logError`/notify。虽然 ExtensionAPI 的 `setThinkingLevel` 实际是 clamp 不抛（`agent-session.js:1360-1383`），这是防御性 catch，但万一抛（未来版本/自定义 provider）会造成 thinking 等级静默回退、且不可诊断，与 (c) 要求「不可重新引入静默丢失」稍有出入。建议 catch 里 `logError(projectRoot, "handoff:restore-thinking", error)`。
+
+4. **`setModel` 抛错与「返回 false」两种失败被同一句「no authentication」提示掩盖** — `handoff.ts:500-503`：`await pi.setModel(model).catch(() => false)` 把 API 抛出的 `No API key for ...`（实际是 checkAuth 抛错）与 `hasConfiguredAuth` 为假的 `return false` 都映射成 `no authentication` 警告。语义上可接受但提示可能有偏差（例如模型解析后 setModel 因其它原因 throw 也会显示「无认证」）。建议区分：`catch` 里单独告警真实错误，仅 `=== false` 才提示无认证。
+
+5. **会话头首行 >64KB 时不扁平化** — `handoff.ts:423,551-555`：`SESSION_HEADER_BYTES=64KB`，`buffer.subarray(0,bytesRead).split("\n",1)[0]` 截断后 `JSON.parse` 抛错 → 返回 undefined → `resolveHandoffParentSession` 回退当前会话（旧行为）。Session 头只有 id/timestamp/cwd/parentSession，正常远小于 64KB，实际几乎不可能触发，属低概率防护边界。
+
+6. **`newSession` 抛错（非 cancel）不清 marker** — `handoff.ts:1140-1174`：只有 `result.cancelled` 分支 clear，`ctx.newSession` 抛错走外层 catch 只设 `failureBackoff`，marker 残留到 TTL。后果：旧会话仍活跃时，用户手动 `/new`（`previousSessionFile` 恰好=旧会话文件、reason="new"）会意外「继承」上次 handoff 的 model/thinking。这实际上与「设置连续性」意图一致，不算错误，但属可料想之外的继承路径，建议在 catch 里一并 clear 或至少注释说明。
+
+## 逐项结论
+
+- **a) 时序/API**：核实无误，`session_start` 的 `pi.setModel/setThinkingLevel` 安全且早于 `withSession` 续接提示词；`ctx.model/ctx.thinkingLevel/pi.getThinkingLevel/getProjectRoot` 在 handoff 命令上下文均可用（`types.d.ts:993,1006-1013`；`runner.js:503-530` 惰性 getter）。
+- **b) 判定误伤/漏掉**：`reason==="new"` 前判对应 startup/reload/resume/fork 均不命中；`previousSessionFile` 为 resolvePath 后的绝对路径，与 staging 的 `getSessionFile()` 字符串相等；多进程碰撞概率极低且受 TTL+previousSessionFile 双重约束；取消路径已正确 clear。
+- **c) fail-open 可诊断**：marker 不可读/写坏→返回 undefined fail-open；模型解析不到/no-auth/写盘失败均有 warning 或 `logError`，唯一缺口是第 3/4 条（thinking 静默与 setModel throw 归类）。
+- **d) marker**：`cleanStaleTemps` 不会误删；无备份/清理误删路径；会无限残留的唯一窗口是第 6 条（约 10 分钟）。**但**：含绝对路径、且未被 gitignore（见 important #1）。
+- **e) resolveHandoffParentSession**：父缺失/不可读/循环/hop 上限均有防护（测试覆盖 cycle、missing、root、in-memory）；仅超长头（#5）退化；未发现依赖 `parentSession` 的其它逻辑被破坏（grep 全 extensions 仅 handoff.ts 引用）。
+- **f) 测试鉴别力**：新增探针覆盖 staging、扁平化、恢复、等值跳过（`matching settings ... left untouched` + `still consumed`）、取消、负例（foreign predecessor / resume / stale）；`harness.mjs` 仅增 `setModel/getThinkingLevel/setThinkingLevel` 记录桩与 `modelCalls/thinkingCalls`，`setModelResult` 可覆盖，未改动既有 stub 语义，9 个旧测试全通过。未发现虚假通过。
+- **g) 既有约定冲突**：无固定 sleep；日志经 `logError` 已脱敏（`redactSecrets`）；marker 未 gitignore 是唯一明显偏离「本地产物不外泄」之处（important #1）。
+
+无 blocking。

@@ -51,6 +51,7 @@
  *   --no-project-context         disable every project-context feature for this run
  */
 
+import { open, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
@@ -68,7 +69,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, getConfig, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, type ProjectContextConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
 import { resolveAuxModel } from "./llm.ts";
-import { getProjectRoot, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
+import { ensureMemoryGitignore, getProjectRoot, logError, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
 /** pi's default compaction reserve; window headroom used by the threshold math. */
 const WINDOW_RESERVE_TOKENS = 16_384;
 /** Output room for the summary call (0.8 * this is the maxTokens cap). */
@@ -408,6 +409,174 @@ export function buildHandoffDocument(parts: HandoffDocumentParts): string {
 		parts.summaryWithIndex.trim(),
 		"",
 	].join("\n");
+}
+
+/**
+ * Settings handover across a handoff. `ctx.newSession()` has no model/thinking option, so the
+ * replacement session is built from pi's configured defaults; this stages the outgoing session's
+ * settings next to the memory so the replacement's `session_start` can restore them. That handler
+ * is the only usable point: `setup()` only rewrites messages, `withSession()` gets a context
+ * without setters, and the old `pi`/`ctx` are stale once the switch starts.
+ */
+export const HANDOFF_SETTINGS_FILE = "handoff-session-settings.json";
+/** A staged marker only has to survive the switch itself; anything older is a leftover. */
+const HANDOFF_SETTINGS_TTL_MS = 10 * 60_000;
+/** Session files grow to many MB; the header is the first (small) line. */
+const SESSION_HEADER_BYTES = 64 * 1024;
+/** Bound for the ancestor walk that flattens the session tree. */
+const MAX_PARENT_HOPS = 32;
+
+export interface HandoffSessionSettings {
+	previousSessionFile: string;
+	model?: { provider: string; id: string };
+	thinkingLevel?: string;
+	at: number;
+}
+
+/** The staged-settings path inside a project's memory directory. */
+export function handoffSettingsFile(projectRoot: string): string {
+	return path.join(memoryDir(projectRoot), HANDOFF_SETTINGS_FILE);
+}
+
+export async function stageHandoffSessionSettings(projectRoot: string, settings: HandoffSessionSettings): Promise<void> {
+	const file = handoffSettingsFile(projectRoot);
+	// Transient, private (it carries an absolute session path): keep it out of the user's commits.
+	await ensureMemoryGitignore(path.dirname(file));
+	await writeAtomic(file, `${JSON.stringify(settings)}\n`);
+}
+
+export async function clearHandoffSessionSettings(projectRoot: string): Promise<void> {
+	await rm(handoffSettingsFile(projectRoot), { force: true }).catch(() => {});
+}
+
+/** Read the staged settings; a missing, torn, or foreign file reads as "nothing staged". */
+export async function readHandoffSessionSettings(projectRoot: string): Promise<HandoffSessionSettings | undefined> {
+	try {
+		const parsed = JSON.parse(await readFile(handoffSettingsFile(projectRoot), "utf8")) as Partial<HandoffSessionSettings>;
+		if (typeof parsed?.previousSessionFile !== "string" || typeof parsed.at !== "number") return undefined;
+		const model = parsed.model;
+		return {
+			previousSessionFile: parsed.previousSessionFile,
+			model: model && typeof model.provider === "string" && typeof model.id === "string" ? { provider: model.provider, id: model.id } : undefined,
+			thinkingLevel: typeof parsed.thinkingLevel === "string" && parsed.thinkingLevel ? parsed.thinkingLevel : undefined,
+			at: parsed.at,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Restore the settings staged by the session we handed off from. Runs from the extension's
+ * `session_start` handler: pi has already replayed the carried messages by then and the
+ * continuation prompt (`withSession`) has not been sent yet, so the first turn uses them.
+ * Anything already equal to the replacement session's own settings is left untouched.
+ */
+export async function restoreHandoffSessionSettings(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	event: { reason?: string; previousSessionFile?: string },
+): Promise<void> {
+	// Cheap guard first: only a handoff successor can have staged settings, and resolving the
+	// project root shells out to git (cached per cwd, but still avoidable on every session start).
+	if (event.reason !== "new" || !event.previousSessionFile) return;
+	const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
+	if (!projectRoot) return;
+	const staged = await readHandoffSessionSettings(projectRoot);
+	if (!staged) return;
+	if (Date.now() - staged.at > HANDOFF_SETTINGS_TTL_MS) {
+		await clearHandoffSessionSettings(projectRoot);
+		return;
+	}
+	// Only the session that replaced the staged one may consume it: `/new`, `resume`, and `fork`
+	// carry a different predecessor (or none), and a cancelled switch leaves the marker for the TTL.
+	if (event.previousSessionFile !== staged.previousSessionFile) return;
+	await clearHandoffSessionSettings(projectRoot);
+
+	const wanted = staged.model;
+	const sameModel = wanted !== undefined && ctx.model?.provider === wanted.provider && ctx.model?.id === wanted.id;
+	if (wanted && !sameModel) {
+		let model: ReturnType<ExtensionContext["modelRegistry"]["find"]> | undefined;
+		try {
+			model = ctx.modelRegistry.find(wanted.provider, wanted.id);
+		} catch {
+			model = undefined;
+		}
+		if (!model) {
+			notify(ctx, `Auto handoff: ${wanted.provider}/${wanted.id} is not available; staying on the default model.`, "warning");
+		} else {
+			let failure: unknown;
+			let applied = false;
+			try {
+				applied = await pi.setModel(model);
+			} catch (error) {
+				failure = error;
+			}
+			if (failure) {
+				notify(ctx, `Auto handoff: could not switch to ${wanted.provider}/${wanted.id} (${errorText(failure)}); staying on the default model.`, "warning");
+				await logError(projectRoot, "handoff:restore-model", failure).catch(() => {});
+			} else if (!applied) {
+				notify(ctx, `Auto handoff: no authentication for ${wanted.provider}/${wanted.id}; staying on the default model.`, "warning");
+			}
+		}
+	}
+	if (staged.thinkingLevel) {
+		let current: string | undefined;
+		try {
+			current = pi.getThinkingLevel();
+		} catch {
+			current = undefined;
+		}
+		if (staged.thinkingLevel !== current) {
+			try {
+				pi.setThinkingLevel(staged.thinkingLevel as Parameters<ExtensionAPI["setThinkingLevel"]>[0]);
+			} catch (error) {
+				// A level this model cannot express is dropped rather than breaking session start.
+				await logError(projectRoot, "handoff:restore-thinking", error).catch(() => {});
+			}
+		}
+	}
+}
+
+/**
+ * pi's session selector renders the `parentSession` chain as a tree, so chaining every handoff to
+ * its immediate predecessor adds a level per handoff. Point the replacement at the oldest existing
+ * ancestor instead: the lineage stays in place, the tree stays two levels deep. A missing or
+ * unreadable ancestor falls back to the session we are handing off from (the old behaviour).
+ */
+export async function resolveHandoffParentSession(sessionFile: string | undefined): Promise<string | undefined> {
+	if (!sessionFile) return sessionFile;
+	let current = sessionFile;
+	let root = sessionFile;
+	const seen = new Set<string>([current]);
+	for (let hop = 0; hop < MAX_PARENT_HOPS; hop++) {
+		const header = await readSessionHeader(current);
+		if (!header) break;
+		root = current;
+		const parent = header.parentSession;
+		if (!parent || parent === current || seen.has(parent)) break;
+		seen.add(parent);
+		current = parent;
+	}
+	return root;
+}
+
+/** Session header of a session file; anything unreadable reads as "no header". */
+async function readSessionHeader(file: string): Promise<{ parentSession?: string } | undefined> {
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(file, "r");
+		const buffer = Buffer.alloc(SESSION_HEADER_BYTES);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		const line = buffer.subarray(0, bytesRead).toString("utf8").split("\n", 1)[0];
+		const parsed = JSON.parse(line) as { type?: unknown; parentSession?: unknown };
+		if (parsed?.type !== "session") return undefined;
+		return typeof parsed.parentSession === "string" && parsed.parentSession ? { parentSession: parsed.parentSession } : {};
+	} catch {
+		return undefined;
+	} finally {
+		await handle?.close().catch(() => {});
+	}
 }
 
 /** Stay this far below a cost tier edge so streaming growth cannot cross it. */
@@ -967,38 +1136,64 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 
 		const parentSession = ctx.sessionManager.getSessionFile();
-		const result = await ctx.newSession({
-			parentSession,
-			setup: async (sessionManager) => {
-				replayEntries(sessionManager, keptSlice);
-			},
-			withSession: async (replacementCtx) => {
+		const handoffParent = await resolveHandoffParentSession(parentSession);
+		if (handoffRoot && parentSession) {
+			// `newSession` resolves the replacement's model/thinking from pi's defaults; stage ours
+			// so its `session_start` can restore them before the continuation prompt is sent.
+			let thinkingLevel = ctx.thinkingLevel;
+			if (thinkingLevel === undefined) {
 				try {
-					if (useDraft) {
-						replacementCtx.ui.setEditorText(handoffPrompt);
-						notify(
-							replacementCtx,
-							guardDraft
-								? `Auto handoff: fresh session prepared, but left for your review because the previous session was waiting on your answer (${percentText} full). Answer in the prompt, then press Enter.`
-								: `Auto handoff: fresh session prepared (previous was ${percentText} full). Review the prompt, then press Enter to continue.`,
-							"info",
-						);
-					} else {
-						await replacementCtx.sendUserMessage(handoffPrompt);
-						notify(
-							replacementCtx,
-							guardWaiting
-								? `Auto handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
-								: `Auto handoff: continued in a fresh session (previous was ${percentText} full, summary ~${fmtTokens(summaryTokens)}, kept ~${fmtTokens(keptTokens)} recent).`,
-							"info",
-						);
-					}
-				} catch (error) {
-					notify(replacementCtx, `Auto handoff: failed to start the continuation — ${errorText(error)}`, "error");
+					thinkingLevel = pi.getThinkingLevel();
+				} catch {
+					// Modes without a session thinking level simply restore the model.
 				}
-			},
-		});
+			}
+			await stageHandoffSessionSettings(handoffRoot, {
+				previousSessionFile: parentSession,
+				model: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
+				thinkingLevel,
+				at: Date.now(),
+			}).catch((error: unknown) => logError(handoffRoot, "handoff:stage-session-settings", error));
+		}
+		const result = await ctx
+			.newSession({
+				parentSession: handoffParent,
+				setup: async (sessionManager) => {
+					replayEntries(sessionManager, keptSlice);
+				},
+				withSession: async (replacementCtx) => {
+					try {
+						if (useDraft) {
+							replacementCtx.ui.setEditorText(handoffPrompt);
+							notify(
+								replacementCtx,
+								guardDraft
+									? `Auto handoff: fresh session prepared, but left for your review because the previous session was waiting on your answer (${percentText} full). Answer in the prompt, then press Enter.`
+									: `Auto handoff: fresh session prepared (previous was ${percentText} full). Review the prompt, then press Enter to continue.`,
+								"info",
+							);
+						} else {
+							await replacementCtx.sendUserMessage(handoffPrompt);
+							notify(
+								replacementCtx,
+								guardWaiting
+									? `Auto handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
+									: `Auto handoff: continued in a fresh session (previous was ${percentText} full, summary ~${fmtTokens(summaryTokens)}, kept ~${fmtTokens(keptTokens)} recent).`,
+								"info",
+							);
+						}
+					} catch (error) {
+						notify(replacementCtx, `Auto handoff: failed to start the continuation — ${errorText(error)}`, "error");
+					}
+				},
+			})
+			.catch(async (error: unknown) => {
+				// A switch that threw never created a replacement, so its stage must not outlive it.
+				if (handoffRoot) await clearHandoffSessionSettings(handoffRoot).catch(() => {});
+				throw error;
+			});
 		if (result.cancelled) {
+			if (handoffRoot) await clearHandoffSessionSettings(handoffRoot).catch(() => {});
 			notify(ctx, "Auto handoff cancelled by another extension.", "warning");
 			return;
 		}

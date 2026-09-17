@@ -90,6 +90,17 @@ export function makePi(options = {}) {
 		getFlag: (name) => flags[name],
 		exec: async () => ({ code: 0, stdout: `${options.cwd ?? process.cwd()}\n` }),
 		sendUserMessage: (text) => pi.sentMessages.push(text),
+		// Settings applied at session start (handoff carry-over); observable in tests.
+		modelCalls: [],
+		thinkingCalls: [],
+		setModel: async (model) => {
+			pi.modelCalls.push(model);
+			return options.setModelResult ?? true;
+		},
+		getThinkingLevel: () => options.thinkingLevel ?? "off",
+		setThinkingLevel: (level) => {
+			pi.thinkingCalls.push(level);
+		},
 	};
 	return pi;
 }

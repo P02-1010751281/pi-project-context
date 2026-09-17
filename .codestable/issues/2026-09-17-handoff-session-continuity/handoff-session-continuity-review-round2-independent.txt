@@ -1,0 +1,56 @@
+Confirmed: `.agents/memory/.gitignore` (the generated file) is NOT itself ignored, so it would be tracked and committed — this is the established mechanism for `errors.log` etc., and now also covers `handoff-session-settings.json`. The fix is consistent with the existing pattern and genuinely effective.
+
+I have now verified everything. Let me write the final report.
+
+---
+
+## 复审结论（lane A，closure round）
+
+我逐条核对了第 1 轮 F1–F6 的修复，并检查了修复增量的副作用与新探针的鉴别力。证据来自 `git diff`、`project-state.ts`/`handoff.ts`/`index.ts` 源码、pi 安装版 `agent-session.js`/`agent-session-runtime.js`，以及本地跑通 `node tests/handoff-test.mjs`、`node tests/run-all.mjs`（9/9）。
+
+### 1. 逐条判定
+
+**F1（marker 未 gitignore）→ resolved**
+- `project-state.ts:156` `MEMORY_GITIGNORE_LINES` 现含 `handoff-session-settings.json`。
+- `project-state.ts:161` `ensureMemoryGitignore` 改为导出。
+- `handoff.ts:441-446` `stageHandoffSessionSettings` 在 `writeAtomic` 前先 `await ensureMemoryGitignore(path.dirname(file))`。
+- 证据：`node tests/handoff-test.mjs` 探针 "staged settings stay out of commits"（`handoff-test.mjs:634` 读 `.agents/memory/.gitignore`）通过；机制与既有 `errors.log`/`*.lock` 完全一致——生成的 `.agents/memory/.gitignore` 本身会被跟踪提交（非 ignore，已用 `git check-ignore` 验证），故新克隆也受益。
+
+**F2（`getProjectRoot` 无条件先跑）→ resolved（带既有残留说明）**
+- `handoff.ts:480-483` guard `if (event.reason !== "new" || !event.previousSessionFile) return;` 已提到 `getProjectRoot(...)` 之前。
+- 证据：探针 m8 `handoff-test.mjs`（`quietExecs === 0`，用新增 `quietCwd` 确保 cache miss）通过。
+- 说明：`getProjectRoot` 仍会经 `registerHandoff` 自己的 `session_start`（`handoff.ts:1246-1247` 的 `syncConfig`）无条件跑一次，但那是既有行为、且按 cwd 缓存（`project-state.ts:39-49`），非本增量引入。F2 所针对的「restore 路径早于 reason 判定」确已修。
+
+**F3（`setThinkingLevel` 静默吞掉）→ resolved**
+- `handoff.ts:532-536` catch 现补 `await logError(projectRoot, "handoff:restore-thinking", error)`。
+- 备注：pi 安装版的 `setThinkingLevel`（`agent-session.js:1360`）是同步 clamp、不抛，故该 catch 纯防御；但诊断已到位，不再静默。
+
+**F4（setModel 抛错与返回 false 混为「no authentication」）→ resolved**
+- `handoff.ts:500-519` 拆开：`try { applied = await pi.setModel(model) } catch (e) { failure = e }`；`failure` 分支告警带 `errorText(failure)` + `logError(..., "handoff:restore-model", ...)`；仅 `!applied` 分支才提示 "no authentication"。
+- 语义核对：安装版 `setModel`（`agent-session.js:1254-1256`）在无认证时**必然 throw**（`throw new Error("No API key for ...")`），并不返回 `false`，故 `!applied` 分支在当前 pi 是防御性死代码，但拆分的告警文案方向正确、无副作用。测试以 `setModel = async () => false` 覆盖了 `!applied` 分支。
+
+**F5（会话头首行 >64KB 不平坦化）→ 接受（作者记为残余，我认同）**
+- `handoff.ts:423` `SESSION_HEADER_BYTES=64*1024`；`readSessionHeader`（`handoff.ts:559-576`）截断首行 `JSON.parse` 失败 → catch 返回 `undefined` → `resolveHandoffParentSession` 回退当前会话（旧行为）。会话头仅含 `type/version/id/timestamp/cwd/parentSession`，正常远小于 64KB；无现实触发场景，且退化行为与老代码完全一致（不是回退错误，而是退化为「不扁平化」）。故无必要修。
+
+**F6（`newSession` 抛错不清 marker）→ resolved**
+- `handoff.ts:1188-1193`：`ctx.newSession(...).catch(async (error) => { if (handoffRoot) await clearHandoffSessionSettings(handoffRoot).catch(()=>{}); throw error; })`。
+- 证据：探针 "a failed switch clears its stage"（`throwCtx.newSession` 抛错）通过；"a cancelled handoff clears its stage" 也通过。
+
+### 2. 修复增量检查（无新问题）
+
+- **`.catch()` 包 `newSession` 的语义**：`newSession` 顺序为 `emitBeforeSwitch`→`teardownCurrent`→`createRuntime`（发 `session_start`，此时 staged 设置已被 `restoreHandoffSessionSettings` 消费并 clear）→`setup`(replayEntries)→`withSession`。`withSession` 内层自带 try/catch 且**不 rethrow**（`handoff.ts:1161-1186`），故 `newSession` 只有当「替换会话未建立」才 reject（emitBeforeSwitch/teardown/createRuntime/setup 抛错）。此时 clear stage 是正确且幂等（已 clear 则 no-op）。无「替换已成功却被误清」的窗口。`failureBackoff` 语义不变（rethrow 进外层 catch 设 backoff）。
+- **guard 提前是否改变 marker 清理语义**：否。guard `reason !== "new" || !previousSessionFile` 提前 `return` 只是不进入 restore；marker 的 TTL 清理与消费仍在 guard 之后。marker 存在但 reason 非 new 时仍保留至其自身 handoff 或 TTL（测试 "a resume leaves the stage alone" / "a foreign switch leaves the stage" 均覆盖）。
+- **`ensureMemoryGitignore` 导出是否破坏封装/误用**：否。它本就是同模块内 4 处内部调用（`project-state.ts:182/403/789/1043`），导出仅让 `handoff.ts` 复用；`gitignoreEnsured` 进程内去重 + `writeAtomic` 保证幂等，无并发问题。
+- **告警文案改动 vs 既有断言**：`node tests/run-all.mjs` 9/9 全过，无断裂。
+
+### 3. 新探针鉴别力（无误报通过）
+
+- **`quietExecs === 0`**：用全新 `quietCwd`（cache miss），且直接以 `reason:"resume"` 调 `restoreHandoffSessionSettings`，`pi.exec` 包装计数确证 guard 短路先于 `getProjectRoot`；非恒真。
+- **`memoryGitignore.includes(...)`**：该测试文件早段未写过 `.gitignore`（grep 仅 `:634` 一处引用），`autolearn/archive` 的 `session_start` 不在本 namespace 触发，故 m7 变异会真实变红；非恒真。
+- **predecessor / TTL / 等值跳过** 等探针均用显式不同输入或 `Date.now()-11min`，非缓存/共享路径恒真。
+
+### 4. 新 blocking/important：无
+
+未发现设置静默丢失、marker 残留或误用、父链扁平化破坏 pi 其它行为的场景。唯一残留为信息性：`getProjectRoot` 仍经 `syncConfig` 的 `session_start` 无条件跑一次（既有、按 cwd 缓存、非本增量引入）。
+
+**无 blocking**

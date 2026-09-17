@@ -153,12 +153,12 @@ export function redactSecrets(text: string): string {
 
 /** Lines every project's memory dir ignores locally, written next to its first local artifact. */
 const MEMORY_GITIGNORE_HEADER = "# project-context: local artifacts, do not commit";
-const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "errors.log", "*.lock", "*.steal", "*.broken-*", "memory.jsonl", "memory-log-*.jsonl", "memory.jsonl.*.tmp"];
+const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "errors.log", "*.lock", "*.steal", "*.broken-*", "memory.jsonl", "memory-log-*.jsonl", "memory.jsonl.*.tmp", "handoff-session-settings.json"];
 const gitignoreEnsured = new Set<string>();
 
 /** Keep backups and the error log out of the project's commits, once per process (best effort;
  * a failure is not retried in this process so a write is never blocked by housekeeping). */
-async function ensureMemoryGitignore(memoryDirectory: string): Promise<void> {
+export async function ensureMemoryGitignore(memoryDirectory: string): Promise<void> {
 	const file = path.join(memoryDirectory, ".gitignore");
 	if (gitignoreEnsured.has(file)) return;
 	gitignoreEnsured.add(file);
