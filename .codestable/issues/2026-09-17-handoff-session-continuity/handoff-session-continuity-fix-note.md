@@ -72,4 +72,15 @@ tags: [handoff, session, settings, ui]
 - **同项目两个 pi 进程在同一瞬间各触发一次 handoff**：单文件 marker 可能被后者覆写，前者当次不继承（仅设置、不影响会话与回放）；实际需要两个进程在同一秒内交棒，影响面极小。
 - **两个 handoff 之间用户手动 `/model`**：继承的是 staging 时刻（= 切换前）的设置，属预期语义。
 - **`getProjectRoot` 仍会经 handoff 自身的 `session_start`（`syncConfig`）无条件跑一次**：既有行为、按 cwd 缓存（R2 记为信息性，未改）。
-- 未提交：本修复在工作树内；已装副本仍是 v0.1.5 旧代码。运行中的 pi 进程继续跑旧扩展，需要提交/发版 + 重启才生效。
+- 运行中的 pi 进程（含发起本 issue 的那个）在重启前仍跑 v0.1.5 代码：本修复只对新启动的进程生效。
+
+## 6. 发布记录（v0.1.6）
+
+| 项 | 值 |
+|---|---|
+| 代码提交 | `8a2e6e4`（代码 + 测试 + 本 issue 全部 artifact，14 files, +1102/−34） |
+| 注解 tag | `v0.1.6` → tag 对象 `3a0a372`，指向 `8a2e6e4` |
+| 远端 | Forgejo + GitHub 镜像的 `master` 均为 `8a2e6e4`，tag 两处均有（`git ls-remote` 双远端核对） |
+| 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.5` → `@v0.1.6`（备份 `/tmp/settings.json.before-v0.1.6-20260917-193654`，1452 B）；`pi update --extensions`（非 `pi update`） |
+| 已装副本 | `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `8a2e6e4`，工作树干净，`handoff.ts` 含 `handoff-session-settings.json`/`resolveHandoffParentSession`/`HANDOFF_SETTINGS_TTL_MS` ×5；`pi list` 显示 `@v0.1.6` |
+| 已装副本真机复验 | 用同一探针的模式 `old`（不传 `-ne`，即加载 settings 里已装的包）：**11/11**（切换前同一探针为 4/11）——证据 `handoff-session-continuity-e2e-installed-v0.1.6.txt` |
