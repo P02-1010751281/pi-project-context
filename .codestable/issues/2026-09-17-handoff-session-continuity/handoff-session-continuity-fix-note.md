@@ -84,3 +84,14 @@ tags: [handoff, session, settings, ui]
 | 安装切换 | `~/.pi/agent/settings.json` pin `@v0.1.5` → `@v0.1.6`（备份 `/tmp/settings.json.before-v0.1.6-20260917-193654`，1452 B）；`pi update --extensions`（非 `pi update`） |
 | 已装副本 | `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `8a2e6e4`，工作树干净，`handoff.ts` 含 `handoff-session-settings.json`/`resolveHandoffParentSession`/`HANDOFF_SETTINGS_TTL_MS` ×5；`pi list` 显示 `@v0.1.6` |
 | 已装副本真机复验 | 用同一探针的模式 `old`（不传 `-ne`，即加载 settings 里已装的包）：**11/11**（切换前同一探针为 4/11）——证据 `handoff-session-continuity-e2e-installed-v0.1.6.txt` |
+
+## 7. 发布后跟进：`ensureMemoryGitignore` 重复 header（根治）
+
+同步项目记忆时发现本仓 `.agents/memory/.gitignore` 里有两段相同的 `# project-context: local artifacts, do not commit`。
+
+- **根因**：`ensureMemoryGitignore`（`project-state.ts:159-176`）把 `${MEMORY_GITIGNORE_HEADER}\n` 无条件拼在追加块之前 —— 首次建文件时正确，但后续某个版本给 `MEMORY_GITIGNORE_LINES` 增行时会把 header 再写一遍（正是 v0.1.6 新增 `handoff-session-settings.json` 那行的效果）。
+- **修复**：`const header = lines.has(MEMORY_GITIGNORE_HEADER) ? "" : `${MEMORY_GITIGNORE_HEADER}\n`;` —— 只在 header 缺失时写；`missing.length === 0` 仍提前返回（幂等）；注释行与现有行均不丢。
+- **验证**：`tests/consolidation-test.mjs` 新增 2 条探针（①预置 `header + memory.jsonl` → header 仍只 1 条、原有行保留、缺失行补齐；②预置无 header 的用户行 → header 只加一次且在原文之后）；把修复退回「总是写 header」的变异只让探针①变红（1 条，无旁带红）；`node tests/run-all.mjs` **9/9**。
+- **独立复审**：lane A 第 3 轮（只读沙箱 `/tmp/pc-gitignore-review`，`git status` 前后 0 行差异；复审在沙箱内做过变异-还原，沙箱文件与仓库 md5 一致）——逐项 (a)-(d) 通过，**无 blocking**；逐状态核对（文件缺失/空文件/只有 header/无尾换行/CRLF/二次调用）均为幂等且不丢行，5 处调用点与文档无旧行为依赖。
+- **接受残余（minor）**：用户手写 header 但**大小写不同**时会再添一条 header。预存行为、注释行对 gitignore 无影响；正确修正需另建一个大小写折叠的集合（与现有大小写敏感的忽略模式集合并存），不值得为此增代码。
+- **发布状态**：本改动在 `v0.1.6` 之后（master 领先已装 pin 一个 cosmetic 提交）；已装 v0.1.6 不受影响，需等下次实质改动一并发版。

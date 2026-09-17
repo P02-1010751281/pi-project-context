@@ -1,0 +1,59 @@
+I've completed a thorough review. Let me do one final check: verify the `readOptional` returns `""` (empty string) for both ENOENT and other read errors, and confirm the empty-file/header-detection interaction with the `head` computation produces exactly one header in the "file exists but empty" case (already verified = true above).
+
+Let me also verify there's no issue with the `lines` Set containing an empty string `""` from trailing newline splits, which could theoretically cause `lines.has(MEMORY_GITIGNORE_HEADER)` to behave oddly — no, we verified all cases.
+
+One more: confirm the CRLF preservation — the original file keeps CRLF for its own lines (`head` is raw existing), and only the newly appended lines use `\n`. This means a CRLF file keeps CRLF on existing lines and `\n` on new lines. That's a cosmetic inconsistency but harmless (gitignore parsers treat both). It's pre-existing (the old code also appended `\n`).
+
+I have enough to write the review.
+
+## 复审结论
+
+### 逐项结论
+
+#### (a) 逻辑正确性 — **通过**
+
+逐一验证了所有列出的状态（沙箱 ad-hoc 探针，`loadNamespace` 载入真实 `ensureMemoryGitignore`）：
+
+| 状态 | 结果 |
+|---|---|
+| 文件缺失 (ENOENT→`""`) | ✅ header 只写 1 次，在最前，全部缺失行补齐 |
+| 空文件 | ✅ 同上，headerCount=1 |
+| 只有 header | ✅ 不重复，补齐缺失行（含 `handoff-session-settings.json`） |
+| header 与内容间无换行（无尾换行） | ✅ `head=existing+"\n"` 路径正确，不丢行 |
+| 末尾无换行 + 无 header | ✅ 先补 `\n` 再插 header，原文保留 |
+| CRLF 文件 | ✅ `split(/\r?\n/)` 正确切分，header 去重生效；原文 CRLF 保留，新行 `\n`（预存 cosmetic，非本次引入） |
+| header 大小写不同 | ⚠️ 见「新发现 minor-1」 |
+| header 前导/尾随空白不同 | ✅ `trim()` 后匹配，去重生效，不重复写 |
+| 同一进程二次调用 | ✅ `gitignoreEnsured` Set 按 path 短路（`project-state.ts:164-165`） |
+
+幂等性：`missing.length === 0` 时提前返回（`project-state.ts:170`），不写文件、不丢用户行。核心改动仅把无条件 `header` 换成 `lines.has(...) ? "" : header`（`project-state.ts:172`），未引入新的「重复添加」或「丢行」路径。
+
+#### (b) 语义变化 — **无依赖方**
+
+- 5 处调用点（`project-state.ts:184` logError / `405` 锁 / `791` 备份 / `1045` 迁移，及 handoff staging 经 `export`）均只关心「本地产物是否被忽略」，不依赖 header 位置或数量。
+- README（`README.md:57,74`）仅描述「生成 .gitignore 忽略本地产物」，无 header 计数依赖。
+- `.codestable` fix-note 未涉及此 cosmetic 改动（早于它）；review.md 仅在 marker 语境提一次 gitignore。
+- 全测试套件无任何断言 header 固定位于某位置或无条件出现。
+
+#### (c) 探针鉴别力 — **充分**
+
+- 探针 ① "a later line joins a single header"：断言 `headerCount===1 && startsWith(header+"\nmemory.jsonl\n") && 含 handoff-session-settings.json && 含 *.lock`。不恒真——若根本不写文件，`handoff-session-settings.json`/`*.lock` 断言必失败，headerCount 与 startsWith 也可能不满足（取决于预置内容，但两条 `includes` 兜底）。
+- 探针 ② "a headerless ignore file gains the header once"：断言 `headerCount===1 && startsWith("node_modules/\n"+header+"\n") && 含 errors.log && 含 handoff-session-settings.json`。不恒真——若无写，`errors.log`/`handoff-session-settings.json` 缺失即失败。
+- **变异验证（已在沙箱执行并还原）**：把「只在缺失时写」退回「总是写」，仅探针 ① 变红（`FAILURES: 1`），探针 ② 及全部其它断言保持绿，无旁带红——与作者声称一致。
+
+#### (d) blocking/important — **无**
+
+未引入任何 blocking 或 important 问题。改动是纯 cosmetic 的收敛（消除重复 header），逻辑等价于「幂等补行」且更正确。
+
+---
+
+### 新发现
+
+**minor-1（cosmetic，非本次回归）** — `project-state.ts:172`
+- **触发场景**：用户手写的 `.gitignore` 里已含 header 行但**大小写不同**（如 `# PROJECT-CONTEXT: local artifacts, do not commit`）。`lines` 是 `trim()` 后的集合（`project-state.ts:169`），只去空白、不去大小写，故 `lines.has(MEMORY_GITIGNORE_HEADER)` 为 false → 追加一个大小写正确的 header，文件里会同时出现两条 header。
+- **证据**：沙箱探针 `case` 结果 `[1, 1]`（小写 header 出现 1 次 + 大写原文 1 次，即两条并存）。
+- **定性**：这是**预存行为**——旧代码无条件写 header，遇到大小写不同的 header 同样会产生两条。改动未使其变差，反而把「完全相同的 header」去重了。gitignore 注释行不影响语义（`#` 注释）。建议（可选）：将 header 比较改为大小写不敏感（如 `lines.has(MEMORY_GITIGNORE_HEADER.toLowerCase())` 配合小写化集合），但非必需。
+
+---
+
+无 blocking

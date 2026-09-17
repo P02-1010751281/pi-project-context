@@ -625,7 +625,7 @@ try {
 
 	console.log("\n=== residuals: recall, rate, lock, ignore, redaction ===");
 	{
-		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock } = await loadNamespace(`${PC}/project-state.ts`);
+		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock, ensureMemoryGitignore } = await loadNamespace(`${PC}/project-state.ts`);
 		const { fitMemoryInput, replyTokenRate, adaptiveOutputTokens, clipText } = await loadNamespace(`${PC}/consolidate.ts`);
 		const fixTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-residuals-"));
 		try {
@@ -996,6 +996,24 @@ try {
 			check("backups are gitignored next to the memory", ignore.includes("*.memory-backup-*") && ignore.includes("errors.log"));
 			await backupMemoryBeforeWrite(memory);
 			check("the gitignore is appended only once", (await readFile(path.join(dir, ".gitignore"), "utf8")) === ignore);
+
+			// A newer version that adds a line appends that line alone, keeping a single header.
+			const header = "# project-context: local artifacts, do not commit";
+			const headerCount = (text) => text.split(header).length - 1;
+			const grownDir = path.join(fixTmp, "grown", ".agents", "memory");
+			await mkdir(grownDir, { recursive: true });
+			await writeFile(path.join(grownDir, ".gitignore"), `${header}\nmemory.jsonl\n`);
+			await ensureMemoryGitignore(grownDir);
+			const grown = await readFile(path.join(grownDir, ".gitignore"), "utf8");
+			check("a later line joins a single header", headerCount(grown) === 1 && grown.startsWith(`${header}\nmemory.jsonl\n`) && grown.includes("handoff-session-settings.json") && grown.includes("*.lock"));
+
+			// A hand-written ignore file gains the header once and keeps its own lines.
+			const bareDir = path.join(fixTmp, "bare", ".agents", "memory");
+			await mkdir(bareDir, { recursive: true });
+			await writeFile(path.join(bareDir, ".gitignore"), "node_modules/\n");
+			await ensureMemoryGitignore(bareDir);
+			const bare = await readFile(path.join(bareDir, ".gitignore"), "utf8");
+			check("a headerless ignore file gains the header once", headerCount(bare) === 1 && bare.startsWith(`node_modules/\n${header}\n`) && bare.includes("errors.log") && bare.includes("handoff-session-settings.json"));
 
 			// Errors are redacted before they land in the log.
 			await logError(fixTmp, "test", "api_key: sk-abcdef1234567890 and ghp_abcdefghijklmnop");
