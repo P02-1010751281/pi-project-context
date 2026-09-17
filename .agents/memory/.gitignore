@@ -1,0 +1,10 @@
+# project-context: local artifacts, do not commit
+*.memory-backup-*
+errors.log
+*.lock
+*.steal
+*.broken-*
+memory.jsonl
+memory-log-*.jsonl
+memory.jsonl.*.tmp
+handoff-session-settings.json
