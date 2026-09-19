@@ -72,9 +72,9 @@ marker 行不计入正文 cap。超限会在每项目每进程写一次 `errors.
 | `/context` | 显示 context、session index、session log 路径 |
 | `/session-log` | 写当前存档；`import <session.jsonl|目录>…` 导入历史 session |
 | `/autolearn` | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off` |
-| `/auto-handoff` | `status`、`on`、`off`、`auto [0.1–0.95]`、裸比例、`target`、`keep`、`thinking`、`guard`、`lang`、`send`、`draft`、`now` |
+| `/auto-handoff` | `status`、`on`、`off`、`auto`、裸比例、`target`、`keep`、`thinking`、`guard`、`lang`、`send`、`draft`、`now` |
 
-说明：`/auto-handoff auto 0.4` 是自适应模式；裸 `/auto-handoff 0.6` 是固定 60% 模式。
+说明：`/auto-handoff auto` 是自适应模式（无参数，阈值取模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台，再与窗口末点及物理下限取中），`/auto-handoff target 64k` 是物理下限；裸 `/auto-handoff 0.6` 是固定 60% 模式，`handoffThresholdRatio` 只用于固定模式（旧配置同时有 `handoffAdaptive: true` 与 ratio 时，auto 忽略 ratio；要比例请用裸 `/auto-handoff 0.6`）。
 
 ## flags
 

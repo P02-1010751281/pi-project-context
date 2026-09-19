@@ -4,8 +4,10 @@
 
 handoff 有两种阈值模式：
 
-- **自适应**（`handoffAdaptive=true`，默认）：窗口比例是下限，实际值还会考虑 baseline、保留量、摘要模型容量、计价档位和窗口余量。
-- **固定**（`handoffAdaptive=false`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的摘要模型 cap。
+- **自适应**（`handoffAdaptive=true`，默认，`/auto-handoff auto`）：auto = 模型的**质量拐点**
+  （按保守拟合曲线 `knee(W)`：≤~400K 诚实窗口取自身边界，450K 起过渡，1M 级收敛到 157K，
+  与窗口末点取小），且不低于 `baseline + keep + handoffTargetTokens`（物理下限）；caps 只降不升。
+- **固定**（`handoffAdaptive=false`，`/auto-handoff 0.6`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的摘要模型 cap。
 
 手动 `/auto-handoff now` 不等待阈值；自动触发只在宿主允许的 TUI 模式中运行。
 
@@ -17,18 +19,16 @@ handoff 有两种阈值模式：
 - `U`：可用于交接的窗口，预留 16384 token。
 - `B`：system、工具 schema、注入 memory/context 等非 conversation token。
 - `K`：`handoffKeepTokens`，最近内容原文保留预算。
-- `S`：`handoffTargetTokens`，旧前缀摘要目标。
-- `r`：`handoffThresholdRatio`。
+- `S`：`handoffTargetTokens`，物理下限（最小摘要量，配置钳制 ≥ 8000）。
+- `r`：`handoffThresholdRatio`，仅固定模式使用。
 - `A`：摘要模型的 context window。
 
 ```text
 U = W - 16384
 B = max(0, usage.tokens - estimateTokens(current branch))
 F = B + K + 8000
-R = U - B - K
-O = max(8000, min(S, floor(R / 2)))
-share = round(r * W)
-T0 = max(B + K + O, share)
+KNEE = round(W - (W - 157000) * sigmoid(ln(W / 450000) / 0.04))
+T0 = max(min(U - 4000, KNEE), B + K + S)
 ```
 
 如果 `U <= F`，不触发。否则依次应用上界：
@@ -50,11 +50,8 @@ F = B + K + 8000
 \]
 
 \[
-O = \max\left(8000,\min\left(S,\left\lfloor\frac{U-B-K}{2}\right\rfloor\right)\right)
-\]
-
-\[
-T_0 = \max\left(B+K+O,\operatorname{round}(rW)\right)
+\text{knee}(W) = W - (W-157000)\,\sigma\!\left(\frac{\ln(W/450000)}{0.04}\right),\qquad
+T_0 = \max\left(\min(U - 4000,\ \operatorname{round}(\text{knee}(W))),\ B+K+S\right)
 \]
 
 \[
@@ -71,10 +68,14 @@ U-4000
 
 ## 公式的实际含义
 
-- 默认 `r=0.4` 的 1M 窗口，baseline 较小时通常在约 400k（40%）触发。
-- `handoffTargetTokens` 不是大窗口的主旋钮；只有 baseline 足够重，或窗口较小，才会把 `T0` 推高。
-- 辅助摘要模型可以比会话模型小；此时摘要输入 cap 可以把阈值压到 40% 以下，这是安全约束，不是 ratio 失效。
-- 如果最终 cap 压低了阈值，`/auto-handoff status` 会显示：
+- auto 是**质量拐点**，来自对 MRCR 8-needle 数据的**保守拟合**：`knee(W) = W − (W − 157K)·σ(ln(W/450K)/0.04)`（σ 为 logistic）。≤~400K 的诚实窗口基本取自身边界（272K → 252K、400K → 380K），450K 起开始过渡，1M 级收敛到 157K 平台（600K → 157K、768K → 157K、2M/10M → 157K）。
+- 参数依据：`K=157K` 是实测拐点的人群中位数（46 个 ≥1M 模型：p25 127K / p50 157K / p75 190K）；`Wc=450K` 因为目前所有 500K+ 的声明实测都偏大——grok-4.5/4.6 声明 500K、家族实测 ~195K，DeepSeek-V4.1-Flash / GLM-5.3 / Qwen3.8 声明 1M、实测 130–170K（DeepSeek 官方 V4 报告 Figure 9：128K 0.92 → 256K 0.82 → 1M 0.59；linux.do 自测 V4.1-Flash：64–128K 79.2 → 128–256K 40.2）。**偏保守是刻意的**：GPT-5.6（~250K）、Gemini 3.7（~450K）、GPT-6（≥512K）会比自己拐点更早触发。
+- 历史：v0.1.10 之前拟合过 `K=273K, Wc=650K`（锚 GPT-5.6 / OpenAI 首档），会让 500K/1M 声明跑到拐点外 2–3 倍（grok 480K、DeepSeek/GLM/Qwen 273K），已替换。
+- 物理下限 `B + K + S`：只在 baseline 很重或 `W ≲ 116K` 时接管，负责装下 system prompt、保留的原文尾部与一次有意义的摘要（S 默认 64k，参考 Anthropic compaction API 的 50k 最小 trigger）；计价档位（`cost.tiers`，如 272K → 268K）与摘要模型窗口只能再压低；档位边界低于 `floor + 4000` 时返回 undefined（不静默跨档）。
+- `handoffThresholdRatio` 只服务固定模式（`/auto-handoff 0.6`）；`/auto-handoff auto` 不接受比例参数。
+- 辅助摘要模型可以比会话模型小；此时摘要输入 cap 可以把阈值压低到 auto 目标以下，这是安全约束。
+- `/auto-handoff status` 在能解析阈值时显示 **cap 之后的预计摘要输入量**（`tokens − baseline − keep`；`auto 157k (16%) · summarize 125k`，Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`target 64.0k`）。实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to summarize`。
+- 如果最终 cap 压低了阈值，状态行会显示：
   - `capped by the summarizer window`
   - `capped by the first pricing tier`
   - `capped by the usable window`
@@ -127,7 +128,7 @@ successor `session_start` 只接受 `reason=new` 且 `previousSessionFile` 精�
 
 ```text
 /auto-handoff status
-/auto-handoff auto 0.4
+/auto-handoff auto
 /auto-handoff target 64k
 /auto-handoff keep 20k
 /auto-handoff lang auto|zh|en

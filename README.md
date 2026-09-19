@@ -31,7 +31,8 @@ pi install git:github.com/P02-1010751281/pi-project-context
 - [架构与数据模型](docs/architecture.md)
 - [配置与命令](docs/configuration.md)
 - [handoff 预算、LaTeX 推导与模型恢复](docs/handoff.md)
-- [本次修复的完整问题报告、复审和 RPC 证据](.codestable/issues/2026-09-18-memory-cap-and-adaptive-threshold/)
+- [本次修复（自适应阈值语义）的问题报告、复审与数据报告](.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/)
+- [上一轮修复（memory 上限与自适应阈值）的问题报告、复审和 RPC 证据](.codestable/issues/2026-09-18-memory-cap-and-adaptive-threshold/)
 
 ## 最小配置
 

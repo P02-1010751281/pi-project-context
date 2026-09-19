@@ -31,5 +31,6 @@ git diff --check
 问题级的详细证据、变异矩阵和复审转录保存在：
 
 ```text
-.codestable/issues/2026-09-18-memory-cap-and-adaptive-threshold/
+.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/   # 当前：自适应阈值语义
+.codestable/issues/2026-09-18-memory-cap-and-adaptive-threshold/     # 上一轮：memory 上限与自适应阈值
 ```
