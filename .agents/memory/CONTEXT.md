@@ -1,22 +1,21 @@
 # Project Context
 
-Last updated: 2026-09-19T06:04:20.446Z
+Last updated: 2026-09-19T06:42:00.000Z
 
 ## Summary
 
-Restructured project documentation so README is a concise entry point and detailed architecture, configuration, and handoff material lives under docs/. Added readable plain-text and LaTeX formulas, validated links and formatting, and confirmed all 9 tests pass. Changes remain uncommitted.
+Released `v0.1.8` with memory-cap, adaptive-handoff, model-restore, documentation, and transient consolidation-JSON retry fixes. The tagged package is installed and passed a settings-loaded RPC probe.
 
 ## Key points
 
-- Added docs/README.md, architecture.md, configuration.md, and handoff.md.
-- README now contains only overview, installation, minimal configuration, verification, and documentation links.
-- handoff documentation includes LaTeX with a plain-text fallback for unsupported Markdown renderers.
-- git diff --check and documentation link/newline checks pass.
-- node tests/run-all.mjs passes all 9 tests.
+- `README.md` is a concise entry point; detailed material lives under `docs/`.
+- `docs/handoff.md` contains plain-text formulas plus LaTeX equivalents and renderer fallback guidance.
+- A malformed consolidation reply gets one bounded retry; persistent failure remains fail-closed with raw-reply diagnostics.
+- Full test suite passes 9/9; `master` and `v0.1.8` are pushed to both remotes.
+- `~/.pi` pins `pi-project-context@v0.1.8`; installed package HEAD is the tagged fix commit.
 
 ## Open tasks
 
-- Review and commit the documentation and implementation changes.
-- Complete installation, release, and real provider RPC verification when quota is available.
+- None for the `v0.1.8` fix and release.
 
-<!-- latest-session-title: Split detailed documentation into docs/ -->
+<!-- latest-session-title: Release v0.1.8 and harden consolidation retries -->
