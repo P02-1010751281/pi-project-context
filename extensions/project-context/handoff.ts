@@ -9,11 +9,14 @@
  * context that protects answer quality.
  *
  * Threshold:
- *   - adaptive (default): trigger once the context can give up ~handoffTargetTokens
- *     (default 64k) on top of the measured baseline + keepRecent, bounded by
- *     half the usable window and by the model's first cost tier. Derived from
- *     model info (contextWindow, cost tiers) and measured usage, not a fixed %.
+ *   - adaptive (default): the later of `handoffThresholdRatio` × contextWindow and
+ *     the measured baseline + keepRecent + ~handoffTargetTokens (default 64k), so
+ *     the window share is a floor and a heavy baseline can raise it. Bounded by the
+ *     summarizer's window and by the model's first cost tier. Derived from model
+ *     info (contextWindow, cost tiers) and measured usage, not a fixed %.
  *   - fixed: /auto-handoff 0.5 uses 0.5 * contextWindow.
+ *   An absolute target alone would trigger at ~10% of a 1M-token window; the floor
+ *   keeps the handoff near the window it is actually working in.
  *
  * Summary calls default to thinking off: on reasoning models thinking and the
  * answer share the response cap (deepseek sends thinking:{type:enabled} with no
@@ -32,7 +35,7 @@
  * Commands:
  *   /auto-handoff                show status
  *   /auto-handoff on|off         enable/disable (persisted per project)
- *   /auto-handoff auto           adaptive threshold (persisted)
+ *   /auto-handoff auto [0.4]     adaptive threshold, optional floor share (persisted)
  *   /auto-handoff 0.6 | 60%      fixed-ratio threshold (persisted)
  *   /auto-handoff target 64k     auto mode: tokens to summarize per handoff
  *   /auto-handoff thinking off   summary thinking level: off (default, fast) or session
@@ -691,9 +694,16 @@ function usageText(ctx: ExtensionContext): string {
 	return `${fmtTokens(usage.tokens)}/${fmtTokens(usage.contextWindow)} (${fmtPct(usage.percent ?? 0)})`;
 }
 
-interface Threshold {
+export interface Threshold {
 	tokens: number;
 	label: string;
+	/**
+	 * Which bound produced the final value: the configured share of the window (`share`), the
+	 * absolute target (`target`), or one of the caps that overrides the share — the summarizer
+	 * window (`summarizer`), the first pricing tier (`tier`), the usable window (`usable`).
+	 * Only informative: the number is the contract, this says what to raise when it looks low.
+	 */
+	bound?: "share" | "target" | "summarizer" | "tier" | "usable";
 }
 
 /** Everything that is not conversation: system prompt, tool schemas, injected memory/context. */
@@ -717,10 +727,16 @@ function firstCostTierEdge(model: NonNullable<ExtensionContext["model"]>): numbe
 /**
  * Resolve the trigger threshold from model info and measured usage:
  * - fixed: ratio * contextWindow.
- * - adaptive: give up ~handoffTargetTokens per handoff, bounded by half the usable
+ * - adaptive: the later of the configured share of the window and the measured
+ *   baseline + keepRecent + ~handoffTargetTokens, bounded by the summarizer's
  *   window and by the first cost tier so a surcharge is not crossed.
  */
-function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold | undefined {
+/** Exported so tests can pin the threshold math without a live session. */
+export function resolveThreshold(
+	ctx: ExtensionContext,
+	usage: ContextUsage,
+	summaryModel?: ExtensionContext["model"],
+): Threshold | undefined {
 	const window = usage.contextWindow;
 	if (window <= 0) return undefined;
 	if (!config.handoffAdaptive) {
@@ -741,14 +757,34 @@ function resolveThreshold(ctx: ExtensionContext, usage: ContextUsage): Threshold
 		MIN_SUMMARIZE_TOKENS,
 		Math.min(config.handoffTargetTokens, Math.floor(conversationRoom / 2)),
 	);
-	let tokens = baseline + keep + targetOlder;
+	// The configured share of the window is the floor; the target only raises it when the measured
+	// baseline is unusually heavy.
+	const share = Math.round(config.handoffThresholdRatio * window);
+	const targetValue = baseline + keep + targetOlder;
+	let tokens = Math.max(targetValue, share);
+	let bound: Threshold["bound"] = targetValue > share ? "target" : "share";
+	// A cap only takes over when it really is lower; recording which one decided is what lets the
+	// status line explain an apparently low threshold instead of contradicting the floor.
+	const cap = (value: number, name: NonNullable<Threshold["bound"]>): void => {
+		if (value < tokens) {
+			tokens = value;
+			bound = name;
+		}
+	};
+	// The dropped prefix is the summary call's input, and pi does not clip it to the model window, so
+	// it must fit the summarizer's window — the auxiliary route may be smaller than the session model.
+	// A summarizer too small even for the minimum prefix keeps the threshold at that minimum: skipping
+	// the bound (as `if (prefixRoom > 0)` did) left a 1M-window threshold that the aux call cannot hold.
+	const summarizerWindow = summaryModel?.contextWindow && summaryModel.contextWindow > 0 ? summaryModel.contextWindow : window;
+	const prefixRoom = Math.max(MIN_SUMMARIZE_TOKENS, summarizerWindow - SUMMARY_OUTPUT_RESERVE_TOKENS);
+	cap(baseline + keep + prefixRoom, "summarizer");
 	const tierEdge = firstCostTierEdge(model);
 	if (tierEdge !== undefined && tierEdge > floor + TIER_EDGE_MARGIN) {
-		tokens = Math.min(tokens, tierEdge - TIER_EDGE_MARGIN);
+		cap(tierEdge - TIER_EDGE_MARGIN, "tier");
 	}
-	tokens = Math.min(tokens, usable - TIER_EDGE_MARGIN);
+	cap(usable - TIER_EDGE_MARGIN, "usable");
 	if (tokens < floor) return undefined;
-	return { tokens, label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})` };
+	return { tokens, label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})`, bound };
 }
 
 /** Recent user messages decide `auto`; the whole session is the fallback when they are too short. */
@@ -787,16 +823,26 @@ export function resolveLanguage(messages: AgentMessage[], configured: ProjectCon
 	return promptLanguage(messages) ?? "en";
 }
 
+/** Status suffix for a threshold that a cap decided, so a low value never looks unexplained. */
+function capSuffix(bound: Threshold["bound"]): string {
+	if (bound === "summarizer") return " · capped by the summarizer window";
+	if (bound === "tier") return " · capped by the first pricing tier";
+	if (bound === "usable") return " · capped by the usable window";
+	return "";
+}
+
 function statusText(ctx: ExtensionContext): string {
 	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	if (usage && usage.tokens !== null) {
-		const threshold = resolveThreshold(ctx, usage);
-		if (threshold) thresholdLabel = threshold.label;
+		const threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
+		if (threshold) thresholdLabel = threshold.label + capSuffix(threshold.bound);
 		else if (config.handoffAdaptive) thresholdLabel = "auto (no room at this window)";
 	}
-	const target = config.handoffAdaptive ? ` · target ${fmtTokens(config.handoffTargetTokens)}` : "";
+	const target = config.handoffAdaptive
+		? ` · target ${fmtTokens(config.handoffTargetTokens)} · floor ${fmtPct(config.handoffThresholdRatio * 100)}`
+		: "";
 	const language = config.handoffLanguage === "auto"
 		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLanguage)})`
 		: config.handoffLanguage;
@@ -997,8 +1043,8 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			notify(ctx, "Auto handoff skipped: the agent is busy.", "warning");
 			return;
 		}
-		// The summary may run on the configured auxiliary route; the threshold math above
-		// still uses the session model's window and pricing tier.
+		// The threshold uses the session model's window/pricing tier and caps the summarized prefix
+		// against the configured auxiliary route's window.
 		const model = resolveAuxModel(ctx, config);
 		if (!model) {
 			notify(ctx, "Auto handoff skipped: no authenticated model available.", "warning");
@@ -1010,7 +1056,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		if (!force) {
 			if (!handoffEnabled()) return;
 			if (!usage || usage.tokens === null || usage.percent === null) return;
-			threshold = resolveThreshold(ctx, usage);
+			threshold = resolveThreshold(ctx, usage, model);
 			if (!threshold || usage.tokens < threshold.tokens) return;
 		}
 
@@ -1176,6 +1222,15 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 				thinkingLevel,
 				at: Date.now(),
 			}).catch((error: unknown) => logError(handoffRoot, "handoff:stage-session-settings", error));
+			// `ctx.model` is documented as possibly undefined. Without it the replacement keeps pi's
+			// default model (thinking would still be restored) and nothing else would ever say so.
+			if (!ctx.model) {
+				await logError(
+					handoffRoot,
+					"handoff:stage-session-settings",
+					"the command context reported no current model, so only the thinking level travels to the replacement session; it will start on pi's default model",
+				).catch(() => {});
+			}
 		}
 		const result = await ctx
 			.newSession({
@@ -1237,7 +1292,7 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 
 	const usage = ctx.getContextUsage();
 	if (!usage || usage.tokens === null) return;
-	const threshold = resolveThreshold(ctx, usage);
+	const threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
 	if (!threshold || usage.tokens < threshold.tokens) return;
 
 	inFlight = true;
@@ -1346,6 +1401,16 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "auto") {
 				config.handoffAdaptive = true;
+				if (value) {
+					// `/auto-handoff 0.5` means a fixed 50%; `auto 0.5` keeps the adaptive math and raises
+					// its floor, which is the knob for "auto hands off too early on a big window".
+					const ratio = parseRatio(value);
+					if (ratio === undefined) {
+						notify(ctx, "Usage: /auto-handoff auto [0.1-0.95]", "warning");
+						return;
+					}
+					config.handoffThresholdRatio = ratio;
+				}
 				await saveConfig();
 				notify(ctx, statusText(ctx));
 				return;

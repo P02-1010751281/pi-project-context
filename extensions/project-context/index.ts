@@ -5,7 +5,7 @@ import { registerAutolearn } from "./autolearn.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./config.ts";
 import { registerConsolidation } from "./consolidate.ts";
 import { registerHandoff, restoreHandoffSessionSettings } from "./handoff.ts";
-import { contextFile, getProjectRoot, loadMemory, notify, type LoadedMemory } from "./project-state.ts";
+import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, notify, type LoadedMemory } from "./project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.
@@ -69,6 +69,8 @@ export default function projectContext(pi: ExtensionAPI): void {
 		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
 		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;
 		if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
+		// A capped document ends with its own marker; surface it here too, next to the knob that lifts it.
+		if (isMemoryTruncated(memory.text)) return `${memory.source} (${size}) — at the maxMemoryChars cap, the tail was dropped (whole lines only); raise maxMemoryChars in project-context.json`;
 		return `${memory.source} (${size})`;
 	}
 
@@ -105,7 +107,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Project context: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
-					`Memory: ${memoryStatusLine(await loadMemory(projectRoot))}`,
+					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars))}`,
 					`Context: ${await contextStatusLine(projectRoot)}`,
 				];
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");

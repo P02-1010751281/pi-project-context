@@ -1,0 +1,115 @@
+Review complete. No repository files were modified (probes were in `/tmp`, outside the repo, and removed). Working tree is identical to the given sandbox state.
+
+---
+
+# 独立代码复审报告（lane A）
+
+审查范围：`pi-project-context` 三处未提交改动。以代码 + 探针 + 自构输入为准。`tests/handoff-test.mjs` 与 `tests/consolidation-test.mjs` 均全量通过，但这不改变下述结论。
+
+## 一、blocking
+
+**无。**
+
+三处改动都通过了幂等性/自洽性/四路径一致性验证的核心数学，未发现数据损坏、崩溃、或「marker 叠加/洗掉」类问题。
+
+---
+
+## 二、important
+
+### I1. 摘要模型窗口 ≤ 32768 时，摘要输入封顶被静默关闭，阈值可远超 aux 模型输入能力（改动3）
+
+`extensions/project-context/handoff.ts:760-762`
+
+```ts
+const prefixRoom = summarizerWindow - SUMMARY_OUTPUT_RESERVE_TOKENS; // 32768
+if (prefixRoom > 0) tokens = Math.min(tokens, baseline + keep + Math.max(MIN_SUMMARIZE_TOKENS, prefixRoom));
+```
+
+`SUMMARY_OUTPUT_RESERVE_TOKENS = 32768`（`:79`）。当 `summaryModel.contextWindow <= 32768` 时 `prefixRoom <= 0`，**整个摘要输入封顶被跳过**。此时 `tokens` 走 `max(baseline+keep+target, 0.4×window)` 路径，返回的阈值仍可能是 0.4×session window（如 1M 窗口 → 400k）。
+
+触发交棒时 `olderTokens ≈ tokens − baseline − keep ≈ 336k`，而 aux 摘要模型只有 16k/32k 输入窗口。代码注释自己声称「pi does not clip it to the model window, so it must fit the summarizer's window」，但这条保证在 `prefixRoom <= 0` 时完全失效。
+
+**反例**：session 模型 1M 窗口，`summaryModel.contextWindow = 16000`（常见小 aux 路由）。`prefixRoom = 16000 − 32768 = −16768 ≤ 0` → 跳过封顶 → `resolveThreshold` 返回 ~400k，`olderTokens` 约 336k 塞进 16k 的摘要调用，`generateSummaryWithUsage` 不会裁剪输入，直接溢出。
+
+**建议**：`prefixRoom <= 0` 时应视为「摘要模型窗口放不下」，要么 `return undefined`，要么把阈值封到 `max(...)` 仍为正的下界；而不是静默跳过。
+
+> 注意这与改动3 (b) 提问里「返回 undefined 只发生在窗口真的放不下时」直接相关：当前实现存在「窗口真的放不下，却仍返回一个会溢出的阈值」的路径。
+
+### I2. `setMemoryCharLimit` 是隐式的进程级全局副作用，跨 projectRoot 串味靠「调用顺序」保证而非显式传参（改动1 (d)（c））
+
+`extensions/project-context/project-state.ts:50-59` + `config.ts:214/272`
+
+`normalizeMemoryDocument(value, limit = memoryCharLimit)` 的默认参数在**调用时**求值，读的是模块级 `memoryCharLimit`。四条路径（`recordMemoryDocument` / `foldMemoryJournal` / `memoryComparisonKey` / `legacyMemory`）目前都「恰好」在 `await getConfig(projectRoot)`（会 `setMemoryCharLimit`）之后、任何 `await` 归一化之前运行，所以单项目单会话下不自相矛盾——我逐条核过：`consolidateProjectState:637 getConfig → 643 loadMemory`、`autolearn:383 getConfig → 416 loadMemory`、`index.ts status:105 getConfig → 110 loadMemory`、`before_agent_start` 经 `memoryEnabled→getConfig`。
+
+但这是**脆弱的不变量**：`setMemoryCharLimit` 是进程级可变状态，一旦同一进程内有两个 projectRoot 的异步归一化交错（例如未来多会话、或 `activeConsolidation` 并发），A 的 `getConfig` 会把模块级 `memoryCharLimit` 设成 A 值，B 随后 `await loadMemory` 恢复时归一化用的却是 A 的限制。没有任何 `limit` 被显式透传进 `normalizeMemoryDocument`/`clipToLineBoundary`，因此这个错位无法被类型系统或调用点察觉。
+
+**当前判定**：单窗口 pi 下不是实际 bug，但属「本轮引入的新风险」——把「配置→限制」的绑定从纯函数参数改成了隐式全局状态。建议至少让 `loadMemory`/`foldMemoryJournal` 内部显式传入 `(await getConfig(root)).maxMemoryChars`，或把 limit 作为参数透传，去掉对调用顺序的隐性依赖。
+
+### I3. `truncated` 把「对象未闭合」与「stray member / 畸形 JSON」混为一谈，errors.log 文案会说谎（改动2 (a)）
+
+`extensions/project-context/consolidate.ts:133-139`
+
+```ts
+const recovered = jsonStringField(text);
+if (recovered) return { memory: recovered, truncated: true };
+```
+
+`jsonStringField`（`:107-113`）的注释自己写着「A model may close the string early, **add a stray member**, or be cut off mid-object」——即它把**三种**完全不同的失败形态都恢复为 `memory`。而 `parseConsolidated` 把所有 `parseJsonObject` 失败但 `memory_markdown` 可恢复的情况都标成 `truncated: true`。
+
+于是 errors.log 会输出 `"...carried no context section (it was cut off, so only memory_markdown could be recovered)"`，哪怕真实原因是模型多写了一个 stray member、或括号不配对、或末尾多了垃圾——这些都不是「输出上限截断」。测试里 `corrupted` 用例（`'{"memory_markdown":"...","stray\n\n- tail"}'`，多了一个未闭合的 `{`）就被断言为 `truncated === true`，但它是**括号不配对**，不是截断。
+
+**影响**：`truncated` 唯一用途是决定 errors.log 里那句「(it was cut off)」的措辞（`:447`），且被 `contextShapeWarned` 每项目每进程去重一次，所以不会数据损坏，只是**诊断信息失真**——用户会去查输出上限，实际却是 malformed JSON。要精确区分「未闭合」应从 `jsonObjectEnd` 返回 `-1` 判定，而不是「JSON 解析失败」这个并集。
+
+---
+
+## 三、minor
+
+### M1. 渲染后的 MEMORY.md 实际长度超过 `maxMemoryChars`（改动1）
+
+`normalizeMemoryDocument` 先 `clipToLineBoundary(document, limit)` 到 `limit`，再把 marker 行 `\n\n_[memory truncated…]\n` **追加在外**。README（`README.md:132`）称「`maxMemoryChars` … 是 `MEMORY.md` 的硬上限；超限时按整行边界截断」——但最终文件长度 = `limit + marker 行长度 + 2`。实测 limit=8000 时最终 8028 字符。
+
+这不是数据损坏（超出的只是 marker 自身的可辨识文本，且幂等），但与「硬上限」的文档表述不符。若真要求硬上限，`clipToLineBoundary` 应在 `limit` 里预留 marker 长度；若接受 marker 豁免，README 应说明「上限不含末尾 marker 行」。
+
+### M2. marker 前缀过宽，可能把真实内容行误判并移位（改动1）
+
+`MEMORY_TRUNCATION_MARKER = "_[memory truncated"`，`normalizeMemoryDocument` 用 `line.trim().startsWith(...)` 过滤（`:898-900`），`isMemoryTruncated` 用 `.includes(...)`（`:864`）。任何以 `_[memory truncated` 开头的正常记忆行（如 `_[memory truncated 是本周遗留问题,需复查]`）会被：从 body 中**剔除**、并作为「previous marker」**搬到文档末尾**；同时 `/project-context status` 会显示「at the maxMemoryChars cap」。检测键应锚定完整格式（如 `^\Q_[memory truncated at \E\d+ characters: \d+ dropped\]_\s*$`），而不是宽松前缀。
+
+### M3. `setMemoryCharLimit` 的 `Math.min(round, MAX)` 是死路径（改动1）
+
+`setMemoryCharLimit` 里 `limit >= MIN ? Math.min(round(limit), MAX_MEMORY_CHARS_LIMIT) : 默认`。但 `getConfig` 只会在 `bounded(...)` 已把 `>MAX` 值拒绝为默认之后再调它，所以 `setMemoryCharLimit` 永远收不到 `>MAX` 的原始值，`Math.min` 分支不可达。二者语义也略不一致（`setMemoryCharLimit` 会 clamp 到上限，`bounded` 会拒绝回落默认），尽管实际无差异。建议统一为一个解析入口。
+
+### M4. `floor < usable ≤ floor + TIER_EDGE_MARGIN` 窄带内静默返回 undefined（改动3 (b)）
+
+`handoff.ts:766-768`：早检 `if (usable <= floor) return undefined`，但随后 `tokens = Math.min(tokens, usable - TIER_EDGE_MARGIN)` 后 `if (tokens < floor) return undefined`。当 `floor < usable ≤ floor + 4000` 时，早检通过、末尾因 `usable−4000 < floor` 返回 `undefined`。这是一个 ~4000 token 的窄带，行为方向正确（需留档位余量），但与早检语义「放得下就不返回 undefined」略有偏差，逻辑上可接受，仅提示边界不完全由早检覆盖。
+
+### M5. `maybeTrigger` 每轮 settle 调 `resolveAuxModel` 引入一次性副作用（改动3 (a)）
+
+`resolveAuxModel`（`llm.ts:53-64`）在 aux 路由未配置/未授权时会 `notify(...warning)`，靠 `warnedRoutes` 每项目每进程去重。现在 `maybeTrigger`（`handoff.ts:1258`）和 `statusText`（`:813`）每轮 settle 都调用它，副作用仅在「第一次触发未授权告警」时发生，之后被去重。噪音极低，但把「解析模型」的纯查询和「发通知」的副作用耦合进了一个 settle 热路径；建议在 `maybeTrigger` 改用无副作用解析，或仅在真正需要告警的命令路径保留 notify。
+
+### M6. `SUMMARY_OUTPUT_RESERVE_TOKENS` 的语义混用（改动3 (c)）
+
+`generateSummaryWithUsage` 内部 `maxTokens = min(0.8 × reserveTokens, model.maxTokens)`——即 `reserveTokens` 是**输出**预算（用于算响应 maxTokens），不是输入容量。handoff 用 `summarizerWindow − SUMMARY_OUTPUT_RESERVE_TOKENS` 来算**输入**余量（`prefixRoom`）。方向正确（为输出+overhead 预留上下文），但预留的是 `32768` 而实际输出上限只有 `0.8×32768=26214`，多扣了 ~6.5k 输入余量。保守方向、不丢数据，但「reserve 语义是否用对」这个问题上，严格说是**近似且偏保守**——如需精确，应预留 `0.8×reserve`+system prompt 开销，而非整份 `reserve`。
+
+---
+
+## 已验证为「正确」的关键点（避免误报，供参考）
+
+- **幂等性**：`normalizeMemoryDocument(normalizeMemoryDocument(x)) === normalizeMemoryDocument(x)` 对「上限内 / 超限 / 带既有 marker / 带 fence / 无 `# Project Memory` 头 / 单行超长 / 多 marker 行」全部成立（探针逐项验证）。marker 不会叠加，单次截断后 `previous` 被提取、body 被恢复、按当前 limit 重新裁剪，重裁到更小 limit 也幂等。
+- **`dropped` 自洽**：`dropped = document.length − kept.length`，其中 `document` = 去 marker 后的「header + body」，`kept` = 截断前缀；与真实丢弃字符数严格相等（实测 25976 === 25976）。四条路径（journal 写/fold/外部编辑比较键/legacy）共用同一 `memoryCharLimit`。
+- **外部编辑判定不打架**：渲染与 fold 两侧都走 `normalizeMemoryDocument`（从而都带/都不带 marker），比较键 `memoryComparisonKey` 归一化后可用；「自家输出被当成 external edit 再写 replace」在 marker 幂等的前提下不会发生。
+- **`maxMemoryChars` 往返保留**：`updateConfig`/`saveConfig` 经 `getConfig` 隐含带出该字段，`/project-context on|off` 重写不会丢；无任何命令能改它（必须手改文件，且缓存未失效前不生效——「load once per project」既有行为，非本轮引入）。
+- **`tests/handoff-test.mjs` 新测试的非 mock 性**：「450k 触发 / 300k 不触发」用真实 conversation bulk + 真实 `baselineTokens`/`estimateTokens`，未用「baseline 技巧」掩盖；「floor=400k」「smallAux 封顶」「tiny window→undefined」都钉住了实际数学，且无与被测代码同构的独立重实现。
+
+---
+
+## 本轮引入的新风险（汇总）
+
+1. I2：`setMemoryCharLimit` 把「配置→限制」绑定从纯函数改为隐式进程级全局状态，正确性依赖调用顺序，未来并发即串味。
+2. I1：摘要模型窗口 ≤ 32768 时输入封顶静默失效，可产生远超出 aux 输入能力的交棒阈值。
+3. M1：README 宣称的「硬上限」与 marker 使最终文件超限的实测不符。
+
+## 与既有约定/文档不一致
+
+- README「maxMemoryChars 是硬上限」vs 实际 `MEMORY.md` 长度 = limit + marker（M1）。
+- `resolveThreshold` 的 `summaryModel` 参数仅对 adaptive 分支生效（fixed 分支仍完全不看摘要模型窗口），与「三处调用点都传入摘要模型」的 fix note 自述不完全一致——传入是真的，但 fixed 模式下被忽略。若 fixed 模式也要防摘要输入溢出（与 I1 同类），需补。
+EXIT=0

@@ -1,0 +1,89 @@
+Status is byte-for-byte unchanged. My probe lives in `/tmp` as required.
+
+Now let me write the review.
+
+---
+
+## 结论
+
+**无 blocking。** 三处修复核心逻辑自洽、`cap()` 与 `Math.min` 语义等价、`bound`/marker/`recovered` 均已落地并有测试咬住；第 1 轮已修项（I1/I2/I3/M1/M2）确认修干净、无残留。发现 1 个 `important`（一处未透传 limit 的调用点，直接违背本次改动的设计前提）与若干 `minor`。
+
+全部 9 个测试文件通过（`node tests/run-all.mjs` → "All 9 tests passed"）。
+
+---
+
+## Blocking
+
+（无）
+
+---
+
+## Important
+
+**1. 迁移路径未透传 `maxMemoryChars`，违背「显式透传、无进程级全局」的设计前提** — `extensions/project-context/project-state.ts:603,605`（推断，未跑真机迁移；但代码路径确定）
+
+`migrateProjectState` 里 legacy OMP 导入走：
+```ts
+const decoded = decodePoisonedMemory(raw);        // 默认 32000
+...
+await recordMemoryDocument(projectRoot, text);     // 默认 32000
+```
+两处都吃 `MAX_MEMORY_CHARS` 的默认值，没有从项目 `project-context.json` 的 `maxMemoryChars` 拿 limit（`project-state.ts` 不 import `config.ts`，否则会循环依赖）。
+
+- **最小复现**：用户设 `maxMemoryChars: 5000`，项目里还有 legacy `~/.omp/.../MEMORY.md`，下次 `session_start` 触发迁移——导入的 memory 会被渲染到 32000 字符，**超过用户设的 5000 上限**；反之设 `maxMemoryChars: 100000` 则被无谓截到 32000。README 明确写了「旧实现损失静默累积…全部走同一限制（由调用方显式传入，不用进程级全局）」——此处正是唯一漏网之鱼。
+- **建议**：给 `migrateProjectState(projectRoot)` 加一个 `limit` 参数，由 `consolidate.ts:524`（那里已经 `getConfig` / 能读 config）传入 `(await getConfig(projectRoot)).maxMemoryChars`，再下传给 `decodePoisonedMemory` 与 `recordMemoryDocument`。真机迁移发生在 session_start，早于任何注入，测试能否抓住取决于 harness 是否 mock 了 `migrateProjectState` 的 legacy 目录——目前**没有任何测试覆盖这条路径**，这正是它漏网的原因。
+
+---
+
+## Minor
+
+**2. `statusText` 格式化回归** — `handoff.ts:834`（实测）
+```
+function statusText(ctx: ExtensionContext): string {	const keep = ...
+```
+`{` 与 `const` 之间的换行被吃掉了（原为两行）。功能无碍，但 `deno fmt`/格式化会改回来，属笔误。
+
+**3. `bound="tier"` 与 `bound="usable"` 两条路径、以及 `capSuffix` 的状态渲染完全无测试** — `handoff.ts:768-785, 827-833`（实测：`grep tier/usable/capped by tests/handoff-test.mjs` 无结果）
+
+新增探针只覆盖了 `share`/`target`/`summarizer`/`undefined` 四种 bound。`firstCostTierEdge` 从未在测试里给 model 配 `cost.tiers`，`usable` 封顶只在 `baseline+keep` 落在极窄带（window−28384 附近）时出现、也没被构造。因此「用户能否从 `status` 看出被压制」这条 Q1 的核心验收，目前只有 `summarizer` 一个 cap 被证明可见，`tier`/`usable` 的 `· capped by the first pricing tier` / `· capped by the usable window` 文案一句都没被测过。
+- **建议**：补一个带 `cost.tiers: [{inputTokensAbove: 200k}]` 的 `resolveThreshold` 断言 `bound === "tier"` + 一个 `statusText` 断言包含对应 suffix。
+
+**4. 「clamped by the parser」探针名不副实** — `tests/consolidation-test.mjs`（"over-cap" 段）
+```js
+check("a limit below the accepted minimum is clamped by the parser, not here",
+      state.normalizeMemoryDocument(long, state.MAX_MEMORY_CHARS) === capped);
+```
+这实际断言的是 `normalizeMemoryDocument(x, 32000) === normalizeMemoryDocument(x)`（默认值恒等），**没测到 config 的 `bounded()`**。且 `bounded`（`config.ts:156`）对越界值是返回 `undefined` → 回落到默认 32000，**不是 clamp 到 4000**；所以「clamped」措辞本身也不准——`maxMemoryChars: 100` 会静默变成 32000，而非 4000。标签误导 + 断言无区分度，是当前最弱的探针之一。
+
+**5. `runHandoff` 注释陈旧** — `handoff.ts:1047-1048`（实测）
+注释仍写「the threshold math above still uses the session model's window and pricing tier」。现 `resolveThreshold(ctx, usage, model)` 已把 aux 模型窗口用于 summarizer cap（`summaryModel`），注释没跟上，读了会误以为 summarizer cap 用的是 session 窗口。
+
+**6. summarizer cap 的跨模型 token 近似** — `handoff.ts:778-780`（推断，非 bug）
+`cap(baseline + keep + prefixRoom, "summarizer")` 里 `baseline = usage.tokens − contextTokens` 是**会话模型实测**的 token，而 `prefixRoom` 是**摘要模型窗口**的 token；两模型 tokenizer 不同时这俩不是同一把尺子。`estimateTokens` 是模型无关的估算，但 `usage.tokens` 不是。结论方向仍是保守的（安全侧），但减出来的 `tokens − baseline − keep ≤ prefixRoom` 只是近似。属可接受的估算误差，建议在注释里点一句而非隐式抹平。
+
+**7.（极微）`repaired` 与 `capped` 同时发生时通知被吞** — `consolidate.ts:494-501`、`consolidateReply`（推断）
+
+`if (storedPoisoned && memoryChanged) notify("…raw JSON…") else if (cappedMemory) notify("…cap…")`——当一次 pass 同时「修好 poisoned JSON」又「超 cap」时，用户只看到「repaired」通知，cap 警告被 `else if` 吃掉（though errors.log 的 cap 条目是独立 `if`，且 `status`/`/memory` 仍会显示 cap，故只是通知层漏一句）。rare 路径，可留。
+
+---
+
+## 对 Q1/Q2/Q3/Q4 的直接回答（只写我验证到/推断的）
+
+**Q1 阈值预算自洽性：自洽。** 各单位统一为 tokens，作用域明确（`window`/`usable`/`share`/`floor` = 会话窗口；`prefixRoom`/`summarizerWindow` = 摘要模型窗口，这是刻意的跨模型修正）。`cap()` 相对原 `Math.min` 语义等价：tier/usable 两处 `cap` 与原 `Math.min` 逐位等价（`min(x,x)=x`，严格 `<` 与 min 的非严格在结果上一致），`bound` 纯增量；`tokens < floor` 提前返回、`usable <= floor` 早退均原样保留。summarizer cap 因 `prefixRoom = max(MIN_SUMMARIZE_TOKENS, …)` 恒 `≥ floor`，故 I1 修复后它**永不**触发 `tokens < floor` 返回 undefined（这是 I1 的正确落点）。
+
+「40% 下限」被压制（`share` 不再是最终值）只发生在三种情况：小 aux 窗口（`bound=summarizer`）、首个计价档低于 0.4×window（`bound=tier`）、`baseline+keep` 极窄时（`bound=usable`）。三者在 `status` 都通过 `capSuffix` 可见（`· capped by …`），**不再静默**——但见 minor#3，tier/usable 的可见性尚未被测试咬住。
+
+**Q2 交接后模型是否静默回 default：这段代码（`stageHandoffSessionSettings`/`restoreHandoffSessionSettings`）本次 diff 一字未改**（`git diff` 该区域 0 行），属既有行为；测试已覆盖 reason 不匹配、foreign predecessor、TTL、resume、已匹配设置、`setModel` 返回 false、model 未注册等几乎所有分支。唯一「不报错也不恢复」的静默路径是 `event.reason !== "new"`（`handoff.ts:488`）与 `!event.previousSessionFile`（`handoff.ts:488`）——两者都先于任何 notify 静默 return，且**不会清掉已 stage 的文件**（clear 只在 reason==="new" 分支内执行）。真机里 `previousSessionFile` 字符串（绝对路径）是否与 `stage` 时 `getSessionFile()` 逐字节相等、以及 handoff successor 的 reason 是否恒为 `"new"`，本沙箱无法实证（无 model_change JSONL、无 live session），标**推断**。
+
+**Q3 已修项：干净。** 残留 `setMemoryCharLimit`/`memoryCharLimitValue` 引用 = 0（grep 全仓无结果）。`MAX_MEMORY_CHARS` 全仓只剩新值 `32_000`，`24000` 仅剩无关的 `AUTOLEARN_EVIDENCE_TOTAL_CHARS`。I1/I2/I3/M1/M2 的断言都在测试里真实 fire 且通过。唯一引入的新边界是上面 Important#1（迁移路径），以及 minor#4 的「clamp vs default」措辞。
+
+**Q4 自洽/可测：** 幂等（`normalizeMemoryDocument` 二次归一化恒等，测试证）、并发（version 预占 + `withMemoryLock`，未变）、失败关闭（unreadable/poisoned/cut-off 均 fail-closed，未变）均自洽。弱探针已列为 minor #3、#4；此外 fold/render 在**非默认 limit 下**的 `memoryComparisonKey` 一致性与「外部手改 MEMORY.md」被 cap 场景也未被直接咬住（只在默认 32000 下测了 idempotency，e2e 只测了单次 5000 写入，没测「fold 用 5000、render 手改也用 5000 比较」的那条 `memoryComparisonKey(render, limit)` 路径）。
+
+---
+
+## 不确定但值得下一轮看
+
+- Q2 中 `event.reason` 与 `event.previousSessionFile` 在真实 pi 里的取值是否与 stage 时逐字一致（路径规范化/symlink 差异可能造成 foreign-predecessor 误判）；需真机造一条 `model_change`/handoff 链才能证反。
+- `migrateProjectState` 是否应在 session_start 之前读 config（目前 consolidate.ts 里其实已经能读，只是没传下去），以及循环依赖是否可通过在 project-state 内新增一个入参而非 import config 来干净解决。
+- `capSuffix` 的三种文案与 README 描述的「封顶动词」是否对得上（`· capped by the usable window` 里 `usable` 是内部量名，用户未必懂「usable window」指什么，偏内部黑话）。
+EXIT=0

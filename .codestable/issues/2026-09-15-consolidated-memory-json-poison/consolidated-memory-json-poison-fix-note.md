@@ -230,3 +230,9 @@ tags: [memory, consolidation, self-heal, token-budget, diagnostics]
   `damaged=0`，字符数维持 15055 / 14784 不变。
 - 边界说明：备份里存的是模型回复的 JSON 信封原文，删除后不可再取回原始字节；已确认解码事实不丢失，
   且这批数据只影响记忆文本，不影响任何代码路径。
+
+## 8. 偶发 unusable JSON 的后续修复
+
+- 现象：provider 偶发返回 fence/prose/未完成 shape 等不可解析回复，UI 显示 `consolidation reply was not a usable JSON object`。
+- 修复：第一次解析失败后只重试一次，并追加严格 JSON contract 提醒；第二次仍失败继续 fail closed，保留现有 `MEMORY.md`，将回复头写入 `errors.log`，不把原始 JSON 写入 memory。
+- 回归：`tests/consolidation-test.mjs` 覆盖第一次 malformed、第二次 valid 的恢复，以及 persistent malformed 只重试一次；定向测试通过，完整套件需在本次修复后重新运行。

@@ -93,6 +93,54 @@ try {
 			"an absent or null context is not flagged",
 			parseConsolidated('{"memory_markdown":"# m"}')?.contextUnusable === undefined && parseConsolidated('{"memory_markdown":"# m","context":null}')?.contextUnusable === undefined,
 		);
+		// An object that never closes means the reply hit the output cap after the memory field; the
+		// context was never emitted. Flagging it is what turns a silently stale CONTEXT.md into a trace.
+		check("a reply whose object never closed is flagged", parseConsolidated(corrupted)?.recovered === true);
+		check(
+			"a complete reply is not flagged as recovered",
+			parseConsolidated('{"memory_markdown":"# m"}')?.recovered === undefined && parseConsolidated("plain markdown")?.recovered === undefined,
+		);
+	}
+
+	console.log("\n=== transient unusable JSON gets one bounded retry ===");
+	{
+		const retryTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-retry-"));
+		try {
+			await mkdir(path.join(retryTmp, ".agents/memory"), { recursive: true });
+			await writeFile(path.join(retryTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- Previous memory.\n");
+			let calls = 0;
+			const retryFactory = await loadDefault(`${PC}/index.ts`);
+			const retryPi = makePi({ cwd: retryTmp });
+			await retryFactory(retryPi);
+			const retryCtx = makeCtx(retryTmp, {
+				sessionManager: makeSessionManager([messageEntry("r1", "user", "retry this consolidation", "2026-09-12T10:00:00.000Z")], "retry-session"),
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					complete: async () => {
+						calls += 1;
+						return {
+							content: [{
+								type: "text",
+								text: calls === 1
+									? '{"memory_markdown": 17, "context": {"summary":"bad"}}'
+									: JSON.stringify({
+										memory_markdown: "# Project Memory\n\n## Project\n- recovered after one transient malformed reply.",
+										context: { title: "Retry", summary: "Recovered.", key_points: [], open_tasks: [] },
+									}),
+							}],
+						};
+					},
+				},
+			});
+			await runHandlers(retryPi, "session_shutdown", retryCtx);
+			const retryMemory = await readFile(path.join(retryTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const retryErrors = await readFile(path.join(retryTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("a transient malformed reply is retried once", calls === 2);
+			check("the retry writes the valid memory", retryMemory.includes("recovered after one transient malformed reply"));
+			check("a recovered retry does not log a failed pass", !retryErrors.includes("consolidation reply was not a usable JSON object"));
+		} finally {
+			await rm(retryTmp, { recursive: true, force: true });
+		}
 	}
 
 	console.log("\n=== a reply that cannot be read never reaches MEMORY.md ===");
@@ -103,12 +151,19 @@ try {
 			const previous = "# Project Memory\n\n## Project\n- Previous memory.\n";
 			await writeFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), previous);
 			let reply = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- recovered.","context":"# Project Context","stray\\n\\n- tail"}';
+			let calls = 0;
 			const factory = await loadDefault(`${PC}/index.ts`);
 			const pi = makePi({ cwd: jsonTmp });
 			await factory(pi);
 			const ctx = makeCtx(jsonTmp, {
 				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "json-session"),
-				modelRegistry: { hasConfiguredAuth: () => true, complete: async () => ({ content: [{ type: "text", text: reply }] }) },
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					complete: async () => {
+						calls += 1;
+						return { content: [{ type: "text", text: reply }] };
+					},
+				},
 			});
 			await runHandlers(pi, "session_shutdown", ctx);
 			const recovered = await readFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), "utf8");
@@ -127,6 +182,7 @@ try {
 			const errors = await readFile(path.join(jsonTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("an unusable reply leaves MEMORY.md untouched", untouched === recovered);
 			check("the failed pass is logged to errors.log", errors.includes("consolidation reply was not a usable JSON object") && errors.includes('"memory_markdown": 17'));
+			check("a persistent malformed reply gets only one retry", calls === 3);
 		} finally {
 			await rm(jsonTmp, { recursive: true, force: true });
 		}
@@ -569,6 +625,117 @@ try {
 			}
 		} finally {
 			await rm(shapeTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a reply with no context section at all is traced, not silently kept ===");
+	{
+		const absentTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-context-absent-"));
+		const cutTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-context-cut-"));
+		try {
+			const setup = async (root) => {
+				const dir = path.join(root, ".agents/memory");
+				await mkdir(dir, { recursive: true });
+				const previous = "# Project Context\n\nLast updated: 2026-09-01T00:00:00Z\n\n## Summary\n- out of date.\n";
+				await writeFile(path.join(dir, "CONTEXT.md"), previous);
+				// Every forced pass must reach the model (the default 15s dedupe would mask a repeat).
+				await writeFile(path.join(dir, "project-context.json"), JSON.stringify({ forceDedupeMs: 0 }));
+				return { dir, previous };
+			};
+			const runPass = async (root, reply) => {
+				const factory = await loadDefault(`${PC}/index.ts`);
+				const pi = makePi({ cwd: root });
+				await factory(pi);
+				const ctx = makeCtx(root, {
+					model: { provider: "test", id: "context-absent", maxTokens: 32768 },
+					sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], `absent-${path.basename(root)}`),
+				});
+				ctx.modelRegistry.complete = async () => ({ content: [{ type: "text", text: reply }] });
+				await pi.commands.get("memory-learn").handler("", ctx);
+				return ctx;
+			};
+
+			// A complete reply that simply omits the section: same stale CONTEXT.md, one step earlier.
+			const absent = await setup(absentTmp);
+			await runPass(absentTmp, JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- no context section." }));
+			const absentLog = await readFile(path.join(absent.dir, "errors.log"), "utf8").catch(() => "");
+			check("a reply without a context section keeps the previous render", (await readFile(path.join(absent.dir, "CONTEXT.md"), "utf8")) === absent.previous);
+			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("stays stale"));
+			check("an omission is not reported as an unclosed reply", !absentLog.includes("never closed"));
+
+			// The truncation variant: the memory survives, the context never made it out.
+			const cut = await setup(cutTmp);
+			await runPass(cutTmp, '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- recovered from a cut-off reply.","context":"# Project Context","stray\\n\\n- tail"}');
+			const cutLog = await readFile(path.join(cut.dir, "errors.log"), "utf8").catch(() => "");
+			const cutMemory = await readFile(path.join(cut.dir, "MEMORY.md"), "utf8");
+			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
+			check("an unclosed reply says so in errors.log", cutLog.includes("carried no context section") && cutLog.includes("never closed"));
+		} finally {
+			await rm(absentTmp, { recursive: true, force: true });
+			await rm(cutTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== an over-cap memory keeps whole lines and says what it dropped ===");
+	{
+		const state = await loadNamespace(`${PC}/project-state.ts`);
+		const line = (index) => `- convention ${index}: ` + "detail ".repeat(20).trimEnd();
+		const original = Array.from({ length: 400 }, (_, index) => line(index));
+		const long = `# Project Memory\n\n${original.join("\n")}`;
+		check("a document inside the cap is returned untouched", state.normalizeMemoryDocument("# Project Memory\n\n## Project\n- short.") === "# Project Memory\n\n## Project\n- short.\n");
+		const capped = state.normalizeMemoryDocument(long);
+		check("an over-cap document is marked as truncated", state.isMemoryTruncated(capped) === true);
+		check("the marker names the cap and the drop", new RegExp(`\\[memory truncated at ${state.MAX_MEMORY_CHARS} characters: \\d+ dropped\\]`).test(capped));
+		const keptLines = capped.split("\n").filter((text) => text.startsWith("- "));
+		check("every kept line is a complete original line", keptLines.length > 0 && keptLines.every((text) => original.includes(text)));
+		// A real memory line that merely starts with the marker words is content, not a marker:
+		// it must survive in place, not be moved to the end and reported as a cap.
+		const lookalikeInput = "# Project Memory\n\n## Project\n- keep.\n_[memory truncated 是本周遗留问题]_\n- tail.\n";
+		const lookalike = state.normalizeMemoryDocument(lookalikeInput);
+		check("a look-alike line is not mistaken for the marker", lookalike === lookalikeInput && !state.isMemoryTruncated(lookalike));
+		check(
+			"the kept document fits the cap",
+			capped.split("\n").filter((text) => !text.startsWith("_[memory truncated")).join("\n").trimEnd().length <= state.MAX_MEMORY_CHARS,
+		);
+		check("normalizing a capped document is idempotent", state.normalizeMemoryDocument(capped) === capped);
+		check("a short memory is not marked", state.isMemoryTruncated(state.normalizeMemoryDocument("# Project Memory\n\n## Project\n- short.")) === false);
+		const limited = state.normalizeMemoryDocument(long, 8_000);
+		check("an explicit limit caps the document", limited.length < capped.length && limited.includes("at 8000 characters"));
+		// The limit is an explicit argument, not process state: two projects cannot leak into each other.
+		check("omitting the explicit limit uses the default cap", state.normalizeMemoryDocument(long) === capped);
+	}
+
+	console.log("\n=== maxMemoryChars caps the render end to end, on a line boundary ===");
+	{
+		const capTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-cap-e2e-"));
+		try {
+			const capDir = path.join(capTmp, ".agents/memory");
+			await mkdir(capDir, { recursive: true });
+			await writeFile(path.join(capDir, "project-context.json"), JSON.stringify({ forceDedupeMs: 0, maxMemoryChars: 5000 }));
+			await writeFile(path.join(capDir, "CONTEXT.md"), "# Project Context\n\n## Summary\n- previous.\n");
+			// The model answers with a memory well past the configured cap.
+			const grown = "# Project Memory\n\n" + Array.from({ length: 400 }, (_, index) => `- grown ${index}: ` + "x".repeat(60)).join("\n");
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: capTmp });
+			await factory(pi);
+			const ctx = makeCtx(capTmp, {
+				model: { provider: "test", id: "memory-cap", maxTokens: 32768 },
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "memory-cap"),
+			});
+			ctx.modelRegistry.complete = async () => ({
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: grown, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+			});
+			await pi.commands.get("memory-learn").handler("", ctx);
+			const rendered = await readFile(path.join(capDir, "MEMORY.md"), "utf8");
+			const capLog = await readFile(path.join(capDir, "errors.log"), "utf8").catch(() => "");
+			check("the render is capped at the configured limit", rendered.length < 5_400 && rendered.includes("at 5000 characters"));
+			check("the capped render keeps only whole lines", rendered.split("\n").filter((text) => text.startsWith("- ")).every((text) => /^- grown \d+: x{60}$/.test(text)));
+			check("the cap is reported to errors.log", capLog.includes("exceeded maxMemoryChars (5000)"));
+			check("the command reply names the cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("maxMemoryChars cap"));
+			await pi.commands.get("project-context").handler("status", ctx);
+			check("status names the cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("at the maxMemoryChars cap"));
+		} finally {
+			await rm(capTmp, { recursive: true, force: true });
 		}
 	}
 

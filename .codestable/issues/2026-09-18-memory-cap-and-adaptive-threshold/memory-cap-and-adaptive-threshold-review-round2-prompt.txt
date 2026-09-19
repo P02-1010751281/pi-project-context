@@ -1,0 +1,45 @@
+# pi-project-context 修复复审（第 2 轮，lane A 独立复审）
+
+你在一个**只读沙箱副本**里复审：`/tmp/mca-review2`（由 `rsync -a` 从仓库复制，含 `.git` 与未提交改动）。
+**禁止写入仓库**（`/run/media/.../Projects/pi-project-context`）；沙箱内也不要写：自建探针一律放 `/tmp/<name>`，
+结束后沙箱 `git status --porcelain` 必须与开始时逐字一致（开始快照见 `/tmp/mca-review2-status-before.txt`）。
+
+## 被审改动（worktree，未提交；`git diff` 即为全部改动）
+
+一个 issue 的三处修复 + 第 1 轮复审后的修补：
+
+1. **记忆渲染 cap**（`extensions/project-context/project-state.ts`、`consolidate.ts`、`config.ts`、`index.ts`、`autolearn.ts`）：
+   `maxMemoryChars`（默认 32000）由调用方**显式透传**到 `normalizeMemoryDocument`/`foldMemoryJournal`/
+   `memoryComparisonKey`/`loadMemory`/`recordMemoryDocument`；超限按**整行边界**截断并写 marker
+   `_[memory truncated at N characters: M dropped]_`；三处出口点名（`errors.log`、pass 警告、命令回复）+ `status`。
+2. **CONTEXT.md 静默停更**（`consolidate.ts`）：模型整个省略 `context` 键、或回复对象未闭合只能从 `memory_markdown`
+   恢复时，都要留下 trace（措辞中性，用 `recovered` 而不是「被截断」）。
+3. **自适应交接阈值**（`handoff.ts`）：`阈值 = max(目标值, handoffThresholdRatio × window)`，再依次被
+   「摘要模型窗口 − 输出预留」「首个计价档位 − margin」「usable − margin」封顶；新增 `Threshold.bound`
+   记录**是哪个界定了最终值**，`/auto-handoff status` 把它渲染成 `· capped by the summarizer window` 等。
+
+第 1 轮（`memory-cap-and-adaptive-threshold-review-round1-independent.txt`）结论：无 blocking；I1（摘要窗口 ≤ 输出预留时
+封顶被静默跳过）、I2（`setMemoryCharLimit` 进程级全局）、I3（`truncated` 措辞失真）、M1（README「硬上限」措辞）、
+M2（marker 相似行误判）已修；M4/M5/M6 明确接受（记录在 fix-note §7）。
+
+## 请重点回答
+
+1. **阈值预算推导是否自洽**：`resolveThreshold`（`handoff.ts`）里 `baseline / keep / floor / targetOlder / share /
+   prefixRoom / tierEdge / usable / margin` 各量的**单位与作用域**是否一致？`cap()` 改成记录 `bound` 后是否与原来的
+   `Math.min` 语义等价（含相等、`undefined`、`tokens < floor` 提前返回、`usable <= floor` 早退等边界）？
+   标称「40% 下限」在什么条件下会被静默压制？压制时用户是否能从 `status` 看出来？
+2. **交接后模型设置会不会静默回到 default**：`stageHandoffSessionSettings` / `restoreHandoffSessionSettings`
+   （`handoff.ts`）在什么情况下会**不报错也不恢复**（reason 不匹配、`previousSessionFile` 缺失或不匹配、
+   staged 文件被 TTL 清掉、`ctx.model` 为空、`pi.setModel` 返回 false/抛错、`provider` 未注册）？
+   逐条给出触发条件与用户可见后果；有实测反例最好（session JSONL 里 `model_change` 记录可作为证据）。
+3. 第 1 轮已修项（I1/I2/I3/M1/M2）是否真的修干净、有没有引入新边界问题；`setMemoryCharLimit`/`memoryCharLimitValue`
+   是否还有残留引用。
+4. 改动是否**自洽**（幂等、并发、失败关闭）与**可测**：新增探针是否真能咬住对应回归（列出你认为弱的探针）。
+
+## 输出
+
+- 结论一句（是否有 blocking）；然后按 `blocking / important / minor` 分组的发现清单，每条：`文件:行` + 现象 + 最小复现 + 建议。
+- 有实测证据（命令 + 输出摘要）的发现请标注；没有证的推断请标「推断」。
+- 不要复述我上面写的背景；只写你**自己验证到**或**明确推断**的东西。
+- 最后可附「不确定但值得下一轮看」清单。
+- 你可以运行 `node tests/run-all.mjs`（沙箱内 `node_modules` 未复制，若缺依赖就跳过并说明）。

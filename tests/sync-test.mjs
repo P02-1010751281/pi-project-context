@@ -22,7 +22,7 @@ async function exists(file) {
 	return stat(file).then(() => true).catch(() => false);
 }
 
-const { logError, migrateProjectState, writeAtomic } = await loadNamespace(`${PC}/project-state.ts`);
+const { legacyOmpDir, logError, migrateProjectState, writeAtomic } = await loadNamespace(`${PC}/project-state.ts`);
 
 console.log("=== errors.log is bounded ===");
 {
@@ -74,6 +74,29 @@ console.log("\n=== migration keeps an unmergeable legacy path ===");
 	check("legacy side left in place", await exists(path.join(tmp, ".pi/MEMORY.md/inside.md")));
 	check("new side left in place", (await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8")) === "current");
 	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== migration honors maxMemoryChars ===");
+{
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-migrate-cap-"));
+	const legacy = legacyOmpDir(tmp);
+	try {
+		await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
+		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), JSON.stringify({ maxMemoryChars: 5_000 }));
+		await mkdir(legacy, { recursive: true });
+		const imported = `# Project Memory\n\n## Project\n${Array.from({ length: 300 }, (_, index) => `- legacy ${index}: ${"detail ".repeat(20)}`).join("\n")}`;
+		await writeFile(path.join(legacy, "MEMORY.md"), imported);
+		const factory = await loadDefault(`${PC}/index.ts`);
+		const pi = makePi({ cwd: tmp });
+		await factory(pi);
+		await runHandlers(pi, "session_start", makeCtx(tmp));
+		const migrated = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
+		check("legacy OMP import uses the project's memory cap", migrated.includes("at 5000 characters") && migrated.length < 5_500);
+		check("legacy OMP import enters the journal", (await readFile(path.join(tmp, ".agents/memory/memory.jsonl"), "utf8")).includes('"replace"'));
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+		await rm(legacy, { recursive: true, force: true });
+	}
 }
 
 console.log("\n=== session-logs gets a .gitignore ===");

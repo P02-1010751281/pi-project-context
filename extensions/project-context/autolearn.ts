@@ -413,7 +413,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const loadedMemory = await loadMemory(projectRoot);
+			const loadedMemory = await loadMemory(projectRoot, config.maxMemoryChars);
 			if (loadedMemory.unreadable) {
 				await logError(projectRoot, "autolearn", "MEMORY.md exists but cannot be read; continuing with an empty memory.");
 			}

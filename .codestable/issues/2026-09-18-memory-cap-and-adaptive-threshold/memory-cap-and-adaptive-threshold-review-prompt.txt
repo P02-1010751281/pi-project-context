@@ -1,0 +1,57 @@
+你是独立代码复审者（lane A）。工作目录是只读沙箱副本 `/tmp/mca-review`（由 rsync 从仓库工作树整份复制，含 `.git`、含未提交改动；
+`.agents/memory/session-logs/` 也在内，因此沙箱 `git status` 应与仓库工作树一致）。请只读审查，不要修改任何文件；
+若为验证探针灵敏度而临时变异，必须立刻还原，并在报告中说明改了哪个文件、是否 md5 与仓库一致。
+
+背景：这是 pi coding agent 扩展 `pi-project-context`（TypeScript/ESM，无构建步骤，pi 用 jiti 直接加载 `.ts`）。
+本轮修复三件事，全部在工作树里未提交（用 `git diff --stat` / `git diff` 看全貌）：
+
+改动 1 —— `extensions/project-context/project-state.ts`：记忆文档的字符上限
+  旧实现 `normalizeMemoryDocument` 用裸 `.slice(0, MAX_MEMORY_CHARS)` 把整份文档切在字符数上（会把最后一行切成半句、无任何痕迹，
+  且模型每轮读到的是被切过的记忆再整份重写，损失静默累积）。现在：按整行边界截断（`clipToLineBoundary`），末尾追加一行
+  `_[memory truncated at <limit> characters: <dropped> dropped]_`，并导出 `isMemoryTruncated`。
+  另新增 `setMemoryCharLimit` / `memoryCharLimitValue`（模块级覆盖）与 `MIN_MEMORY_CHARS`/`MAX_MEMORY_CHARS_LIMIT`，
+  默认 `MAX_MEMORY_CHARS` 由 24000 上调为 32000。
+  要独立核验：
+  (a) 归一化的**幂等性**：`normalizeMemoryDocument(normalizeMemoryDocument(x)) === normalizeMemoryDocument(x)` 是否对
+      「上限内 / 超限 / 带既有 marker / 带 fence / 无 `# Project Memory` 头 / 单行超长」都成立，marker 会不会被洗掉或叠加；
+  (b) 截断是否**只**发生在整行边界（除了单行本身超限），`dropped` 数值是否自洽（是否与实际丢弃量一致）；
+  (c) 四条调用路径是否共用一个限制、且不会互相打架：`recordMemoryDocument` 写 journal、`foldMemoryJournal` 折叠、
+      `memoryComparisonKey`（外部编辑判定）、legacy 读路径（`.pi`/OMP）。特别注意：外部编辑判定把两侧都归一化后比较，
+      会不会出现「磁盘 render 与 journal fold 因 marker 位置/上限不同而判为不同 → 把自家输出当成 external edit 再写一条 replace」；
+  (d) `setMemoryCharLimit` 是**进程级**状态：同一进程内 `getConfig` 对不同 projectRoot 的调用是否会串味（A 项目的
+      `maxMemoryChars` 被当成 B 项目的限制）；默认值/越界值（<4000、>200000、非数字）回落是否正确；是否存在
+      「先读记忆后解析 config」的路径导致读到默认值；
+  (e) `config.ts::getConfig` 的推送点（缓存命中与未命中两条路径）是否都会执行；`maxMemoryChars` 的解析与
+      `updateConfig`/`saveConfig` 往返是否保持该字段（`/project-context on|off` 等命令会重写配置文件）。
+
+改动 2 —— `extensions/project-context/consolidate.ts`：CONTEXT.md 静默停更
+  v0.1.7 只在「`context` 键存在但形状不可用」时记 trace；模型**整个省略** `context`（或回复在输出上限处被截断、只剩
+  `memory_markdown` 能恢复）时保留旧 CONTEXT.md 且不报任何东西。现在：`ConsolidatedResult` 增加 `truncated`（对象未闭合、
+  只恢复了 memory 字段时置位），写入路径对「没有可用 context 且要保留旧文件」新增一条 errors.log trace（沿用
+  `contextShapeWarned`，每项目每进程一次）。另新增：超出上限的记忆写 `errors.log`（`memoryCapWarned` 去重）、
+  非静默 pass 的 warning 通知、显式命令回复 `consolidateReply` 的 capped 分支、`/project-context status` 的 cap 文案。
+  要核验：(a) `truncated` 的判定是否准确（哪些回复形态会被误判/漏判，尤其是「完整 JSON 但缺 context」与「对象未闭合」的区别）；
+  (b) 两条 trace 共用一个 `contextShapeWarned` 是否会导致某类问题在本进程内永不落盘；
+  (c) 通知/回复/日志三处文案是否与真实结果一致（不要出现「已更新」却什么都没写、或反之）；
+  (d) `lastWrite` 的 `capped` 是否可能被后续 pass 的错误状态覆盖，导致命令回复说谎。
+
+改动 3 —— `extensions/project-context/handoff.ts`：自适应阈值明显偏低
+  旧公式 `tokens = baseline + keep + min(handoffTargetTokens, 会话余量/2)` 是绝对 token 预算，与窗口无关：1M 窗口上
+  ≈ `baseline + 84k`，约 10% 就换会话（实测状态行 `threshold auto 64.0k (6.4%)`）。现在自适应分支改为
+  `max(目标值, round(handoffThresholdRatio × window))`（`handoffThresholdRatio` 默认 0.4 成为**下限**），再用
+  「摘要模型窗口 − SUMMARY_OUTPUT_RESERVE_TOKENS」「模型首个计价档位」「usable − TIER_EDGE_MARGIN」依次封顶；
+  新增第三个参数 `summaryModel`（`statusText`/`maybeTrigger`/`runHandoff` 三处传入），并新增 `/auto-handoff auto [0.1-0.95]`
+  与状态行 `· floor 40%`。`resolveThreshold` 由不导出改为导出（仅为测试）。
+  要核验：(a) 三处调用点是否都传入了摘要模型，`maybeTrigger` 每轮 settle 调 `resolveAuxModel` 是否引入副作用/噪音；
+  (b) 各封顶的顺序与边界：窗口很小/比例 0.95/aux 窗口比会话窗口小/无 cost tiers/`usage.tokens === null` 时，返回
+      `undefined`（=永不交棒）是否只发生在窗口真的放不下时；有没有「封顶后低于 floor → 静默永不交棒」的新路径；
+  (c) 阈值抬到 40% 后，被摘要的 older 前缀（`tokens − baseline − keep`）会不会超过摘要调用能承受的输入；
+      `SUMMARY_OUTPUT_RESERVE_TOKENS` 这个 reserve 语义是否用对（对照 pi 的 `generateSummaryWithUsage`）；
+  (d) `/auto-handoff auto <ratio>` 的解析/持久化/与裸比例（固定模式）的区分是否清楚，是否有回归；
+  (e) 测试：`tests/handoff-test.mjs` 新增的「阈值数值 / label / 摘要封顶 / tiny window / 触发级 300k 不触发 450k 触发」
+      是否真的钉住了数学（而不是被 mock 的 baseline 技巧掩盖），是否存在与被测代码同构的重复实现。
+
+其他要求：
+- 判定请分 **blocking / important / minor**，每条给出 `文件:行` 与最小复现或反例（能给出具体数值/输入最好）。
+- 不要相信注释与提交信息，也不要相信 fix note 里的自述；以代码 + 探针 + 你自己构造的输入为准。
+- 也请指出「本轮引入的新风险」与「与既有约定不一致之处」（例如 README 是否与实现一致、是否有未覆盖的路径）。

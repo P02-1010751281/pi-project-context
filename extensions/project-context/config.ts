@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { memoryDir, readOptional, writeAtomic } from "./project-state.ts";
+import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writeAtomic } from "./project-state.ts";
 
 /**
  * Project-scoped configuration for the project-context extension.
@@ -70,6 +70,8 @@ export type ProjectContextConfig = HandoffSettings & {
 	maxTokens: number;
 	/** Hard ceiling for the adaptive output cap when the model reports no limit of its own. */
 	maxOutputTokens: number;
+	/** Cap on the rendered `MEMORY.md`; over it the document is cut on a line boundary with a marker. */
+	maxMemoryChars: number;
 	/** Optional auxiliary-call route override; must be set together with `model`. Empty = session model. */
 	provider: string;
 	/** Optional auxiliary-call route override; must be set together with `provider`. Empty = session model. */
@@ -90,6 +92,7 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	forceDedupeMs: 15 * 1000,
 	maxTokens: 8192,
 	maxOutputTokens: 32_768,
+	maxMemoryChars: 32_000,
 	provider: "",
 	model: "",
 	handoffAdaptive: true,
@@ -234,6 +237,7 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 		forceDedupeMs: positive(raw.forceDedupeMs, 0) ?? DEFAULT_CONFIG.forceDedupeMs,
 		maxTokens: positive(raw.maxTokens, MIN_AUX_MAX_TOKENS) ?? DEFAULT_CONFIG.maxTokens,
 		maxOutputTokens: positive(raw.maxOutputTokens, MIN_AUX_MAX_TOKENS) ?? DEFAULT_CONFIG.maxOutputTokens,
+		maxMemoryChars: bounded(raw.maxMemoryChars, MIN_MEMORY_CHARS, MAX_MEMORY_CHARS_LIMIT) ?? DEFAULT_CONFIG.maxMemoryChars,
 		provider: route.provider,
 		model: route.model,
 

@@ -1,0 +1,95 @@
+feature: 2026-09-15-codex-project-context-port
+created: 2026-09-15
+
+steps:
+  - id: S1
+    action: "编排骨架：建立插件清单、默认 hooks/hooks.json、Pi→Codex 映射和事件响应契约"
+    exit_signal: "七类 Codex hook 的 fixture 输入都得到合法响应；manifest 校验通过；未知字段、异常和空输入不会阻塞宿主"
+    status: done
+  - id: S2
+    action: "原始源 framing：实现 JSONL envelope、base64 原始字节、source identity、全文件/前缀 sha256、offset/reset 游标、POSIX 锁和 hook event 记录"
+    exit_signal: "任意字节可从 envelope 还原；两个并发 writer 不重复；同 inode 同长度改写、文件重写或 inode 变化追加 reset；崩溃尾行可恢复"
+    status: done
+  - id: S3
+    action: "渲染与索引：从 envelope 重建 session.md、机械 INDEX.md 和 session-logs/.gitignore"
+    exit_signal: "多事件 session 可重建为 Markdown 和单行索引；重复 flush 不改变原始字节；索引路径无需模型调用"
+    status: done
+  - id: S4
+    action: "迁移节点：按普通文件内容 sha256 manifest 复制/合并 Pi .pi、旧 skills 和旧 index"
+    exit_signal: "迁移可重跑；同摘要不产生重复旁车；源目录始终保留；内容冲突生成确定命名的 legacy 旁车并写诊断"
+    status: done
+  - id: S5
+    action: "注入节点：实现配置默认值、SessionStart/UserPromptSubmit 有界注入和裁剪指针"
+    exit_signal: "上下文按 CONTEXT→MEMORY→skill 指针排序并遵守 maxInjectedChars；空文件、超长单文件和多 skill 有确定结果"
+    status: done
+  - id: S6
+    action: "Stop/handoff 节点：在项目锁和原子 request 文件下实现 maintenance request 状态机、防循环、PreCompact HANDOFF 和 PostCompact/新 task 路径"
+    exit_signal: "两个并发 Stop 只创建一个 request；继续轮次、重复 Stop、重启和失败可恢复；handoff 字段完整且不创建新 task"
+    status: done
+  - id: S7
+    action: "模型维护节点：提供 project-context/2 consolidation/autolearn schema、证据门槛、原子写入和维护 skill"
+    exit_signal: "schema/2 合法结果原子更新目标文件；未知 schema/非法/缺字段结果不覆盖 MEMORY.md；少于 2 个已存档 session 只写候选"
+    status: done
+  - id: S8
+    action: "验证与交付：完成逐事件 fixture、迁移回归、Pi 基线和插件校验；Desktop UI smoke 作为安装后的手工步骤"
+    exit_signal: "CMD-001、CMD-002、CMD-003 和本地 hook wrapper fixture 通过；插件目录可直接交给 Desktop 本地插件入口；不宣称未执行的 UI smoke"
+    status: done
+
+checks:
+  - item: "Codex 插件根目录包含有效 .codex-plugin/plugin.json，hooks/hooks.json 可按默认路径装载，且不依赖 Pi ExtensionAPI"
+    source: 挂载点
+    status: done
+  - item: "SessionStart/UserPromptSubmit/PostToolUse/PreCompact/PostCompact/Stop/SessionEnd 的事件路由有明确 stdin/stdout、失败和幂等契约"
+    source: 编排骨架
+    status: done
+  - item: "session.jsonl 是 append-only envelope 源；base64 可逆，源文件只用全文件/前缀 sha256 判断追加或重写，payload/event 指纹负责去重，锁保证并发和重启不重复，重写源有 reset envelope"
+    source: 名词契约
+    status: done
+  - item: "session.md 与 session-logs/INDEX.md 可从原始源重建，且索引不调用模型"
+    source: 流程级约束
+    status: done
+  - item: "fsync 后 cursor 提交、尾行截断恢复、envelope 重放去重和并发 request 防重均有独立测试证据"
+    source: 流程级约束
+    status: done
+  - item: "Pi 旧目录迁移可重跑，按普通文件内容 sha256 建 manifest 并生成确定 legacy 旁车，复制/合并后不删除源；不计算目录树 digest"
+    source: 验收场景
+    status: done
+  - item: "迁移只按稳定相对路径排序，manifest 记录 source_path/target_path/sha256/status，不引入目录树 digest"
+    source: 名词契约
+    status: done
+  - item: "SessionStart 注入包含 MEMORY/CONTEXT/skill 指针并受 maxInjectedChars 限制"
+    source: 验收场景
+    status: done
+  - item: "Stop request 具有 request_id 和 pending/consumed/failed 状态，stop_hook_active、重复 Stop 和重启恢复能防止继续轮次循环"
+    source: 验收场景
+    status: done
+  - item: "维护输出严格使用 project-context/2 schema：top-level 和 nested object 均禁止未知字段，required 集合、类型/大小/slug/证据校验、原子写入和失败处理明确；非法结果不覆盖 MEMORY.md，证据不足时只写 skill-candidates"
+    source: 验收场景
+    status: done
+  - item: "PreCompact 生成包含 session/project/index/todo 的 HANDOFF.md；同 task PostCompact 与用户新 task 的注入路径有区别，首版不调用未定义 Desktop 新 task API"
+    source: 范围守护
+    status: done
+  - item: "每个 Codex 事件、framing/迁移/注入/Stop/维护/handoff 场景、Pi 基线测试、插件校验和两种 Desktop smoke 均有证据"
+    source: 验收场景
+    status: pending
+  - item: "新增插件代码不产生运行期临时 debug 输出、TODO/FIXME、注释掉代码或无用 import；测试 console 输出仅作为测试报告"
+    source: 范围守护
+    status: done
+
+dod:
+  commands:
+    - id: CMD-001
+      command: "node tests/run-all.mjs"
+      core: true
+      failure_handling: fix-or-block
+    - id: CMD-002
+      command: "python3 tests/run_tests.py"
+      core: true
+      failure_handling: fix-or-block
+    - id: CMD-003
+      command: "python3 /home/user/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/codex-project-context"
+      core: true
+      failure_handling: fix-or-block
+  evidence_required: [command_output, diff_summary, desktop_smoke]
+  cleanliness:
+    debug_output: forbidden

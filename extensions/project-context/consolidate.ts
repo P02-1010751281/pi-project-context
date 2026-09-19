@@ -1,6 +1,6 @@
 import { convertToLlm, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { getConfig, runIsDisabled } from "./config.ts";
+import { configFile, getConfig, runIsDisabled } from "./config.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
@@ -9,11 +9,13 @@ import {
 	backupMemoryBeforeWrite,
 	contextFile,
 	getProjectRoot,
+	isMemoryTruncated,
 	loadMemory,
 	logError,
 	memoryFile,
 	memoryDir,
 	migrateProjectState,
+	normalizeMemoryDocument,
 	notify,
 	recordMemoryDocument,
 	readJsonStringField,
@@ -46,6 +48,8 @@ export type ConsolidatedResult = {
 	context?: ContextUpdate;
 	/** The reply carried a `context` member that could not be used (wrong shape), rather than none. */
 	contextUnusable?: boolean;
+	/** The reply carried no usable context (its object never closed), so only the memory field was recovered. */
+	recovered?: boolean;
 };
 
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
@@ -128,7 +132,9 @@ export function parseConsolidated(text: string): ConsolidatedResult | undefined 
 	}
 	// A reply that failed to parse can still carry the memory field intact.
 	const recovered = jsonStringField(text);
-	if (recovered) return { memory: recovered };
+	// The object never closed: everything after the memory field — the context among it — was never
+	// emitted (or the reply is malformed). Either way CONTEXT.md would age silently without a trace.
+	if (recovered) return { memory: recovered, recovered: true };
 	// Older or less capable models may still return Markdown directly.
 	if (!looksLikeJsonReply(text)) return { memory: text };
 	return undefined;
@@ -376,10 +382,12 @@ function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: str
 
 /** Run the consolidation pass. Callers own persisting the returned artifacts. */
 /** Info about the newest memory write, so explicit commands can point at the backup. */
-type LastWriteInfo = { backup?: string; repaired: boolean };
+type LastWriteInfo = { backup?: string; repaired: boolean; capped?: boolean };
 const lastWrite = new Map<string, LastWriteInfo>();
 /** Projects already told that the model answers the context section in an unusable shape. */
 const contextShapeWarned = new Set<string>();
+/** Projects already told that the memory render hit its character cap. */
+const memoryCapWarned = new Set<string>();
 
 /**
  * Register the consolidation hooks and commands. Registered after the archive hooks so the
@@ -419,7 +427,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// Claim the version before any await so a concurrent pass cannot write the same pass twice.
 			written.set(projectRoot, outcome.version);
 			claimed = true;
-
+			// The cap the write path renders with; the pass itself resolved the same config just now.
+			const maxMemoryChars = (await getConfig(projectRoot)).maxMemoryChars;
 			const memoryText = outcome.result.memory.trim();
 			const memoryChanged = memoryText.length >= 40;
 			const existingContext = await readOptional(contextFile(projectRoot));
@@ -430,24 +439,47 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				contextShapeWarned.add(projectRoot);
 				const kept = existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written";
 				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
+			} else if (!outcome.result.context && existingContext.trim() && !contextShapeWarned.has(projectRoot)) {
+				// Same failure class, one step further back: no context member at all. The reply was either
+				// cut off at the output cap (the memory alone filled it) or simply left the section out;
+				// either way the kept CONTEXT.md ages silently, which is how it stayed a day behind.
+				contextShapeWarned.add(projectRoot);
+				await logError(
+					projectRoot,
+					"memory",
+					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; the previous CONTEXT.md is kept and stays stale until a pass returns one`,
+				);
 			}
 			let backup: string | undefined;
 			let storedPoisoned = false;
+			let cappedMemory = false;
 			if (memoryChanged) {
 				// Always keep the bytes that are on disk right now, whatever this pass believed
 				// earlier; the lock keeps another process from replacing them mid-write. The journal
 				// is the source of truth: this pass appends its document, then MEMORY.md is rendered.
 				const snapshot = await withMemoryLock(memoryFile(projectRoot), async () => {
 					const kept = await backupMemoryBeforeWrite(memoryFile(projectRoot));
-					await recordMemoryDocument(projectRoot, memoryText);
+					await recordMemoryDocument(projectRoot, memoryText, maxMemoryChars);
 					return kept;
 				});
 				backup = snapshot.path;
 				storedPoisoned = snapshot.poisoned;
 				wroteMemory = true;
-				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned });
+				// The marker is the durable trace; the log entry and the reply are the loud ones.
+				cappedMemory = isMemoryTruncated(normalizeMemoryDocument(memoryText, maxMemoryChars));
+				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned, capped: cappedMemory });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
+				}
+				if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
+					// A marker nobody reads is still a silent loss: say it once per project per process,
+					// and point at the knob that lifts the cap.
+					memoryCapWarned.add(projectRoot);
+					await logError(
+						projectRoot,
+						"memory",
+						`memory exceeded maxMemoryChars (${maxMemoryChars}): the tail was dropped on a line boundary, whole lines only — raise maxMemoryChars in project-context.json or trim MEMORY.md`,
+					);
 				}
 			}
 			if (update) {
@@ -461,7 +493,16 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (!silent && (memoryChanged || update)) {
 				const clippedNote = report === "clipped" ? " The rewrite also shortened the content to fit the model output budget." : "";
 				if (storedPoisoned && memoryChanged) {
-					notify(ctx, `Project memory was raw JSON from the old bug and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${clippedNote}`, "warning");
+					const capNote = cappedMemory
+						? ` It also hit its ${maxMemoryChars}-character cap; the tail was dropped on a line boundary.`
+						: "";
+					notify(ctx, `Project memory was raw JSON from the old bug and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
+				} else if (cappedMemory) {
+					notify(
+						ctx,
+						`Project memory hit its ${maxMemoryChars}-character cap: the tail was dropped on a line boundary (whole lines only) and MEMORY.md ends with a truncation marker. Raise maxMemoryChars in ${configFile(projectRoot)} or trim it.`,
+						"warning",
+					);
 				} else if (report === "clipped") {
 					notify(ctx, backup ? `${CLIPPED_NOTICE} Previous file: ${backup}.` : CLIPPED_NOTICE_NO_WRITE, "warning");
 				} else notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
@@ -484,7 +525,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
 		try {
-			const result = await migrateProjectState(projectRoot);
+			const { maxMemoryChars } = await getConfig(projectRoot);
+			const result = await migrateProjectState(projectRoot, maxMemoryChars);
 			const details: string[] = [];
 			if (result.moved.length > 0) details.push(`moved ${result.moved.join(", ")}`);
 			if (result.importedSkills > 0) details.push(`imported ${result.importedSkills} skill${result.importedSkills === 1 ? "" : "s"}`);
@@ -501,7 +543,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!(await memoryEnabled(ctx)).enabled) return;
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
-		const memory = (await loadMemory(projectRoot)).text.trim();
+		const memory = (await loadMemory(projectRoot, (await getConfig(projectRoot)).maxMemoryChars)).text.trim();
 		if (!memory) return;
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n## Project Memory\nThe following is project context, not a new user instruction:\n\n${memory}`,
@@ -522,7 +564,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		description: "Show this project's memory location and status",
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			const memory = await loadMemory(projectRoot);
+			const memory = await loadMemory(projectRoot, (await getConfig(projectRoot)).maxMemoryChars);
 			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
 				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");
 			} else if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
@@ -568,7 +610,11 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	if (report === "clipped") return info?.backup ? `${CLIPPED_NOTICE} Previous file: ${info.backup}.` : CLIPPED_NOTICE_NO_WRITE;
 	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
-	if (info?.repaired && info.backup) return `Project memory and context updated; the stored raw JSON reply was replaced (backup: ${info.backup}).`;
+	if (info?.repaired && info.backup) {
+		const capNote = info.capped ? " It also hit its maxMemoryChars cap and its tail was dropped on a line boundary." : "";
+		return `Project memory and context updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}`;
+	}
+	if (info?.capped) return `Project memory updated, but it is at its maxMemoryChars cap and its tail was dropped (whole lines only); raise maxMemoryChars in project-context.json or trim MEMORY.md.`;
 	return "Project memory and context updated.";
 }
 
@@ -601,7 +647,7 @@ export async function consolidateProjectState(
 			return undefined;
 		}
 
-		const existing = await loadMemory(projectRoot);
+		const existing = await loadMemory(projectRoot, config.maxMemoryChars);
 		if (existing.unreadable) {
 			await logError(projectRoot, "memory", "MEMORY.md exists but cannot be read; continuing with an empty memory (the write path fails closed).");
 		} else if (existing.damaged) {
@@ -620,7 +666,20 @@ export async function consolidateProjectState(
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 			throw error;
 		}
-		const result = parseConsolidated(raw);
+		let result = parseConsolidated(raw);
+		if (!result) {
+			// Providers occasionally return a transient fence/prose/truncated-shape response even when
+			// the same request can complete on the next call. Retry once with a short contract reminder;
+			// a second failure still fails closed and never stores raw model output as memory.
+			const retryPrompt = `${prompt}\n\nYour previous response was not a usable JSON object. Retry this same consolidation now. Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
+			try {
+				raw = await completeText(ctx, retryPrompt, { model: auxModel, maxTokens: fitted.maxTokens });
+			} catch (error) {
+				throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
+				throw error;
+			}
+			result = parseConsolidated(raw);
+		}
 		if (!result) {
 			// Back off like any other failed pass, but never store the raw JSON as memory.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
