@@ -73,3 +73,14 @@ tags: [memory, consolidation, output-budget, reasoning, truncation, diagnostics]
   不会写坏 memory；彻底解决需要 provider 原生 structured output 或拆成 memory/context 独立调用（本轮不做）。
 - reasoning 预留按 `model.reasoning` 元数据判断，元数据缺失的模型仍按非 reasoning 处理（保守不裁剪正文），
   其截断由重试路径兜底。
+
+## 5. 发布（v0.1.9）
+
+- 修复 commit：`0af9ec6`；annotated tag `v0.1.9`（tag 对象 `87eaf39`）指向该 commit。
+- `master` 与 tag 已双推 Forgejo + GitHub mirror。
+- 安装 pin：`~/.pi/agent/settings.json` 与 `~/.pi/README.md` 更新为 `@v0.1.9`，pi-config commit `da0f869` 已推送。
+- `pi update --extensions` 后安装副本 HEAD = `0af9ec6`（与 tag 一致，工作树干净），已含 `reasoningReserveTokens`。
+- settings 加载的真机探针：`/tmp/pi-project-context-v019-probe-voVpBB`，模型 `openai-codex/gpt-5.6-luna`（reasoning: true），
+  `memory-learn` / `auto-handoff` 命令可用；`/memory-learn` 写出 `MEMORY.md`（5447 bytes）、`CONTEXT.md`（885 bytes）、
+  `memory.jsonl`（40861 bytes）与两份 backup，**无 errors.log**（即未发生裁剪、未发生截断）。
+  注：该模型自行把 29.5KB 的 CJK 记忆压缩到 5.4KB，属模型编辑选择而非 clipped（否则会有 “shortened” 日志）。
