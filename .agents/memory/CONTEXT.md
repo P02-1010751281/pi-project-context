@@ -20,6 +20,6 @@ Adaptive handoff threshold rework is code-complete on the conservative knee curv
 
 - Re-run the independent review on the fix delta (`/tmp/pc-threshold-review-v3` or equivalent), then release: commit, annotated tag v0.1.10, push both remotes, bump the `pi-config` pin, verify installed blobs, run a settings-installed probe, record evidence.
 - Restart the live pi process (PID 367149) so it loads the new threshold code; until then the running session rewrites `.agents/memory/*` with the old semantics.
-- Decide on the untracked autolearn skills (`pi-project-context-memory-cap-truncation-triage`, `pi-project-context-stale-writer-process-check`, `pi-project-context-sandboxed-independent-review`, `pi-project-context-gate-probe-mutation-check`) and the `.agents/memory/skill-candidates/` release-verification candidate.
+- Project skills were consolidated and committed: `memory-recovery` absorbed the truncation triage and stale-writer checks, `release-tag-and-pin-sync` absorbed the release-verification candidate, `write-lock-hardening` was promoted, and `sibling-repo-memory-sync` / `sandboxed-independent-review` / `gate-probe-mutation-check` were kept (backup: `/tmp/pc-skills-backup-20260919-220834.tar.gz`).
 
 <!-- latest-session-title: Handoff adaptive threshold semantics: auto = conservative knee curve -->
