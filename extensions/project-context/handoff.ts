@@ -9,14 +9,12 @@
  * context that protects answer quality.
  *
  * Threshold:
- *   - adaptive (default): the later of `handoffThresholdRatio` × contextWindow and
- *     the measured baseline + keepRecent + ~handoffTargetTokens (default 64k), so
- *     the window share is a floor and a heavy baseline can raise it. Bounded by the
- *     summarizer's window and by the model's first cost tier. Derived from model
- *     info (contextWindow, cost tiers) and measured usage, not a fixed %.
- *   - fixed: /auto-handoff 0.5 uses 0.5 * contextWindow.
- *   An absolute target alone would trigger at ~10% of a 1M-token window; the floor
- *   keeps the handoff near the window it is actually working in.
+ *   - adaptive (`/auto-handoff auto`, default): the model's conservative quality knee (see
+ *     `kneeTokens` below), never above the last usable point (just before pi's own compaction
+ *     reserve) and never below `baseline + keep + handoffTargetTokens` (the physical floor that
+ *     accepts the system prompt, the kept tail, and a worthwhile summary). The summarizer's input
+ *     window and the first pricing tier cap it lower.
+ *   - fixed (`/auto-handoff 0.6`): 0.6 * contextWindow.
  *
  * Summary calls default to thinking off: on reasoning models thinking and the
  * answer share the response cap (deepseek sends thinking:{type:enabled} with no
@@ -35,9 +33,9 @@
  * Commands:
  *   /auto-handoff                show status
  *   /auto-handoff on|off         enable/disable (persisted per project)
- *   /auto-handoff auto [0.4]     adaptive threshold, optional floor share (persisted)
+ *   /auto-handoff auto          adaptive threshold (no parameters; persisted)
  *   /auto-handoff 0.6 | 60%      fixed-ratio threshold (persisted)
- *   /auto-handoff target 64k     auto mode: tokens to summarize per handoff
+ *   /auto-handoff target 64k     auto mode: minimum tokens summarized per handoff
  *   /auto-handoff thinking off   summary thinking level: off (default, fast) or session
  *   /auto-handoff keep 20k|0     recent tokens carried over verbatim (persisted)
  *   /auto-handoff send|draft     auto-send the continuation, or leave it in the editor
@@ -606,6 +604,28 @@ async function readSessionHeader(file: string): Promise<{ parentSession?: string
 
 /** Stay this far below a cost tier edge so streaming growth cannot cross it. */
 const TIER_EDGE_MARGIN = 4_000;
+/**
+ * Conservative quality knee of long-context models, fitted to MRCR 8-needle data (GDM-MRCRv2 /
+ * Context Arena population + vendor reports, 2026-09):
+ *   knee(W) = W - (W - K) * sigmoid(ln(W / Wc) / s)
+ * Observed honest windows (≤ ~400K: Codex 272K/400K, Claude 200K) keep their own boundary. The
+ * transition starts at Wc = 450K because every 500K+ declaration measured so far is inflated —
+ * grok-4.5/4.6 declare 500K while the family knee is ~195K, and DeepSeek-V4.1-Flash / GLM-5.3 /
+ * Qwen3.8 declare 1M with measured knees of 130–170K. Beyond the transition the knee saturates at
+ * K = 157K, the population median (46 models ≥ 1M: p25 127K / p50 157K / p75 190K). Deliberately
+ * conservative: strong 1M models (GPT-5.6 ~250K, Gemini 3.7 ~450K, GPT-6 ≥ 512K) trigger earlier
+ * than their own knee. The previous fit anchored K at 273K (GPT-5.6 / OpenAI's first tier) with
+ * Wc = 650K, which let inflated declarations run 2–3× past their knee.
+ */
+const KNEE_ASYMPTOTE_TOKENS = 157_000;
+const KNEE_TRANSITION_TOKENS = 450_000;
+const KNEE_TRANSITION_STEEPNESS = 0.04;
+
+/** Fitted knee curve: the share of the window that is still reliable. */
+function kneeTokens(window: number): number {
+	const z = Math.log(window / KNEE_TRANSITION_TOKENS) / KNEE_TRANSITION_STEEPNESS;
+	return Math.round(window - (window - KNEE_ASYMPTOTE_TOKENS) / (1 + Math.exp(-z)));
+}
 const SUMMARY_TIMEOUT_MS = 180_000;
 const FAILURE_BACKOFF_MS = 5 * 60_000;
 const RETRIGGER_COOLDOWN_MS = 30_000;
@@ -698,12 +718,15 @@ export interface Threshold {
 	tokens: number;
 	label: string;
 	/**
-	 * Which bound produced the final value: the configured share of the window (`share`), the
-	 * absolute target (`target`), or one of the caps that overrides the share — the summarizer
-	 * window (`summarizer`), the first pricing tier (`tier`), the usable window (`usable`).
-	 * Only informative: the number is the contract, this says what to raise when it looks low.
+	 * Which bound produced the final value: the conservative knee curve (`adaptive`),
+	 * the physical floor `baseline + keep + handoffTargetTokens` (`target`), or one of the caps that
+	 * lowers it — the summarizer window (`summarizer`), the first pricing tier (`tier`), the usable
+	 * window (`usable`). Only informative: the number is the contract, this says what to raise when it
+	 * looks low.
 	 */
-	bound?: "share" | "target" | "summarizer" | "tier" | "usable";
+	bound?: "adaptive" | "target" | "summarizer" | "tier" | "usable";
+	/** Projected summary input after caps: `tokens - baseline - keep`. The cut at handoff time can only be shorter (a single turn can hold the whole window), never longer. */
+	summarizeTokens?: number;
 }
 
 /** Everything that is not conversation: system prompt, tool schemas, injected memory/context. */
@@ -727,9 +750,9 @@ function firstCostTierEdge(model: NonNullable<ExtensionContext["model"]>): numbe
 /**
  * Resolve the trigger threshold from model info and measured usage:
  * - fixed: ratio * contextWindow.
- * - adaptive: the later of the configured share of the window and the measured
- *   baseline + keepRecent + ~handoffTargetTokens, bounded by the summarizer's
- *   window and by the first cost tier so a surcharge is not crossed.
+ * - adaptive: `max(min(usable - TIER_EDGE_MARGIN, knee(window)), baseline + keep + handoffTargetTokens)`
+ *   where `knee()` is the conservative MRCR curve above, only lowered by the summarizer's window and by
+ *   the first cost tier so neither the aux input limit nor a surcharge is crossed.
  */
 /** Exported so tests can pin the threshold math without a live session. */
 export function resolveThreshold(
@@ -752,17 +775,15 @@ export function resolveThreshold(
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return undefined; // window too small for this configuration
 
-	const conversationRoom = usable - baseline - keep;
-	const targetOlder = Math.max(
-		MIN_SUMMARIZE_TOKENS,
-		Math.min(config.handoffTargetTokens, Math.floor(conversationRoom / 2)),
-	);
-	// The configured share of the window is the floor; the target only raises it when the measured
-	// baseline is unusually heavy.
-	const share = Math.round(config.handoffThresholdRatio * window);
-	const targetValue = baseline + keep + targetOlder;
-	let tokens = Math.max(targetValue, share);
-	let bound: Threshold["bound"] = targetValue > share ? "target" : "share";
+	// Auto finds the model's conservative quality knee (honest windows keep their own boundary, large
+	// windows saturate at the population-median knee), never above the last usable point and never
+	// below the physical floor that accepts the system prompt, the kept tail, and a worthwhile
+	// summary (`handoffTargetTokens`). The caps below only lower it further — the summarizer's input
+	// window and the first pricing tier. `handoffThresholdRatio` belongs to fixed mode.
+	const boundary = Math.min(usable - TIER_EDGE_MARGIN, kneeTokens(window));
+	const targetValue = baseline + keep + config.handoffTargetTokens;
+	let tokens = Math.max(boundary, targetValue);
+	let bound: Threshold["bound"] = targetValue > boundary ? "target" : "adaptive";
 	// A cap only takes over when it really is lower; recording which one decided is what lets the
 	// status line explain an apparently low threshold instead of contradicting the floor.
 	const cap = (value: number, name: NonNullable<Threshold["bound"]>): void => {
@@ -779,12 +800,25 @@ export function resolveThreshold(
 	const prefixRoom = Math.max(MIN_SUMMARIZE_TOKENS, summarizerWindow - SUMMARY_OUTPUT_RESERVE_TOKENS);
 	cap(baseline + keep + prefixRoom, "summarizer");
 	const tierEdge = firstCostTierEdge(model);
-	if (tierEdge !== undefined && tierEdge > floor + TIER_EDGE_MARGIN) {
+	if (tierEdge !== undefined) {
+		// The first pricing tier is the other surcharge guard. It can only bind at or above the
+		// physical floor; below that a handoff that both summarizes and stays in the cheap tier is
+		// impossible, so fail closed instead of silently crossing the paid boundary (the old
+		// `tierEdge > floor + margin` gate skipped the cap exactly in that case).
+		if (tierEdge - TIER_EDGE_MARGIN < floor) return undefined;
 		cap(tierEdge - TIER_EDGE_MARGIN, "tier");
 	}
 	cap(usable - TIER_EDGE_MARGIN, "usable");
 	if (tokens < floor) return undefined;
-	return { tokens, label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})`, bound };
+	// The status line reports the projected summary input after caps, not the configured minimum: the
+	// cut at handoff time can only be shorter (a single huge turn can hold the whole window), never
+	// longer. A cap (summarizer/tier/usable) can leave less than `handoffTargetTokens` droppable.
+	return {
+		tokens,
+		label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})`,
+		bound,
+		summarizeTokens: tokens - baseline - keep,
+	};
 }
 
 /** Recent user messages decide `auto`; the whole session is the fallback when they are too short. */
@@ -835,13 +869,19 @@ function statusText(ctx: ExtensionContext): string {
 	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
+	let threshold: Threshold | undefined;
 	if (usage && usage.tokens !== null) {
-		const threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
+		threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
 		if (threshold) thresholdLabel = threshold.label + capSuffix(threshold.bound);
 		else if (config.handoffAdaptive) thresholdLabel = "auto (no room at this window)";
 	}
+	// With a usable threshold the status reports the projected prefix after caps, so a cap cannot be
+	// misread as the configured minimum; the real cut can only be shorter. Without usage it echoes the
+	// configured target.
 	const target = config.handoffAdaptive
-		? ` · target ${fmtTokens(config.handoffTargetTokens)} · floor ${fmtPct(config.handoffThresholdRatio * 100)}`
+		? threshold?.summarizeTokens !== undefined
+			? ` · summarize ${fmtTokens(threshold.summarizeTokens)}`
+			: ` · target ${fmtTokens(config.handoffTargetTokens)}`
 		: "";
 	const language = config.handoffLanguage === "auto"
 		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLanguage)})`
@@ -1381,7 +1421,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				}
 				config.handoffTargetTokens = tokens;
 				await saveConfig();
-				notify(ctx, `Auto threshold will summarize ~${fmtTokens(tokens)} per handoff.`);
+				notify(ctx, `Auto summarize target: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
 				return;
 			}
 			if (head === "thinking") {
@@ -1401,17 +1441,10 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "auto") {
 				config.handoffAdaptive = true;
-				if (value) {
-					// `/auto-handoff 0.5` means a fixed 50%; `auto 0.5` keeps the adaptive math and raises
-					// its floor, which is the knob for "auto hands off too early on a big window".
-					const ratio = parseRatio(value);
-					if (ratio === undefined) {
-						notify(ctx, "Usage: /auto-handoff auto [0.1-0.95]", "warning");
-						return;
-					}
-					config.handoffThresholdRatio = ratio;
-				}
 				await saveConfig();
+				if (value) {
+					notify(ctx, "Adaptive mode takes no ratio; use /auto-handoff 0.6 for a fixed share.", "warning");
+				}
 				notify(ctx, statusText(ctx));
 				return;
 			}
