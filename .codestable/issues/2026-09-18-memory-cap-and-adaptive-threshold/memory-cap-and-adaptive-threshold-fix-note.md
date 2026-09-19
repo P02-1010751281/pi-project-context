@@ -98,8 +98,14 @@ tags: [memory, truncation, maxMemoryChars, context, handoff, threshold]
 
 ## 6. 发布
 
-待 owner 决定。若走发布：tag 指向修复 commit，`master` + tag 双推，`pi-config` 里 pin 提到新版本，
-安装副本与 tag 做 `md5sum` 比对，真机探针（不带 `-ne`/`-e`）与转录归档到本 issue 目录。
+已按 owner 授权发布 `v0.1.8`：
+
+- 修复 commit：`27f7043`，annotated tag `v0.1.8`。
+- `master` 与 tag 已双推 Forgejo 和 GitHub mirror。
+- `~/.pi` 的 package pin 已更新为 `@v0.1.8`，`pi-config` commit `bfd794a` 已推送。
+- `pi update --extensions` 后安装副本 `/home/user/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` 为 `27f7043`，工作树干净，包含 bounded retry 修复。
+- settings-installed RPC probe：`/tmp/pi-project-context-settings-v0.1.8-mdloNV`；未使用 `-ne/-e`，发现 `memory-learn`/`auto-handoff` 命令，真实 consolidation 写出 `MEMORY.md`、`CONTEXT.md`、`memory.jsonl` 和 backup，无 `errors.log`。
+- 发版后新增的安装证据只在本节追加记录，不重写已发布 tag。
 
 ## 7. 预算公式再推导（owner 要求）
 
