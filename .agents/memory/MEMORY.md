@@ -21,6 +21,7 @@
 - Writes use `.agents/memory/MEMORY.md.lock` with cross-process ownership, stale-lock recovery, backups, and atomic replacement. `errors.log` is append-only and redacts credential-shaped strings.
 - Memory rendering defaults to `MAX_MEMORY_CHARS = 32000`, configurable through `maxMemoryChars` from 4000–200000. Truncation keeps whole lines and appends a strict marker; the limit is passed explicitly through normalization, folding, loading, comparison, and recording.
 - Consolidation context must be an object with `summary` string, `title` string, and `key_points`/`open_tasks` arrays of strings. Missing or unusable context is logged and the previous `CONTEXT.md` is retained.
+- Consolidation's primary failure mode is protocol/容量 mismatch rather than retry absence: a model must rewrite potentially large memory and context inside one JSON response, while provider output limits and dense CJK tokenization can truncate the response before closing quotes/braces or produce schema-invalid output. The bounded retry is only mitigation; durable improvements would require truncation/finish-reason diagnostics, structured-output support, or smaller independent/incremental updates.
 
 ## Handoff
 - Handoff uses `ctx.newSession()` and stages settings in `handoff-session-settings.json`; successor startup restores the outgoing model and thinking level only for the matching predecessor, then consumes the staged file.
@@ -38,4 +39,4 @@
 - Release procedure: commit, annotated tag, push tag and `master` to both remotes, bump the pin in the separate `pi-config` repository, verify installed tagged blobs, run a real settings-installed probe, record evidence, then commit release documentation separately.
 - Memory render changes are tracked and normally committed as `docs(memory): refresh the memory render`.
 - Full test suite currently passes 9/9. Real provider RPC validation was previously blocked by external quota/credit errors and does not count as successful handoff validation.
-- The current fix and documentation work remains uncommitted; release and installation verification are pending.
+- Version `v0.1.8` is released and installed in `~/.pi`; the retry fix and related documentation are complete. Future protocol-level hardening is not yet implemented.
