@@ -1,0 +1,86 @@
+你是独立代码复审者（lane A）。工作目录是只读沙箱副本 `/tmp/pc-threshold-review`（由 rsync 从仓库工作树整份复制，含 `.git` 与未提交改动）。
+请只读审查，不要修改沙箱内任何文件；若为验证探针灵敏度而临时变异，必须在 `/tmp` 另建副本进行并说明，仓库沙箱必须保持字节不变（进入/退出 `git status --porcelain` 对照）。
+测试可运行：`node tests/run-all.mjs`（只写 /tmp 下的 mkdtemp）。
+
+背景：`pi-project-context` 是 pi coding agent 扩展（TypeScript/ESM，无构建，pi 用 jiti 直接加载 `.ts`）。
+本轮修正自适应 handoff 阈值的语义。owner 的定调：**auto 实际上就是在找拐点**——阈值应落在模型的
+质量拐点上；auto 不接受任何参数；公式要简单。v0.1.9 的 `max(8000, min(S, floor(room/2)))` 把 auto
+封顶在 64k；两项式让 auto 退化为 `rW`；「半个窗口」和「窗口末点」（1M → 980k/98%）都越过拐点。最终公式：
+
+```text
+usable = contextWindow - 16384
+floor  = baseline + keep + 8000
+knee   = W - (W - 157000) * sigmoid(ln(W / 450000) / 0.04)
+T0 = max(min(usable - 4000, knee), baseline + keep + handoffTargetTokens)
+cap: summarizer → first pricing tier → usable - 4000
+低于 floor 返回 undefined
+```
+
+拐点依据（保守拟合）：`K=157K` 是实测拐点的人群中位数（≥1M 窗口的 46 个模型：p25 127K / p50 157K /
+p75 190K）；`Wc=450K` 因为目前所有 500K+ 声明实测都偏大——grok-4.5/4.6 声明 500K、家族实测 ~195K；
+DeepSeek-V4.1-Flash / GLM-5.3 / Qwen3.8 声明 1M、实测 130–170K（DeepSeek 官方 V4 报告 Figure 9：
+V4-Pro-Max 128K 0.92 → 256K 0.82 → 1M 0.59；linux.do 自测 V4.1-Flash：64–128K 79.2 → 128–256K 40.2）。
+≤~400K 的诚实窗口（Codex 272K/400K、Claude 200K）仍取自身边界；保守是刻意的：GPT-5.6（~250K）、
+Gemini 3.7（~450K）、GPT-6（512K–1M 仍 96.3%）会比自身拐点更早触发。数据源：Context Arena GDM-MRCRv2
+full-bin API（184 条＝73 模型 × reasoning 变体，带 CI/n）、OAI-MRCR 2/4/8 针（仅旧模型）、厂商报告。
+行为：≤400K ≈ 自身边界（272K 93%、400K 95%）、500K 36%、600K 26%、768K 20%、1M 16%、≥1M 饱和 157K。
+`handoffThresholdRatio` 只服务固定模式（`/auto-handoff 0.6` → `threshold 60% of window`）；
+`/auto-handoff auto` 带参数会被警告且不写入比例。
+`Threshold.summarizeTokens = tokens - baseline - keep`：状态行显示实际摘要量
+（`auto 157k (16%) · summarize 125k`；120K 档位时 `auto 116k (12%) · capped by the first pricing tier`），
+无 usage 时回退 `target 64.0k`。
+参考资料：pi compaction `W − 16384`；OpenAI 短/长上下文计价分界 272,000；GPT-5.5 MRCRv2 8-needle
+128–256K 87.5% → 256–512K 81.5% → 512K–1M 74.0%；Anthropic compaction API trigger 最小 50k。
+同步 `docs/handoff.md`（纯文本 + LaTeX）、`docs/configuration.md`、
+`.agents/skills/pi-project-context-adaptive-handoff-threshold-review/SKILL.md`、`MEMORY.md`。
+详见 `.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/`（report/analysis/fix-note/audit）。
+
+本轮改动（用 `git diff` 看全貌）：
+- `handoff.ts`：`kneeTokens(window)` 保守拟合曲线（K=157000、Wc=450000、s=0.04）；
+  `T0 = max(min(usable - 4000, knee), baseline + keep + handoffTargetTokens)`；
+  `Threshold.bound` 取值 `adaptive | target | summarizer | tier | usable`；
+  `/auto-handoff auto` 无参数；`target` 文案为「物理下限」。
+- `tests/handoff-test.mjs`：wide `157_000` / `auto 157k (16%)` / `summarizeTokens 125_076`；
+  诚实窗口 `400K → 379_616`、`272K → 251_616`；平台 `768K → 157_001`；
+  heavy `583_924` / bound `target` / `summarizeTokens 64_000`；tier 120K 档 → `116_000`；
+  summarizer 128K 窗口 → `127_156` / bound `summarizer`；quiet fixture 用 120K usage（低于 157K 阈值）；
+  固定模式与「比例未落盘」用例保留。
+
+要核验（每条尽量给出 `文件:行`、具体数值或反例）：
+
+1. 公式不变式：任意 `W/B/K/S/A/tier` 下，
+   (a) 返回 `tokens ≥ floor` 且 `≤ usable - 4000`；
+   (b) `knee(W)` 曲线、`usable - 4000` 与 `B + K + S` 三者的交叉点（小窗口 / 重 baseline）行为是否自洽；
+       `usable - 4000 < floor` 的窗口是否都返回 undefined。
+   (c) 是否存在「阈值大于会话可能达到的 usage」或数值为负/永不触发的退化组合。
+2. 命令与配置语义：`/auto-handoff auto` 无参数（带参数告警且**不写**比例）；`--handoff-ratio auto`
+   与 `/auto-handoff 0.6` 的固定模式路径；`handoffThresholdRatio` 在自适应下完全无效是否有副作用
+   （旧配置文件里同时有 `handoffAdaptive=true` 与 ratio 时，行为变化是否需要迁移说明）。
+3. `summarizeTokens = tokens − baseline − keep` 是否在每个 cap 分支都等于真实丢弃前缀；
+   无 usage / 无阈值时的 `target {S}` 回退是否合理；`bound` 取值改动是否影响 `capSuffix` / 既有断言。
+4. 参考取值合理性：以 pi `W − 16384`、OpenAI 272K 计价档、MRCR 8-needle 实测拐点（1M 级 0.13–0.29、
+   绝对 166K–304K；人群 p25 127K / p50 157K / p75 190K）、DeepSeek V4 官方曲线与 linux.do 的 V4.1-Flash
+   自测、GPT-6 两档（256–512K 100%、512K–1M 96.3%）、Anthropic 50k 下限为参照，
+   「保守曲线 + 窗口末点取小 + 物理下限」是否自洽；K=157K / Wc=450K / s=0.04 是否有更合理的取值
+   （给出数据与理由，包括「为什么不是纯平 157K 平台」与「为什么不是回到 K=273K」）。
+5. caps 交互：summarizer cap `B + K + max(8000, A − 32768)`、tier 门槛 `> floor + 4000`、usable `U − 4000`
+   的顺序与门槛是否仍正确；自适应值/下限高于这些 caps 时状态行是否自洽。
+6. 测试鉴别力（变异矩阵）：把 `max` 改成 `min`、去掉 `max(..., baseline + keep + S)` 项、
+   把 `knee(W)` 改成 `W`（窗口末点）或固定比例 `0.25W`、固定夹取 `clamp(0.25W, 256K, 512K)`、
+   让 `auto` 静默接受参数，分别应有哪些 check 转红？是否存在恒真断言。
+7. 文档一致性：`docs/handoff.md` 纯文本公式、LaTeX、含义条目与代码是否逐项一致；
+   `docs/configuration.md`、`handoff.ts` 头部注释、review skill、MEMORY.md 是否还有旧语义残留
+   （`usable - 4000` 单独作为边界、`980k`、`492k`、`auto 250k`、`auto 256k`、`273k`、`650K`、`480k`、
+   `280_529`、`196_000`、`clamp(0.25W`、`room/2`、`usable/2`、`auto 0.4`、bound `share`）。
+8. 回归风险：1M 默认 157,000（16%），摘要调用输入 ≈125k（测试夹具 125,076）；400K/272K 诚实窗口
+   379,616/251,616；768K 平台 157,001；重 baseline（B≈500K）落到物理下限 583,924（`bound target`）。
+   请评估 tier cap / summarizer cap 是否会把大窗口重新压回小阈值（新平台已低于常见 200K 档，
+   相关测试夹具已改紧）、`handoffGuard` / force 路径是否受影响。
+9. 其他你发现的问题（含旧代码遗留）。
+
+要求：
+
+- 判定分 **blocking / important / minor**，每条给出 `文件:行` 与最小复现或反例（能给具体数值最好）。
+- 不要相信注释与 fix note 的自述；以代码 + 你自己的探针/变异为准。
+- 指出「本轮引入的新风险」与「与既有约定不一致之处」。
+- 最后给出一句话结论：能否进入发布。

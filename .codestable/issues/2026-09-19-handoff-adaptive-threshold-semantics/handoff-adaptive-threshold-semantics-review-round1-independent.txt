@@ -1,0 +1,106 @@
+## 结论摘要
+
+**Blocking：无。**
+
+## Important
+
+1. **tier cap 在低门槛时会被静默绕过**  
+   `extensions/project-context/handoff.ts:802-807`
+
+   代码仅在 `tierEdge > floor + 4000` 时应用 cap。反例：`B=0,K=20k,S=64k,W=1M`，`floor=28k`，tier edge=`32k`（恰好 `floor+4000`）。返回 `157000 (bound=adaptive)`，明显高于 `32k`，且状态行不提示 tier cap。
+
+   **修法：** 至少处理 `>=`；对 `tierEdge < floor+4000` 明确定义为 `undefined` 或牺牲 margin 返回 `floor`，不要静默跨过计价档。
+
+2. **`summarizeTokens` 不一定是实际丢弃前缀**  
+   `handoff.ts:728-729, 808-815, 1104-1147`
+
+   复现：`W=1M`、默认 `keep=20k`，单个用户消息约 `600,000` 字符（估算150k tokens），usage=`157k`。探针得到：
+
+   ```text
+   threshold=157000
+   summarizeTokens=130000
+   findCutPoint.firstKeptEntryIndex=0
+   olderMessages=空
+   ```
+
+   `runHandoff` 随后在 `handoff.ts:1135-1140` 跳过摘要。因此状态显示摘要约130k，但实际摘要量是0；超大单轮也可能反复无法 handoff。
+
+   **修法：** 用实际 cut 后的 `olderTokens` 计算显示值，或将字段明确改名为 estimated/planned；自动路径应在没有至少8k真实旧前缀时避免触发。
+
+3. **小 auxiliary summarizer 的 cap 仍可能生成不可能的请求**  
+   `handoff.ts:795-801`，测试 `tests/handoff-test.mjs:436-439`
+
+   `A=16k` 时：
+
+   ```text
+   prefixRoom=max(8000, 16000-32768)=8000
+   ```
+
+   代码仍返回阈值（默认 `B=0,K=20k` 时约28k），但摘要输入8k加上32k reserve、系统 prompt 和序列化开销，已经超过16k上下文。现有测试只验证“阈值为正”，未验证摘要请求可执行。
+
+   **修法：** 对无法容纳最小输入和输出预算的 A 返回 undefined、回退到可用模型，或实现分块；补实际 request-boundary 测试。
+
+4. **迁移/记忆文档仍有相互矛盾的旧语义**  
+   - `.agents/memory/MEMORY.md:43` 仍称 `handoffThresholdRatio` 是 adaptive 的下限；当前代码 `handoff.ts:765-768,782` 明确只在 fixed 模式使用。
+   - `.agents/memory/CONTEXT.md:7,11-16` 仍记录旧的 `O=max(S,room/2)` / ratio 公式和旧钉值。
+   - `.agents/memory/HANDOFF.md:31-34` 仍把已完成同步列为待办。
+   - `README.md:34`、`docs/README.md` 仍链接到旧的 `2026-09-18` issue，用户会看到旧公式。
+
+   **影响：** 运行时阈值虽已变更，但后续 agent/用户会被当前项目上下文和链接误导。另需明确说明旧配置中 `handoffAdaptive=true` + ratio 会静默改为 knee 语义；想要旧式比例应使用 `/auto-handoff 0.4`。
+
+5. **ratio 参数测试不具备完整变异鉴别力**  
+   `tests/handoff-test.mjs:471-479`
+
+   测试执行 `auto 0.6`，而原配置 ratio 本来就是 `0.6`。一个“仍告警但实际写入 ratio”的变异在 `/tmp/pc-threshold-mutation-survivor.wmXLnP` 中完整通过。
+
+   **修法：** 改用 `auto 0.7`，断言持久化值仍为0.6；另补 `--handoff-ratio auto` 与 `--handoff-ratio 0.6` 的 flag 测试。
+
+## Minor
+
+1. **LaTeX 未表达代码的取整**  
+   `docs/handoff.md:30,53`：纯文本公式有 `round`，LaTeX 的 `knee(W)` 没有。影响最多一个 token，但不算逐项完全一致。
+
+2. **target 文案仍可能过度承诺**  
+   `handoff.ts:1417`、`config.ts:38` 称“至少摘要64k”，但 summarizer/tier/usable cap 可以把实际摘要量降到8k或23.6k。应说明这是 cap 前的物理下限。
+
+3. **参数依据应更准确地描述为保守策略拟合**  
+   `.codestable/issues/.../handoff-adaptive-threshold-semantics-analysis.md:32-64` 的 RMSE 表只展示旧参数组；最终 `157K/450K/0.04` 是基于人群中位数和保守政策选择，并非表中重新拟合的结果。数据还混有 reasoning variants，且“166K–304K”与“p25=127K”需要说明统计口径。
+
+## 独立公式与对抗性核验
+
+对有限、经过配置校验的 `W/B/K/S/A/tier` 做了小窗口、重 baseline、tier、summarizer 组合探针：
+
+- 所有**返回的**阈值满足 `tokens >= floor`、`tokens <= usable-4000`，且 `summarizeTokens >= 8000`。
+- 默认 fixture `B=11924,K=20k,S=64k`：
+  - `usable-4000` 与 `floor` 的边界约 `W=60,308`，更小窗口返回 undefined；
+  - target 与 usable 上界交点约 `W=116,308`；
+  - knee 与 usable 上界交点约 `W=408,358`。
+- `W=1M,B=900k` 返回 `979,616`，仍不超过 usable 上界；更重 baseline 会返回 undefined。
+- 正常回归值均匹配：1M `157,000`、400K `379,616`、272K `251,616`、768K `157,001`、重 baseline `583,924`。
+- `handoffGuard` 与 force 路径仍绕过阈值计算，未发现本轮直接影响。
+
+参数取值方面，157K 比回到273K更能覆盖声明虚高的500K/1M模型；也不能使用纯平157K，否则272K/400K诚实窗口会过早触发。当前曲线数值与 owner 目标一致，但450K附近过渡很陡，450K约303.5k、500K约179.98k，这是应明确接受的保守策略，而不是平滑统计拟合结论。
+
+## Test And QA Focus
+
+已运行：
+
+- `node tests/run-all.mjs`：9/9通过。
+- `git diff --check`：通过。
+- 直接 `resolveThreshold` 边界探针、tier edge 探针、无 usage status 探针、超大单轮 cut 探针。
+- 变异测试均在 `/tmp` 副本：
+  - `/tmp/pc-threshold-mutations.apTesp`：
+    - `max→min`：14项失败；
+    - 删除 floor max 项：5项失败；
+    - `knee→W`：8项失败；
+    - `knee→0.25W`：6项失败；
+    - 固定 clamp：5项失败；
+    - auto 静默接受参数：1项失败。
+  - `/tmp/pc-threshold-mutation-survivor.wmXLnP`：ratio 写入变异完整通过，证实测试缺口。
+- 未做真实 provider/RPC handoff；这不影响确定性公式测试，但尚未覆盖真实 auxiliary context-window 拒绝行为。
+
+最终 `git status --porcelain -uall` 内容与 `/tmp/rev-v2-baseline-status.txt` 一致，仓库沙箱未写入。
+
+**修复上述 Important 项后再发布；当前不能直接进入发布。**
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,16 @@
+## Blocking
+- 无。
+
+## Important
+- 无。
+
+## Minor
+- 无。
+
+## Test And QA Focus
+- `node tests/run-all.mjs`：9/9 通过。
+- `handoff.ts:803-814`：默认 fixture 的 `floor=39,924`；`43,924-4,000` 恰等于 floor，返回 `39,924 / bound=tier / summarizeTokens=8,000`；`43,000` 则 fail-closed。
+- 120K、128K、272K 与重 baseline 均未误伤：分别得到 116K tier cap、127,156 summarizer cap、251,616 adaptive threshold，以及重 baseline 的 583,924 target threshold。
+- `tests/handoff-test.mjs:488-495`：先持久化 ratio `0.6`，执行 `auto 0.7` 后重新读取配置；任何“告警但写入 0.7”的变异都会失败。
+
+VERDICT: PASSED
