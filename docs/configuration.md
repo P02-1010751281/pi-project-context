@@ -88,7 +88,7 @@ flags 只影响当前运行；`--no-project-context` 不改项目配置。功能
 
 ## 路由与输出预算
 
-整理、沉淀、handoff 摘要默认使用会话模型。配置 `provider` 与 `model` 后使用指定路由；路由解析失败或未授权时退回会话模型，并按进程去重告警。`maxTokens` 可按 artifact token 率自适应抬高，但不超过模型上限和 `maxOutputTokens`。
+整理、沉淀、handoff 摘要默认使用会话模型。配置 `provider` 与 `model` 后使用指定路由；路由解析失败或未授权时退回会话模型，并按进程去重告警。`maxTokens` 可按 artifact token 率自适应抬高，但不超过模型上限和 `maxOutputTokens`。reasoning 模型（`reasoning: true`）会额外预留隐藏思考 token，正文预算相应收紧；若回复被输出上限截断，会自动按更高预算重试一次，仍失败则显式报告截断并保留旧 memory。
 
 pi 的 handoff 摘要使用宿主 `generateSummaryWithUsage`，其输出 reserve 不随 `maxTokens` 改变；具体预算和小 aux 模型 cap 见 [handoff 预算与恢复](handoff.md)。
 

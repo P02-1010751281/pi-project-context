@@ -1,0 +1,50 @@
+你是独立代码复审者（lane A）。工作目录是只读沙箱副本 `/tmp/pc-output-budget-review`（由 rsync 从仓库工作树整份复制，含 `.git` 与未提交改动）。
+请只读审查，不要修改任何文件；若为验证探针灵敏度而临时变异，必须在 `/tmp` 另建副本进行并说明，仓库沙箱必须保持字节不变（进入/退出 `git status --porcelain` 对照）。
+测试可运行：`node tests/run-all.mjs`（只写 /tmp 下的 mkdtemp）。
+
+背景：`pi-project-context` 是 pi coding agent 扩展（TypeScript/ESM，无构建，pi 用 jiti 直接加载 `.ts`）。本轮修复一个生产告警：
+`consolidation reply was not a usable JSON object`。已确认根因：
+1) consolidation 让模型把整份 memory+context 重写成 JSON，`fitMemoryInput` 的 `needed` 只算「正文 + 1024 JSON 余量」；
+2) reasoning 模型（`reasoning: true`）的隐藏思考 token 计入 `output`（pi-ai `Usage.reasoning` 文档：subset of output），于是思考吃掉上限，JSON 在字符串中途被截断（`stopReason: "length"`）；
+3) `completeText` 丢弃 `stopReason`/`errorMessage`：截断与畸形 JSON 混为同一句；provider 报错（空 content + `stopReason: "error"`）被 `parseConsolidated("")` 当成「纯 Markdown 记忆」，既不失败也不写日志。
+真实证据：`UniField` memory 17.9k 字符，修复前重放 `maxTokens=13198 / output=13198 / reasoning=4133 / stopReason=length / PARSE FAIL`；修复后 `maxTokens=17459 / output=13693 / reasoning=2419 / stopReason=stop`，第一次调用即写出 MEMORY.md/CONTEXT.md。
+详见 `.codestable/issues/2026-09-19-consolidation-output-budget/`（analysis/fix-note/repro）。
+
+本轮改动（用 `git diff --stat` / `git diff` 看全貌）：
+
+改动 A —— `extensions/project-context/llm.ts`
+- 新增 `completeWithMeta()`：返回 `{ text, stopReason, errorMessage, reasoningTokens }`；`stopReason === "error" | "aborted"` 时抛出
+  `model call <reason>: <errorMessage>`；`completeText()` 改为调用它（签名不变）。
+要核验：
+  (a) 各调用方（`consolidate.ts`、`autolearn.ts`、`tests/aux-model-test.mjs`）的语义是否都被正确覆盖；有没有调用方依赖「provider 错误时返回空字符串」的旧行为；
+  (b) `stopReason` 缺失（测试 mock）时是否等价于旧行为；空文本 + `stopReason: "stop"` 是否仍走「纯 Markdown」分支（不要顺带改变旧语义）；
+  (c) `response` 的字段读取（可选链/类型断言）是否会对真实 pi-ai `AssistantMessage` 误判；`reasoningTokens` 是否真的被使用（不应是死字段）。
+
+改动 B —— `extensions/project-context/consolidate.ts`
+- 新增 `reasoningReserveTokens(contentTokens, model)`：`reasoning === true` 且 content>0 时按 35% 预留，clamp `[1024, 8192]`。
+- `fitMemoryInput(memory, context, configuredMaxTokens, model, ceilingTokens, extraHeadroomTokens=0)`：
+  `needed = ceil(content) + 1024 + reasoning + extraHeadroom`；
+  `reserved = min(desiredReserve, maxTokens − MIN_CLIP_CHARS, max(1024, round(maxTokens/2)))`；`budget = maxTokens − reserved`。
+- 重试路径：解析失败且 `stopReason === "length"` 时用 `+4096` headroom 重新 fit（`usedInput`），重试 prompt 提示被截断并要求压缩；
+  两次都截断则抛 `consolidation reply was cut off by the model output limit (N tokens requested[, M spent on hidden reasoning])…`；
+  其他失败保持原有 fail-closed 文案；`clipped` 改为取 `usedInput.clipped`。
+- `autolearn.ts` 的技能输出预算加上 `reasoningReserveTokens(MAX_SKILL_BODY_CHARS, auxModel)`。
+
+要核验：
+  (a) 预算不变式：对 cap 矩阵（1024/1400/2048/8192/32768）× 混合语种密度 × `reasoning: true|false` × `extraHeadroom 0|4096`，
+      「发送正文 token + reserve ≤ maxTokens」是否恒成立；`budget` 是否可能为 0/负/把正文地板压没；`reserved` 的三项 min/max 组合是否有可达的退化分支；
+  (b) **非 reasoning 行为与 HEAD 完全一致**（可以 `git show HEAD:extensions/...` 导出旧文件到 /tmp 用同一 harness 对拍数值）；
+      特别是既有 `tests/consolidation-test.mjs` 的 budget 矩阵断言是否仍是同一口径；
+  (c) 模型上限封住（`model.maxTokens` 小）时，`extraHeadroom` 会挤压正文预算——结果是否仍然保留头尾、非空，且不会反复重试后把内容越写越少（自锁风险）；
+  (d) 重试路径的正确性：`usedInput`/`clipped` 报告是否与最后一次真实发送一致；prompt override 是否真的生效（注意这里曾有一个真实 bug：`call()` 最初忽略了 override）；
+      `call()` 的 throttle 退避、`activeConsolidation` 单飞、`written` 版本 claim、失败时 `lastOutcome` 不被回放、是否存在重复写；
+  (e) 截断判定：`stopReason: "length"` 但 JSON 完整时是否被正确接受；`stopReason` 缺失/其他值时是否走通用重试；两次失败后的错误分支是否覆盖所有路径（不要有落空的 result===undefined）；
+  (f) autolearn 的预算改动：把 `MAX_SKILL_BODY_CHARS`（字符）当 token 用是否过度保守，是否会被 `adaptiveOutputTokens` 的 model/ceiling 正确封顶；
+  (g) 新增测试的鉴别力（变异矩阵）：去掉 reasoning 预留 / 去掉 length 分支 / 恢复 `call(usedInput)` 忽略 override / 去掉 provider-error 抛出，
+      分别应有哪几条测试转红；是否存在恒真断言或与被测实现同构的重复实现。
+  (h) 文档一致性：`docs/architecture.md`、`docs/configuration.md` 的新文案是否与实现一致。
+
+其他要求：
+- 判定分 **blocking / important / minor**，每条给出 `文件:行` 与最小复现或反例（能给具体数值最好）。
+- 不要相信注释与 fix note 的自述；以代码 + 你自己的探针/变异为准。
+- 指出「本轮引入的新风险」与「与既有约定不一致之处」。

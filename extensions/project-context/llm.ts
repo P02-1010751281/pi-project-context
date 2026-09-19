@@ -5,6 +5,10 @@ import { notify } from "./project-state.ts";
 /**
  * Minimal model plumbing shared by the extension passes that ask a model for JSON.
  * Passes own their prompts, throttles and persistence; this module only talks to the model.
+ *
+ * Failure contract: a provider failure (`stopReason` "error"/"aborted") throws instead of
+ * returning empty text, so a caller that does not handle it must fail its own pass. Other stop
+ * reasons ("stop", "length", "pending", "deferred", "toolUse") return whatever text arrived.
  */
 
 export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
@@ -59,12 +63,27 @@ export function resolveAuxModel(
 	return sessionModel;
 }
 
-/** One-shot completion with the resolved auxiliary model. Callers check auth before calling. */
-export async function completeText(
+/** What a completion returned beyond its text: how it ended and what it spent. */
+export type CompletionOutcome = {
+	/** Visible reply text; hidden reasoning is not included. */
+	text: string;
+	/** Provider stop reason; "length" means the reply was cut off by the output cap. */
+	stopReason?: string;
+	errorMessage?: string;
+	/** Reasoning tokens the provider reported; they are a subset of the output cap. */
+	reasoningTokens: number;
+};
+
+/**
+ * One-shot completion with the resolved auxiliary model. Callers check auth before calling.
+ * A provider failure (`stopReason` error/aborted) throws instead of returning empty text: an
+ * empty reply must never be mistaken for "the model had nothing to say".
+ */
+export async function completeWithMeta(
 	ctx: ExtensionContext,
 	prompt: string,
 	options: { maxTokens?: number; model?: NonNullable<ExtensionContext["model"]> } = {},
-): Promise<string> {
+): Promise<CompletionOutcome> {
 	const model = options.model ?? ctx.model;
 	if (!model) throw new Error("no model selected");
 	const response = await ctx.modelRegistry.complete(
@@ -72,5 +91,34 @@ export async function completeText(
 		{ messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] },
 		{ maxTokens: options.maxTokens ?? 8192, cacheRetention: "none", sessionId: uuidv7() },
 	);
-	return extractText(response);
+	const result = response as { stopReason?: unknown; errorMessage?: unknown; usage?: { reasoning?: unknown } };
+	const stopReason = typeof result.stopReason === "string" ? result.stopReason : undefined;
+	const errorMessage = typeof result.errorMessage === "string" && result.errorMessage ? result.errorMessage : undefined;
+	const text = extractText(response);
+	if (stopReason === "error" || stopReason === "aborted") {
+		// The provider answered with a failure and no text; parsing that as Markdown would keep the
+		// previous memory and leave only a misleading "no context" trace in errors.log.
+		throw new Error(errorMessage ? `model call ${stopReason}: ${errorMessage}` : `model call ${stopReason}`);
+	}
+	if ((stopReason === "pending" || stopReason === "deferred" || stopReason === "toolUse") && text.trim() === "") {
+		// A call that never produced a final text answer has nothing to parse: treating its empty
+		// string as Markdown would silently leave the previous memory in place as "up to date".
+		throw new Error(errorMessage ? `model call ${stopReason}: ${errorMessage}` : `model call ${stopReason} without text`);
+	}
+	const reasoning = result.usage?.reasoning;
+	return {
+		text,
+		stopReason,
+		errorMessage,
+		reasoningTokens: typeof reasoning === "number" && Number.isFinite(reasoning) && reasoning > 0 ? reasoning : 0,
+	};
+}
+
+/** The visible text of one model call; see completeWithMeta for the failure semantics. */
+export async function completeText(
+	ctx: ExtensionContext,
+	prompt: string,
+	options: { maxTokens?: number; model?: NonNullable<ExtensionContext["model"]> } = {},
+): Promise<string> {
+	return (await completeWithMeta(ctx, prompt, options)).text;
 }

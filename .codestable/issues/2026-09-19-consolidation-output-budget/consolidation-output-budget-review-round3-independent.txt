@@ -1,0 +1,22 @@
+## blocking
+
+无。
+
+## important
+
+无。I-4、I-2 均已关闭。
+
+- `extensions/project-context/llm.ts:103-106` 明确覆盖 `pending`、`deferred`、`toolUse`；空文本抛错且不会重试。
+- 非终态带文本仍返回文本，继续按 Markdown/JSON 解析。
+- `stop` 空文本仍走旧的 plain Markdown 路径；`memoryChanged` 要求至少 40 字，因此报告为 unchanged，不写 `MEMORY.md`。
+- `docs/architecture.md:77` 与 `fitMemoryInput:304-308` 一致：请求上限可能不变，但 reserve 增大时正文预算可保持或减少；未发现遗漏情形。
+
+## minor
+
+无。
+
+## 变异与测试
+
+- `node tests/consolidation-test.mjs`：全部通过。
+- provider-error 不抛变异：2 条断言转红。
+- reserve 恒 0 变异：本地精确替换 `reasoningReserveTokens` 后 9 条转红（而非题述预期的 10 条），但矩阵和 retry 鉴别力仍有效；这属于预期数字差异，不构成实现缺陷。

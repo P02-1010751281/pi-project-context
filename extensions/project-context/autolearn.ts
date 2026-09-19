@@ -3,7 +3,7 @@ import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
-import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens } from "./consolidate.ts";
+import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "./consolidate.ts";
 import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
@@ -424,10 +424,11 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			];
 
 			// A skill body can be as large as MAX_SKILL_BODY_CHARS; ask for enough output room (1
-			// token per char worst case), bounded by the model's own limit and the configured ceiling.
+			// token per char worst case) plus the model's hidden reasoning share, bounded by its own
+			// limit and the configured ceiling.
 			const maxTokens = adaptiveOutputTokens(
 				config.maxTokens,
-				MAX_SKILL_BODY_CHARS + REPLY_OUTPUT_MARGIN_TOKENS,
+				MAX_SKILL_BODY_CHARS + REPLY_OUTPUT_MARGIN_TOKENS + reasoningReserveTokens(MAX_SKILL_BODY_CHARS, auxModel),
 				auxModel,
 				config.maxOutputTokens,
 			);

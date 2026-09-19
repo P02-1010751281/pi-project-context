@@ -1,0 +1,28 @@
+你是独立代码复审者（lane A），这是**第二轮**复审。第一轮报告见仓库
+`.codestable/issues/2026-09-19-consolidation-output-budget/consolidation-output-budget-review-round1-independent.txt`
+（无 blocking；important I-1/I-2/I-3；minor M-1..M-5）。
+
+工作目录是更新后的只读沙箱 `/tmp/pc-output-budget-review2`（rsync 自当前工作树，未提交改动在内；`.agents/memory/session-logs`、
+`skill-candidates` 已排除，故 `git status` 中该路径显示为删除属预期）。请只读审查，不要修改文件；变异请在 `/tmp` 另建副本并还原。
+
+第一轮后的处置（请独立核验，不要相信本节自述）：
+
+- **I-1（`clipped` 改为末次发送口径）**：结论是「首轮 clipped 且重试未 clipped」不可达，且新口径能覆盖反向的
+  「首轮未 clipped、重试 clipped」（旧口径会漏报）。请自行用 `fitMemoryInput`（含 `extraHeadroomTokens`）做网格验证这两个方向；
+  我们已加入探针 `a truncated retry can clip more than the first attempt (and the flag follows the sent prompt)`
+  （`tests/consolidation-test.mjs`，例：memory `"记".repeat(20000)`、context `"a".repeat(8000)`、model `{maxTokens:32768,reasoning:true}`）。
+- **I-2（capped 模型重试预算不变）**：不改行为，改文档口径（`docs/architecture.md`：预算被上限封住时重试预算不变、由提示词要求压缩）。
+  请判断该描述是否与 `fitMemoryInput` 的 capped 分支完全一致，是否还有第三种被遗漏的情形。
+- **I-3（reasoning 预算矩阵）**：`tests/consolidation-test.mjs` 的 budget 矩阵现在对 `reasoning:false|true` 两轮循环，
+  期望 reserve 由常量（1024 + `min(8192, max(1024, round(content*0.35)))`，再 `min(., cap-400, max(1024, round(cap/2)))`）独立计算，
+  **不再调用被测的 `reasoningReserveTokens`**。变异 m1（reserve 恒 0）应有 10 条转红，请复核该数字与断言鉴别力。
+- **M-5**：新增 `a complete JSON that stopped at the cap is written without a retry`（`stopReason: "length"` 但 JSON 完整 → 接受、不重试）。
+- **M-1/M-4**：`llm.ts` 模块注释写明「provider error/aborted 抛出，其他 stop reason 返回已到文本」的契约。
+- **M-2**：认为 autolearn 的 reserve 只抬高请求上限（该 pass 没有输入裁剪），不挤压正文预算，故不改。
+- **M-3**：`errorMessage` 为空时错误信息退化为 `model call error`，接受。
+
+请核验：
+1. 上述处置是否真正落地、是否引入回归（尤其 I-3 的期望公式与实现语义、矩阵在 5 档 cap × 8 种密度 × 2 模式下的不变式）；
+2. 第一轮的变异矩阵在新测试下是否仍成立（可自行复跑 m1..m4，并补充你认为关键的变异）；
+3. 是否还有未覆盖的失败路径（例如 `parseConsolidated` 在 `stopReason` 缺失/`"pending"`/`"toolUse"` 时的行为、capped+reasoning 双截断后的错误路径）；
+4. 输出：**blocking / important / minor** 分级 + `文件:行` + 最小复现；若判定第一轮 findings 已关闭，请明确写出。

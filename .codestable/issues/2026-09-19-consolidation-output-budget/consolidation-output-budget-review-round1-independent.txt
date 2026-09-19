@@ -1,0 +1,113 @@
+Warning: Model "inclusionai/ling-3.0-flash-sante:free" not found for provider "commandcode". Using custom model id.
+Now I have all the data I need. Here is the full review.
+
+---
+
+# Code Review — Lane A: Consolidation Output Budget Fix
+
+## 回归核验（先确认旧路径数值一致性）
+
+我在 /tmp 用同一 harness 验证了 `fitMemoryInput` 非 reasoning 路径与 HEAD 旧公式逐值等价：
+
+| cap | 旧 reserved | 新 reserved (无 reasoning) | 匹配 |
+|-----|------------|--------------------------|------|
+| 1024 | 624 | 624 | ✓ |
+| 1400 | 1000 | 1000 | ✓ |
+| 2048 | 1024 | 1024 | ✓ |
+| 8192 | 1024 | 1024 | ✓ |
+| 32768 | 1024 | 1024 | ✓ |
+
+`node tests/run-all.mjs` → 9/9 通过。仓库沙箱 `git status --porcelain` 进入/退出一致，无字节改动。
+
+---
+
+## Blocking（阻断发布）
+
+**无。** 没有发现会导致数据损坏或静默丢记忆的阻塞问题。`parseConsolidated` 仍 fail-closed；provider 错误不再被吞；两次截断后明确报错而非写入畸形 JSON。
+
+---
+
+## Important（重要）
+
+### I-1 · `clipped` 语义从"首次发送"改为"末次发送" — 影响可观测性
+`consolidate.ts:725` 用 `usedInput.clipped`（末次尝试）替代了原来的 `fitted.clipped`（首次尝试）。若首次截断但重试因 +4096 headroom 放宽了裁剪，重试的 `clipped=false`，结果会报告"未裁剪"，而首次尝试实际裁剪了。**这与 docs/architecture.md "裁剪即 lossy rewrite" 的叙事不一致**——用户看到 "updated" 却不知道首轮已裁剪过。
+
+最小反例：`memory=20000 CJK chars, cap=8192, reasoning=true` → 首轮 `clipped=true`，重试 `usedInput.clipped` 仍为 `true`（因为 cap 封住，预算不变）。但若模型 metadata maxTokens 较大（如 32768），重试 budget 变大可能让 `clipped` 翻成 `false`，此时 `consolidateReply` 不显示 "clipped" 通知。
+
+**建议**：保留 `fitted.clipped`（首次）或改为 `clipped: fitted.clipped || usedInput.clipped`（任一裁剪即标记）。
+
+### I-2 · capped 模型的重试实质无效
+`consolidate.ts:693-694`：截断重试调用 `fitMemoryInput(..., RETRY_OUTPUT_HEADROOM_TOKENS)`。当 `model.maxTokens` 封住时（如 cap=8192，reasoningReserve=7000），`adaptiveOutputTokens` 无法抬升 maxTokens，`desiredReserve` 增大但被 `max(1024, round(maxTokens/2))=4096` 项截断，`reserved` 和 `budget` 与首轮完全相同（均为 4096）。**重试发送的正文与首轮等长、预算相同，唯一区别是提示词加了 "condense" 文案**。
+
+最小反例：`fitMemoryInput("记".repeat(20000), "", 8192, {maxTokens:8192, reasoning:true})` → 首轮与重试的 `maxTokens=8192, budget=4096, text.length=4096`。
+
+**建议**：在 capped 路径下，显式将 prompt 标记为 "模型上限封住，本次仅重试压缩文案"；或在文档中说明此限制。当前代码会给消费者一种"已加大预算重试"的错误印象。
+
+### I-3 · reasoning 预算矩阵测试口径与实现不一致
+`tests/consolidation-test.mjs` 中的 budget 矩阵断言仍用旧公式计算 `reserved`：
+```js
+const reserved = Math.min(1024, cap, Math.max(64, cap - 400));
+```
+这恰好与新实现非 reasoning 路径等价，所以非 reasoning 断言正确。**但 reasoning 路径的预算不变式无任何矩阵级覆盖**——新增的 reasoning 测试只验证了 3 个定点用例（6000/20000/1），没有验证 `tokens + reasoningReserve + REPLY_OUTPUT_MARGIN_TOKENS ≤ maxTokens` 在混合密度矩阵上的恒成立性。
+
+**建议**：将 reasoning 矩阵加入循环（`{ maxTokens: cap, reasoning: true }`），用新公式 `reserved = min(1024+rr, cap-400, max(1024, round(cap/2)))` 作为预期值做断言。
+
+---
+
+## Minor（次要）
+
+### M-1 · `llm.ts:90` 类型断言 + 字段读取的防御性
+```ts
+const result = response as { stopReason?: unknown; ... };
+```
+对真实 `AssistantMessage` 而言 `stopReason` 是必填 `StopReason` 字符串，此处断言为 `?` 会丢失类型精度。`completeWithMeta` 中 `stopReason === "error" | "aborted"` 之外的分支（`"pending"/"deferred"/"toolUse"`）会继续走文本解析——目前可接受，但未来若 pi-ai 在这些状态下也返回空 content，会重复 I-3 的旧问题。建议在注释中记录此边界。
+
+### M-2 · `autolearn.ts` 把字符数当 token 数传入 `reasoningReserveTokens`
+`autolearn.ts:431` 传入 `MAX_SKILL_BODY_CHARS=20000`（字符）而非 token 估算。对 ASCII 文本（rate≈0.4），实际 token 数仅约 8000，但 reserve 按 20000×0.35=7000 计算，**高估约 4200 token**。对 CJK 文本则准确。`adaptiveOutputTokens` 会 cap 在模型上限，所以高估不会导致超限请求，但会**过度挤压正文预算**（例如 ASCII 技能正文可能本可用 8192 却只分配到更少）。
+
+### M-3 · `completeWithMeta` 空 `errorMessage` 时丢失 provider 原文
+`llm.ts:89-90`：`errorMessage` 为空串时视为 undefined，抛出的信息只有 `model call error`，不含 provider 详情。对话中 `402: Insufficient Balance` 场景会退化为 "model call error"——虽仍 fail-closed，但可观测性下降。
+
+### M-4 · `completeText` 契约变更未全局审计
+`llm.ts` 现在对 `stopReason: error/aborted` 抛异常，而非返回空串。`autolearn.ts` 已用 try/catch 包裹，**但任何未来新增的 `completeText` 调用方若未 catch，会从 unhandled rejection 崩溃**。建议在 `completeText` JSDoc 或 `llm.ts` 模块注释中显式声明此契约变更。
+
+### M-5 · `parseConsolidated` 未因 `stopReason: length` 做特殊处理
+`consolidate.ts:697` 在重试前检查 `completion.stopReason === "length"`，但 `parseConsolidated(completion.text)` 本身对"JSON 完整但 stopReason 为 length"（即模型恰好在 JSON 末尾触达上限）的情况仍返回有效结果——这是正确行为（接受 JSON）。但**没有测试覆盖此边界**：第一次 `stopReason: length` 但 JSON 完整的情况应被接受而非重试。
+
+---
+
+## 变异矩阵验证（回答 G）
+
+| 变异 | 预期转红的测试 |
+|------|----------------|
+| 去掉 `reasoningReserveTokens`（恒返回 0） | "a reasoning model asks for extra output room", "the reasoning reserve stays bounded" |
+| 去掉 `stopReason === "length"` 分支（强制走通用重试） | "a truncated reply is retried once with a larger budget"（budgets[1] > budgets[0] 不成立）, "a persistent truncation names the output limit" |
+| 恢复 `call(usedInput)` 忽略 promptOverride（始终传 prompt 而非 retryPrompt） | "the truncated retry asks the model to condense" |
+| 去掉 provider-error 抛出（改回返回空文本） | "a provider error is a failure, not an empty memory", "a provider error leaves MEMORY.md untouched", "the provider message reaches errors.log", "an empty provider error is not read as a missing context" |
+
+**恒真断言检查**：budget 矩阵的 `tokens + reserved <= cap + 0.001` 对非 reasoning 路径非恒真（实现与预期公式一致时可能因浮点误差触红）；reasoning 路径的 `reasoningFit.maxTokens > plainFit.maxTokens` 在 `reasoningReserveTokens` 返回 0 时为恒假，可作为回归探针。
+
+**同构重复实现**：测试中 `reserved` 的旧公式计算与实现的新公式在非 reasoning 路径逐值等价——这不是断言与实现同构（实现改了公式，测试用旧公式验证等价性），但缺少 reasoning 版本的独立断言，构成 I-3 的问题。
+
+---
+
+## 文档一致性（H）
+
+`docs/architecture.md` 与 `docs/configuration.md` 的变更与实现一致：
+- "35% 预留 [1024–8192]" ✓ 与 `REASONING_RESERVE_RATIO=0.35` / clamp 一致
+- "+4096 token 重试" ✓ 与 `RETRY_OUTPUT_HEADROOM_TOKENS` 一致
+- "模型上限封住时只发送更少正文并要求压缩" ✓ 与 capped 路径行为一致（虽然 I-2 指出这实际上是"同样的正文+同样的预算+文案提示"）
+- provider 错误不再当 Markdown 记忆 ✓ 与 `completeWithMeta` 抛出一致
+
+---
+
+## 本轮引入的新风险
+
+1. **`completeWithMeta` 抛异常语义扩散**：autolearn 已处理，但任何新增调用方若忘记 catch，行为从"静默返回空串→parseConsolidated 兜底"变为"未捕获异常→进程崩溃"。
+2. **capped 模型截断后重试无效**：I-2。真实场景中若用户配置了小上限模型 + reasoning 模式，首次截断后重试不会改善预算，仅改变提示词——失败速度与修复前相同，只是错误信息更精确。
+3. **`clipped` 语义漂移**：I-1 可能让 UI/通知层漏报 "content was shortened" 警告。
+
+## 与既有约定不一致之处
+
+1. **`completeText` 不再 fail-open**：旧约定是"provider 失败→空串→parseConsolidated 兜底→保持旧 memory"，新约定是"provider 失败→抛异常→fail closed"。这是有意变更，但应在模块级文档中明示。
+2. **`clipped` 报告口径从"首轮"改为"末次"**：与 `autolearn.ts` / `consolidateReply` 消费 `clipped` 的既有理解不一致（可能预期始终基于首次 prompt）。

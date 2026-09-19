@@ -1,0 +1,60 @@
+consolidation 输出预算问题：复现证据（2026-09-19，只读沙箱）
+==============================================================================
+
+环境
+----
+- 真实记忆：UniField .agents/memory/MEMORY.md（29568 字节 / 17918 字符，CJK 混合）
+- 真实会话：/home/user/.pi/agent/sessions/--run-media-...-UniField--/2026-09-18T13-02-08-249Z_01a0b49c-....jsonl
+  （复制到沙箱并把 cwd 重写为沙箱路径，--fork 加载；project-context.json: forceDedupeMs=0）
+- 模型：commandcode/inclusionai/ling-3.0-flash-sante:free（reasoning: true，maxTokens 65536）
+- 探针：复制扩展源码到 /tmp，仅给 llm.ts 打「把每个模型响应写 replies.jsonl」的 dump 补丁，
+  不经 committed 代码路径写入仓库。
+
+真实生产失败（errors.log 摘录）
+-------------------------------
+/run/media/.../Projects/UniField/.agents/memory/errors.log
+
+2026-09-19T06:44:33.659Z [memory] Error: consolidation reply was not a usable JSON object
+--- raw reply ---
+{
+"memory_markdown": "# Project Memory\n\n## 项目定位与架构\n\nUniField 是频域..."
+[...reply omitted after 4000 of 14008 chars...]
+    at .../consolidate.ts:686:13          ← v0.1.8：解析失败重试之后的最终 throw
+
+/home/user/.pi/.agents/memory/errors.log
+
+2026-09-19T06:02:19.682Z / 06:11:47.867Z / 06:23:48.518Z
+Error: consolidation reply was not a usable JSON object（raw 分别 12954 / 4738 / 7779 字符）
+    at .../consolidate.ts:627:13          ← v0.1.7：无重试的旧路径
+
+修复前重放（HEAD 代码，同一 memory/模型/会话）
+------------------------------------------------
+reply 1: maxTokens=13198 output=13198 reasoning=4133 stopReason=length
+         rawChars=16828；尾部 "…支持 `--check"（字符串中途截断）→ PARSE FAIL
+reply 2: maxTokens=13427 output=13427 reasoning=2111 stopReason=length → PARSE FAIL
+         （这是 v0.1.8 的同预算重试，仍然撞上限）
+
+注意：output == maxTokens 恰好相等；reasoning 是 output 的子集（pi-ai Usage 文档）。
+
+修复后重放（本 issue 改动，同一输入）
+---------------------------------------
+reply 1: maxTokens=17459 output=13693 reasoning=2419 stopReason=stop
+         rawChars=20344；完整 JSON（含 fence）
+         → MEMORY.md（31364 字节）、CONTEXT.md、memory.jsonl、memory backup 全部写出；无 errors.log；
+           第一次调用即成功，没有触发重试。
+
+provider 报错被吞（修复前，同一沙箱）
+---------------------------------------
+- commandcode 400 insufficient credits → 空 content、stopReason=error、errorMessage=...
+- deepseek 402 Insufficient Balance → 同上
+修复前表现：parseConsolidated("") 走「纯 Markdown」→ 报告 unchanged，
+errors.log 只有 "the consolidation reply carried no context section"（误导）。
+修复后表现：completeWithMeta 直接抛出 `model call error: 402: Insufficient Balance`，
+失败路径写 errors.log，不把空回复当记忆。
+
+复现命令（摘要）
+----------------
+1. mkdir /tmp/pc-rootcause/ext-after && cp -r extensions/project-context/. /tmp/pc-rootcause/ext-after/
+2. 给 /tmp/pc-rootcause/ext-after/llm.ts 的 completeWithMeta 打 dump 补丁（PC_DUMP_DIR）
+3. python3 /tmp/pc-rootcause/fork.py unifield   # fork 真实 session + --model <free reasoning model>
+4. 读 <sandbox>/replies.jsonl 的 stopReason/output/reasoning，与 errors.log 对照

@@ -2,7 +2,7 @@ import { convertToLlm, serializeConversation, sessionEntryToContextMessages } fr
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { configFile, getConfig, runIsDisabled } from "./config.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
-import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
+import { completeWithMeta, parseJsonObject, resolveAuxModel, type CompletionOutcome } from "./llm.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	MAX_CONVERSATION_CHARS,
@@ -158,6 +158,14 @@ const ASCII_TOKENS_PER_CHAR = 0.4;
 const ESCAPE_TOKENS_PER_CHAR = 0.2;
 /** Output room reserved for the JSON scaffolding and the rewritten context. */
 export const REPLY_OUTPUT_MARGIN_TOKENS = 1024;
+/** Share of the content tokens a reasoning model may spend on hidden thinking before its JSON. */
+const REASONING_RESERVE_RATIO = 0.35;
+/** Floor for the reasoning reserve, so even a small memory gets thinking room. */
+const MIN_REASONING_RESERVE_TOKENS = 1024;
+/** Ceiling for the reasoning reserve: above this, condensing the memory is the better trade. */
+const MAX_REASONING_RESERVE_TOKENS = 8192;
+/** Extra output room one truncated retry may ask for on top of the fitted budget. */
+const RETRY_OUTPUT_HEADROOM_TOKENS = 4096;
 /** Chars kept per artifact when the budget allows; the split also reserves it as a token floor. */
 const MIN_CLIP_CHARS = 400;
 /** Hard ceiling for an adaptive output cap when the model reports no limit of its own. */
@@ -181,6 +189,16 @@ export function replyTokenRate(text: string): number {
 	}
 	// Rate per UTF-16 unit, so `text.length * rate` stays the token estimate.
 	return tokens / text.length;
+}
+
+/**
+ * Extra output tokens a reasoning model needs beyond the text it must re-emit. Providers report
+ * those thinking tokens as a subset of the output, so a budget that only pays for the visible
+ * memory and context gets its JSON cut off mid-string (`stopReason: "length"`).
+ */
+export function reasoningReserveTokens(contentTokens: number, model: { reasoning?: boolean }): number {
+	if (model.reasoning !== true || contentTokens <= 0) return 0;
+	return Math.min(MAX_REASONING_RESERVE_TOKENS, Math.max(MIN_REASONING_RESERVE_TOKENS, Math.round(contentTokens * REASONING_RESERVE_RATIO)));
 }
 
 /** Clip from the original text to a char limit, keeping the original when it already fits. */
@@ -269,18 +287,26 @@ export function fitMemoryInput(
 	memory: string,
 	context: string,
 	configuredMaxTokens: number,
-	model: { maxTokens?: number },
+	model: { maxTokens?: number; reasoning?: boolean },
 	ceilingTokens: number = MAX_ADAPTIVE_OUTPUT_TOKENS,
+	extraHeadroomTokens = 0,
 ): MemoryInput {
 	const memoryRate = replyTokenRate(memory);
 	const contextRate = replyTokenRate(context);
-	const needed = Math.ceil(memory.length * memoryRate + context.length * contextRate) + REPLY_OUTPUT_MARGIN_TOKENS;
+	const contentTokens = memory.length * memoryRate + context.length * contextRate;
+	// A reasoning model emits hidden thinking before its JSON, and those tokens count against the
+	// same output cap: without room for them the reply is cut mid-string even though the content
+	// itself would fit. A retry after a truncation may ask for extra headroom on top.
+	const reasoningReserve = reasoningReserveTokens(contentTokens, model);
+	const needed = Math.ceil(contentTokens) + REPLY_OUTPUT_MARGIN_TOKENS + reasoningReserve + extraHeadroomTokens;
 	const maxTokens = adaptiveOutputTokens(configuredMaxTokens, needed, model, ceilingTokens);
-	// Keep a JSON-scaffolding margin, with a small absolute floor so a tiny cap cannot spend
-	// every token on content and then truncate the reply's own braces and keys.
-	const reserved = Math.min(REPLY_OUTPUT_MARGIN_TOKENS, maxTokens, Math.max(64, maxTokens - MIN_CLIP_CHARS));
+	// What the visible content must not spend: the JSON-scaffolding margin, the reasoning room and
+	// any retry headroom. The reserve never eats the clip floor, and a capped model keeps at least
+	// half its cap for content so a clipped rewrite can still say something.
+	const desiredReserve = REPLY_OUTPUT_MARGIN_TOKENS + reasoningReserve + extraHeadroomTokens;
+	const reserved = Math.min(desiredReserve, Math.max(0, maxTokens - MIN_CLIP_CHARS), Math.max(REPLY_OUTPUT_MARGIN_TOKENS, Math.round(maxTokens * 0.5)));
 	const budget = Math.max(0, maxTokens - reserved);
-	if (memory.length * memoryRate + context.length * contextRate <= budget) {
+	if (contentTokens <= budget) {
 		return { text: memory, contextText: context, maxTokens, clipped: false };
 	}
 	// Over budget: each artifact keeps a floor in tokens and the rest follows its measured need, so
@@ -655,39 +681,56 @@ export async function consolidateProjectState(
 			await logError(projectRoot, "memory", `memory journal has ${existing.damaged} unusable line(s); they were skipped`);
 		}
 		const existingContext = (await readOptional(contextFile(projectRoot))).slice(0, MAX_CONTEXT_CHARS);
+		const conversation = conversationText(ctx.sessionManager.buildContextEntries());
 		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens);
-		const prompt = buildPrompt(projectRoot, fitted, conversationText(ctx.sessionManager.buildContextEntries()));
 
-		let raw: string;
-		try {
-			raw = await completeText(ctx, prompt, { model: auxModel, maxTokens: fitted.maxTokens });
-		} catch (error) {
-			// Record the attempt so a persistent failure backs off instead of retrying on every settle.
-			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-			throw error;
-		}
-		let result = parseConsolidated(raw);
-		if (!result) {
-			// Providers occasionally return a transient fence/prose/truncated-shape response even when
-			// the same request can complete on the next call. Retry once with a short contract reminder;
-			// a second failure still fails closed and never stores raw model output as memory.
-			const retryPrompt = `${prompt}\n\nYour previous response was not a usable JSON object. Retry this same consolidation now. Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
+		// Record a failed attempt so a persistent failure backs off instead of retrying on every settle.
+		const call = async (input: MemoryInput, promptOverride?: string): Promise<CompletionOutcome> => {
 			try {
-				raw = await completeText(ctx, retryPrompt, { model: auxModel, maxTokens: fitted.maxTokens });
+				return await completeWithMeta(ctx, promptOverride ?? buildPrompt(projectRoot, input, conversation), { model: auxModel, maxTokens: input.maxTokens });
 			} catch (error) {
 				throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 				throw error;
 			}
-			result = parseConsolidated(raw);
+		};
+
+		let usedInput = fitted;
+		let completion = await call(usedInput);
+		let result = parseConsolidated(completion.text);
+		if (!result) {
+			// Providers occasionally return a transient fence/prose/truncated-shape response even when
+			// the same request can complete on the next call. A reply cut off at the output cap is retried
+			// with extra headroom: the request cap grows when the model allows it, and when the cap is
+			// already binding the reserve grows instead, so less content is re-emitted; either way the
+			// reminder asks the model to condense. Anything else keeps the same budget with a strict
+			// reminder. A second failure still fails closed and never stores raw model output as memory.
+			const truncated = completion.stopReason === "length";
+			usedInput = truncated
+				? fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens, RETRY_OUTPUT_HEADROOM_TOKENS)
+				: fitted;
+			const reminder = truncated
+				? "Your previous response was cut off by the output limit. Retry this same consolidation now; condense the memory and context so the complete JSON object fits in this response."
+				: "Your previous response was not a usable JSON object. Retry this same consolidation now.";
+			const retryPrompt = `${buildPrompt(projectRoot, usedInput, conversation)}\n\n${reminder} Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
+			completion = await call(usedInput, retryPrompt);
+			result = parseConsolidated(completion.text);
+		}
+		if (!result && completion.stopReason === "length") {
+			// Two attempts both hit the cap: name the real cause instead of the generic parse message.
+			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
+			const reasoningNote = completion.reasoningTokens > 0 ? `, ${completion.reasoningTokens} spent on hidden reasoning` : "";
+			throw new Error(`consolidation reply was cut off by the model output limit (${usedInput.maxTokens} tokens requested${reasoningNote}); raise maxOutputTokens or trim MEMORY.md\n${replyHead(completion.text)}`);
 		}
 		if (!result) {
 			// Back off like any other failed pass, but never store the raw JSON as memory.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(raw)}`);
+			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(completion.text)}`);
 		}
 		const version = (nextVersion += 1);
 		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-		const outcome: ConsolidateOutcome = { result, version, clipped: fitted.clipped };
+		// `clipped` describes the prompt the writing reply actually saw: a truncated retry may have
+		// sent less content than the first attempt, and the callers report that as a lossy rewrite.
+		const outcome: ConsolidateOutcome = { result, version, clipped: usedInput.clipped };
 		lastOutcome.set(projectRoot, { version, at: Date.now(), outcome });
 		return outcome;
 	})().finally(() => {

@@ -143,6 +143,178 @@ try {
 		}
 	}
 
+	console.log("\n=== a reply cut off at the output cap is retried with more room ===");
+	{
+		const capTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-cap-retry-"));
+		try {
+			await mkdir(path.join(capTmp, ".agents/memory"), { recursive: true });
+			// Large enough that the fitted budget is driven by the memory, not by the 8192 default.
+			// Keep it multi-line: whole-line truncation drops an oversized single line entirely.
+			await writeFile(path.join(capTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- old.\n" + ("x".repeat(200) + "\n").repeat(200));
+			let calls = 0;
+			const budgets = [];
+			const prompts = [];
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: capTmp });
+			await factory(pi);
+			const ctx = makeCtx(capTmp, {
+				model: { provider: "test", id: "cap-retry", maxTokens: 65536 },
+				sessionManager: makeSessionManager([messageEntry("r1", "user", "truncated retry", "2026-09-12T10:00:00.000Z")], "cap-retry-session"),
+			});
+			ctx.modelRegistry.complete = async (_model, context, options) => {
+				calls += 1;
+				budgets.push(options?.maxTokens);
+				prompts.push(context.messages[0].content[0].text);
+				if (calls === 1) return { content: [{ type: "text", text: '{"memory_markdown":"# Project Memory\\n\\n- cut' }], stopReason: "length" };
+				return {
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- recovered after the cap.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+					stopReason: "stop",
+				};
+			};
+			await runHandlers(pi, "session_shutdown", ctx);
+			const memory = await readFile(path.join(capTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const errors = await readFile(path.join(capTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("a truncated reply is retried once with a larger budget", calls === 2 && budgets[1] > budgets[0]);
+			check("the truncated retry asks the model to condense", prompts[1].includes("cut off by the output limit") && prompts[1].includes("condense"));
+			check("the retried pass writes the complete memory", memory.includes("recovered after the cap."));
+			check("a recovered truncation is not logged as a failure", !errors.includes("not a usable JSON object") && !errors.includes("output limit"));
+		} finally {
+			await rm(capTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a persistent truncation names the output limit ===");
+	{
+		const hardTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-cap-hard-"));
+		try {
+			await mkdir(path.join(hardTmp, ".agents/memory"), { recursive: true });
+			const previous = "# Project Memory\n\n## Project\n- previous memory.\n";
+			await writeFile(path.join(hardTmp, ".agents/memory/MEMORY.md"), previous);
+			let calls = 0;
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: hardTmp });
+			await factory(pi);
+			const ctx = makeCtx(hardTmp, {
+				model: { provider: "test", id: "cap-hard", maxTokens: 65536 },
+				sessionManager: makeSessionManager([messageEntry("h1", "user", "always truncated", "2026-09-12T10:00:00.000Z")], "cap-hard-session"),
+			});
+			ctx.modelRegistry.complete = async () => {
+				calls += 1;
+				return { content: [{ type: "text", text: '{"memory_markdown":"# Project Memory\\n\\n- cut' }], stopReason: "length" };
+			};
+			await runHandlers(pi, "session_shutdown", ctx);
+			const memory = await readFile(path.join(hardTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const errors = await readFile(path.join(hardTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("a persistent truncation gets only one retry", calls === 2);
+			check("a persistent truncation names the output limit", errors.includes("cut off by the model output limit"));
+			check("a persistent truncation leaves MEMORY.md untouched", memory === previous);
+		} finally {
+			await rm(hardTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a complete reply that stopped at the cap is accepted ===");
+	{
+		const okTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-cap-complete-"));
+		try {
+			await mkdir(path.join(okTmp, ".agents/memory"), { recursive: true });
+			await writeFile(path.join(okTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- old.\n");
+			let calls = 0;
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: okTmp });
+			await factory(pi);
+			const ctx = makeCtx(okTmp, {
+				model: { provider: "test", id: "cap-complete", maxTokens: 65536 },
+				sessionManager: makeSessionManager([messageEntry("c1", "user", "complete at cap", "2026-09-12T10:00:00.000Z")], "cap-complete-session"),
+			});
+			ctx.modelRegistry.complete = async () => {
+				calls += 1;
+				return {
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- complete at the cap.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+					stopReason: "length",
+				};
+			};
+			await runHandlers(pi, "session_shutdown", ctx);
+			const memory = await readFile(path.join(okTmp, ".agents/memory/MEMORY.md"), "utf8");
+			check("a complete JSON that stopped at the cap is written without a retry", calls === 1 && memory.includes("complete at the cap."));
+		} finally {
+			await rm(okTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a provider error is a failure, not an empty memory ===");
+	{
+		const errTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-provider-error-"));
+		try {
+			await mkdir(path.join(errTmp, ".agents/memory"), { recursive: true });
+			const previous = "# Project Memory\n\n## Project\n- previous memory.\n";
+			await writeFile(path.join(errTmp, ".agents/memory/MEMORY.md"), previous);
+			await writeFile(path.join(errTmp, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\nkept context.\n");
+			let calls = 0;
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: errTmp });
+			await factory(pi);
+			const ctx = makeCtx(errTmp, {
+				model: { provider: "test", id: "provider-error" },
+				sessionManager: makeSessionManager([messageEntry("e1", "user", "provider error", "2026-09-12T10:00:00.000Z")], "provider-error-session"),
+			});
+			ctx.modelRegistry.complete = async () => {
+				calls += 1;
+				return { content: [], stopReason: "error", errorMessage: "402: Insufficient Balance" };
+			};
+			await runHandlers(pi, "session_shutdown", ctx);
+			const memory = await readFile(path.join(errTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const errors = await readFile(path.join(errTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("a provider error is not parsed and not retried", calls === 1);
+			check("a provider error leaves MEMORY.md untouched", memory === previous);
+			check("the provider message reaches errors.log", errors.includes("model call error: 402: Insufficient Balance"));
+			check("an empty provider error is not read as a missing context", !errors.includes("carried no context section"));
+		} finally {
+			await rm(errTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== a call that never finished is a failure, not an empty memory ===");
+	{
+		const pendingTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-pending-"));
+		try {
+			await mkdir(path.join(pendingTmp, ".agents/memory"), { recursive: true });
+			const previous = "# Project Memory\n\n## Project\n- previous memory.\n";
+			await writeFile(path.join(pendingTmp, ".agents/memory/MEMORY.md"), previous);
+			let calls = 0;
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: pendingTmp });
+			await factory(pi);
+			const ctx = makeCtx(pendingTmp, {
+				model: { provider: "test", id: "pending" },
+				sessionManager: makeSessionManager([messageEntry("p1", "user", "no answer", "2026-09-12T10:00:00.000Z")], "pending-session"),
+			});
+			ctx.modelRegistry.complete = async () => {
+				calls += 1;
+				return { content: [], stopReason: "toolUse" };
+			};
+			await runHandlers(pi, "session_shutdown", ctx);
+			const memory = await readFile(path.join(pendingTmp, ".agents/memory/MEMORY.md"), "utf8");
+			const errors = await readFile(path.join(pendingTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check("a non-final stop reason fails the pass without a retry", calls === 1 && memory === previous);
+			check("a non-final stop reason is named in errors.log", errors.includes("model call toolUse without text"));
+		} finally {
+			await rm(pendingTmp, { recursive: true, force: true });
+		}
+	}
+
+	console.log("\n=== reasoning models reserve output room for hidden thinking ===");
+	{
+		const { fitMemoryInput, reasoningReserveTokens } = await loadNamespace(`${PC}/consolidate.ts`);
+		const plainFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768 });
+		const reasoningFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768, reasoning: true });
+		check("a reasoning model asks for extra output room", reasoningFit.maxTokens > plainFit.maxTokens);
+		check("a reasoning model still receives the whole memory", reasoningFit.text.length === 6000 && reasoningFit.clipped === false);
+		check("a capped reasoning model keeps content room", fitMemoryInput("记".repeat(20000), "", 8192, { maxTokens: 8192, reasoning: true }).text.length > 0);
+		check("the reasoning reserve stays bounded", reasoningReserveTokens(1, { reasoning: true }) === 1024 && reasoningReserveTokens(1_000_000, { reasoning: true }) === 8192);
+		check("a non-reasoning model pays no reasoning reserve", reasoningReserveTokens(10_000, {}) === 0 && reasoningReserveTokens(10_000, { reasoning: false }) === 0);
+	}
+
 	console.log("\n=== a reply that cannot be read never reaches MEMORY.md ===");
 	{
 		const jsonTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-json-"));
@@ -806,7 +978,7 @@ try {
 
 			// Mixed-language and uneven-density artifacts: each keeps its own rate, the split holds
 			// the invariant, both stay alive, and the split does not waste the budget it was given.
-			const { fitMemoryInput, replyTokenRate } = await loadNamespace(`${PC}/consolidate.ts`);
+			const { fitMemoryInput, replyTokenRate, reasoningReserveTokens } = await loadNamespace(`${PC}/consolidate.ts`);
 			const localRate = (text) => (text ? replyTokenRate(text) : 0);
 			const budgetCases = [
 				["small CJK memory × big ASCII context", "记".repeat(500), "a".repeat(16000) + "记".repeat(8000)],
@@ -818,23 +990,38 @@ try {
 				["emoji-heavy memory × CJK context", "😀".repeat(400) + "a".repeat(200), "记".repeat(3000)],
 				["quote-heavy memory × ASCII context", '"\\'.repeat(800) + "x".repeat(200), "y".repeat(6000)],
 			];
-			for (const cap of [1024, 1400, 2048, 8192, 32768]) {
-				for (const [label, memoryText, contextText] of budgetCases) {
-					const fitted = fitMemoryInput(memoryText, contextText, cap, { maxTokens: cap });
-					const reserved = Math.min(1024, cap, Math.max(64, cap - 400));
-					const tokens = fitted.text.length * localRate(fitted.text) + fitted.contextText.length * localRate(fitted.contextText);
-					check(`budget invariant: ${label} @${cap} (${Math.round(tokens + reserved)}/${cap})`, tokens + reserved <= cap + 0.001);
-					if (cap - reserved >= 800) {
-						const wholeMemory = fitted.text.length === memoryText.length;
-						const wholeContext = fitted.contextText.length === contextText.length;
-						check(`artifact floor: ${label} @${cap} (${fitted.text.length}/${fitted.contextText.length})`, fitted.text.length >= Math.min(memoryText.length, 400) && fitted.contextText.length >= Math.min(contextText.length, 400));
-						if (!(wholeMemory && wholeContext)) {
-							const slack = Math.max(32, (cap - reserved) * 0.02);
-							check(`budget is used, not wasted: ${label} @${cap} (${Math.round(tokens)}/${cap - reserved})`, tokens >= cap - reserved - slack);
+			for (const reasoning of [false, true]) {
+				for (const cap of [1024, 1400, 2048, 8192, 32768]) {
+					const mode = reasoning ? " [reasoning]" : "";
+					for (const [label, memoryText, contextText] of budgetCases) {
+						const fitted = fitMemoryInput(memoryText, contextText, cap, { maxTokens: cap, reasoning });
+						// The reserve the implementation owes: 1024 scaffolding + the reasoning share, bounded by
+						// the clip floor and by half of the cap.
+						const contentTokens = memoryText.length * localRate(memoryText) + contextText.length * localRate(contextText);
+						// Expected from the documented constants, not from the exported helper, so a broken reserve
+						// function cannot rewrite the expectation together with the implementation.
+						const reasoningShare = reasoning ? Math.min(8192, Math.max(1024, Math.round(contentTokens * 0.35))) : 0;
+						const desiredReserve = 1024 + reasoningShare;
+						const reserved = Math.min(desiredReserve, Math.max(0, cap - 400), Math.max(1024, Math.round(cap / 2)));
+						const tokens = fitted.text.length * localRate(fitted.text) + fitted.contextText.length * localRate(fitted.contextText);
+						check(`budget invariant: ${label} @${cap}${mode} (${Math.round(tokens + reserved)}/${cap})`, tokens + reserved <= cap + 0.001);
+						if (cap - reserved >= 800) {
+							const wholeMemory = fitted.text.length === memoryText.length;
+							const wholeContext = fitted.contextText.length === contextText.length;
+							check(`artifact floor: ${label} @${cap}${mode} (${fitted.text.length}/${fitted.contextText.length})`, fitted.text.length >= Math.min(memoryText.length, 400) && fitted.contextText.length >= Math.min(contextText.length, 400));
+							if (!(wholeMemory && wholeContext)) {
+								const slack = Math.max(32, (cap - reserved) * 0.02);
+								check(`budget is used, not wasted: ${label} @${cap}${mode} (${Math.round(tokens)}/${cap - reserved})`, tokens >= cap - reserved - slack);
+							}
 						}
 					}
 				}
 			}
+			// The retry's headroom is part of the reserve, so when the model cap binds the retry can clip
+			// more than the first attempt; the reported flag follows the prompt that was actually sent.
+			const retryFirst = fitMemoryInput("记".repeat(20000), "a".repeat(8000), 8192, { maxTokens: 32768, reasoning: true });
+			const retryAgain = fitMemoryInput("记".repeat(20000), "a".repeat(8000), 8192, { maxTokens: 32768, reasoning: true }, 32768, 4096);
+			check("a truncated retry can clip more than the first attempt (and the flag follows the sent prompt)", retryFirst.clipped === false && retryAgain.clipped === true);
 
 			const near = await runPass({ provider: "test", id: "cap-near", maxTokens: 8192 }, undefined, "# Project Memory\n\n## Project\nNEAR-HEAD\n" + "接近。".repeat(3000) + "\nNEAR-MIDDLE\n" + "结尾。".repeat(1000) + "\nNEAR-TAIL\n");
 			check("a near-budget memory keeps head and tail only", near?.clipped === true && call.prompt.includes("NEAR-HEAD") && call.prompt.includes("NEAR-TAIL") && !call.prompt.includes("NEAR-MIDDLE"));

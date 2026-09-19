@@ -1,0 +1,73 @@
+## 复审结论
+
+### blocking
+
+无。
+
+### important
+
+#### I-4：空文本回复会被当作合法 memory，可能清空 `MEMORY.md`
+
+**位置：** `extensions/project-context/consolidate.ts:138-140`
+
+`parseConsolidated("")` 返回 `{ memory: "" }`，因此以下响应不会进入失败/重试路径：
+
+```js
+{ content: [], stopReason: "pending" }
+{ content: [], stopReason: "toolUse" }
+{ content: [] } // stopReason 缺失
+```
+
+最小复现：
+
+```js
+parseConsolidated("")
+// { memory: "" }
+```
+
+这与 `llm.ts:9-11` “其他 stop reason 返回 whatever text”本身一致，但 consolidation 随后把空文本视为有效 Markdown，可能覆盖现有记忆。应至少拒绝空/全空白文本；或者对 `pending`/`toolUse` 等非终态 stop reason fail closed。
+
+#### I-2 处置未完全准确：capped + reasoning 时重试预算不总是不变
+
+**位置：** `extensions/project-context/consolidate.ts:306-308`、`docs/architecture.md:77`
+
+当 `maxTokens` 被模型上限封住时，`maxTokens` 不变，但 `extraHeadroomTokens` 仍会增加 `reserved`，所以正文 `budget` 可能下降。
+
+最小复现参数：
+
+```js
+fitMemoryInput(
+  "记".repeat(6000), "", 8192,
+  { maxTokens: 8192, reasoning: true }
+)
+// maxTokens = 8192, reserved = 3124, budget = 5068
+
+fitMemoryInput(
+  "记".repeat(6000), "", 8192,
+  { maxTokens: 8192, reasoning: true },
+  32768, 4096
+)
+// maxTokens = 8192, reserved = 4096, budget = 4096
+```
+
+因此文档“重试预算不变”只在 reserve 已被 `cap/2` 封顶的子情形成立；遗漏了“模型上限固定，但重试 reserve 增大、正文预算变小”的第三种情况。建议改为“请求上限不变；重试可能保持或减少正文预算，并通过提示词要求压缩”。
+
+### minor
+
+无其他新 minor。
+
+## 第一轮 findings 状态
+
+- **I-1：已关闭。** `clipped` 使用末次实际发送的 `usedInput.clipped`；新增反向案例通过。
+- **I-2：部分关闭。** 文档已补充 capped 行为，但“预算不变”表述仍不完全准确，见 I-2。
+- **I-3：已关闭。** 公式独立于被测 helper；5 档 cap × 8 密度 × 2 模式共 80 组预算不变量全部通过。
+- **M-1/M-4：已关闭。** 模块契约注释已加入。
+- **M-2：已关闭/接受。**
+- **M-3：已关闭/接受。**
+- **M-5：已关闭。** 完整 JSON + `stopReason: "length"` 测试通过。
+
+## 验证结果
+
+- `node tests/consolidation-test.mjs`：全部通过。
+- reasoning reserve 恒为 0 的变异：**恰好 10 条断言失败**，与预期一致。
+- 新增 retry clip 方向测试通过：首轮未裁剪、重试裁剪，且 `clipped` 跟随实际发送 prompt。
