@@ -114,7 +114,13 @@ tags: [handoff, adaptive-threshold, budget, diagnostics]
 - round 1 零写入证据：`/tmp/rev-v2-baseline-status.txt` / `/tmp/rev-v2-baseline-files.txt` 对照 diff 为空；转录 106 行 / 6,067 B 已归档。
 - round 2 零写入证据：`/tmp/rev-v3-baseline-status.txt` / `/tmp/rev-v3-baseline-files.txt` 对照 diff 为空；转录 670 B 已归档；VERDICT PASSED。
 - 复审修复后复跑：`node tests/run-all.mjs` 9/9；`git diff --check` 干净。
-- （待填：round 2 复验、commit/tag/push、`~/.pi` pin、安装副本校验、真机探针输出。）
+- **v0.1.10 发布（2026-09-19）**：
+  - 提交：`3ee5794` fix(handoff)、`7f2ebe9` docs(handoff)、`25b41d6` docs(memory)、`cc6f6df` docs(codestable)；annotated tag `v0.1.10` → `cc6f6df`。
+  - 双推：Forgejo 与 GitHub mirror 均更新 `master`（`95a6590..cc6f6df`）与 `v0.1.10`；`git ls-remote` 确认。
+  - pi-config：pin 从 `@v0.1.9` 升到 `@v0.1.10`（`~/.pi/agent/settings.json` + `~/.pi/README.md`），commit `42d7631`，已推送。
+  - `pi update --extensions` → 安装副本 `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` 位于 `cc6f6df`，`handoff.ts` 含 `KNEE_ASYMPTOTE_TOKENS = 157_000`。
+  - 安装副本测试：`node tests/handoff-test.mjs` → `handoff: all checks passed.`
+  - settings-installed 探针：沙箱 `/tmp/pc-v0110-probe-bFwq`（默认 settings，未用 `-ne`/`-e`）；`pi -p --model openai-codex/gpt-5.6-luna --thinking off` → `PROBE-OK`；扩展从 settings pin 加载并真实 consolidation 写出 `.agents/memory/CONTEXT.md` + `session-logs/01a0b9fc…/{session.md,session.jsonl}`，无 `errors.log`；单轮无 durable 记录故无 `MEMORY.md`（预期）。
 
 ## 6. 残余风险
 
