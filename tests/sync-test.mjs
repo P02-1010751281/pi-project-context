@@ -133,7 +133,7 @@ console.log("\n=== consolidation throttle is session-local ===");
 	const factory = await loadDefault(`${PC}/index.ts`);
 	const pi = makePi({ cwd: tmp });
 	await factory(pi);
-	const { consolidateProjectState } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+	const { consolidateProjectState } = await loadNamespace(`${PC}/memory/pass.ts`);
 
 	const turns = (id) => Array.from({ length: 6 }, (_, index) => [
 		messageEntry(`${id}-u${index}`, "user", `turn ${index}`, `2026-09-12T10:0${index}:00.000Z`),

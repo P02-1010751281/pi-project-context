@@ -3,7 +3,7 @@ import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
-import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../memory/consolidate.ts";
+import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../shared/output-budget.ts";
 import { completeText, parseJsonObject, resolveAuxModel } from "../shared/llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,

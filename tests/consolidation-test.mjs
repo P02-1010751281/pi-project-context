@@ -74,7 +74,7 @@ try {
 
 	console.log("\n=== malformed consolidation replies ===");
 	{
-		const { parseConsolidated } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+		const { parseConsolidated } = await loadNamespace(`${PC}/memory/parse.ts`);
 		// The reply that used to poison MEMORY.md: a stray member made JSON.parse fail and the
 		// raw object was stored as memory.
 		const corrupted = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- kept.","context":"# Project Context","stray\\n\\n- tail"}';
@@ -305,7 +305,8 @@ try {
 
 	console.log("\n=== reasoning models reserve output room for hidden thinking ===");
 	{
-		const { fitMemoryInput, reasoningReserveTokens } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+		const { fitMemoryInput } = await loadNamespace(`${PC}/memory/input.ts`);
+		const { reasoningReserveTokens } = await loadNamespace(`${PC}/shared/output-budget.ts`);
 		const plainFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768 });
 		const reasoningFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768, reasoning: true });
 		check("a reasoning model asks for extra output room", reasoningFit.maxTokens > plainFit.maxTokens);
@@ -927,7 +928,7 @@ try {
 				await writeFile(budgetMemory, memoryText);
 				await rm(budgetContext, { force: true });
 				if (contextText) await writeFile(budgetContext, contextText);
-				const { consolidateProjectState } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+				const { consolidateProjectState } = await loadNamespace(`${PC}/memory/pass.ts`);
 				const pi = makePi({ cwd: budgetTmp });
 				const ctx = makeCtx(budgetTmp, {
 					model,
@@ -978,7 +979,9 @@ try {
 
 			// Mixed-language and uneven-density artifacts: each keeps its own rate, the split holds
 			// the invariant, both stay alive, and the split does not waste the budget it was given.
-			const { fitMemoryInput, replyTokenRate, reasoningReserveTokens } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+			const { fitMemoryInput } = await loadNamespace(`${PC}/memory/input.ts`);
+			const { replyTokenRate } = await loadNamespace(`${PC}/shared/text.ts`);
+			const { reasoningReserveTokens } = await loadNamespace(`${PC}/shared/output-budget.ts`);
 			const localRate = (text) => (text ? replyTokenRate(text) : 0);
 			const budgetCases = [
 				["small CJK memory × big ASCII context", "记".repeat(500), "a".repeat(16000) + "记".repeat(8000)],
@@ -1026,7 +1029,7 @@ try {
 			const near = await runPass({ provider: "test", id: "cap-near", maxTokens: 8192 }, undefined, "# Project Memory\n\n## Project\nNEAR-HEAD\n" + "接近。".repeat(3000) + "\nNEAR-MIDDLE\n" + "结尾。".repeat(1000) + "\nNEAR-TAIL\n");
 			check("a near-budget memory keeps head and tail only", near?.clipped === true && call.prompt.includes("NEAR-HEAD") && call.prompt.includes("NEAR-TAIL") && !call.prompt.includes("NEAR-MIDDLE"));
 
-			const { consolidateReply } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+			const { consolidateReply } = await loadNamespace(`${PC}/memory/report.ts`);
 			check("a clipped reply is visible to explicit commands", consolidateReply("clipped").includes("output budget"));
 
 			// The command path runs silently; it must still report the clip and leave a trace.
@@ -1061,7 +1064,9 @@ try {
 	console.log("\n=== residuals: recall, rate, lock, ignore, redaction ===");
 	{
 		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock, ensureMemoryGitignore } = await loadNamespace(`${PC}/shared/project-state.ts`);
-		const { fitMemoryInput, replyTokenRate, adaptiveOutputTokens, clipText } = await loadNamespace(`${PC}/memory/consolidate.ts`);
+		const { fitMemoryInput } = await loadNamespace(`${PC}/memory/input.ts`);
+		const { replyTokenRate, clipText } = await loadNamespace(`${PC}/shared/text.ts`);
+		const { adaptiveOutputTokens } = await loadNamespace(`${PC}/shared/output-budget.ts`);
 		const fixTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-residuals-"));
 		try {
 			const dir = path.join(fixTmp, ".agents/memory");
