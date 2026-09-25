@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stat } from "node:fs/promises";
 import { registerArchive } from "./archive/archive.ts";
-import { registerAutolearn } from "./autolearn/autolearn.ts";
+import { registerAutolearn } from "./autolearn/pass.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
 import { registerConsolidation } from "./memory/report.ts";
 import { registerHandoff } from "./handoff/run.ts";
