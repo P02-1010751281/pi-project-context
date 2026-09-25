@@ -25,7 +25,7 @@ try {
 	// A fresh module instance per case: getConfig caches per project root.
 	const parseConfig = async (raw) => {
 		await writeFile(configPath, JSON.stringify(raw));
-		return (await loadNamespace(`${PC}/config.ts`)).getConfig(tmp);
+		return (await loadNamespace(`${PC}/shared/config.ts`)).getConfig(tmp);
 	};
 	const configured = await parseConfig({ provider: "prov", model: "mid", maxTokens: 4096 });
 	check("route and cap load from the flat config", configured.provider === "prov" && configured.model === "mid" && configured.maxTokens === 4096);
@@ -37,7 +37,7 @@ try {
 	check("defaults match dsh", defaults.maxTokens === 8192 && defaults.provider === "" && defaults.model === "");
 
 	console.log("\n=== resolveAuxModel ===");
-	const { resolveAuxModel, completeText } = await loadNamespace(`${PC}/llm.ts`);
+	const { resolveAuxModel, completeText } = await loadNamespace(`${PC}/shared/llm.ts`);
 	const auxModel = { provider: "aux", id: "small" };
 	const sessionModel = { provider: "session", id: "big" };
 	const notifications = [];

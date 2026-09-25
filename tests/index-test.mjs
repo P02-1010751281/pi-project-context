@@ -53,8 +53,8 @@ try {
 	check("no duplicates after second run", again.split("\n").filter((line) => line.includes("[cur-sess]")).length === 1 && again.split("\n").filter((line) => line.includes("[old-one]")).length === 1);
 
 	console.log("\n=== CONTEXT.md keeps the index out ===");
-	const { renderContextDocument } = await loadNamespace(`${PC}/context-doc.ts`);
-	const { renderIndexDocument } = await loadNamespace(`${PC}/session-index.ts`);
+	const { renderContextDocument } = await loadNamespace(`${PC}/memory/context-doc.ts`);
+	const { renderIndexDocument } = await loadNamespace(`${PC}/archive/session-index.ts`);
 	const contextDoc = renderContextDocument({
 		title: "Index test session",
 		summary: "render check",

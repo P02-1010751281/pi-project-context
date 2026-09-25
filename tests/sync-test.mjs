@@ -22,7 +22,7 @@ async function exists(file) {
 	return stat(file).then(() => true).catch(() => false);
 }
 
-const { legacyOmpDir, logError, migrateProjectState, writeAtomic } = await loadNamespace(`${PC}/project-state.ts`);
+const { legacyOmpDir, logError, migrateProjectState, writeAtomic } = await loadNamespace(`${PC}/shared/project-state.ts`);
 
 console.log("=== errors.log is bounded ===");
 {
@@ -115,7 +115,7 @@ console.log("\n=== session-logs gets a .gitignore ===");
 
 console.log("\n=== CONTEXT.md caps the list sections ===");
 {
-	const { renderContextDocument } = await loadNamespace(`${PC}/context-doc.ts`);
+	const { renderContextDocument } = await loadNamespace(`${PC}/memory/context-doc.ts`);
 	const document = renderContextDocument({
 		title: "cap test",
 		summary: "summary",
@@ -133,7 +133,7 @@ console.log("\n=== consolidation throttle is session-local ===");
 	const factory = await loadDefault(`${PC}/index.ts`);
 	const pi = makePi({ cwd: tmp });
 	await factory(pi);
-	const { consolidateProjectState } = await loadNamespace(`${PC}/consolidate.ts`);
+	const { consolidateProjectState } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 
 	const turns = (id) => Array.from({ length: 6 }, (_, index) => [
 		messageEntry(`${id}-u${index}`, "user", `turn ${index}`, `2026-09-12T10:0${index}:00.000Z`),
@@ -171,7 +171,7 @@ console.log("\n=== consolidation throttle is session-local ===");
 console.log("\n=== session.jsonl appends incrementally ===");
 {
 	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-append-"));
-	const { writeSessionArtifacts } = await loadNamespace(`${PC}/session-log.ts`);
+	const { writeSessionArtifacts } = await loadNamespace(`${PC}/archive/session-log.ts`);
 	const source = path.join(tmp, "harness.jsonl");
 	await writeFile(source, `${JSON.stringify({ type: "message", id: "m1" })}\n`);
 	const entries = [messageEntry("m1", "user", "first", "2026-09-12T10:00:00.000Z")];
@@ -212,7 +212,7 @@ console.log("\n=== session.jsonl appends incrementally ===");
 console.log("\n=== archive backfill import ===");
 {
 	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-import-"));
-	const { importArchiveFiles, importSessionFile, resolveImportTargets } = await loadNamespace(`${PC}/import-archive.ts`);
+	const { importArchiveFiles, importSessionFile, resolveImportTargets } = await loadNamespace(`${PC}/archive/import-archive.ts`);
 	const dir = path.join(tmp, "exports");
 	await mkdir(dir, { recursive: true });
 	const file = path.join(dir, "session-old.jsonl");

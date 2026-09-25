@@ -1,7 +1,7 @@
 import { appendFile, open, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from "./project-state.ts";
+import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 
 /**
  * Session archive: the raw JSONL is canonical, the Markdown rendering preserves every

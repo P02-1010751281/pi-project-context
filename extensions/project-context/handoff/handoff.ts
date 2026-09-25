@@ -68,9 +68,9 @@ import {
 	type SessionManager,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, getConfig, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, type ProjectContextConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
-import { resolveAuxModel } from "./llm.ts";
-import { ensureMemoryGitignore, getProjectRoot, logError, memoryDir, safeSessionId, writeAtomic } from "./project-state.ts";
+import { DEFAULT_CONFIG, getConfig, MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, peekConfig, type ProjectContextConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
+import { resolveAuxModel } from "../shared/llm.ts";
+import { ensureMemoryGitignore, getProjectRoot, logError, memoryDir, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 /** pi's default compaction reserve; window headroom used by the threshold math. */
 const WINDOW_RESERVE_TOKENS = 16_384;
 /** Output room for the summary call (0.8 * this is the maxTokens cap). */

@@ -87,16 +87,21 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 
 ```text
 extensions/project-context/
-├── index.ts            # hooks、命令、flags、开关
-├── config.ts           # 配置与旧布局兼容
-├── archive.ts          # 增量存档与 context 注入
-├── session-log.ts      # session.jsonl / session.md
-├── session-index.ts    # INDEX.md
-├── import-archive.ts   # 历史 session 导入
-├── consolidate.ts      # 整理 pass
-├── context-doc.ts      # CONTEXT.md 渲染
-├── autolearn.ts        # 技能沉淀
-├── handoff.ts          # 阈值、摘要、replay、新会话
-├── llm.ts              # JSON LLM 调用与辅助路由
-└── project-state.ts    # 路径、原子写、锁、错误、迁移
+├── index.ts                # 入口：hooks、命令、flags、开关（pi 从这里加载）
+├── archive/                # ① 存档（无 LLM）
+│   ├── archive.ts          #    增量存档与 context 注入
+│   ├── session-log.ts      #    session.jsonl / session.md
+│   ├── session-index.ts    #    INDEX.md
+│   └── import-archive.ts   #    历史 session 导入
+├── memory/                 # ② 整理（1 次 LLM）
+│   ├── consolidate.ts      #    整理 pass
+│   └── context-doc.ts      #    CONTEXT.md 渲染
+├── autolearn/              # ③ 沉淀（1 次 LLM，≥6h）
+│   └── autolearn.ts        #    技能沉淀与证据门禁
+├── handoff/                # ④ 交接（1 次 LLM）
+│   └── handoff.ts          #    阈值、摘要、replay、新会话
+└── shared/                 # 四个能力共用
+    ├── config.ts           #    配置与旧布局兼容
+    ├── llm.ts              #    JSON LLM 调用与辅助路由
+    └── project-state.ts    #    路径、原子写、锁、错误、迁移
 ```

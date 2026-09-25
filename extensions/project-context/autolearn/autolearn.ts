@@ -2,9 +2,9 @@ import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { convertToLlm, parseSessionEntries, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getConfig, runIsDisabled, setFeature, updateConfig } from "./config.ts";
-import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "./consolidate.ts";
-import { completeText, parseJsonObject, resolveAuxModel } from "./llm.ts";
+import { getConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
+import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../memory/consolidate.ts";
+import { completeText, parseJsonObject, resolveAuxModel } from "../shared/llm.ts";
 import {
 	MAX_SKILL_BODY_CHARS,
 	contextFile,
@@ -22,7 +22,7 @@ import {
 	skillsDir,
 	validSkillName,
 	writeAtomic,
-} from "./project-state.ts";
+} from "../shared/project-state.ts";
 
 /**
  * Autolearn: derive reusable project skills from consolidated knowledge, not from the

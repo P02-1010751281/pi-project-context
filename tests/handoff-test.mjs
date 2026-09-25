@@ -24,7 +24,7 @@ const PINNED_SUMMARY = ["## Goal", "- 做完了。", "", "## Critical Context", 
 try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 
-	const handoff = await loadNamespace(`${PC}/handoff.ts`);
+	const handoff = await loadNamespace(`${PC}/handoff/handoff.ts`);
 
 	console.log("=== detectHandoffLanguage ===");
 	check("Chinese user text picks zh", handoff.detectHandoffLanguage(["那做了呗，统一一下", "把记忆也改成 append-only 的模型，别残留隐患"]) === "zh");
@@ -259,7 +259,7 @@ try {
 	console.log("\n=== config parsing ===");
 	const parseConfig = async (raw) => {
 		await writeFile(configPath, JSON.stringify(raw));
-		return (await loadNamespace(`${PC}/config.ts`)).getConfig(tmp);
+		return (await loadNamespace(`${PC}/shared/config.ts`)).getConfig(tmp);
 	};
 	const flat = await parseConfig({ handoffLanguage: "zh" });
 	check("flat handoffLanguage loads", flat.handoffLanguage === "zh");
@@ -281,7 +281,7 @@ try {
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		await writeFile(configPath, JSON.stringify({}));
-		const globalLegacy = await (await loadNamespace(`${PC}/config.ts`)).getConfig(tmp);
+		const globalLegacy = await (await loadNamespace(`${PC}/shared/config.ts`)).getConfig(tmp);
 		check("global legacy language loads", globalLegacy.handoffLanguage === "en");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -662,7 +662,7 @@ try {
 		contentEntry(
 			"p2",
 			"assistant",
-			[{ type: "text", text: "Reading the current implementation first." }, { type: "toolCall", id: "pc1", name: "bash", arguments: { command: "cat extensions/project-context/project-state.ts" } }],
+			[{ type: "text", text: "Reading the current implementation first." }, { type: "toolCall", id: "pc1", name: "bash", arguments: { command: "cat extensions/project-context/shared/project-state.ts" } }],
 			"2026-09-16T00:50:01.000Z",
 			"p1",
 		),

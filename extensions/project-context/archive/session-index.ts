@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MAX_LIST_ITEM_CHARS, safeSessionId } from "./project-state.ts";
+import { MAX_LIST_ITEM_CHARS, safeSessionId } from "../shared/project-state.ts";
 
 /**
  * Mechanical session index: `<memory>/session-logs/INDEX.md`.

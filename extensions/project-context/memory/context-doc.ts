@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ContextUpdate } from "./consolidate.ts";
-import { MAX_CONTEXT_CHARS, MAX_LIST_ITEM_CHARS, MAX_SUMMARY_CHARS } from "./project-state.ts";
+import { MAX_CONTEXT_CHARS, MAX_LIST_ITEM_CHARS, MAX_SUMMARY_CHARS } from "../shared/project-state.ts";
 
 /**
  * Rendering for CONTEXT.md (summary / key points / open tasks).

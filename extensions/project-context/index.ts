@@ -1,11 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stat } from "node:fs/promises";
-import { registerArchive } from "./archive.ts";
-import { registerAutolearn } from "./autolearn.ts";
-import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./config.ts";
-import { registerConsolidation } from "./consolidate.ts";
-import { registerHandoff, restoreHandoffSessionSettings } from "./handoff.ts";
-import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, notify, type LoadedMemory } from "./project-state.ts";
+import { registerArchive } from "./archive/archive.ts";
+import { registerAutolearn } from "./autolearn/autolearn.ts";
+import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
+import { registerConsolidation } from "./memory/consolidate.ts";
+import { registerHandoff, restoreHandoffSessionSettings } from "./handoff/handoff.ts";
+import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, notify, type LoadedMemory } from "./shared/project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.

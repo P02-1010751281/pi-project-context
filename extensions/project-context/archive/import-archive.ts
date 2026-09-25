@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { renderIndexDocument, sessionIndexLineFrom, titleFromEntries } from "./session-index.ts";
-import { logsDir, pathExists, readOptional, safeSessionId, sessionIndexFile, writeAtomic } from "./project-state.ts";
+import { logsDir, pathExists, readOptional, safeSessionId, sessionIndexFile, writeAtomic } from "../shared/project-state.ts";
 import { renderSessionMarkdown } from "./session-log.ts";
 
 /**

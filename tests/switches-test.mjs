@@ -159,7 +159,7 @@ try {
 	console.log("\n=== legacy autolearn.json compatibility ===");
 	await rm(configPath, { force: true });
 	await writeFile(path.join(tmp, ".agents/memory/autolearn.json"), `${JSON.stringify({ at: 123, enabled: false })}\n`);
-	const { getConfig } = await loadNamespace(`${PC}/config.ts`);
+	const { getConfig } = await loadNamespace(`${PC}/shared/config.ts`);
 	const legacy = await getConfig(tmp);
 	check("legacy enabled=false maps to the switch", legacy.autoLearn === false);
 	check("legacy throttle timestamp kept", legacy.autolearnAt === 123);
@@ -172,7 +172,7 @@ try {
 		consolidateTurns: 9,
 		handoff: { threshold: 0.6, autoTargetTokens: 32_000, keepRecentTokens: 1_000, summaryThinking: "session", mode: "draft", guard: "skip" },
 	}, null, 2)}\n`);
-	const { getConfig: getNested, setFeature: setNested } = await loadNamespace(`${PC}/config.ts`);
+	const { getConfig: getNested, setFeature: setNested } = await loadNamespace(`${PC}/shared/config.ts`);
 	const nested = await getNested(tmp);
 	check("nested switches mapped", nested.archiveEnabled === false && nested.autoConsolidate === false && nested.handoffEnabled === false && nested.autoLearn === true);
 	check("nested threshold maps to adaptive=false + ratio", nested.handoffAdaptive === false && nested.handoffThresholdRatio === 0.6);

@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getConfig, runIsDisabled } from "./config.ts";
+import { getConfig, runIsDisabled } from "../shared/config.ts";
 import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionTitle } from "./session-index.ts";
 import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
@@ -14,7 +14,7 @@ import {
 	readOptional,
 	sessionIndexFile,
 	writeAtomic,
-} from "./project-state.ts";
+} from "../shared/project-state.ts";
 import { writeSessionArtifacts } from "./session-log.ts";
 
 /**

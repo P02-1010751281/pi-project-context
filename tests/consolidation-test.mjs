@@ -74,7 +74,7 @@ try {
 
 	console.log("\n=== malformed consolidation replies ===");
 	{
-		const { parseConsolidated } = await loadNamespace(`${PC}/consolidate.ts`);
+		const { parseConsolidated } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 		// The reply that used to poison MEMORY.md: a stray member made JSON.parse fail and the
 		// raw object was stored as memory.
 		const corrupted = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- kept.","context":"# Project Context","stray\\n\\n- tail"}';
@@ -305,7 +305,7 @@ try {
 
 	console.log("\n=== reasoning models reserve output room for hidden thinking ===");
 	{
-		const { fitMemoryInput, reasoningReserveTokens } = await loadNamespace(`${PC}/consolidate.ts`);
+		const { fitMemoryInput, reasoningReserveTokens } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 		const plainFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768 });
 		const reasoningFit = fitMemoryInput("记".repeat(6000), "", 8192, { maxTokens: 32768, reasoning: true });
 		check("a reasoning model asks for extra output room", reasoningFit.maxTokens > plainFit.maxTokens);
@@ -362,7 +362,7 @@ try {
 
 	console.log("\n=== a stored JSON reply is decoded on read and repaired on write ===");
 	{
-		const { loadMemory, backupMemoryBeforeWrite } = await loadNamespace(`${PC}/project-state.ts`);
+		const { loadMemory, backupMemoryBeforeWrite } = await loadNamespace(`${PC}/shared/project-state.ts`);
 		const healTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-heal-"));
 		const healMemory = path.join(healTmp, ".agents/memory/MEMORY.md");
 		const backupCount = async () => (await readdir(path.dirname(healMemory))).filter((name) => name.includes(".memory-backup-")).length;
@@ -595,7 +595,7 @@ try {
 
 	console.log("\n=== the memory journal is the source of truth and MEMORY.md its render ===");
 	{
-		const { appendMemoryOp, foldMemoryJournal, loadMemory, memoryJournalFile, readMemoryJournal, recordMemoryDocument } = await loadNamespace(`${PC}/project-state.ts`);
+		const { appendMemoryOp, foldMemoryJournal, loadMemory, memoryJournalFile, readMemoryJournal, recordMemoryDocument } = await loadNamespace(`${PC}/shared/project-state.ts`);
 		const journalTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-journal-"));
 		const journalMemory = path.join(journalTmp, ".agents/memory/MEMORY.md");
 		const journalFile = memoryJournalFile(journalTmp);
@@ -850,7 +850,7 @@ try {
 
 	console.log("\n=== an over-cap memory keeps whole lines and says what it dropped ===");
 	{
-		const state = await loadNamespace(`${PC}/project-state.ts`);
+		const state = await loadNamespace(`${PC}/shared/project-state.ts`);
 		const line = (index) => `- convention ${index}: ` + "detail ".repeat(20).trimEnd();
 		const original = Array.from({ length: 400 }, (_, index) => line(index));
 		const long = `# Project Memory\n\n${original.join("\n")}`;
@@ -927,7 +927,7 @@ try {
 				await writeFile(budgetMemory, memoryText);
 				await rm(budgetContext, { force: true });
 				if (contextText) await writeFile(budgetContext, contextText);
-				const { consolidateProjectState } = await loadNamespace(`${PC}/consolidate.ts`);
+				const { consolidateProjectState } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 				const pi = makePi({ cwd: budgetTmp });
 				const ctx = makeCtx(budgetTmp, {
 					model,
@@ -978,7 +978,7 @@ try {
 
 			// Mixed-language and uneven-density artifacts: each keeps its own rate, the split holds
 			// the invariant, both stay alive, and the split does not waste the budget it was given.
-			const { fitMemoryInput, replyTokenRate, reasoningReserveTokens } = await loadNamespace(`${PC}/consolidate.ts`);
+			const { fitMemoryInput, replyTokenRate, reasoningReserveTokens } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 			const localRate = (text) => (text ? replyTokenRate(text) : 0);
 			const budgetCases = [
 				["small CJK memory × big ASCII context", "记".repeat(500), "a".repeat(16000) + "记".repeat(8000)],
@@ -1026,7 +1026,7 @@ try {
 			const near = await runPass({ provider: "test", id: "cap-near", maxTokens: 8192 }, undefined, "# Project Memory\n\n## Project\nNEAR-HEAD\n" + "接近。".repeat(3000) + "\nNEAR-MIDDLE\n" + "结尾。".repeat(1000) + "\nNEAR-TAIL\n");
 			check("a near-budget memory keeps head and tail only", near?.clipped === true && call.prompt.includes("NEAR-HEAD") && call.prompt.includes("NEAR-TAIL") && !call.prompt.includes("NEAR-MIDDLE"));
 
-			const { consolidateReply } = await loadNamespace(`${PC}/consolidate.ts`);
+			const { consolidateReply } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 			check("a clipped reply is visible to explicit commands", consolidateReply("clipped").includes("output budget"));
 
 			// The command path runs silently; it must still report the clip and leave a trace.
@@ -1060,8 +1060,8 @@ try {
 
 	console.log("\n=== residuals: recall, rate, lock, ignore, redaction ===");
 	{
-		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock, ensureMemoryGitignore } = await loadNamespace(`${PC}/project-state.ts`);
-		const { fitMemoryInput, replyTokenRate, adaptiveOutputTokens, clipText } = await loadNamespace(`${PC}/consolidate.ts`);
+		const { loadMemory, backupMemoryBeforeWrite, logError, migrateProjectState, readJsonStringField, withMemoryLock, ensureMemoryGitignore } = await loadNamespace(`${PC}/shared/project-state.ts`);
+		const { fitMemoryInput, replyTokenRate, adaptiveOutputTokens, clipText } = await loadNamespace(`${PC}/memory/consolidate.ts`);
 		const fixTmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-residuals-"));
 		try {
 			const dir = path.join(fixTmp, ".agents/memory");

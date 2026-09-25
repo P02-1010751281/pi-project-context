@@ -1,8 +1,8 @@
 import { convertToLlm, serializeConversation, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { configFile, getConfig, runIsDisabled } from "./config.ts";
+import { configFile, getConfig, runIsDisabled } from "../shared/config.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
-import { completeWithMeta, parseJsonObject, resolveAuxModel, type CompletionOutcome } from "./llm.ts";
+import { completeWithMeta, parseJsonObject, resolveAuxModel, type CompletionOutcome } from "../shared/llm.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	MAX_CONVERSATION_CHARS,
@@ -22,7 +22,7 @@ import {
 	readOptional,
 	withMemoryLock,
 	writeAtomic,
-} from "./project-state.ts";
+} from "../shared/project-state.ts";
 
 /**
  * The project-state consolidation pass: one model call that rewrites durable project
