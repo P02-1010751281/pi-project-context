@@ -936,9 +936,22 @@ try {
 	await stageFor({});
 	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("mid") });
 	check("a different predecessor never inherits", restorePi.modelCalls.length === 0 && restorePi.thinkingCalls.length === 0);
-	// Only that predecessor's successor can consume the stage, so anything else is a leftover (a
-	// crash between staging and `newSession()`): it is dropped now instead of waiting for the TTL.
-	check("a foreign switch drops the stage instead of keeping it", !(await markerExists()));
+	// The marker is one file per project, so two handoffs in flight overwrite each other's stage. A
+	// *recent* foreign one may belong to a handoff whose successor has not started yet: clearing it here
+	// would silently deny that successor its model and thinking level, so it is left in place (and the
+	// skipped restore is reported).
+	check("a recent foreign switch leaves the stage for its own successor", await markerExists());
+	check(
+		"the skipped restore is reported, not silent",
+		replacementCtx.notifications.some((entry) => String(entry?.[0] ?? "").includes("not the handoff successor")),
+	);
+
+	// An older foreign marker is the leftover of a crash between staging and the switch: dropped now
+	// instead of waiting out the TTL.
+	resetCalls();
+	await stageFor({ at: Date.now() - 5 * 60_000 });
+	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("mid") });
+	check("a stale foreign switch drops the stage", !(await markerExists()));
 
 	resetCalls();
 	await stageFor({ at: Date.now() - 11 * 60_000 });

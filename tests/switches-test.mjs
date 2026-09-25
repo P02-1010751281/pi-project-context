@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
@@ -196,6 +196,19 @@ try {
 	check("the handoff key is still persisted", afterHandoff?.handoffLanguage === "zh");
 	await command.handler("on memory", ctx);
 
+	console.log("\n=== the config write takes the cross-process lock ===");
+	// `updateConfig` is a read-modify-write of one file shared by every process that mounts the project,
+	// and each process holds its own cache: without re-reading under a lock the second writer publishes
+	// its snapshot and reverts the first one's fields.
+	{
+		const lockFile = path.join(tmp, ".agents/memory/project-context.json.lock");
+		await writeFile(lockFile, "stale");
+		const longAgo = new Date(Date.now() - 60_000);
+		await utimes(lockFile, longAgo, longAgo);
+		await command.handler("off memory", ctx);
+		check("the config write consumed and released the stale lock", await stat(lockFile).then(() => false).catch(() => true));
+		check("the write still landed", (await readConfig())?.autoConsolidate === false);
+	}
 } finally {
 	await rm(tmp, { recursive: true, force: true });
 }

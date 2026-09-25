@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { withMemoryLock } from "./lock.ts";
 import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writeAtomic } from "./project-state.ts";
 
 /**
@@ -207,11 +208,8 @@ async function legacyDefaults(projectRoot: string): Promise<{
 	};
 }
 
-/** Load (once per project) and cache the project's configuration. */
-export async function getConfig(projectRoot: string): Promise<ProjectContextConfig> {
-	const cached = cache.get(projectRoot);
-	if (cached) return cached;
-
+/** Parse a project's configuration from disk, legacy layouts included. */
+async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 	const raw = (await readJson(configFile(projectRoot))) ?? {};
 	const legacy = await legacyDefaults(projectRoot);
 	const features = asRecord(raw.features);
@@ -264,6 +262,14 @@ export async function getConfig(projectRoot: string): Promise<ProjectContextConf
 		handoffGuard: guardOf(raw.handoffGuard) ?? guardOf(handoff.guard) ?? guardOf(global.guard) ?? DEFAULT_CONFIG.handoffGuard,
 		handoffLanguage: languageOf(raw.handoffLanguage) ?? languageOf(handoff.language) ?? languageOf(global.language) ?? DEFAULT_CONFIG.handoffLanguage,
 	};
+	return config;
+}
+
+/** Load (once per project) and cache the project's configuration. */
+export async function getConfig(projectRoot: string): Promise<ProjectContextConfig> {
+	const cached = cache.get(projectRoot);
+	if (cached) return cached;
+	const config = await parseConfig(projectRoot);
 	cache.set(projectRoot, config);
 	return config;
 }
@@ -279,9 +285,21 @@ export async function saveConfig(projectRoot: string, config: ProjectContextConf
 	return config;
 }
 
-/** Merge a partial update into the cached config and persist it in the flat layout. */
+/**
+ * Merge a partial update into the project's configuration and persist it.
+ *
+ * The merge re-reads the file **under a cross-process lock**. Every process holds its own cache, so
+ * merging into the cache alone publishes this process's snapshot and silently reverts whatever another
+ * writer just wrote — the same class of bug the handoff mirror had (a lost `autolearnAt` is the visible
+ * version of it). The lock serializes the read-modify-write; the fresh read makes the merge current.
+ */
 export async function updateConfig(projectRoot: string, patch: Partial<ProjectContextConfig>): Promise<ProjectContextConfig> {
-	return saveConfig(projectRoot, { ...(await getConfig(projectRoot)), ...patch });
+	return withMemoryLock(configFile(projectRoot), async () => {
+		const merged = { ...(await parseConfig(projectRoot)), ...patch };
+		cache.set(projectRoot, merged);
+		await writeAtomic(configFile(projectRoot), `${JSON.stringify(merged, null, 2)}\n`);
+		return merged;
+	});
 }
 
 export async function setFeature(projectRoot: string, feature: FeatureName, enabled: boolean): Promise<ProjectContextConfig> {

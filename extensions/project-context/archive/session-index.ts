@@ -48,7 +48,7 @@ export function normalizeLegacyIndex(document: string): string {
 }
 
 /** Newest line per session id, oldest first, capped; `sessionLine` replaces its id's line. */
-function dedupeIndexLines(lines: string[], sessionLine: string | undefined, limit: number): string[] {
+function dedupeIndexLines(lines: string[], sessionLine: string | undefined): string[] {
 	const replaceId = sessionLine ? lineId(sessionLine) : undefined;
 	const seen = new Set<string>();
 	const result: string[] = [];
@@ -59,7 +59,7 @@ function dedupeIndexLines(lines: string[], sessionLine: string | undefined, limi
 		result.unshift(lines[index]);
 	}
 	if (sessionLine) result.push(sessionLine);
-	return result.slice(-limit);
+	return result;
 }
 
 export function sessionIndexLine(ctx: ExtensionContext, title: string): string {
@@ -103,6 +103,20 @@ export function sessionTitle(ctx: ExtensionContext): string {
 
 /** The archive layer's index document; rewritten (deduped, capped) on each settle/shutdown. */
 export function renderIndexDocument(existing: string, sessionLine: string): string {
-	const lines = dedupeIndexLines(parseIndexLines(existing), sessionLine, MAX_INDEX_LINES);
-	return ["# Session Index", "", ...lines, ""].join("\n");
+	const ordered = dedupeIndexLines(parseIndexLines(existing), sessionLine);
+	// The cap drops the oldest lines. Their archives stay on disk, but this index is the only navigation
+	// the backtracking and the handoff pointers have, so a silent drop reads as "that session never
+	// existed". The count is carried forward from the previous marker: every write re-reads an
+	// already-capped document and can only see the line it pushes out, so an uncarried marker would
+	// always claim "1 dropped" — as false as saying nothing. `parseIndexLines` keeps only `- [..]` lines,
+	// so an HTML comment can never be read back as an entry.
+	const carried = Number(/<!-- (\d+) older session/.exec(existing)?.[1] ?? 0);
+	const dropped = (Number.isFinite(carried) ? carried : 0) + Math.max(0, ordered.length - MAX_INDEX_LINES);
+	return [
+		"# Session Index",
+		"",
+		...ordered.slice(-MAX_INDEX_LINES),
+		...(dropped > 0 ? ["", `<!-- ${dropped} older session${dropped === 1 ? "" : "s"} dropped from this index by the ${MAX_INDEX_LINES}-line cap; their archives remain in session-logs/ -->`] : []),
+		"",
+	].join("\n");
 }

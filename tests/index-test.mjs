@@ -69,6 +69,33 @@ try {
 	check("the index was still written with a stale lock present", (await readFile(indexFile, "utf8")).includes("[cur-sess]"));
 	check("the writer consumed and released the stale lock", await stat(lockFile).then(() => false).catch(() => true));
 
+
+	console.log("\n=== the index cap names the lines it drops, cumulatively ===");
+	{
+		// Same contract as the dsh twin: the dropped archives stay on disk, but a silent drop reads as
+		// "that session never existed", and the count has to be carried forward because every write
+		// re-reads an already-capped document.
+		const { renderIndexDocument: render, parseIndexLines } = await loadNamespace(`${PC}/archive/session-index.ts`);
+		let document = render("", "- [cap-000](cap-000/session.md) — 2026-08-01 — Capped 0");
+		for (let index = 1; index < 205; index += 1) {
+			const id = `cap-${String(index).padStart(3, "0")}`;
+			const day = String((index % 27) + 1).padStart(2, "0");
+			document = render(document, `- [${id}](${id}/session.md) — 2026-08-${day} — Capped ${index}`);
+		}
+		check("the cap keeps 200 entries", parseIndexLines(document).length === 200);
+		check("the dropped count is reported", /<!-- 5 older sessions dropped from this index by the 200-line cap/.test(document));
+		check("the marker is never parsed as an entry", !parseIndexLines(document).some((line) => line.includes("older sessions")));
+		document = render(document, "- [cap-205](cap-205/session.md) — 2026-08-28 — Capped 205");
+		check("the count is carried forward", /<!-- 6 older sessions dropped/.test(document) && (document.match(/older session/g) ?? []).length === 1);
+	}
+
+	console.log("\n=== a sanitized session id cannot collide with another ===");
+	{
+		const { safeSessionId } = await loadNamespace(`${PC}/shared/project-state.ts`);
+		check("a sanitized id is still filesystem-safe", !safeSessionId("a/b").includes("/") && safeSessionId("a/b").startsWith("a-b"));
+		check("distinct ids keep distinct archive directories", safeSessionId("a/b") !== safeSessionId("a-b"));
+		check("a normal id is passed through", safeSessionId("session-9f2c1b7e-0000-4000-8000-000000000000") === "session-9f2c1b7e-0000-4000-8000-000000000000");
+	}
 	const { renderIndexDocument } = await loadNamespace(`${PC}/archive/session-index.ts`);
 	const contextDoc = renderContextDocument({
 		title: "Index test session",

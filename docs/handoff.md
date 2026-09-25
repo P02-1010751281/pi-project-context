@@ -129,6 +129,8 @@ successor 接收：
 
 successor `session_start` 只接受 `reason=new` 且 `previousSessionFile` 精确匹配的暂存，成功后立即消费删除。这样普通 `/new`、resume、fork 不会误吃设置。
 
+暂存文件**每个项目只有一个**，所以两个同时在飞的 handoff 会互相覆盖对方的暂存。因此一个指向**别的前驱**的暂存不会当场被删（2 分钟内它可能正是另一次 handoff 的 successor 要用的），只有超过该宽限期才当成「staging 与 switch 之间崩溃」的残留清掉；被跳过的那次恢复会写 `errors.log` 并提示用户模型/thinking 没有恢复。
+
 - provider/model 可用：调用 `pi.setModel()` 恢复，并恢复 thinking level。
 - model 不可用或 `setModel` 失败：通知用户；可记录的异常写 `errors.log`；successor 沿用默认模型。
 - `ctx.model` 缺失：不可能可靠推断 provider/model，只恢复 thinking，并写明确诊断；不伪造 fallback ID。

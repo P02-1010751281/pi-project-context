@@ -17,6 +17,20 @@ export const HANDOFF_SETTINGS_FILE = "handoff-session-settings.json";
 /** A staged marker only has to survive the switch itself; anything older is a leftover. */
 const HANDOFF_SETTINGS_TTL_MS = 10 * 60_000;
 
+/**
+ * How long a staged marker that names a *different* predecessor is left alone.
+ *
+ * The marker is one file per project, so two handoffs in flight overwrite each other's stage. The
+ * successor of the first then sees a foreign `previousSessionFile` — and clearing it there silently
+ * denied the *other* handoff its model and thinking level. A concurrent successor starts within seconds
+ * of its staging, so a foreign marker younger than this may still be claimed; an older one is the
+ * leftover of a crash between staging and the switch, and is dropped.
+ */
+const HANDOFF_SETTINGS_FOREIGN_GRACE_MS = 2 * 60_000;
+
+/** Report a foreign stage once per process: the successor that owns it may still arrive. */
+let foreignStageReported = false;
+
 export interface HandoffSessionSettings {
 	previousSessionFile: string;
 	model?: { provider: string; id: string };
@@ -84,7 +98,21 @@ export async function restoreHandoffSessionSettings(
 	// unconsumable one is dropped right away — that covers a crash between staging and the switch,
 	// which used to leave the file behind until the TTL expired.
 	if (event.previousSessionFile !== staged.previousSessionFile) {
-		await clearHandoffSessionSettings(projectRoot);
+		if (Date.now() - staged.at > HANDOFF_SETTINGS_FOREIGN_GRACE_MS) {
+			await clearHandoffSessionSettings(projectRoot);
+			return;
+		}
+		// Left in place for its own successor, but this session silently got the defaults instead of the
+		// staged model/thinking: say so once, durably.
+		if (!foreignStageReported) {
+			foreignStageReported = true;
+			await logError(
+				projectRoot,
+				"handoff:stage-session-settings",
+				`a staged handoff marker for ${staged.previousSessionFile} was left for its own successor (this session replaced ${String(event.previousSessionFile)}); if it is a leftover it expires with the ${Math.round(HANDOFF_SETTINGS_TTL_MS / 60_000)}-minute TTL`,
+			).catch(() => {});
+			notify(ctx, "This session is not the handoff successor the staged settings belong to; the model and thinking level were not restored.", "warning");
+		}
 		return;
 	}
 	await clearHandoffSessionSettings(projectRoot);
