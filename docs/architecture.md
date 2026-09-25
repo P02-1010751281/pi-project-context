@@ -116,7 +116,7 @@ extensions/project-context/
 │   └── skill.ts            #    技能形状、SKILL.md 渲染、安全校验
 ├── handoff/                # ④ 交接（1 次 LLM）
 │   ├── run.ts              #    交接事务、自动触发、命令注册
-│   ├── threshold.ts        #    阈值：膝曲线、物理下限、两个上界与被谁限住的回执
+│   ├── threshold.ts        #    阈值：膝曲线与窗口末点两项、两个 cap、拒绝原因与护栏覆盖回执
 │   ├── summary.ts          #    摘要调用
 │   ├── prompt.ts           #    摘要提示词与续接文档
 │   ├── language.ts         #    语言判定与提示词识别

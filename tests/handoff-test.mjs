@@ -377,12 +377,12 @@ try {
 	check("an attempted auto handoff does not retrigger on the next settle", auto.sentMessages.length === 1);
 
 	console.log("\n=== adaptive threshold: the conservative knee, with a physical floor ===");
-	// Auto finds the model's conservative quality knee: honest windows keep their own boundary, large
-	// ones saturate at the population-median knee, and the value never exceeds the last usable point
-	// (before pi's own compaction reserve) nor falls below `baseline + keep + handoffTargetTokens`,
-	// the physical floor that accepts the system prompt, the kept tail, and a worthwhile summary.
-	// The caps then only
-	// lower it: the summarizer window, the first pricing tier, and the usable window.
+	// Auto hands off at the **two-term** guardrail: the lower of the model's conservative quality knee
+	// (honest windows keep their own boundary, large ones saturate at the population-median knee) and
+	// the last usable point before pi's own compaction reserve, minus the tier margin. The caps then
+	// only lower it — the summarizer window and the first pricing tier. `handoffTargetTokens` is a
+	// manual **request**, not a term on that line: it cannot lift the trigger, and when the guardrail
+	// lands below what it asked for the receipt names it (checked below).
 	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 20_000, handoffTargetTokens: 64_000 }));
 	// `handoff` here is a direct namespace load: it reads the module defaults (keep 20k / target 64k /
 	// ratio 0.4, same as the config written above). The extension-driven checks below load their own
@@ -415,15 +415,52 @@ try {
 		getContextUsage: () => ({ tokens: 24_000, percent: 3, contextWindow: 768_000 }),
 	});
 	check("the conservative curve saturates above the transition", handoff.resolveThreshold(curveCtx, curveCtx.getContextUsage())?.tokens === 157_001);
-	// A heavy baseline lifts the physical floor above the knee, so the floor decides instead.
+	// A heavy baseline pushes the physical floor above the knee. The floor is a **refusal gate, not a
+	// lift**: raising the trigger to `baseline + keep + target` here (583_924) is what the two-term rule
+	// forbids, because it would let a 1M-window model run to 584k — past the very knee the curve exists
+	// to distrust. Auto refuses instead, and the receipt names the knee as the cause.
 	const heavyCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-heavy"),
 		getContextUsage: () => ({ tokens: 512_000, percent: 51, contextWindow: 1_000_000 }),
 	});
-	const heavy = handoff.resolveThreshold(heavyCtx, heavyCtx.getContextUsage());
-	check("a heavy baseline lands on the physical floor", heavy?.tokens === 583_924);
-	check("a heavy-baseline threshold reports the target bound", heavy?.bound === "target");
-	check("a heavy baseline keeps the summarize amount at the configured minimum", heavy?.summarizeTokens === 64_000);
+	check(
+		"a heavy baseline whose floor sits above the knee leaves no threshold",
+		handoff.resolveThreshold(heavyCtx, heavyCtx.getContextUsage()) === undefined,
+	);
+	check(
+		"the heavy-baseline refusal blames the quality knee, not the target or the window",
+		handoff.thresholdRefusal(heavyCtx, heavyCtx.getContextUsage()) === "below-quality-knee",
+	);
+	// `handoffTargetTokens` is a manual request the guardrail may refuse. Raising it must not move the
+	// trigger — pi's old `max(boundary, targetValue)` lifted this one to 232k — and the refusal must be
+	// visible: a user who raises the target and reads the same threshold has been sent to a dead control.
+	// This needs a project config (the direct `handoff` namespace above holds the module defaults).
+	const targetTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-target-"));
+	try {
+		await mkdir(path.join(targetTmp, ".agents/memory"), { recursive: true });
+		await writeFile(
+			path.join(targetTmp, ".agents/memory/project-context.json"),
+			JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 20_000, handoffTargetTokens: 200_000 }),
+		);
+		const targetPi = makePi({ cwd: targetTmp });
+		await (await loadDefault(`${PC}/index.ts`))(targetPi);
+		const targetCtx = makeCtx(targetTmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-target"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 24_000, percent: 2.4, contextWindow: 1_000_000 }),
+		});
+		await runHandlers(targetPi, "session_start", targetCtx);
+		await targetPi.commands.get("auto-handoff").handler("status", targetCtx);
+		const targetReceipt = String(targetCtx.notifications.at(-1)?.[0] ?? "");
+		check("a raised target cannot lift the trigger above the knee", targetReceipt.includes("auto 157k (16%)"));
+		check(
+			"the overridden target is named, not silently ignored",
+			/· handoff target 200k is not applied in full/.test(targetReceipt),
+		);
+		check("the warning names the guardrail that bound it", /quality knee allows 157k/.test(targetReceipt));
+	} finally {
+		await rm(targetTmp, { recursive: true, force: true });
+	}
 	// The dropped prefix is the summary call's input and pi does not clip it to a model window.
 	const smallAux = handoff.resolveThreshold(
 		floorCtx,
@@ -539,36 +576,47 @@ try {
 		});
 		await runHandlers(usablePi, "session_start", usableCtx);
 		await usablePi.commands.get("auto-handoff").handler("status", usableCtx);
-		check("status names a usable-window cap", String(usableCtx.notifications.at(-1)?.[0] ?? "").includes("capped by the usable window"));
-		check("status reports the effective summarize amount under a cap", String(usableCtx.notifications.at(-1)?.[0] ?? "").includes("summarize 23.6k"));
+		// The usable window is one of the two adaptive terms, not a cap bolted on afterwards, so the
+		// receipt reports the value without a "capped by" suffix. The number is unchanged: the old target
+		// lift pushed it to 84k and the usable window then capped it back to the same 43.6k.
+		const usableReceipt = String(usableCtx.notifications.at(-1)?.[0] ?? "");
+		check("status reports the adaptive value at the usable-window limit", usableReceipt.includes("auto 43.6k (68%)"));
+		check("the usable window is not reported as a bolt-on cap", !usableReceipt.includes("capped by"));
+		check("status reports the effective summarize amount under the guardrail", usableReceipt.includes("summarize 23.6k"));
 	} finally {
 		await rm(usableTmp, { recursive: true, force: true });
 	}
 
 	console.log("\n=== auto trigger: the knee and the floor stop an early handoff ===");
 	// The threshold math derives the baseline as usage − estimated conversation, so a mock whose
-	// conversation is tiny reports a huge baseline and can never cross its own threshold. Give the
-	// session real weight: ~119k tokens of conversation, so a 120k session stops below the 157k knee
-	// while a 600k one sits above the floor (baseline + keep + target).
+	// conversation is tiny reports a huge baseline and its floor (`baseline + keep + target`) lands
+	// above the knee. That used to be rescued by lifting the trigger with the target, which the
+	// two-term rule now forbids — so the fixture has to keep usage consistent with the conversation
+	// instead of leaning on the lift. A session below the 157k knee does not hand off; a 620k one
+	// whose baseline stayed small clears the floor and does.
 	const bulkTurn = messageEntry("b1", "user", filler.repeat(10), "2026-09-16T00:01:00.000Z");
 	const bulkReply = messageEntry("b2", "assistant", "已收到。", "2026-09-16T00:01:01.000Z");
 	bulkReply.parentId = bulkTurn.id;
+	const loudTurn = messageEntry("b3", "user", filler.repeat(50), "2026-09-16T00:01:02.000Z");
+	const loudReply = messageEntry("b4", "assistant", "已收到。", "2026-09-16T00:01:03.000Z");
+	loudReply.parentId = loudTurn.id;
 	const floorQuietPi = makePi({ cwd: tmp });
 	await (await loadDefault(`${PC}/index.ts`))(floorQuietPi);
 	const quietCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager([bulkTurn, bulkReply], "handoff-quiet"),
 		mode: "tui",
-		getContextUsage: () => ({ tokens: 120_000, percent: 12, contextWindow: 1_000_000 }),
+		getContextUsage: () => ({ tokens: 140_000, percent: 14, contextWindow: 1_000_000 }),
 	});
 	await runHandlers(floorQuietPi, "session_start", quietCtx);
 	await runHandlers(floorQuietPi, "agent_settled", quietCtx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	check("a session below the knee does not hand off", floorQuietPi.sentMessages.length === 0);
-	// The same session past the floor triggers: the floor is where a full summary fits.
+	// The same extension on a session well past the knee: the baseline stays small, the floor clears,
+	// and the trigger fires.
 	const loudCtx = makeCtx(tmp, {
-		sessionManager: makeSessionManager([bulkTurn, bulkReply], "handoff-loud"),
+		sessionManager: makeSessionManager([loudTurn, loudReply], "handoff-loud"),
 		mode: "tui",
-		getContextUsage: () => ({ tokens: 600_000, percent: 60, contextWindow: 1_000_000 }),
+		getContextUsage: () => ({ tokens: 620_000, percent: 62, contextWindow: 1_000_000 }),
 	});
 	await runHandlers(floorQuietPi, "session_start", loudCtx);
 	await runHandlers(floorQuietPi, "agent_settled", loudCtx);

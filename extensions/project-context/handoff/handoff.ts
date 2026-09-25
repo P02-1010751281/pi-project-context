@@ -13,5 +13,5 @@ export { buildHandoffDocument, buildHandoffPrompt, localizeSummaryHeadings } fro
 export type { HandoffDocumentParts, HandoffPromptParts } from "./prompt.ts";
 export { registerHandoff, statusText } from "./run.ts";
 export { REPLAY_MARKER, SPLIT_TURN_MARKER, replayMessagesFor } from "./text.ts";
-export { resolveThreshold, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
-export type { Threshold, ThresholdRefusal } from "./threshold.ts";
+export { resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
+export type { Threshold, ThresholdBound, ThresholdOverride, ThresholdRefusal } from "./threshold.ts";

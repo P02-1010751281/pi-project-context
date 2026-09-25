@@ -20,7 +20,7 @@ import { config, getConfigRoot, handoffEnabled, parseRatio, parseTokenCount, sav
 import { FAILURE_BACKOFF_MS, RETRIGGER_COOLDOWN_MS, armHandoffCooldown, armHandoffFailureBackoff, handoffCooldownUntil, handoffFailureBackoffUntil, handoffInFlight, setHandoffInFlight } from "./state.ts";
 import { generateHandoffSummary } from "./summary.ts";
 import { replayEntries, replayMessagesFor } from "./text.ts";
-import { type Threshold, capSuffix, resolveThreshold, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
+import { type Threshold, capSuffix, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function statusText(ctx: ExtensionContext): string {
@@ -30,8 +30,12 @@ export function statusText(ctx: ExtensionContext): string {
 	let threshold: Threshold | undefined;
 	if (usage && usage.tokens !== null) {
 		threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
-		if (threshold) thresholdLabel = threshold.label + capSuffix(threshold.bound);
-		else if (config.handoffAdaptive) {
+		if (threshold) {
+			thresholdLabel = threshold.label + capSuffix(threshold.bound);
+			// A manual target the guardrail landed below must be named, not silently ignored: a user who
+			// raised it and sees the same trigger has been sent to a control that does nothing.
+			if (threshold.override) thresholdLabel += ` · ${thresholdOverrideText(threshold.override, usage.contextWindow)}`;
+		} else if (config.handoffAdaptive) {
 			// Never render every refusal as a claim about the window: name the term that refused.
 			const refusal = thresholdRefusal(ctx, usage, resolveAuxModel(ctx, config));
 			thresholdLabel = refusal === undefined ? "auto" : thresholdRefusalText(refusal, ctx, usage);
