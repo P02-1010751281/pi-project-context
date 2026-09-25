@@ -685,7 +685,12 @@ try {
 			await rm(journalFile, { force: true });
 			await writeFile(journalMemory, "# Project Memory\n\n## Project\n- a stale pre-pass render\n");
 			const archiveName = "memory-log-2026-01-20T00-00-00-000Z-00000020.jsonl";
-			await writeFile(path.join(path.dirname(journalFile), archiveName), `${JSON.stringify({ ts: "2026-01-20T00:00:00.000Z", op: "replace", text: "# Project Memory\n\n## Project\n- recovered from the archive\n" })}\n`);
+			const archiveFile = path.join(path.dirname(journalFile), archiveName);
+			await writeFile(archiveFile, `${JSON.stringify({ ts: "2026-01-20T00:00:00.000Z", op: "replace", text: "# Project Memory\n\n## Project\n- recovered from the archive\n" })}\n`);
+			// Anchor the ordering: the other archives in this fixture were written in the same second, so
+			// "newest" must not depend on a clock tie or the name tie-break.
+			const later = new Date(Date.now() + 60 * 60 * 1000);
+			await utimes(archiveFile, later, later);
 			const recovered = await loadMemory(journalTmp);
 			check(
 				"a missing journal is recovered from its archive, not the stale render",
