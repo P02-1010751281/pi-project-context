@@ -1,5 +1,15 @@
+import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MAX_LIST_ITEM_CHARS, safeSessionId } from "../shared/project-state.ts";
+import { MAX_LIST_ITEM_CHARS, memoryDir, safeSessionId } from "../shared/project-state.ts";
+
+/**
+ * Cross-process lock target for one project's index. `withMemoryLock` appends `.lock` itself, so the
+ * final file is `<memory>/session-index.lock`; it lives in the memory directory because that
+ * directory's `.gitignore` already covers `*.lock`.
+ */
+export function sessionIndexLockTarget(projectRoot: string): string {
+	return path.join(memoryDir(projectRoot), "session-index");
+}
 
 /**
  * Mechanical session index: `<memory>/session-logs/INDEX.md`.

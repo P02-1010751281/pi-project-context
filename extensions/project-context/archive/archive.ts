@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
-import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionTitle } from "./session-index.ts";
+import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionIndexLockTarget, sessionTitle } from "./session-index.ts";
 import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
 	MAX_CONTEXT_CHARS,
@@ -14,6 +14,7 @@ import {
 	notify,
 	readOptional,
 	sessionIndexFile,
+	withMemoryLock,
 	writeAtomic,
 } from "../shared/project-state.ts";
 import { writeSessionArtifacts } from "./session-log.ts";
@@ -60,15 +61,21 @@ export function registerArchive(pi: ExtensionAPI): void {
 		let projectRoot = knownRoot;
 		try {
 			projectRoot ??= await getProjectRoot(pi, ctx.cwd);
-			const existing = await readOptional(sessionIndexFile(projectRoot));
-			if (!existing.trim()) {
-				const legacyFile = legacySessionIndexFile(projectRoot);
-				const legacy = normalizeLegacyIndex(await readOptional(legacyFile));
-				await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(legacy, sessionIndexLine(ctx, sessionTitle(ctx))));
-				if (legacy.trim()) await rm(legacyFile, { force: true }).catch(() => undefined);
-				return;
-			}
-			await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(existing, sessionIndexLine(ctx, sessionTitle(ctx))));
+			// `writeQueue` orders writers inside this process only, and this is a read-modify-write:
+			// two hosts doing it at once lose whole index lines, leaving archived sessions that autolearn
+			// can no longer navigate to. The same cross-process lock the memory journal uses guards the
+			// whole read → merge → write sequence, not just the final write.
+			await withMemoryLock(sessionIndexLockTarget(projectRoot), async () => {
+				const existing = await readOptional(sessionIndexFile(projectRoot));
+				if (!existing.trim()) {
+					const legacyFile = legacySessionIndexFile(projectRoot);
+					const legacy = normalizeLegacyIndex(await readOptional(legacyFile));
+					await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(legacy, sessionIndexLine(ctx, sessionTitle(ctx))));
+					if (legacy.trim()) await rm(legacyFile, { force: true }).catch(() => undefined);
+					return;
+				}
+				await writeAtomic(sessionIndexFile(projectRoot), renderIndexDocument(existing, sessionIndexLine(ctx, sessionTitle(ctx))));
+			});
 		} catch (error) {
 			// Best effort: a stale ctx or read-only dir must not break the archive write.
 			if (projectRoot && !loggedScopes.has("session-index")) {

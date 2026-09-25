@@ -678,6 +678,19 @@ try {
 				&& ["01", "02", "03", "04", "05", "06", "07"].every((day) => !archives.some((name) => name.includes(`-2026-01-${day}T`)))
 				&& ["11", "15"].every((day) => archives.some((name) => name.includes(`-2026-01-${day}T`))));
 			check("the rotated render still matches the journal", foldMemoryJournal(rotated.entries) === await readFile(journalMemory, "utf8"));
+
+			// A journal that is gone entirely must not silently revive the render it superseded:
+			// rotation copies the previous bytes into `memory-log-*.jsonl`, so the archive is the
+			// surviving copy of the pass's document and the read path prefers it.
+			await rm(journalFile, { force: true });
+			await writeFile(journalMemory, "# Project Memory\n\n## Project\n- a stale pre-pass render\n");
+			const archiveName = "memory-log-2026-01-20T00-00-00-000Z-00000020.jsonl";
+			await writeFile(path.join(path.dirname(journalFile), archiveName), `${JSON.stringify({ ts: "2026-01-20T00:00:00.000Z", op: "replace", text: "# Project Memory\n\n## Project\n- recovered from the archive\n" })}\n`);
+			const recovered = await loadMemory(journalTmp);
+			check(
+				"a missing journal is recovered from its archive, not the stale render",
+				recovered.text.includes("- recovered from the archive") && !recovered.text.includes("stale pre-pass render") && recovered.source.endsWith(archiveName),
+			);
 		} finally {
 			await rm(journalTmp, { recursive: true, force: true });
 		}

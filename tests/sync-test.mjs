@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -74,6 +74,43 @@ console.log("\n=== migration keeps an unmergeable legacy path ===");
 	check("legacy side left in place", await exists(path.join(tmp, ".pi/MEMORY.md/inside.md")));
 	check("new side left in place", (await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8")) === "current");
 	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== migration keeps a divergent legacy skill directory, and names a superseded file ===");
+{
+	// The import used to delete `<legacy>/skills/<name>/` as soon as the destination `SKILL.md`
+	// existed: a newer hand-edited body and every sibling asset went with it, silently and without a
+	// conflict. A legacy directory is now consumed only when it is an exact duplicate.
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-skills-"));
+	const live = '---\nname: release-checklist\ndescription: "live"\n---\n\nlive body\n';
+	const legacy = '---\nname: release-checklist\ndescription: "hand edited"\n---\n\nhand-edited body\n';
+	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
+	await mkdir(path.join(tmp, ".agents/skills/release-checklist"), { recursive: true });
+	await writeFile(path.join(tmp, ".agents/skills/release-checklist/SKILL.md"), live);
+	await mkdir(path.join(tmp, ".pi/skills/release-checklist"), { recursive: true });
+	await writeFile(path.join(tmp, ".pi/skills/release-checklist/SKILL.md"), legacy);
+	await writeFile(path.join(tmp, ".pi/skills/release-checklist/reference.md"), "only in the legacy copy");
+
+	const result = await migrateProjectState(tmp);
+	check("the divergent legacy body survives", (await readFile(path.join(tmp, ".pi/skills/release-checklist/SKILL.md"), "utf8").catch(() => "")) === legacy);
+	check("the legacy-only sibling survives", await exists(path.join(tmp, ".pi/skills/release-checklist/reference.md")));
+	check("the kept legacy directory is reported", result.conflicts.includes(".agents/skills/release-checklist"));
+	check("the live skill is untouched", (await readFile(path.join(tmp, ".agents/skills/release-checklist/SKILL.md"), "utf8")) === live);
+	await rm(tmp, { recursive: true, force: true });
+
+	// The other outcome: a colliding file whose legacy copy is older. The bytes are dropped, and the
+	// migration must not call that "moved".
+	const older = await mkdtemp(path.join(os.tmpdir(), "pi-sync-superseded-"));
+	await mkdir(path.join(older, ".agents/memory"), { recursive: true });
+	await writeFile(path.join(older, ".agents/memory/MEMORY.md"), "# new\n");
+	await mkdir(path.join(older, ".pi"), { recursive: true });
+	await writeFile(path.join(older, ".pi/MEMORY.md"), "# legacy\n");
+	const past = new Date(Date.now() - 60_000);
+	await utimes(path.join(older, ".pi/MEMORY.md"), past, past);
+	const superseded = await migrateProjectState(older);
+	check("a newer destination is reported as superseded, not moved", superseded.moved.length === 0 && superseded.superseded.includes(".agents/memory/MEMORY.md"));
+	check("the discarded legacy file is gone", !(await exists(path.join(older, ".pi/MEMORY.md"))));
+	await rm(older, { recursive: true, force: true });
 }
 
 console.log("\n=== migration honors maxMemoryChars ===");

@@ -74,7 +74,7 @@ marker 行不计入正文 cap。超限会在每项目每进程写一次 `errors.
 | `/autolearn` | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off`。`approve` 会重新套用与提案路径相同的形状规则（描述/体积上下限、注入检测），不满足则拒绝并点名原因 |
 | `/auto-handoff` | `status`、`on`、`off`、`auto`、裸比例、`target`、`keep`、`thinking`、`guard`、`lang`、`send`、`draft`、`now` |
 
-说明：`/auto-handoff auto` 是自适应模式（无参数，阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升），`/auto-handoff target 64k` 是手动设定的**目标摘要量**，不参与触发公式，被护栏压掉时 `status` 会点名；裸 `/auto-handoff 0.6` 是固定 60% 模式，`handoffThresholdRatio` 只用于固定模式（旧配置同时有 `handoffAdaptive: true` 与 ratio 时，auto 忽略 ratio；要比例请用裸 `/auto-handoff 0.6`）。
+说明：`/auto-handoff auto` 是自适应模式（无参数，阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升），`/auto-handoff target 64k` 是手动设定的**目标摘要量**，不参与触发公式，被护栏压掉时 `status` 会点名；裸 `/auto-handoff 0.6` 是固定 60% 模式，`handoffThresholdRatio` 只用于固定模式（旧配置同时有 `handoffAdaptive: true` 与 ratio 时，auto 忽略 ratio；要比例请用裸 `/auto-handoff 0.6`）。`/auto-handoff` 写入时只提交自己拥有的 handoff 键，因此不会覆盖 `/project-context off memory` 之类的开关、另一个实例的改动或手改的字段。
 
 ## flags
 

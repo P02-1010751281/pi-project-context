@@ -4,7 +4,7 @@ export { backupMemoryBeforeWrite } from "../memory/backup.ts";
 export { isMemoryTruncated, memoryTruncationMarker, normalizeMemoryDocument } from "../memory/document.ts";
 export { appendMemoryOp, foldMemoryJournal, readMemoryJournal } from "../memory/journal.ts";
 export type { MemoryJournalEntry } from "../memory/journal.ts";
-export { withMemoryLock } from "../memory/lock.ts";
+export { withMemoryLock } from "./lock.ts";
 export { readJsonStringField } from "../memory/poison.ts";
 export { loadMemory, recordMemoryDocument } from "../memory/store.ts";
 export type { LoadedMemory } from "../memory/store.ts";

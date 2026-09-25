@@ -34,17 +34,50 @@ export function handoffEnabled(): boolean {
 	return !runIsDisabled() && flagEnabled && (peekConfig(configRoot)?.handoffEnabled ?? false);
 }
 
-/** Load the project's configuration into the local working copy. */
+/**
+ * Load the project's configuration into the local working copy.
+ *
+ * Mutate the mirror **in place**, never reassign it: reassigning this exported `let` did not reach
+ * the command handler under the host's interop (measured — `run.ts` kept writing the previous
+ * object while this module read the new one), which is how a command could persist values nobody
+ * had set. Keeping one stable object is the same reason the split exposes `setFlagEnabled` /
+ * `setConfigRoot` instead of reassigning.
+ */
 export async function syncConfig(root: string | undefined): Promise<void> {
 	configRoot = root;
 	if (!root) return;
-	config = await getConfig(root);
+	Object.assign(config, await getConfig(root));
 }
 
+/**
+ * Persist the handoff settings.
+ *
+ * `updateConfig` merges into the cached configuration and publishes a **new** object, so this
+ * module's mirror goes stale the moment another writer saves — `/project-context off memory` calls
+ * `setFeature` and does exactly that. Writing the whole mirror back then silently reverted whatever
+ * the other writer had just set (and any other host's or hand edit's changes). A command that means
+ * to change one handoff key must send only the handoff keys, and then adopt the merged result so the
+ * mirror cannot drift again.
+ */
 export async function saveConfig(): Promise<void> {
 	if (!configRoot) return;
+	const patch: Partial<ProjectContextConfig> = {
+		handoffAdaptive: config.handoffAdaptive,
+		handoffThresholdRatio: config.handoffThresholdRatio,
+		handoffTargetTokens: config.handoffTargetTokens,
+		handoffKeepTokens: config.handoffKeepTokens,
+		handoffSummaryThinking: config.handoffSummaryThinking,
+		handoffMode: config.handoffMode,
+		handoffGuard: config.handoffGuard,
+		handoffLanguage: config.handoffLanguage,
+	};
 	try {
-		await updateConfig(configRoot, config);
+		// Adopt the merged result **in place**. Reassigning this exported `let` did not reach the
+		// command handler under the host's module interop — measured: after `/auto-handoff lang zh`
+		// every later command persisted `zh` again, because `run.ts` was still mutating the previous
+		// object while this module read the new one. This is the same reason the split exposes
+		// `setFlagEnabled`/`setConfigRoot` instead of reassigning.
+		Object.assign(config, await updateConfig(configRoot, patch));
 	} catch {
 		// Best effort; a read-only project dir must not break the session.
 	}

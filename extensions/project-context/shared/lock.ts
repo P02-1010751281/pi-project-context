@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ensureMemoryGitignore } from "../shared/gitignore.ts";
+import { ensureMemoryGitignore } from "./gitignore.ts";
 
 /** How long a write may hold the memory lock before another process may steal it. */
 const MEMORY_LOCK_STALE_MS = 30_000;

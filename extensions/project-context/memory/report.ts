@@ -164,8 +164,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (result.importedSkills > 0) details.push(`imported ${result.importedSkills} skill${result.importedSkills === 1 ? "" : "s"}`);
 			if (result.importedMemory) details.push("imported legacy OMP memory");
 			if (details.length > 0) notify(ctx, `Project memory in ${memoryDir(projectRoot)}: ${details.join("; ")}`);
+			// The legacy counterpart was older, so the current file won and the legacy bytes are gone.
+			// The migration used to report these as "moved", which is false.
+			if (result.superseded.length > 0) {
+				notify(ctx, `Legacy files superseded and discarded (the current file was newer): ${result.superseded.join(", ")}`);
+			}
 			if (result.conflicts.length > 0) {
-				notify(ctx, `Legacy layout left in place (file/directory type conflict, merge it by hand): ${result.conflicts.join(", ")}`, "warning");
+				notify(ctx, `Legacy layout left in place (a newer legacy copy or a file/directory type conflict; merge it by hand): ${result.conflicts.join(", ")}`, "warning");
 			}
 		} catch (error) {
 			await logError(projectRoot, "migration", error);

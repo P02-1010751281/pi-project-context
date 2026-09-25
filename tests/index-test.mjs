@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -54,6 +54,21 @@ try {
 
 	console.log("\n=== CONTEXT.md keeps the index out ===");
 	const { renderContextDocument } = await loadNamespace(`${PC}/memory/context-doc.ts`);
+	console.log("\n=== the index read-modify-write takes the cross-process lock ===");
+	// `writeQueue` only serializes writers inside this process, and the index write is a
+	// read-modify-write: two hosts doing it at once lose whole session lines. A stale lock left behind
+	// by a dead host must be stolen and released by the writer; an unlocked writer would ignore the
+	// file entirely and leave it in place.
+	const lockFile = path.join(tmp, ".agents/memory/session-index.lock");
+	await writeFile(lockFile, "stale");
+	const longAgo = new Date(Date.now() - 60_000);
+	await utimes(lockFile, longAgo, longAgo);
+	// `session_shutdown` awaits its write (agent_settled fires and forgets), so the lock is released
+	// before this returns.
+	await runHandlers(pi, "session_shutdown", ctx);
+	check("the index was still written with a stale lock present", (await readFile(indexFile, "utf8")).includes("[cur-sess]"));
+	check("the writer consumed and released the stale lock", await stat(lockFile).then(() => false).catch(() => true));
+
 	const { renderIndexDocument } = await loadNamespace(`${PC}/archive/session-index.ts`);
 	const contextDoc = renderContextDocument({
 		title: "Index test session",

@@ -7,7 +7,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { clipToLineBoundary, normalizeMemoryDocument } from "./document.ts";
-import { appendMemoryOp, foldMemoryJournal, readMemoryJournal, rotateMemoryJournalIfNeeded } from "./journal.ts";
+import { appendMemoryOp, foldMemoryJournal, newestMemoryArchive, readMemoryJournal, rotateMemoryJournalIfNeeded } from "./journal.ts";
 import { decodePoisonedMemory, memoryComparisonKey } from "./poison.ts";
 import { logError } from "../shared/error-log.ts";
 import { readOptional, writeAtomic } from "../shared/files.ts";
@@ -117,6 +117,15 @@ export async function loadMemory(projectRoot: string, limit: number = MAX_MEMORY
 			// The file exists but cannot be read: report it instead of claiming there is no memory.
 			return { text: "", source: target, poisoned: false, unreadable: true };
 		}
+	}
+	// No journal at all. A rotation archive is still evidence of what the document was — the previous
+	// bytes are copied there — so prefer it over a render the journal had already superseded. This is
+	// the recovery path for a journal deleted by hand, and the second net under the rotation window.
+	const archive = await newestMemoryArchive(projectRoot);
+	if (archive) {
+		const archived = await readMemoryJournal(archive);
+		const recovered = foldMemoryJournal(archived.entries, limit);
+		if (recovered) return { text: recovered, source: archive, poisoned: false, damaged: archived.damaged };
 	}
 	const current = raw.trim();
 	if (current) {

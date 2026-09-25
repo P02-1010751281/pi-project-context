@@ -104,7 +104,6 @@ extensions/project-context/
 │   ├── store.ts            #    读路径与一次写入事务
 │   ├── backup.ts           #    写入前字节级备份与清理
 │   ├── poison.ts           #    存储回复解码与归一化比较键
-│   ├── lock.ts             #    跨进程写锁
 │   └── context-doc.ts      #    CONTEXT.md 渲染
 ├── autolearn/              # ③ 沉淀（1 次 LLM，≥6h）
 │   ├── pass.ts             #    pass 与注册：节流蒸馏
@@ -138,6 +137,7 @@ extensions/project-context/
     ├── files.ts            #    原子写、可选读、探测、移动/合并、临时清理
     ├── notify.ts           #    用户通知与错误文本
     ├── redact.ts           #    日志脱敏
+    ├── lock.ts             #    跨进程写锁（journal / 索引 / 迁移共用）
     ├── gitignore.ts        #    `.agents/.gitignore` 托管块
     ├── error-log.ts        #    errors.log 轮转与脱敏写入
     ├── migrate.ts          #    旧布局一次性迁移
