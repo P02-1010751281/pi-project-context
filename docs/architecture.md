@@ -94,16 +94,54 @@ extensions/project-context/
 │   ├── session-index.ts    #    INDEX.md
 │   └── import-archive.ts   #    历史 session 导入
 ├── memory/                 # ② 整理（1 次 LLM）
-│   ├── consolidate.ts      #    整理 pass
+│   ├── pass.ts             #    整理 pass：节流 + 单飞 + 状态
+│   ├── report.ts           #    截断提示、上次写入记录、hook 注册
+│   ├── prompt.ts           #    提示词：固定规则 + 装配后的文档
+│   ├── input.ts            #    记忆 + 上下文适配进输入预算
+│   ├── parse.ts            #    回复解析（容错 JSON + 逐字段裁决）
+│   ├── document.ts         #    MEMORY.md 规范化与截断标记
+│   ├── journal.ts          #    memory.jsonl 追加日志（折叠 / 轮转 / 归档）
+│   ├── store.ts            #    读路径与一次写入事务
+│   ├── backup.ts           #    写入前字节级备份与清理
+│   ├── poison.ts           #    存储回复解码与归一化比较键
+│   ├── lock.ts             #    跨进程写锁
 │   └── context-doc.ts      #    CONTEXT.md 渲染
 ├── autolearn/              # ③ 沉淀（1 次 LLM，≥6h）
-│   └── autolearn.ts        #    技能沉淀与证据门禁
+│   ├── pass.ts             #    pass 与注册：节流蒸馏
+│   ├── prompt.ts           #    清单 + 索引 + 取证，固定规则
+│   ├── inventory.ts        #    技能清单
+│   ├── evidence.ts         #    会话索引、历史会话与取证文本预算
+│   ├── candidate.ts        #    候选文件、准入规则、approve/reject
+│   ├── parse.ts            #    回复 → 提案
+│   └── skill.ts            #    技能形状、SKILL.md 渲染、安全校验
 ├── handoff/                # ④ 交接（1 次 LLM）
-│   ├── handoff.ts          #    阈值、摘要、replay、触发与命令
+│   ├── run.ts              #    交接事务、自动触发、命令注册
+│   ├── threshold.ts        #    阈值：膝曲线、物理下限、两个上界与被谁限住的回执
+│   ├── summary.ts          #    摘要调用
+│   ├── prompt.ts           #    摘要提示词与续接文档
+│   ├── language.ts         #    语言判定与提示词识别
+│   ├── text.ts             #    消息渲染与 replay 标记
+│   ├── format.ts           #    数字 / 百分比 / token 格式化
+│   ├── file-ops.ts         #    对话中出现过的文件操作
+│   ├── question.ts         #    未答问题守卫
+│   ├── settings.ts         #    持久开关的进程内镜像
+│   ├── state.ts            #    in-flight 与两个冷却时钟
+│   ├── handoff.ts          #    交接子包对外门面（再导出）
 │   ├── session-settings.ts #    交接的设置暂存与恢复（模型 / 思考级别）
 │   └── session-lineage.ts  #    新会话挂在哪个祖先（父链压平、会话头读取）
 └── shared/                 # 四个能力共用
     ├── config.ts           #    配置与旧布局兼容
     ├── llm.ts              #    JSON LLM 调用与辅助路由
-    └── project-state.ts    #    路径、原子写、锁、错误、迁移
+    ├── project-state.ts    #    项目状态**门面**（再导出原有公共 API）
+    ├── paths.ts            #    项目根与路径助手
+    ├── limits.ts           #    字符预算
+    ├── files.ts            #    原子写、可选读、探测、移动/合并、临时清理
+    ├── notify.ts           #    用户通知与错误文本
+    ├── redact.ts           #    日志脱敏
+    ├── gitignore.ts        #    `.agents/.gitignore` 托管块
+    ├── error-log.ts        #    errors.log 轮转与脱敏写入
+    ├── migrate.ts          #    旧布局一次性迁移
+    ├── text.ts             #    文本计量、裁剪、回复头
+    ├── output-budget.ts    #    辅助调用输出预算
+    └── conversation.ts     #    会话渲染与用户轮次统计
 ```
