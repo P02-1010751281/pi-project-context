@@ -467,6 +467,33 @@ try {
 		getContextUsage: () => ({ tokens: 24_000, percent: 2.4, contextWindow: 1_000_000 }),
 	});
 	check("a tier edge inside the floor leaves no threshold", handoff.resolveThreshold(tierBelowCtx, tierBelowCtx.getContextUsage()) === undefined);
+	// Every refusal above used to render as "auto (no room at this window)" — a claim about the
+	// window. Only the window-too-small cause is about the window; the tier one is **billing**, and a
+	// user told "no room at this window" goes and changes the model or the target in vain. The status
+	// line must name the term that actually refused.
+	check(
+		"a window that cannot hold the configuration is reported as a small window",
+		handoff.thresholdRefusal(tinyCtx, tinyCtx.getContextUsage()) === "window-too-small",
+	);
+	check(
+		"the tier refusal is attributed to the pricing tier, not the window",
+		handoff.thresholdRefusal(tierBelowCtx, tierBelowCtx.getContextUsage()) === "below-first-tier",
+	);
+	check(
+		"a resolved threshold has no refusal cause",
+		handoff.thresholdRefusal(floorCtx, floorCtx.getContextUsage()) === undefined,
+	);
+	const tierReceipt = handoff.statusText(tierBelowCtx);
+	check(
+		"the status line does not blame the window for a billing refusal",
+		/auto \(/.test(tierReceipt) && !/no room at this window/.test(tierReceipt) && !/window too small/.test(tierReceipt),
+	);
+	const smallReceipt = handoff.statusText(tinyCtx);
+	check("the status line explains the tier refusal", /pricing tier/.test(tierReceipt));
+	check(
+		"the two refusals do not render as the same sentence",
+		smallReceipt !== tierReceipt && /window too small/.test(smallReceipt),
+	);
 	// `handoffThresholdRatio` belongs to fixed mode, and `/auto-handoff auto` takes no parameters.
 	const fixedTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-fixed-"));
 	try {

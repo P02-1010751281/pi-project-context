@@ -821,6 +821,71 @@ export function resolveThreshold(
 	};
 }
 
+/**
+ * Why {@link resolveThreshold} returned `undefined`, named as the term that actually decided.
+ *
+ * The receipt used to render every refusal as "auto (no room at this window)" — an assertion about
+ * the window. Only one of the six causes is about the window; the others are an unknown window, an
+ * unknown model/usage, a fixed ratio that rounds to zero, a **pricing tier** that would be crossed,
+ * and a cap that squeezed the value below the floor. Sending a user to change the model or the target
+ * when the cause is billing (or when nothing is known yet) is the misattribution this names away.
+ */
+export type ThresholdRefusal =
+	| "no-window"
+	| "fixed-ratio-rounds-to-zero"
+	| "no-model-or-usage"
+	| "window-too-small"
+	| "below-first-tier"
+	| "squeezed-by-cap";
+
+/**
+ * The refusal cause behind `resolveThreshold(...) === undefined`, or `undefined` when it resolves.
+ * Read-only companion: it replays the same terms in the same order and only reports a cause once the
+ * real function has refused, so the diagnosis cannot drift from the formula (which is untouched).
+ */
+export function thresholdRefusal(
+	ctx: ExtensionContext,
+	usage: ContextUsage,
+	summaryModel?: ExtensionContext["model"],
+): ThresholdRefusal | undefined {
+	if (resolveThreshold(ctx, usage, summaryModel) !== undefined) return undefined;
+	const window = usage.contextWindow;
+	if (window <= 0) return "no-window";
+	if (!config.handoffAdaptive) return "fixed-ratio-rounds-to-zero";
+	const model = ctx.model;
+	if (!model || usage.tokens === null) return "no-model-or-usage";
+	const floor = baselineTokens(ctx, usage) + config.handoffKeepTokens + MIN_SUMMARIZE_TOKENS;
+	const usable = window - WINDOW_RESERVE_TOKENS;
+	if (usable <= floor) return "window-too-small";
+	const tierEdge = firstCostTierEdge(model);
+	if (tierEdge !== undefined && tierEdge - TIER_EDGE_MARGIN < floor) return "below-first-tier";
+	return "squeezed-by-cap";
+}
+
+/**
+ * The refusal sentence for the status line. Each cause names the comparison that failed, so the
+ * receipt cannot attribute one refusal to another.
+ */
+export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionContext, usage: ContextUsage): string {
+	const window = usage.contextWindow;
+	const floor = baselineTokens(ctx, usage) + config.handoffKeepTokens + MIN_SUMMARIZE_TOKENS;
+	const usable = window - WINDOW_RESERVE_TOKENS;
+	switch (reason) {
+		case "no-window":
+			return "auto (the context window is not known yet)";
+		case "fixed-ratio-rounds-to-zero":
+			return `auto (a fixed ratio of ${fmtPct(config.handoffThresholdRatio * 100)} resolves to no positive threshold at this window)`;
+		case "no-model-or-usage":
+			return "auto (the session model or its token usage is not known yet)";
+		case "window-too-small":
+			return `auto (window too small: ${usable} usable tokens after the ${WINDOW_RESERVE_TOKENS} reserve, below the ${floor} floor)`;
+		case "below-first-tier":
+			return "auto (crossing the first pricing tier would not leave room for a worthwhile summary, so the handoff is skipped rather than billed)";
+		default:
+			return "auto (a cap — the summarizer window or the usable window — left less than the summarize minimum)";
+	}
+}
+
 /** Recent user messages decide `auto`; the whole session is the fallback when they are too short. */
 const LANGUAGE_SAMPLE_MESSAGES = 8;
 const LANGUAGE_SAMPLE_MIN_CHARS = 40;
@@ -865,7 +930,8 @@ function capSuffix(bound: Threshold["bound"]): string {
 	return "";
 }
 
-function statusText(ctx: ExtensionContext): string {
+/** Exported so tests can read the status receipt without going through the command registration. */
+export function statusText(ctx: ExtensionContext): string {
 	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
@@ -873,7 +939,11 @@ function statusText(ctx: ExtensionContext): string {
 	if (usage && usage.tokens !== null) {
 		threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
 		if (threshold) thresholdLabel = threshold.label + capSuffix(threshold.bound);
-		else if (config.handoffAdaptive) thresholdLabel = "auto (no room at this window)";
+		else if (config.handoffAdaptive) {
+			// Never render every refusal as a claim about the window: name the term that refused.
+			const refusal = thresholdRefusal(ctx, usage, resolveAuxModel(ctx, config));
+			thresholdLabel = refusal === undefined ? "auto" : thresholdRefusalText(refusal, ctx, usage);
+		}
 	}
 	// With a usable threshold the status reports the projected prefix after caps, so a cap cannot be
 	// misread as the configured minimum; the real cut can only be shorter. Without usage it echoes the
