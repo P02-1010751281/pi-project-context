@@ -279,12 +279,6 @@ export function peekConfig(projectRoot: string | undefined): ProjectContextConfi
 	return projectRoot ? cache.get(projectRoot) : undefined;
 }
 
-export async function saveConfig(projectRoot: string, config: ProjectContextConfig): Promise<ProjectContextConfig> {
-	cache.set(projectRoot, config);
-	await writeAtomic(configFile(projectRoot), `${JSON.stringify(config, null, 2)}\n`);
-	return config;
-}
-
 /**
  * Merge a partial update into the project's configuration and persist it.
  *
