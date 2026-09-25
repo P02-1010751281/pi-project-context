@@ -21,13 +21,29 @@ export function candidateFile(projectRoot: string, name: string): string {
 	return path.join(candidatesDir(projectRoot), `${name}.md`);
 }
 
+/**
+ * The shape rules every skill must pass, whichever path read it. A proposal from the model and a
+ * candidate file on disk are the *same document*, so judging them with two copies of the rules is
+ * how `approveCandidate` ended up checking only the description and the body's lower bound — a
+ * hand-approved candidate skipped the body cap and the instruction-injection detector that the
+ * proposal path enforces. One pure predicate, shared by both callers.
+ *
+ * The name is checked by the caller: the pass validates the model's name, the approve path validates
+ * the CLI argument before it reads anything.
+ */
+export function shapeRejection(description: string, body: string): string | undefined {
+	if (!description) return "missing description";
+	if (description.length > MAX_SKILL_DESCRIPTION_CHARS) return "description too long";
+	if (body.length < MIN_SKILL_BODY_CHARS) return "body too short";
+	if (body.length > MAX_SKILL_BODY_CHARS) return "body too long";
+	if (skillBodyUnsafe(body)) return "body looks like an instruction injection";
+	return undefined;
+}
+
 export function rejectionReason(skill: ProposedSkill, verified: Set<string>, skills: SkillInfo[], candidateExists: boolean): string | undefined {
 	if (!validSkillName(skill.name)) return "invalid kebab-case name";
-	if (!skill.description) return "missing description";
-	if (skill.description.length > MAX_SKILL_DESCRIPTION_CHARS) return "description too long";
-	if (skill.body.length < MIN_SKILL_BODY_CHARS) return "body too short";
-	if (skill.body.length > MAX_SKILL_BODY_CHARS) return "body too long";
-	if (skillBodyUnsafe(skill.body)) return "body looks like an instruction injection";
+	const shape = shapeRejection(skill.description, skill.body);
+	if (shape !== undefined) return shape;
 	const cited = [...new Set(skill.evidence)].filter((id) => verified.has(id));
 	const required = skill.candidate ? AUTOLEARN_CANDIDATE_MIN_SESSIONS : AUTOLEARN_MIN_SESSIONS;
 	if (cited.length < required) {
@@ -66,8 +82,12 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 	}
 	const description = skillDescription(raw, MAX_SKILL_DESCRIPTION_CHARS);
 	const body = candidateBody(raw);
-	if (!description || body.length < MIN_SKILL_BODY_CHARS) {
-		notify(ctx, `Candidate "${name}" is incomplete; not activating.`, "warning");
+	// The same rules the pass applied when it stored this candidate, minus the evidence rules (a
+	// stored candidate already passed those, and its file carries no parsed evidence). Naming the rule
+	// makes the refusal actionable instead of a dead end.
+	const shape = shapeRejection(description, body);
+	if (shape !== undefined) {
+		notify(ctx, `Candidate "${name}" is not activatable (${shape}); not activating.`, "warning");
 		return;
 	}
 	const destination = path.join(skillsDir(projectRoot), name, "SKILL.md");
