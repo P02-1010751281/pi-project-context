@@ -4,7 +4,7 @@ import { registerArchive } from "./archive/archive.ts";
 import { registerAutolearn } from "./autolearn/autolearn.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
 import { registerConsolidation } from "./memory/consolidate.ts";
-import { registerHandoff } from "./handoff/handoff.ts";
+import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
 import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, notify, type LoadedMemory } from "./shared/project-state.ts";
 
