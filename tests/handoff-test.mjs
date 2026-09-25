@@ -25,6 +25,8 @@ try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 
 	const handoff = await loadNamespace(`${PC}/handoff/handoff.ts`);
+	const settings = await loadNamespace(`${PC}/handoff/session-settings.ts`);
+	const lineage = await loadNamespace(`${PC}/handoff/session-lineage.ts`);
 
 	console.log("=== detectHandoffLanguage ===");
 	check("Chinese user text picks zh", handoff.detectHandoffLanguage(["那做了呗，统一一下", "把记忆也改成 append-only 的模型，别残留隐患"]) === "zh");
@@ -773,28 +775,28 @@ try {
 	await writeHeader(sessionFile("root"), "root");
 	await writeHeader(sessionFile("mid"), "mid", sessionFile("root"));
 	await writeHeader(sessionFile("leaf"), "leaf", sessionFile("mid"));
-	check("a session chain resolves to its root", (await handoff.resolveHandoffParentSession(sessionFile("leaf"))) === sessionFile("root"));
-	check("a root session is its own parent", (await handoff.resolveHandoffParentSession(sessionFile("root"))) === sessionFile("root"));
-	check("a missing session file is its own parent", (await handoff.resolveHandoffParentSession(sessionFile("nope"))) === sessionFile("nope"));
-	check("an in-memory session has no parent", (await handoff.resolveHandoffParentSession(undefined)) === undefined);
+	check("a session chain resolves to its root", (await lineage.resolveHandoffParentSession(sessionFile("leaf"))) === sessionFile("root"));
+	check("a root session is its own parent", (await lineage.resolveHandoffParentSession(sessionFile("root"))) === sessionFile("root"));
+	check("a missing session file is its own parent", (await lineage.resolveHandoffParentSession(sessionFile("nope"))) === sessionFile("nope"));
+	check("an in-memory session has no parent", (await lineage.resolveHandoffParentSession(undefined)) === undefined);
 	await writeHeader(sessionFile("cyc-a"), "cyc-a", sessionFile("cyc-b"));
 	await writeHeader(sessionFile("cyc-b"), "cyc-b", sessionFile("cyc-a"));
-	check("a parent cycle terminates", [sessionFile("cyc-a"), sessionFile("cyc-b")].includes(await handoff.resolveHandoffParentSession(sessionFile("cyc-a"))));
+	check("a parent cycle terminates", [sessionFile("cyc-a"), sessionFile("cyc-b")].includes(await lineage.resolveHandoffParentSession(sessionFile("cyc-a"))));
 	// The header is the first line and is read to its newline, so an oversized one no longer costs
 	// the whole ancestor walk (the old fixed 64KB read failed to parse and fell back to chaining).
 	const oversized = JSON.stringify({ type: "session", version: 3, id: "big", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note: "x".repeat(80_000), parentSession: sessionFile("root") });
 	await writeFile(sessionFile("big"), `${oversized}\n`);
-	check("an oversized session header still resolves to its root", (await handoff.resolveHandoffParentSession(sessionFile("big"))) === sessionFile("root"));
+	check("an oversized session header still resolves to its root", (await lineage.resolveHandoffParentSession(sessionFile("big"))) === sessionFile("root"));
 	const pathological = JSON.stringify({ type: "session", version: 3, id: "huge", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note: "x".repeat(1_100_000), parentSession: sessionFile("root") });
 	await writeFile(sessionFile("huge"), `${pathological}\n`);
-	check("a header beyond the pathological cap falls back to chaining", (await handoff.resolveHandoffParentSession(sessionFile("huge"))) === sessionFile("huge"));
+	check("a header beyond the pathological cap falls back to chaining", (await lineage.resolveHandoffParentSession(sessionFile("huge"))) === sessionFile("huge"));
 	// Exactly at the cap is still a header when the file ends there: the boundary is decided by one
 	// extra byte, not by equality (`>` vs `>=` must not turn into a silent downgrade).
 	const cap = 1024 * 1024;
 	const headerFor = (note) => JSON.stringify({ type: "session", version: 3, id: "edge", timestamp: "2026-09-17T00:00:00.000Z", cwd: tmp, note, parentSession: sessionFile("root") });
 	const exact = headerFor("x".repeat(cap - headerFor("").length));
 	await writeFile(sessionFile("cap"), `${exact}\n`);
-	check("a header exactly at the cap is still read", exact.length === cap && (await handoff.resolveHandoffParentSession(sessionFile("cap"))) === sessionFile("root"));
+	check("a header exactly at the cap is still read", exact.length === cap && (await lineage.resolveHandoffParentSession(sessionFile("cap"))) === sessionFile("root"));
 
 	const settingsEntries = [
 		contentEntry("s1", "user", [{ type: "text", text: `Please carry the session settings over. ${'filler sentence. '.repeat(200)}` }], "2026-09-17T00:10:00.000Z"),
@@ -839,7 +841,7 @@ try {
 	await runHandlers(pinPi, "session_start", settingsCtx);
 	await pinPi.commands.get("auto-handoff").handler("now", settingsCtx);
 
-	const markerFile = handoff.handoffSettingsFile(tmp);
+	const markerFile = settings.handoffSettingsFile(tmp);
 	const markerExists = () => readFile(markerFile, "utf8").then(() => true).catch(() => false);
 	const staged = JSON.parse(await readFile(markerFile, "utf8").catch(() => "{}"));
 	check("the handoff still continues in a fresh session", settingsCaptured.prompt !== undefined && settingsCaptured.replay.length > 0);
@@ -850,7 +852,7 @@ try {
 	);
 	check("the stage is keyed to the replaced session", staged.previousSessionFile === sessionFile("leaf") && typeof staged.at === "number");
 	const memoryGitignore = await readFile(path.join(tmp, ".agents/memory/.gitignore"), "utf8").catch(() => "");
-	check("the staged settings stay out of commits", memoryGitignore.includes(handoff.HANDOFF_SETTINGS_FILE));
+	check("the staged settings stay out of commits", memoryGitignore.includes(settings.HANDOFF_SETTINGS_FILE));
 
 	// pi builds the replacement from its own defaults, so the staged settings are applied from the
 	// fresh extension instance's session_start (after the replay, before the continuation prompt).
@@ -870,7 +872,7 @@ try {
 	check("the staged settings are consumed by that one switch", !(await markerExists()));
 
 	const stageFor = (overrides) =>
-		handoff.stageHandoffSessionSettings(tmp, {
+		settings.stageHandoffSessionSettings(tmp, {
 			previousSessionFile: sessionFile("leaf"),
 			model: { provider: "deepseek", id: "deepseek-flash" },
 			thinkingLevel: "high",
@@ -945,9 +947,9 @@ try {
 		return quietExec(...execArgs);
 	};
 	await stageFor({});
-	await handoff.restoreHandoffSessionSettings(quietPi, makeCtx(quietCwd, { sessionManager: makeSessionManager([], "quiet") }), { reason: "resume", previousSessionFile: sessionFile("leaf") });
+	await settings.restoreHandoffSessionSettings(quietPi, makeCtx(quietCwd, { sessionManager: makeSessionManager([], "quiet") }), { reason: "resume", previousSessionFile: sessionFile("leaf") });
 	check("a non-handoff session start stops before resolving the project root", quietExecs === 0);
-	await handoff.clearHandoffSessionSettings(tmp);
+	await settings.clearHandoffSessionSettings(tmp);
 
 	// A switch cancelled by another extension must not leave a stage behind for a later `/new`.
 	const cancelCtx = makeCtx(tmp, {

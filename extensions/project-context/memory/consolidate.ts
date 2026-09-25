@@ -8,6 +8,7 @@ import {
 	MAX_CONVERSATION_CHARS,
 	backupMemoryBeforeWrite,
 	contextFile,
+	errorText,
 	getProjectRoot,
 	isMemoryTruncated,
 	loadMemory,
@@ -541,7 +542,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (projectRoot) await logError(projectRoot, "memory", error);
 			if (!silent) {
 				// The message may carry a raw-reply dump for errors.log; the toast shows the headline only.
-				const message = error instanceof Error ? error.message : String(error);
+				const message = errorText(error);
 				notify(ctx, `Project memory update failed: ${message.split("\n", 1)[0]}`, "warning");
 			}
 			return "failed";

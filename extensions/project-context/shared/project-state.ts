@@ -119,6 +119,12 @@ export function notify(ctx: ExtensionContext, message: string, type: "info" | "w
 	}
 }
 
+/** The message of a thrown value, for user-facing receipts and guards. The error log keeps the
+ * stack (`logError` builds its own text) — this helper deliberately drops it. */
+export function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /** Rotate `errors.log` once its on-disk size passes this many bytes. */
 const MAX_ERROR_LOG_BYTES = 1_000_000;
 /** How many characters of the newest tail survive a rotation. */

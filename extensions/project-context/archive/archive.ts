@@ -6,6 +6,7 @@ import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
 	MAX_CONTEXT_CHARS,
 	contextFile,
+	errorText,
 	getProjectRoot,
 	legacySessionIndexFile,
 	logError,
@@ -47,7 +48,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 			loggedScopes.add("session-log");
 			await logError(projectRoot, "session-log", error);
 		}
-		if (!silent) notify(ctx, `Session log update failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		if (!silent) notify(ctx, `Session log update failed: ${errorText(error)}`, "warning");
 	}
 
 	/**

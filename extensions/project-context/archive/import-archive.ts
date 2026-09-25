@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { renderIndexDocument, sessionIndexLineFrom, titleFromEntries } from "./session-index.ts";
-import { logsDir, pathExists, readOptional, safeSessionId, sessionIndexFile, writeAtomic } from "../shared/project-state.ts";
+import { errorText, logsDir, pathExists, readOptional, safeSessionId, sessionIndexFile, writeAtomic } from "../shared/project-state.ts";
 import { renderSessionMarkdown } from "./session-log.ts";
 
 /**
@@ -113,7 +113,7 @@ export async function importSessionFile(
 		await writeAtomic(sessionIndexFile(options.projectRoot), renderIndexDocument(existing, line));
 		return { source: file, id, status: "created" };
 	} catch (error) {
-		return { source: file, status: "failed", error: error instanceof Error ? error.message : String(error) };
+		return { source: file, status: "failed", error: errorText(error) };
 	}
 }
 

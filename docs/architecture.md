@@ -99,7 +99,9 @@ extensions/project-context/
 ├── autolearn/              # ③ 沉淀（1 次 LLM，≥6h）
 │   └── autolearn.ts        #    技能沉淀与证据门禁
 ├── handoff/                # ④ 交接（1 次 LLM）
-│   └── handoff.ts          #    阈值、摘要、replay、新会话
+│   ├── handoff.ts          #    阈值、摘要、replay、触发与命令
+│   ├── session-settings.ts #    交接的设置暂存与恢复（模型 / 思考级别）
+│   └── session-lineage.ts  #    新会话挂在哪个祖先（父链压平、会话头读取）
 └── shared/                 # 四个能力共用
     ├── config.ts           #    配置与旧布局兼容
     ├── llm.ts              #    JSON LLM 调用与辅助路由

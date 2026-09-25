@@ -8,6 +8,7 @@ import { completeText, parseJsonObject, resolveAuxModel } from "../shared/llm.ts
 import {
 	MAX_SKILL_BODY_CHARS,
 	contextFile,
+	errorText,
 	fileMtimeMs,
 	getProjectRoot,
 	globalSkillsDir,
@@ -483,7 +484,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			notify(ctx, `Learned project skill: ${skill.name} → ${destination}`);
 		} catch (error) {
 			if (projectRoot) await logError(projectRoot, "autolearn", error);
-			if (!options.silent) notify(ctx, `Autolearn failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			if (!options.silent) notify(ctx, `Autolearn failed: ${errorText(error)}`, "warning");
 		}
 	}
 
