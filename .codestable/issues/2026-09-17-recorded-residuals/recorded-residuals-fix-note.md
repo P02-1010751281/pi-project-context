@@ -105,6 +105,25 @@ tags: [residuals, gitignore, handoff, context, status]
 之后：本轮是 4 条残余 + 1 条静默缺陷（CONTEXT.md 停更）的修复，其中残余 2/3 有真实行为变化（超大头的扁平化、marker 清理时机）、
 残余 4 新增命令输出，属「实质改动」，故随 `v0.1.7` 发布。**运行中的 pi 进程仍跑旧代码**，需重启（或下一次 handoff）才吃到 v0.1.7。
 
+**已发布 `v0.1.11`（2026-09-25）**：`v0.1.10..v0.1.11` 共 17 个提交，本轮收口 R3 损失面并把四个能力拆成各自子包
+（`b5d825d` 起），故 tag 指向收口提交本身。
+
+| 步骤 | 结果 |
+|---|---|
+| 注解 tag | `v0.1.11` → `ed2704c`（annotated；message `v0.1.11: R3 loss surfaces closed, capability modules split one per responsibility`，tag object `5ffec44`） |
+| 双远端 | `master` 与 `v0.1.11` 均已推：GitHub `origin`（本检出的唯一 remote）与 forgejo（`ssh://forgejo@git.lentech.site/…`，经**已装副本**的 origin 核实）均为 `ed2704c` / `5ffec44` |
+| 安装 pin | `~/.pi/agent/settings.json` 与 `~/.pi/README.md` 均为 `…pi-project-context.git@v0.1.11`；pin 变更提交在 `pi-config` 仓库 `ccd7046 chore(packages): bump pi-project-context to v0.1.11`，已推送（`HEAD == origin/HEAD`） |
+| 已装副本 | `/home/user/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context` HEAD = `ed2704c`（detached at tag） |
+| 已装副本自测 | `9/9`（`PI_PKG=<pi 包根> node tests/run-all.mjs`，本机 pi `0.86.1`）；本仓库检出同为 `9/9` |
+| CLI | `pi --version` = `0.86.1`；`pi --help` 含 `--extension, -e <path>` / `--no-extensions, -ne` |
+| 真机探针（已装包，不加 `-ne/-e`） | 沙箱 `/tmp/pi-v0111-probe-dls1`：真实写出 `.agents/memory/session-logs/INDEX.md`（149 B，条目指向 `01a0d8c5-…`）、`session-logs/01a0d8c5-…/{session.md 49,211 B, session.jsonl 41,275 B}` 与 `.agents/memory/CONTEXT.md`（403 B）；无 `errors.log` |
+
+**测试入口陷阱（本轮实测，值得记住）**：`tests/harness.mjs` 从 `${PI_PKG}/node_modules/jiti/lib/jiti-static.mjs`
+载入 jiti，所以 **`PI_PKG` 必须指向 pi 自身的包根**（`…/lib/node_modules/pi-monorepo`），**不是本仓库**。
+给本仓库路径会 `ERR_MODULE_NOT_FOUND` 并打印「9 of 9 tests failed」——那是**假红**，不是代码失败；
+本机 pi 是 nix 包，取 `readlink -f $(which pi)` 对应版本的 `lib/node_modules/pi-monorepo`。
+nix store 里同时存在多个 pi 版本（本机 0.85.1 与 0.86.1 都有 `jiti`），用 glob 会拼出坏路径。
+
 ## 10. 文档一致性（复审 minor #4 / M1）
 
 - `README.md`：`status` 那句补上了记忆来源与 `CONTEXT.md` 更新时间。
