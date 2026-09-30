@@ -1,7 +1,7 @@
 ---
 doc_type: design
 issue: 2026-09-30-auxiliary-call-noise-and-memory-cap
-status: proposed
+status: implemented-pending-owner-review
 created_at: 2026-09-30
 related: [auxiliary-call-noise-and-memory-cap-analysis.md, auxiliary-call-noise-and-memory-cap-fix-note.md]
 tags: [memory, schema, pointerization, budgets, s1, s3]
@@ -74,10 +74,10 @@ tags: [memory, schema, pointerization, budgets, s1, s3]
 
 - 6 轮只读 sandbox 评审，每轮 before/after `git status` + `stat` 快照证明零写入；artifact 存本 issue 目录。
 
-## 需要你确认
+## 决策记录（本轮落地）
 
-1. schema 用 **C**（`Project / Invariants / Pitfalls / Index`）还是 A / B？
-2. 软强制 fail-open 是否接受？（若要硬约束，需定拒绝还是 reshape 策略。）
-3. 预算份额 `20 / 40 / 25 / 15` 是否可？
+owner 经「继续」委派推进，本轮按**推荐默认**落地：schema C（`Project / Invariants / Pitfalls / Index`）+ 软强制 fail-open + 份额 `20 / 40 / 25 / 15`。每节带一句内容说明（F3）；固定开销（标题 + 4 个节标题）先扣除再分预算（F1）；指针示例改为通用占位，且要求目标已存在并确实承载细节（F2）。三项确认仍待 owner 复核；若改选，只动 `memory/schema.ts` 常量与 prompt 文案，机制不变。
 
-确认后我按默认（C + 软强制 + 20/40/25/15）落地并进入 6 轮评审；若你要改，只动 `memory/schema.ts` 常量与 prompt 文案，机制不变。
+## 残余（已知且接受）
+
+- 无符合度可见性（status 不报告记忆是否收敛到 schema）；模型可以永远忽略 prompt 的结构要求。属本设计明确的可选增强，留给 S4 / 后续。

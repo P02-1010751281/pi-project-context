@@ -63,7 +63,7 @@ _[memory truncated at N characters: M dropped]_
 
 marker 行不计入正文 cap。超限时保留头尾、丢弃中段，在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/project-context max-memory` 建议）。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
-`MEMORY.md` 的顶层结构收敛到固定的 4 节：`Project` 20% / `Invariants` 40% / `Pitfalls` 25% / `Index` 15%（份额定义在 `memory/schema.ts`）。consolidation prompt 按 `maxMemoryChars` 算出每节字符预算，并要求长解释指针化到版本化 `docs/`（只指向已存在的路径，不虚构）。这是 prompt 的收敛目标：已有自由结构的记忆照常读、渲染、剪裁，schema 不是存储闸门，按节优先序丢（S4）仍待后续。
+`MEMORY.md` 的顶层结构收敛到固定的 4 节：`Project` 20% / `Invariants` 40% / `Pitfalls` 25% / `Index` 15%（份额与每节说明定义在 `memory/schema.ts`）。consolidation prompt 先扣掉固定开销（`# Project Memory` 标题 + 4 个 `##` 节标题）再按 `maxMemoryChars` 算出每节字符预算，保证“逐节刚好填满”也不会超 cap；并要求长解释指针化到版本化 `docs/`（只指向**已存在且确实承载该细节**的路径，不虚构）。这是 prompt 的收敛目标：已有自由结构的记忆照常读、渲染、剪裁，schema 不是存储闸门，按节优先序丢（S4）与符合度可见性仍待后续。
 
 cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 1 token/字符最坏估算，`maxMemoryChars + 1024` 超过输出上限的上界 `max(maxTokens, maxOutputTokens)` 时 `status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）——否则回复很可能在闭合前被截断。模型自身的 `maxTokens` 更小、reasoning 预留或大 context 可能比这个上界更紧，那些情况由 pass 自己的 `clipped` 诊断兜底。
 

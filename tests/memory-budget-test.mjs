@@ -41,24 +41,50 @@ try {
 	check("the prompt states the cap and the current size", budgeted.includes("under 4000 characters") && budgeted.includes("currently about 1234"));
 	check("the prompt calls it a hard cap", budgeted.includes("hard cap"));
 	check("the prompt forbids writing truncation markers", budgeted.includes("Never write omission or truncation markers"));
-	const unbudgeted = buildPrompt("/tmp/p", fitted, "conversation");
-	check("without a budget the prompt keeps the concise wording", unbudgeted.includes("Keep memory concise") && !unbudgeted.includes("hard cap"));
-
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
-	const { MEMORY_SECTIONS, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
-	const sectionBudgets = memorySectionBudgets(4_000);
-	check("the shares cover the whole cap", Math.abs(MEMORY_SECTIONS.reduce((sum, section) => sum + section.share, 0) - 1) < 1e-9);
+	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
+	const freeFitted = fitMemoryInput("# Project Memory\n\n- a free-form fact\n", "", 8192, { maxTokens: 32768 });
+	const cap401 = 4_001;
+	const documented = [["Project", 0.2], ["Invariants", 0.4], ["Pitfalls", 0.25], ["Index", 0.15]];
+	const overhead = memorySchemaOverheadChars();
+	const intendedBudgets = memorySectionBudgets(cap401);
+	const expectedBudgets = documented.map(([heading, share]) => [heading, Math.floor((cap401 - overhead) * share)]);
 	check(
-		"the prompt names every canonical section in order",
-		MEMORY_SECTIONS.every(
-			(section, index) =>
-				budgeted.includes(`## ${section.heading}`) &&
-				(index === 0 || budgeted.indexOf(`## ${MEMORY_SECTIONS[index - 1].heading}`) < budgeted.indexOf(`## ${section.heading}`)),
+		"the schema order and shares match the documented contract",
+		MEMORY_SECTIONS.map((section) => [section.heading, section.share]).every(([heading, share], index) => heading === documented[index][0] && share === documented[index][1]),
+	);
+	check(
+		"the budgets are the documented shares of the cap after the fixed overhead",
+		intendedBudgets.every((section, index) => section.heading === expectedBudgets[index][0] && section.chars === expectedBudgets[index][1]),
+	);
+	check(
+		"the budgets plus the fixed overhead stay within the cap",
+		overhead + intendedBudgets.reduce((sum, section) => sum + section.chars, 0) <= cap401 && intendedBudgets.every((section) => section.chars >= 0),
+	);
+	const realOverhead = "# Project Memory\n\n".length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length, 0);
+	check("the reserved overhead covers the header and every section heading", overhead >= realOverhead);
+	check(
+		"a document filling the real overhead and every budget stays within the cap",
+		realOverhead + intendedBudgets.reduce((sum, section) => sum + section.chars, 0) <= cap401,
+	);
+	const schemaPrompt = buildPrompt("/tmp/p", freeFitted, "conversation", { maxMemoryChars: cap401, currentChars: 10 });
+	check("the prompt lists every section with its description and budget", intendedBudgets.every((section) => schemaPrompt.includes(`## ${section.heading}: ${section.description} (about ${section.chars} characters)`)));
+	check(
+		"the prompt fixes the section order before the fitted memory",
+		documented.every(
+			([heading], index) =>
+				schemaPrompt.indexOf(`## ${heading}:`) < schemaPrompt.indexOf("<existing-memory>") &&
+				(index === 0 || schemaPrompt.indexOf(`## ${documented[index - 1][0]}:`) < schemaPrompt.indexOf(`## ${heading}:`)),
 		),
 	);
-	check("the prompt gives each section its cap-scaled budget", sectionBudgets.every((section) => budgeted.includes(`## ${section.heading}: about ${section.chars} characters`)));
-	check("the prompt asks for one-line pointers and forbids inventing paths", budgeted.includes("see docs/handoff.md") && budgeted.includes("never invent a path"));
-	check("without a cap the prompt still names the sections but gives no numbers", MEMORY_SECTIONS.every((section) => unbudgeted.includes(`## ${section.heading}`)) && !unbudgeted.includes("about 1600 characters"));
+	check(
+		"the prompt asks for one-line pointers, forbids inventing paths, and uses no project-specific path",
+		schemaPrompt.includes("docs/<topic>.md") && schemaPrompt.includes("never invent a path") && !schemaPrompt.includes("157K/450K") && !schemaPrompt.includes("docs/handoff.md"),
+	);
+	check(
+		"the prompt conditions the drop rule on being over budget",
+		schemaPrompt.includes("When over budget, merge duplicates within a section, deduplicate across sections, then drop the least durable entries."),
+	);
 
 	console.log("\n=== M2: an overflowing reply is condensed once, not silently truncated ===");
 	{
