@@ -80,6 +80,9 @@ try {
 		const glued = `x_[memory truncated 是遗留]_## S\n😀_[memory truncated at 4000 characters: 10 dropped]_`;
 		const gluedOnce = doc.normalizeMemoryDocument(glued, 100);
 		check("a glued marker does not break idempotence", doc.normalizeMemoryDocument(gluedOnce, 100) === gluedOnce);
+		// A non-canonical heading must not be split into a bare word (it stays as body content).
+		const notes = doc.normalizeMemoryDocument("# Project Memory Notes\n\n- x\n", 4_000);
+		check("a non-canonical heading is not split", notes.includes("# Project Memory Notes") && !notes.includes("\n\nNotes"));
 	}
 
 	console.log("\n=== M7: a cap the output ceiling cannot hold is flagged ===");
@@ -155,6 +158,54 @@ try {
 		await store.recordMemoryDocument(tmp, clipped, cap);
 		const fresh = await store.loadMemory(tmp, cap);
 		check("a fresh reply drops a carried marker", !doc.isMemoryTruncated(fresh.text));
+	}
+
+	console.log("\n=== M4: an empty memory reports empty, not the heading size ===");
+	{
+		const tmp = await makeProject();
+		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), "");
+		const pi = makePi({ cwd: tmp });
+		await (await loadDefault(`${PC}/index.ts`))(pi);
+		const ctx = makeCtx(tmp);
+		await pi.commands.get("project-context").handler("status", ctx);
+		check("an empty memory reports empty", String(ctx.notifications.at(-1)?.[0] ?? "").includes("(empty)"));
+	}
+
+	console.log("\n=== M4: the cap suggestion is a value the command accepts ===");
+	{
+		const tmp = await makeProject({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
+		const pi = makePi({ cwd: tmp });
+		await (await loadDefault(`${PC}/index.ts`))(pi);
+		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "cap-suggest-session") });
+		// Heading-less body under the raw length but over the cap once the heading is counted.
+		const body = `- ${"x".repeat(3_988)}`;
+		ctx.modelRegistry.complete = async () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: body, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }] });
+		await runHandlers(pi, "agent_settled", ctx);
+		await waitUntil(() => ctx.notifications.some(([message]) => String(message).includes("max-memory")), 5_000);
+		const toast = ctx.notifications.map(([message]) => String(message)).find((message) => message.includes("max-memory")) ?? "";
+		const suggested = Number((toast.match(/max-memory (\d+)/) ?? [])[1]);
+		check("the suggested cap is within the accepted range", Number.isFinite(suggested) && suggested >= cap);
+	}
+
+	console.log("\n=== migration keeps a capped legacy memory's marker ===");
+	{
+		const doc = await loadNamespace(`${PC}/memory/document.ts`);
+		const store = await loadNamespace(`${PC}/shared/project-state.ts`);
+		const { migrateProjectState } = await loadNamespace(`${PC}/shared/migrate.ts`);
+		const tmp = await makeProject();
+		await rm(path.join(tmp, ".agents/memory/MEMORY.md"));
+		const savedHome = process.env.HOME;
+		process.env.HOME = tmp;
+		try {
+			const legacy = path.join(tmp, ".omp", "agent", "memories", `--${tmp.replaceAll(path.sep, "-")}--`);
+			await mkdir(legacy, { recursive: true });
+			await writeFile(path.join(legacy, "MEMORY.md"), doc.normalizeMemoryDocument(bigMemory, cap));
+			await migrateProjectState(tmp, cap);
+			const loaded = await store.loadMemory(tmp, cap);
+			check("a migrated capped memory keeps its marker", doc.isMemoryTruncated(loaded.text));
+		} finally {
+			process.env.HOME = savedHome;
+		}
 	}
 } finally {
 	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });

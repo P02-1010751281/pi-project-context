@@ -26,6 +26,8 @@ try {
 	check("a fitting document does not exceed the cap", doc.exceedsMemoryCap(small, cap) === false);
 	check("an over-cap document exceeds the cap", doc.exceedsMemoryCap(big, cap) === true);
 	check("a copied marker on a short document does not count as overflow", doc.exceedsMemoryCap(copiedMarker, cap) === false);
+	check("the measured size excludes a carried marker", doc.memoryDocumentChars(copiedMarker) === doc.memoryDocumentChars(small));
+	check("an empty document measures zero, not the heading", doc.memoryDocumentChars("") === 0);
 	const clipped = doc.normalizeMemoryDocument(big, cap);
 	check("the fitting document is stored verbatim", doc.normalizeMemoryDocument(small, cap) === small);
 	check("an over-cap document is clipped with a positive dropped count", doc.isMemoryTruncated(clipped) && /_\[memory truncated at 4000 characters: \d+ dropped\]_/.test(clipped));

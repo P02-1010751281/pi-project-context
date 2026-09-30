@@ -43,7 +43,10 @@ function parseMemoryValue(value: string): { body: string; previous?: string } {
 
 /** Characters the cap is measured against: the heading plus the body, a carried marker excluded. */
 export function memoryDocumentChars(value: string): number {
-	return MEMORY_HEADER.length + parseMemoryValue(value).body.length;
+	const { body } = parseMemoryValue(value);
+	// An empty body is an empty memory: counting the heading alone made the status line call a
+	// fresh project non-empty.
+	return body ? MEMORY_HEADER.length + body.length : 0;
 }
 
 /**

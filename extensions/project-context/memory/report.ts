@@ -6,7 +6,7 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
-import { MAX_MEMORY_CHARS_LIMIT } from "../shared/limits.ts";
+import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { consolidateProjectState } from "./pass.ts";
@@ -106,7 +106,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				// The marker is the durable trace; the log entry and the reply are the loud ones.
 				cappedMemory = exceedsMemoryCap(memoryText, maxMemoryChars);
 				// What the cap would have to be to keep this reply; clamped to what the config accepts.
-				neededChars = Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT);
+				neededChars = Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT));
 				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned, capped: cappedMemory });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
