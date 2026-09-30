@@ -1,0 +1,44 @@
+You are an independent code reviewer. Review the current state of the repository at:
+/tmp/pi-context-rev11
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev11.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments or the fix notes; verify against the code.
+
+CONTEXT
+This is a TypeScript/ESM pi coding-agent extension suite (pi-project-context). Prior rounds:
+/tmp/rev8-round1-out.txt, /tmp/rev8-round2-out.txt, /tmp/rev9-round3-out.txt,
+/tmp/rev10-round4-out.txt (the meta-review of round 3, which found two residual defects:
+an empty-memory status regression and an out-of-range cap suggestion). Those were fixed in
+commit 2a38c5f. This is the final verification round.
+
+Start with:
+  cd /tmp/pi-context-rev11
+  git show 2a38c5f
+  git diff 009e12d..HEAD -- extensions tests docs
+  cat .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/*.md
+Read the changed source files in full, and the tests.
+
+WHAT TO REVIEW
+1. Are the two round-4 findings actually fixed by 2a38c5f, and is each fix pinned by a test
+   (does reverting the fix fail the suite)? Does `memoryDocumentChars` stay consistent with
+   `exceedsMemoryCap` and `normalizeMemoryDocument`? Is the suggested `/project-context
+   max-memory <n>` always inside [MIN_MEMORY_CHARS, MAX_MEMORY_CHARS_LIMIT]?
+2. Full fresh correctness pass of the whole diff with an adversarial mindset.
+3. Quality bars, cite file:line for any violation: over-design / over-abstraction / unnecessary
+   indirection, fragmentation, over-guarding, unclear boundaries, duplicated code, verbose or
+   unclear logic, verbose code, readability, maintainability, file/function organisation and
+   single responsibility, hashing abuse, exception-handling abuse, monkey-patching/hooking.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (should be 12/12) and report what you saw. Do mutation thinking:
+for each significant change, would a reverted production change still pass?
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise |
+residual-risk), file:line, evidence, impact, minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

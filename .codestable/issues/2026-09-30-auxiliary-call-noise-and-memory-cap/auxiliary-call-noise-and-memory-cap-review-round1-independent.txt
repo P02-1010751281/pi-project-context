@@ -1,0 +1,102 @@
+Review complete. I read the full diff (d02e869 + eb4c6a2 + ee42c80), the changed sources in full, the new tests, ran the suite, and ran adversarial probes against the running modules (read-only; probes only wrote to `os.tmpdir()`).
+
+# Findings
+
+## IMPORTANT
+
+### I1. M6 half-fix: a copied/stale truncation marker is still re-attached to the render and still drives `status`/`/memory` (not just errors.log)
+`extensions/project-context/memory/document.ts:95` (`normalizeMemoryDocument` re-appends `previous` whenever the body fits), consumed by `extensions/project-context/index.ts:76` and `extensions/project-context/memory/report.ts:223` (`isMemoryTruncated(memory.text)`).
+
+Evidence (probe through the real command path, M6's own scenario):
+- model reply = short memory + copied marker → written `MEMORY.md` still ends with `_[memory truncated at 4000 characters: 1234 dropped]_`;
+- `/memory` then prints: `... (100 chars, 3% of the 4000-char cap) — at the cap, so both ends were kept and the middle dropped`.
+`exceedsMemoryCap` correctly returns false for that reply, and no errors.log cap warning is written, so the two surfaces now disagree: the reply is "not capped" but the render and status say "capped". The fix-note/analysis item M6 says it removes "…陈旧自述行" (the stale self-describing line); it only removed the false *log/toast* warning. Any consumer that echoes the stored memory (including the next model prompt, which contains `<existing-memory>` with the marker) re-injects it.
+Impact: false cap warnings in `status` and `/memory` indefinitely, contradictory messages, marker can survive many passes if the model copies it despite the new "never write markers" instruction.
+Minimal fix boundary: at minimum gate the status texts on `exceedsMemoryCap(memory.text, cap)` instead of `isMemoryTruncated`; properly, decide whether `normalizeMemoryDocument` should re-append a marker to a body that now fits (this interacts with `loadMemory`'s render-vs-fold comparison and the idempotence test, so it needs a deliberate read-side/idempotence adjustment, not a one-liner).
+
+### I2. `TRANSIENT_RE` misses HTTP 500 (and 501): pattern `50[234]` is almost certainly meant to be `50[0-4]`
+`extensions/project-context/shared/call-policy.ts:28`.
+
+Evidence (probe): `classifyModelFailure("model call error: 500: Internal Server Error")` → `"other"`; same for `501`. `502/503/504` classify transient. The test suite only covers connection/timeout/402/429/403, so this slipped through.
+Impact: the most common transient provider error (generic 500 from a relay) never arms a cooldown, so the exact "retried on every settle" burst the change exists to stop continues for 5xx-500 outages. A message with a 500 but also "timed out" would classify transient, but a bare "500" will not.
+Minimal fix boundary: change to `\b50[0-4]\b` (or explicitly encode the intended set), and add a 500/501 classification test.
+
+### I3. Autolearn classifies *every* caught error as a model-route failure; the classifier then maps local fs/lock errors to auth/transient
+`extensions/project-context/autolearn/pass.ts:136-139` (catch-all around the whole `run` body), with `extensions/project-context/shared/call-policy.ts:26` (`permission denied` → auth) and `:28` (`timed? ?out` → transient, and `withMemoryLock` throws `timed out waiting for the memory write lock…`, `shared/lock.ts:189`).
+
+Evidence (probes): `classifyModelFailure(new Error("EACCES: permission denied, open …"))` → `"auth"`; `classifyModelFailure(new Error("withMemoryLock timed out after 30000ms"))` → `"transient"`. In `run()`, `readOptional`, `collectSkills`, `collectEvidence`, `updateConfig`, `writeAtomic` and `notify` all throw into the same catch.
+Impact: a local permission problem parks a healthy model route for 30 min and, after 5 occurrences, disables autolearn for the process with the message "the auxiliary model rejected the credentials". A lock timeout arms a transient (escalating) cooldown. This directly undermines the new policy's diagnostic meaning. (The memory pass does it right: only `completeWithMeta` errors go through `noteModelFailure`.)
+Minimal fix boundary: move `noteModelSuccess`/`noteModelFailure` around the `completeText` calls only (a small wrapper like `memory/pass.ts`'s `call`), or tag/only-classify provider errors; leave generic fs/lock failures out of the call policy.
+
+### I4. `memoryCapUnsatisfiable` does not match the real `fitMemoryInput` math; the default config always warns
+`extensions/project-context/shared/output-budget.ts:33-39`, used at `index.ts:117-118` and `index.ts:142-146`.
+
+Evidence (probe):
+- `fitMemoryInput`'s real ceiling is `Math.max(config.maxTokens, config.maxOutputTokens)` (see `adaptiveOutputTokens`); with `maxTokens=40000`, `maxOutputTokens=32768` a dense 32000-char memory fits (`maxTokens=40000`, `clipped=false`), yet the status warning still fires ("above maxOutputTokens=32768").
+- The check ignores the context document and `reasoningReserveTokens`: dense 20000 + 32000-char context + reasoning clips in `fitMemoryInput` while `memoryCapUnsatisfiable(20000, 32768)` returns false.
+- The shipped default (32000 chars, 32768 ceiling) satisfies `32000+1024 > 32768`, so every `/project-context status` on default config now prints "Memory cap warning" — pinned by `tests/memory-ops-test.mjs` ("status warns when the default cap is unsatisfiable"). The M7 test only re-asserts the formula; it never calls `fitMemoryInput` to validate the "cannot be re-emitted" claim.
+Impact: noisy warning that trains users to ignore it, plus false negatives precisely in the large-context/reasoning-model case the issue was about.
+Minimal fix boundary: compare against `Math.max(config.maxTokens, config.maxOutputTokens)` (and ideally the resolved model's cap) and include the context/reasoning reserve in the estimate, or scope the warning to the current measured memory rather than a static worst case.
+
+### I5. M2: a failure of the condensation call discards the first *valid* consolidation result
+`extensions/project-context/memory/pass.ts:128-135`: `const condensed = parseConsolidated((await call(usedInput, condensePrompt)).text);` is unguarded.
+
+Evidence (probe): first call returns valid JSON whose `memory_markdown` is over cap; second (condense) call throws `Connection error` → `memory-learn` reports "Project memory update failed", `MEMORY.md` unchanged, and `noteModelFailure` has armed/doubled a cooldown. The previous code would have written the over-cap result with a truncation marker.
+Impact: an extra network failure on top of a successful consolidation turns the pass into a failed one and feeds the auto-disable counter; the commit's stated guarantee ("if even the second reply overflows, keep the original") only holds when the condense call *returns*, not when it throws.
+Minimal fix boundary: wrap the condense `call` in a deliberate try/catch that keeps `result` on error (and records why), so the fallback path is "keep the first result and let the cap warning speak" as documented.
+
+## NIT
+
+### N1. The consecutive-failure counter is per-kind, so alternating provider failures never reach the session disable
+`extensions/project-context/shared/call-policy.ts:87` (`sameEpisode = previous?.kind === kind && previous.failures > 0`).
+Evidence (probe): 4 transient + 1 quota + 1 transient → `modelAutoDisabled` still false after 6 provider failures. A flapping relay alternating 502/timeout/429 keeps resetting. The commit says "five consecutive provider failures". Fix boundary: count consecutive provider failures regardless of kind (use `kind` only to pick the cooldown), or document that "consecutive" is per-kind and the disable is per-episode.
+
+### N2. Suppressed-count line is lost when a key never recurs, contrary to the comment
+`extensions/project-context/shared/error-log.ts:91-99`. The fold only runs for `seen`, i.e. when the *same* `(scope, headline)` key itself reappears after the window. A run that never recurs leaves no "N suppressed" line. Evidence (probe): log `[a] boom one` twice, then `[b] boom two` (different key), wait past the window, log `[b] boom two` again → log shows only the two `[b]` records; the `[a]` count of 1 suppressed is never emitted. The comment says "a new key … Fold the run that just ended" but the code only folds the current key. First copy is retained, so information isn't lost, only the count. Fix boundary: either correct the comment or track runs independently of recurrence (would require a write on eviction/end, which append-only logging can't know).
+
+### N3. Dedupe state is only half-bounded; eviction is insertion-order, not LRU
+`extensions/project-context/shared/error-log.ts:25-32,102-105`. The per-file map is capped at 64, but the outer `recentErrors` map is unbounded over project roots, contradicting the "cannot grow it without limit" comment. Also suppressed records don't touch `lastAt` position, so the key that is still failing can be evicted before truly idle ones. Residual-risk-note level; a hard cap on the outer map (or an oldest-file sweep) would close it.
+
+### N4. Dead API: `FailureRecord.firstSinceSuccess` and `modelCooldownRemaining` are used only by tests
+`extensions/project-context/shared/call-policy.ts:46-59,100-104`; production callers (`autolearn/pass.ts:35,92,138`, `memory/pass.ts:60,87,91`, `report.ts:157,264`) ignore `noteModelFailure`'s return value entirely. The "first failure is the one worth surfacing" behavior the comment describes is not implemented (the toast is emitted on every attempt; rarity comes from the cooldown). Tests therefore pin a dead surface, which reads as coverage. Fix boundary: drop the unused fields/function or actually use them to suppress duplicate toasts.
+
+### N5. Small dead/over-defensive checks and cosmetic issues
+- `extensions/project-context/index.ts:71` — `cap > 0` can never be false (`config.ts` clamps to `MIN_MEMORY_CHARS`); over-guarding.
+- `extensions/project-context/shared/output-budget.ts:34` — `Math.ceil` on an integer config value.
+- `extensions/project-context/memory/pass.ts:133` — condense prompt still says "its tail would be dropped", stale after the head+tail change.
+- `extensions/project-context/memory/document.ts:30` — `/^#\s*Project Memory\s*/i` mangles a heading like `# Project Memory Notes` into `# Project Memory\n\nNotes`; pre-existing, but the regex was moved/generalized into `parseMemoryValue` and now also feeds `exceedsMemoryCap`.
+- `extensions/project-context/memory/report.ts:113-117` — `needed = memoryText.length` includes the marker/any fences and can exceed `MAX_MEMORY_CHARS_LIMIT`, so the suggested `/project-context max-memory ${needed}` can be rejected or too large.
+
+### N6. Render artifact contradicts the suite it documents
+`.agents/memory/MEMORY.md:5` ("run by `tests/run-all.mjs` (11 suites)") and `:59` ("Full suite currently 11/11 (including `call-policy-test.mjs`, `memory-budget-test.mjs`)") while `tests/run-all.mjs` now runs 12 suites including `memory-ops-test.mjs`, and the fix note itself records 12/12. Stale/live-render text committed after the code; nit, but it is user-facing documentation in the repo.
+
+### N7. Surrogate-unsafe line clipping (new tail clipper inherits the old head clipper's flaw)
+`extensions/project-context/memory/document.ts:50-63,75-81`. `clipToLineBoundary`/`clipTailToLineBoundary` slice by UTF-16 unit with no surrogate guard; `shared/text.ts` already has `clipText` doing exactly this. Evidence (probe): a 32000-char emoji document clipped to 4000 yields 1 lone surrogate in the returned text; Buffer encoding reports 8040 bytes for 4056 chars. Impact: a clipped emoji/CJK fact can be stored as U+FFFD (`�`) at the boundary; the dropped count and cap are measured in UTF-16 units while the file is bytes. Pre-existing for the head clipper, extended by the new tail clipper. Fix boundary: nudge both cuts off high-surrogate boundaries (mirror `clipText`), or route through a shared surrogate-safe helper.
+
+## LEARNING / PRAISE
+
+- P1. `shape` correctly never arms a cooldown (`call-policy.ts:79-85`): a provider failure followed by a shape failure preserves the count/`until` (probe verified), and a shape failure on a fresh key leaves `modelBlocked === false`. The intent "the parse throttle already backs off shape failures" is correctly implemented.
+- P2. Keying is genuinely per `(scope, project)` (`stateKey`, `call-policy.ts:57-59`), so an autolearn failure does not park memory and vice versa.
+- P3. `error-log` dedupe keeps the append-only invariant (fold line is appended, never a rewrite), applies `redactSecrets` before both keying and writing (`error-log.ts:71-73`), and the per-file cap/eviction is a real bound for the single-project process. Suppressed counts are not lost *when the key recurs*.
+- P4. M3 (head+tail) is a real improvement: probes over 300 randomized over-cap documents confirm the result always fits `limit`, never overlaps indices, keeps head and tail, and `normalizeMemoryDocument` is idempotent. The dropped count is a truthful approximate (it includes trimmed whitespace, which is documented as "dropped").
+- P5. M1 is correctly threaded: `promptFor` is used on the initial, retry and condense prompts (`pass.ts:80,110-114,133`), and the prompt no longer contains the dead "below 6000 words" hint.
+- P6. No hashing added, no exception swallowing in production beyond the pre-existing `logError` catch, no monkey-patching in production code.
+
+## RESIDUAL RISK
+
+- R1. The "session disable" state is module-level, keyed by `(scope, project)` only; `newSession()`/handoff in the same process does not clear it, and a forced call that fails with a *different* provider kind resets `failures` and clears `disabled` (`call-policy.ts:87-92`). The toast says "for this session"; behavior is closer to "until an explicit successful call". Worth deciding/documenting.
+- R2. All of this state is per-process; the multi-process live projects (the original incident) still each keep their own cooldowns, so cross-process burst damping relies on `updateConfig`/throttle only.
+- R3. `memoryCapUnsatisfiable`'s blindness to the resolved model's own `maxTokens` means the warning can stay silent while the actual route is incapable (probe: model cap 8192 clips a 32000-char memory, warning still keyed to 32768).
+
+# Test And QA Focus
+
+- Ran `node tests/run-all.mjs`: **12/12 passed** (autolearn, aux-model, call-policy, consolidation, handoff, index, loadtest, memory-budget, memory-ops, registration, switches, sync). `git diff 009e12d..HEAD --check` is clean.
+- Mutation thinking — unpinned production changes:
+  - `noteModelSuccess("memory"|"autolearn")` wiring is **not pinned by any test**. The policy unit test calls `noteModelSuccess` on its own `loadNamespace` instance (`moduleCache: false` gives a separate module graph), and no integration test does fail→succeed→fail and asserts the counter/cooldown restarts. Deleting both `noteModelSuccess` calls keeps 12/12. This is the most valuable missing test (it is the recovery half of the backoff contract).
+  - `disablesAnnounced`/`MEMORY_PAUSED_NOTICE` (`report.ts:136-159`) and the quota/auth branches of `memoryFailureNotice` are untested; only the transient wording is asserted.
+  - The M2 condense path's failure mode (I5) has no test; the M6 test asserts only `errors.log` (I1 escapes), and the M7 test is circular (pins `memoryReplyTokens`, never checks `fitMemoryInput`).
+  - The dedupe bounded-state, rotation interaction and concurrent-append behavior are untested; the 10-minute window is tested only with a single-key recurrence.
+- Non-vacuousness of the changed assertions: the three updated pre-existing assertions (`consolidation-test.mjs` ×2, `switches-test.mjs` ×1) are equivalent-or-stricter (the status regex now also demands the percentage, the cap regex now demands the head+tail wording). I did not find any assertion weakened to make a change pass.
+- Test hygiene: `call-policy-test.mjs` and `memory-ops-test.mjs` globally patch `Date.now` and the harness's `waitUntil` uses the same clock; each suite is a separate process so leakage across suites is contained, but the 250 ms fixed sleeps in the "parked" checks are the only bounding of a race (a slow scheduler making the blocked path take >250 ms would pass vacuously — it asserts `calls === 1`, so it fails safe, not false-pass). For the call-policy classification section, add at least: bare `500`, `501`, `ENOTFOUND`, `EACCES: permission denied`, and a `withMemoryLock timed out` message.
+
+VERDICT: CHANGES-REQUESTED

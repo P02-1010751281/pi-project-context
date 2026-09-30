@@ -1,0 +1,36 @@
+You are an independent META-REVIEWER. Reviewer C produced the review at
+/tmp/rev9-round3-out.txt of the code at /tmp/pi-context-rev10. Audit that review critically.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev10.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+
+INPUTS
+- Reviewer C's review: /tmp/rev9-round3-out.txt (read it in full; it has a
+  "Round 1/2 disposition summary" and a "Test And QA Focus" section).
+- The earlier rounds: /tmp/rev8-round1-out.txt, /tmp/rev8-round2-out.txt.
+- Code: `cd /tmp/pi-context-rev10 && git diff 009e12d..HEAD -- extensions tests docs`.
+  Note the code now includes the fixes for reviewer C's findings (commit 71922d8); reviewer C
+  reviewed a665f5d. So verify (a) each finding was real in the revision reviewer C saw, and
+  (b) whether 71922d8 fixes it correctly and without a regression.
+
+YOUR TASK
+For EVERY item in reviewer C's review (B1, I1, R1, N1-N5 and its disposition summary):
+1. Verify it against the code and, where it claims a probe, reproduce it read-only.
+2. Classify: CONFIRMED | PARTIALLY-CONFIRMED (description/severity/fix boundary off) |
+   FALSE-POSITIVE | UNVERIFIABLE.
+3. For each confirmed item, say whether 71922d8 fixes it, and whether the fix is correct or
+   introduces a new problem (scope, type narrowing, idempotence, marker provenance, append-only,
+   render-vs-fold comparison, test non-vacuousness).
+4. Flag any claim in reviewer C's review that is wrong or overstated.
+
+Then: FINDINGS C MISSED — real problems in the current code that reviewer C did not report,
+with file:line, impact and minimal fix boundary.
+
+Then: a short judgement of reviewer C's overall quality (its blocking finding, its disposition
+summary accuracy, and its test/mutation analysis).
+
+End with exactly one line:
+VERDICT: REVIEW-SOUND | REVIEW-NEEDS-WORK | REVIEW-BLOCKED

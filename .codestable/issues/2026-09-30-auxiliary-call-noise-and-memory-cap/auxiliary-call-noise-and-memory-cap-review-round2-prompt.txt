@@ -1,0 +1,38 @@
+You are an independent META-REVIEWER. Another reviewer (Reviewer A) produced a code review of the
+changes in /tmp/pi-context-rev8. Your job is to audit that review critically — do not trust it.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev8.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+
+INPUTS
+- Reviewer A's review: /tmp/rev8-round1-out.txt (read it in full).
+- Code under review: `cd /tmp/pi-context-rev8 && git diff 009e12d..HEAD -- extensions tests docs`,
+  plus the changed source files in full and `.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/*.md`.
+
+YOUR TASK
+For EVERY item in Reviewer A's review (I1-I5, N1-N7, R1-R3, P1-P6):
+1. Verify it against the actual code. Cite file:line.
+2. Classify it: CONFIRMED (real and correctly described) | PARTIALLY-CONFIRMED (real, but the
+   description, severity or fix boundary is off) | FALSE-POSITIVE (not real) | UNVERIFIABLE.
+3. If the item claims a probe/experiment result, reproduce it yourself (read-only) and report what
+   you actually observed.
+4. For each CONFIRMED / PARTIALLY-CONFIRMED item, state the minimal correct fix boundary. If
+   Reviewer A's proposed boundary is wrong or would break something else (tests, idempotence,
+   loadMemory's render-vs-fold comparison, the append-only invariant, etc.), say what it should be.
+
+Then add one section: FINDINGS A MISSED — real problems in this diff that Reviewer A did not
+report at all, each with file:line, impact and minimal fix boundary.
+
+Then one section: CRITERIA COVERAGE — is Reviewer A's coverage of these adequate, and where is it
+thin: over-design, over-abstraction, fragmentation, over-guarding, unclear boundaries,
+duplicated code, verbose/unclear logic, readability/maintainability, file/function organisation
+and single responsibility, hashing abuse, exception-handling abuse, monkey-patching/hooking.
+
+End with exactly one line:
+VERDICT: REVIEW-SOUND | REVIEW-NEEDS-WORK | REVIEW-BLOCKED
+
+Be adversarial and concise. Your value is catching a wrong finding, a missed bug, or a bad fix
+boundary — not restating Reviewer A.

@@ -1,0 +1,50 @@
+# Final Verification Review — `/tmp/pi-context-rev11` @ `2a38c5f`
+
+## Round-4 findings: verification
+
+### F1 — empty-memory status regression — **FIXED and pinned**
+- Fix: `extensions/project-context/memory/document.ts:49` (`return body ? MEMORY_HEADER.length + body.length : 0;`), with comment at `:47-48`.
+- Consistency verified by direct probe: `memoryDocumentChars("") === 0`, `memoryDocumentChars("# Project Memory\n\n") === 0`, `exceedsMemoryCap("", 4000) === false`. `exceedsMemoryCap` (`document.ts:58`) calls `memoryDocumentChars`, so the two cannot drift. `normalizeMemoryDocument` still stores the canonical 18-char header for an empty value (intended; a render has a shape), and `index.ts:70`'s `chars === 0 ? "empty"` branch is now reachable.
+- Test: `tests/memory-ops-test.mjs:163-172` (e2e via the real `project-context status` handler) and `tests/memory-budget-test.mjs:30` (unit). Mutation probe: reverting `:49` to `return MEMORY_HEADER.length + body.length;` → `FAIL an empty memory reports empty`, 1 failure. **Non-vacuous.**
+
+### F2 — out-of-range cap suggestion — **FIXED and pinned**
+- Fix: `extensions/project-context/memory/report.ts:109` — `neededChars = Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT))`.
+- Range guarantee: `MIN_MEMORY_CHARS = 4000` (`limits.ts:9`) and `MAX_MEMORY_CHARS_LIMIT = 200000` (`limits.ts:11`); `Math.max(MIN, …)` floors at 4000 and `Math.min(…, MAX)` caps at 200000, so the suggestion is always in the command's accepted range (`index.ts:136` enforces the same bounds). `config.ts:238` bounds the stored value identically, so a hand-edited config cannot widen the contract.
+- Tightness verified: I swept ~324 body lengths; setting the cap to exactly `memoryDocumentChars(reply)` stores a document with no marker at cap, while `cap = measured − 1` clips. The suggestion is therefore sufficient, not merely in-range.
+- Test: `tests/memory-ops-test.mjs:175-188` drives the real `agent_settled` path with a 3990-char heading-less body and asserts `suggested >= cap` (4000). Mutation probe: reverting `:109` to `Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT)` → `FAIL the suggested cap is within the accepted range`. **Non-vacuous** (the clamp is what the test kills; the raw length is 3990 < 4000).
+
+### F3 — migration marker wiring now end-to-end (round-4 missed item) — **FIXED and pinned**
+- The test at `tests/memory-ops-test.mjs:191-206` now goes through the real `migrateProjectState` with a fake `HOME` and a legacy `~/.omp/agent/memories/--<tmp>--/MEMORY.md` (`legacyOmpDir` encoding matches `paths.ts:83-86`). Mutation probe: removing `{ preserveMarker: true }` at `shared/migrate.ts:127` → `FAIL a migrated capped memory keeps its marker`. **Non-vacuous** (previously reverted freely).
+
+No regressions found in the `2a38c5f` delta: `git diff a76e91f..2a38c5f` touches only `document.ts`, `report.ts` and tests; the other `memoryDocumentChars` call sites (`index.ts:70`, `report.ts:221`) only change behavior for an empty body (0 instead of 18), which is the intended correction.
+
+## Findings (full diff, adversarial pass)
+
+**1. [nit] Duplicated unsatisfiable-cap warning construction** — `extensions/project-context/index.ts:119` and `:146`. Both lines compute `memoryReplyTokens(cap)`, `max(config.maxTokens, config.maxOutputTokens)` and nearly the same sentence; only the prefix ("Memory cap warning"/"Memory cap set to …") differs. Impact: a future constant or wording change must be mirrored; the two can silently diverge. Boundaries are otherwise clear (`status` vs. `max-memory` verb). Minimal fix boundary: one local helper returning the warning text; do not touch `memoryCapUnsatisfiable`.
+
+**2. [nit] Duplicated percentage/size formatting** — `extensions/project-context/index.ts:71` and `extensions/project-context/memory/report.ts:222` build the identical `empty / chars, X% of the N-char cap` string with different cap variable names. Impact: user-facing strings in two modules; the `/memory` and `status` surfaces can drift. Minimal fix boundary: a shared `memorySizeLabel(chars, cap)` exported from `memory/document.ts` or `report.ts` (the underlying measurement is already centralized in `document.ts`, which is the right call).
+
+**3. [nit] Awkward constant naming** — `extensions/project-context/shared/limits.ts:9,11`: `MIN_MEMORY_CHARS` and `MAX_MEMORY_CHARS_LIMIT` use different suffix conventions for a symmetric pair. Minor readability cost in `report.ts:109` and `index.ts:127,136`, where the clamp reads `Math.max(MIN_MEMORY_CHARS, Math.min(…, MAX_MEMORY_CHARS_LIMIT))`. Minimal fix boundary: rename only if the constants are touched again; not worth a standalone churn commit.
+
+**4. [suggestion] Upper-bound half of the suggestion contract is unasserted** — `tests/memory-ops-test.mjs:187` asserts only `suggested >= cap`. The ≤200000 half is guaranteed by `report.ts:109` by construction, but no test would notice if the `Math.min(…, MAX_MEMORY_CHARS_LIMIT)` leg were deleted (the `MIN` leg is what the current test kills). Minimal fix boundary: extend the existing check to assert `suggested <= MAX_MEMORY_CHARS_LIMIT` (import from `limits.ts`).
+
+**5. [residual-risk] The suggestion measures the reply, not the stored document's marker+newline** — `report.ts:109` vs. `document.ts:78`: `memoryDocumentChars` excludes the carried marker and `normalizeMemoryDocument` always appends a trailing newline, so `neededChars` is a tight-but-exact body+heading size. I could not construct a case where the suggested cap leaves the stored document marked (the `MIN_MEMORY_CHARS = 4000` clamp absorbs the off-by-one for the 3983–4000 body range). Accepted trade-off; no action needed.
+
+**6. [residual-risk] A reply that copies an old marker is under-measured by the marker length** — `document.ts:58` (via `parseMemoryValue`) vs. `memory.ts:129`. `exceedsMemoryCap` deliberately ignores copied markers (M6), so a reply whose `body + marker` straddles the cap skips the condensation attempt and is clipped by `normalizeMemoryDocument`. This is the documented M6 trade-off, bounded to ≤ one marker line of content; already accepted in the design, not a new regression.
+
+**7. [learning] The two round-4 defects were classic measure-vs-render drift** — measuring the raw reply (`memoryText.length`) and measuring the heading even for an empty body. Both are now pinned at the *unit* and *e2e* layers; the pattern to repeat is to assert the user-visible surface (`status` output, toast text) and not just the helper.
+
+No blocking, important, over-abstraction, hashing-abuse, exception-handling, monkey-patching, or unclear-boundary violations found in the diff. `git diff --check` is clean; the tracked tree is clean.
+
+## Test And QA Focus
+
+- **Ran `node tests/run-all.mjs` on the pristine sandbox: `All 12 tests passed.`** (twice, plus once more after the probes; 12/12 each time).
+- Mutation matrix (run in a `/tmp/mut-probe` copy, never inside the sandbox):
+  - revert `document.ts:49` empty-body guard → `FAIL an empty memory reports empty` ✓ killed
+  - revert `report.ts:109` clamp → `FAIL the suggested cap is within the accepted range` ✓ killed
+  - remove `{ preserveMarker: true }` at `migrate.ts:127` → `FAIL a migrated capped memory keeps its marker` ✓ killed
+- One transient `1 of 12 tests failed` was observed during the very first mutation run, while another full-suite process was running concurrently; it did not recur in 9 subsequent clean runs and its output was not captured. Consistent with the round-4 note about load sensitivity — not reproducible enough to call a flake, but worth knowing that the suite is not perfectly isolated under heavy concurrent load.
+- The cap-suggestion test's `suggested >= cap` assertion is non-vacuous but one-sided (finding 4); the `!capToast.includes("not defined")` assertion at `memory-ops-test.mjs:156` remains technically vacuous when no toast exists, but the preceding `includes(`${cap}-character cap`)` check is what kills the bug.
+- Docs/render: `docs/architecture.md` and `docs/configuration.md` match the implemented behavior (head+tail clip, marker excluded from cap, M7 upper-bound caveat); `.agents/memory/MEMORY.md` already carries the 12/12 suite count.
+
+VERDICT: PASSED

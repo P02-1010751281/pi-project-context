@@ -1,0 +1,57 @@
+You are an independent code reviewer. Review the changes in the repository at:
+/tmp/pi-context-rev9
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev9.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Do NOT trust the code comments or the fix note; verify against the code.
+
+CONTEXT
+This is a TypeScript/ESM pi coding-agent extension suite (pi-project-context). Two earlier review
+rounds are at /tmp/rev8-round1-out.txt (review) and /tmp/rev8-round2-out.txt (meta-review of that
+review). Their findings were then fixed in commit a665f5d. Your job is a fresh independent review.
+
+Start with:
+  cd /tmp/pi-context-rev9
+  git diff 009e12d..HEAD -- extensions tests docs
+  git show a665f5d
+  cat .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/*.md
+Read the changed source files in full, and the tests.
+
+WHAT TO REVIEW
+1. Every accepted finding from rounds 1 and 2 must actually be fixed, and the fix must not break
+   something else (tests, idempotence, the append-only log, loadMemory's render-vs-fold comparison,
+   marker provenance, or the "shape failures never arm a cooldown" rule). Say which finding is
+   only partly fixed or fixed wrongly.
+2. Fresh correctness review of the whole diff, with an adversarial pass that assumes a real bug is
+   hiding.
+3. Quality bars, cite file:line for any violation: over-design / over-abstraction / unnecessary
+   indirection, fragmentation, over-guarding (checks that cannot fire or hide real errors),
+   unclear boundaries, duplicated code, verbose or unclear logic, verbose code, readability,
+   maintainability, file/function organisation and single responsibility, hashing abuse,
+   exception-handling abuse, monkey-patching/hooking/shims.
+
+Specific things to try to falsify:
+- `memory/document.ts`: is `normalizeMemoryDocument` idempotent for every input (single long
+  line, leading blank lines, look-alike marker, multiple markers, surrogate boundaries)? Does
+  `exceedsMemoryCap` measure the same form the prompt tells the model to respect? Is
+  `normalizeMemoryReply` used on every fresh-reply write path and never on the read/fold path?
+- `memory/pass.ts`: the condensation retry — exactly one, keeps the first result on throw, merges
+  context correctly, does not double-count failures.
+- `autolearn/pass.ts`: do only the model calls reach `noteModelFailure`? Does the paused notice
+  fire once and not on a local error?
+- `shared/call-policy.ts`: cross-kind consecutive counting, the success reset, the classifier.
+- `shared/error-log.ts`: dedupe window, LRU bounds, append-only, redaction, concurrency.
+- `index.ts` / `shared/output-budget.ts`: the satisfiability ceiling matches `fitMemoryInput`.
+- Tests: non-vacuous? Any assertion weakened? Would a reverted production change still pass?
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (should be 12/12) and report what you saw. Do mutation thinking for
+each significant change.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise |
+residual-risk), file:line, evidence, impact, minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

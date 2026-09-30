@@ -1,0 +1,32 @@
+You are an independent META-REVIEWER. Reviewer D produced the review at
+/tmp/rev11-round5-out.txt of the code at /tmp/pi-context-rev12. Audit that review critically.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev12.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+
+INPUTS
+- Reviewer D's review: /tmp/rev11-round5-out.txt (it verified the round-4 fixes and returned
+  PASSED with three nits).
+- Earlier rounds: /tmp/rev8-round1-out.txt, /tmp/rev8-round2-out.txt, /tmp/rev9-round3-out.txt,
+  /tmp/rev10-round4-out.txt.
+- Code: `cd /tmp/pi-context-rev12 && git diff 009e12d..HEAD -- extensions tests docs`.
+  One further commit, fd0cc9e, applied reviewer D's two duplication nits (a shared cap-warning
+  helper and a shared memory size label) and widened the suggestion test to the upper bound.
+
+YOUR TASK
+1. Verify reviewer D's PASSED verdict: were its three fix verifications (F1-F3) correct, and was
+   there really no blocking/important finding left? Reproduce its mutation claims read-only.
+2. Verify fd0cc9e: do the two helpers really remove the duplication without changing behaviour
+   (same user-visible strings, same numbers)? Did it introduce a regression or an over-abstraction?
+   Is the widened test non-vacuous?
+3. Independently hunt for any remaining real problem in the whole diff (adversarial pass), including
+   the quality bars: over-design / over-abstraction / fragmentation / over-guarding / unclear
+   boundaries / duplicated code / verbose logic / readability / maintainability / SRP / hashing
+   abuse / exception-handling abuse / monkey-patching.
+4. Flag any claim in reviewer D's review that is wrong or overstated.
+
+End with exactly one line:
+VERDICT: REVIEW-SOUND | REVIEW-NEEDS-WORK | REVIEW-BLOCKED

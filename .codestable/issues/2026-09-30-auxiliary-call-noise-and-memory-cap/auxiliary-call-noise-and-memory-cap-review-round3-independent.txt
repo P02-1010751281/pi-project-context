@@ -1,0 +1,95 @@
+I reviewed the full `009e12d..HEAD` diff, the `a665f5d` commit, all changed sources and tests, both prior review rounds, and the `.codestable` artifacts. I ran the suite, read the code in full, and ran read-only adversarial probes (writing only under `os.tmpdir()`), plus mutation experiments in a copied tree (`/tmp/pi-mut`, never the sandbox repo).
+
+# Findings
+
+## BLOCKING
+
+### B1. `neededChars` is block-scoped but used outside its block: every automatic cap toast throws `ReferenceError`
+`extensions/project-context/memory/report.ts:108` declares `const neededChars` **inside** the `if (memoryChanged) { … }` block (opens at `:93`, closes at `:123`), but `:142` uses it in the later `if (!silent && (memoryChanged || update))` block.
+
+Evidence (real path, no monkey-patching): a probe that makes the model return an over-cap memory and fires `agent_settled` produced:
+- toast: `Project memory update failed: neededChars is not defined`
+- `errors.log`: `ReferenceError: neededChars is not defined at consolidate (.../report.ts:142:204)`
+- `MEMORY.md` was already written with its truncation marker (so the pass "succeeded" but reported failure).
+The cap log line at `:120` works (it is inside the block), which is why `errors.log` contains the correct cap warning *and* the ReferenceError. The suite misses it because every cap-path test goes through `memory-learn` (`silent=true`) and reports via `consolidateReply`; the internal toast is only reached by the non-silent `agent_settled` path.
+
+Impact: the primary user-visible cap warning introduced by M4 is dead; automatic consolidation reports a bogus failure after writing memory, and the confusing message trains users to ignore the surface.
+
+Minimal fix boundary: hoist the computation to function scope (e.g., `let neededChars = 0;` next to `cappedMemory`, assign inside `memoryChanged`, or compute `Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT)` before the `if`). Add one test that drives the `agent_settled` cap path and asserts the toast text — the missing test is exactly what hid this. Do not restructure the accounting; it is a scope bug.
+
+## IMPORTANT
+
+### I1. The "drop a copied marker on a fresh reply" fix is applied to the legacy import too, so a genuinely capped legacy memory loses its marker
+`extensions/project-context/memory/store.ts:69,72` use `normalizeMemoryReply` for every `recordMemoryDocument` call, and `extensions/project-context/shared/migrate.ts:127` imports legacy/OMP memory through that same function. `normalizeMemoryReply` (`memory/document.ts:123`) strips exact marker lines first; if the imported body fits (because it was already clipped by the old cap), no fresh marker is generated.
+
+Evidence (probe): take `clipped = normalizeMemoryDocument(overCap, 4000)` (has a genuine marker), write it with `recordMemoryDocument`, then `loadMemory` → `isMemoryTruncated(loaded.text) === false`, render 3921 chars, no marker. Before `a665f5d` the import preserved the marker. The read/fold paths (`journal.ts:96`, `poison.ts:157`, `store.ts:50`) correctly preserve it, so this is only the import write path.
+
+Impact: migrating an old project that had a capped memory silently promotes a truncated document to "complete"; `status`/`/memory` then report no cap. This is exactly marker-provenance loss, and the stated rationale ("a marker it copied out of the stored render") does not apply to a legacy file's own marker.
+
+Minimal fix boundary: make the import path marker-preserving (e.g., a `recordMemoryDocument(..., { preserveMarker: true })`/separate `recordMemoryImport` that normalizes with `normalizeMemoryDocument`), while model replies keep `normalizeMemoryReply`. Add a sync-test case whose legacy OMP `MEMORY.md` is already clipped with a marker.
+
+## RESIDUAL-RISK
+
+### R1. `memoryCapUnsatisfiable` still is not `fitMemoryInput`'s actual ceiling — the new comment/docs overclaim
+`shared/output-budget.ts:41-43` now checks `cap + 1024 > max(maxTokens, maxOutputTokens)`, and its doc says this is "the one `fitMemoryInput`/`adaptiveOutputTokens` actually uses". `fitMemoryInput` (`memory/input.ts:34`) calls `adaptiveOutputTokens`, which additionally clamps to the resolved model's `maxTokens` and reserves reasoning/context (`input.ts:20-24`; `output-budget.ts:84-88`).
+
+Probes:
+- `fitMemoryInput(20000 dense, "", 8192, { maxTokens: 8192 }, 32768)` → `clipped=true, maxTokens=8192`, but `memoryCapUnsatisfiable(20000, 8192, 32768) === false` (no warning).
+- reasoning model, cap 31000, same config → `fitMemoryInput` clips, warning false.
+- 20000 dense memory + 30000 dense context → `fitMemoryInput` clips, warning false.
+
+Impact: false negatives precisely in the constrained-route/large-context cases; only the `status`/`max-memory` text is affected (no data loss). This is the previously recorded R3, still open; the *new* code comment and `docs/architecture.md`/`docs/configuration.md` wording ("实际输出上限") should be softened to "upper bound" unless the resolved model cap is folded in.
+
+Minimal fix boundary: either resolve `resolveAuxModel(ctx, config)` in the status command and pass its `maxTokens`, or label the check an upper-bound heuristic in the comment/docs. Do not add the context/reasoning reserve to the static check without the model cap — that would make almost every large-context project warn (the round-2 meta-review warned about this).
+
+## NIT
+
+### N1. `normalizeMemoryDocument` is still not idempotent for every input
+`memory/document.ts:108-113`. The single-long-line counterexample is fixed, but a marker-shaped line glued mid-line that the first clip re-breaks onto a line start, combined with just-over-cap input, makes the second pass treat the old marker as `previous` and drop the fresh one.
+
+Evidence (valid Unicode, no lone surrogates): with `limit=100`,
+`look = "_[memory truncated 是遗留]_"`, `marker = "_[memory truncated at 4000 characters: 10 dropped]_"`,
+`input = "x" + look + "## S\n😀" + marker`:
+- `once` ends `…_[memory truncated at 100 characters: 2 dropped]_`
+- `twice` ends `…_[memory truncated at 4000 characters: 10 dropped]_` and `once !== twice`.
+50,000 randomized valid-Unicode inputs with glued markers found no other class; a separate 20,000 malformed-UTF-16 run found one (lone surrogates plus glued marker).
+
+Impact: `recordMemoryDocument` stores `once` while `loadMemory` folds to `twice`, so the render on disk and the injected/status view can carry different marker metadata. Comparison/adoption still self-heals (`memoryComparisonKey` applies the same second pass), and there is no content loss, so this is low impact — but the code/docs claim idempotence unconditionally.
+
+Minimal fix boundary: after clipping, do not re-adopt a `previous` that became a whole line only because the clip inserted the join newline (e.g., strip marker-shaped lines from `keptBody` before appending the fresh marker); or scope the idempotence claim to documents whose marker was already line-terminated. Add the glued-marker repro to `memory-ops-test.mjs`.
+
+### N2. Round-1 N5d is not fixed: the heading regex still mangles `# Project Memory Notes`
+`memory/document.ts:33`: `.replace(/^#\s*Project Memory\s*/i, "")` turns `# Project Memory Notes\n\n- x` into `# Project Memory\n\nNotes\n\n- x`. Pre-existing, but now also feeds `exceedsMemoryCap`. Minor content reordering, no loss. Fix boundary: anchor the replace to an end-of-line/heading-boundary (`/^#\s*Project Memory\s*$/im` on the first line only, or `\s*(?=\n|$)/`).
+
+### N3. Round-1 N6 is not fixed: the committed render still documents 11 suites
+`.agents/memory/MEMORY.md:5` ("`tests/run-all.mjs` (11 suites)") and `:59` ("Full suite currently 11/11 …") while `tests/run-all.mjs` runs 12 (`memory-ops-test.mjs` missing from the list). `a665f5d` did not refresh the render, and no render commit follows it at HEAD.
+
+### N4. Cap percentage includes the marker, so a capped memory reports >100%
+`index.ts:70-71` and `memory/report.ts:220-221` use `memory.text.length`, which includes the marker line; the cap semantically excludes it (`exceedsMemoryCap`/`normalizeMemoryDocument`). Probe: stored 4039 chars at cap 4000 → `101% of the 4000-char cap` right next to "at the cap". Cosmetic, pre-existing, but M4 made it prominent.
+
+### N5. Small quality items
+- `memory/document.ts:52-58` duplicates `isHighSurrogate`/`isLowSurrogate` from `shared/text.ts:52-58`; `shared/text.ts:clipText` already has a more careful surrogate-safe joiner. Reuse instead of a third copy.
+- `memory/store.ts:69,72` normalizes the same text twice per write (once for the journal, once for the render); compute once.
+- `shared/error-log.ts:90` `if (oldestFile === undefined) break;` cannot fire (`size > 16` implies non-empty). Dead over-guard.
+- `memory/report.ts:34` has an orphaned doc comment (`/** Run the consolidation pass… */`) sitting on `type LastWriteInfo` (pre-existing, but the file is touched).
+- `memory/report.ts:160`: `armed` tests whether the policy is *currently* armed, not whether *this* failure armed it; the commit message says "actually armed". Reachability of a stale-armed + local error is tiny (a local failure can only follow a successful model call, which clears the state), but the wording is stronger than the code.
+- `memory/report.ts` is still a 300-line mix of command registration, write transaction, cap accounting, and notification policy; B1 is a symptom of that mixing. Extracting the cap/notice accounting would be a genuine simplification, not cosmetic.
+
+## Round 1/2 disposition summary
+- Fixed correctly: I1 (write/read split is the right direction — copied marker no longer sticks, genuine markers survive the fold), I2 (`50[0-4]`, ENOTFOUND), I3 (autolearn `call` wrapper; probe verified 5 failures disable and the pause log fires once, local errors no longer arm), I5 (one condense attempt, first result kept on throw, context merge pinned by test), N1 (cross-kind counting + success reset, both pinned), N2 (comment corrected), N3 (outer 16-file LRU cap added), N4 (`firstSinceSuccess` removed, `modelCooldownRemaining` used), N5a/b/c/e and the prompt "middle dropped" wording, N7 (surrogate-safe for well-formed input), round-2 missed #1 (context merge), #2 (armed gate), #3 (autolearn pause trace), #4 (idempotence for the reported class), #5 (prompt names the whole document).
+- Not fixed: N5d (`# Project Memory Notes`), N6 (render "11 suites"), R3/model-cap part of I4.
+- Fixed wrongly: N5e's `neededChars` clamp exists but is out of scope where used → B1.
+- Partly fixed: I4 (`Math.max` done, but it is an upper bound, not the actual ceiling); provenance story (fresh writes fixed, legacy import regressed).
+
+# Test And QA Focus
+
+- `node tests/run-all.mjs` → **All 12 tests passed** (ran twice; ~19 s). `git diff 009e12d..HEAD --check` clean.
+- Mutation testing in `/tmp/pi-mut` (fresh copy; reverted with `git checkout` after each):
+  - **Killed** by the suite: per-kind counter revert (`call-policy-test`), `50[234]` revert, `normalizeMemoryReply` strip removed (`memory-budget` M6 checks), `result = condensed` (`memory-budget` first-context check), condense `try/catch` removal (`memory-budget` fallback checks), `memoryCapUnsatisfiable` reverting to `maxOutputTokens` only (`memory-ops`), body-clipping/idempotence revert and both surrogate guards removed (`memory-ops`), `noteModelSuccess("memory", …)` removed (new end-to-end reset test).
+  - **Survived the full 12-suite run**: removing `noteModelSuccess("autolearn", …)`; restoring the autolearn catch-all `noteModelFailure` (round-1 I3 revert); removing the autolearn paused-notice block; making the memory `armed` check always true; removing the error-log outer-map cap; and nothing reaches the automatic-cap toast (B1). These are real coverage gaps, not just theoretical: reverting three accepted fixes passes 12/12.
+  - The autolearn fixes were still verified by an independent read-only probe: 5 failures → `calls` stops at 5 on the 6th automatic settle, `errors.log` contains exactly one "autolearn is disabled for this session" line.
+- Non-vacuousness: the three updated pre-existing assertions (`consolidation-test` ×2, `switches-test` ×1) are equal-or-stricter; no assertion was weakened. The new tests are generally non-vacuous, and I confirmed the M6/M2/M7 tests fail when the corresponding production change is reverted.
+- Test hygiene: `call-policy-test.mjs` still globally patches `Date.now` (contained per process); the `await new Promise(r => setTimeout(r, 250))` "no call happened" assertions remain vulnerable to a scheduler delay >250 ms passing vacuously (the mutation M1 test relies on this shape). The 250 ms waits are assert-`calls===N` style, so they were not the reason anything survived.
+- Recommended additions: (a) an `agent_settled` cap-path test (would have caught B1); (b) an autolearn success→failure→retry integration test; (c) a legacy import that is already clipped with a marker; (d) a `tsc --noEmit` (or equivalent) step if tooling is ever available — B1 is a type error that jiti cannot catch.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,38 @@
+I have completed the audit. Here is my assessment.
+
+## Method
+
+Read D's review, all four earlier reviews, the full `009e12d..HEAD` diff, and the current sources. Copied the repo to `/tmp/meta-probe` (never wrote inside `/tmp/pi-context-rev12`) and ran the suite plus sequential mutation probes there. Verified the sandbox tracked tree stayed clean (`git status`, `git diff --check`).
+
+## 1. Were D's F1–F3 verifications correct? Yes — all three reproduced
+
+- **F1** (`document.ts:49`, empty body measures 0): reverting to `return MEMORY_HEADER.length + body.length;` → `memory-budget-test`: `FAIL an empty document measures zero, not the heading`; `memory-ops-test`: `FAIL an empty memory reports empty`. Killed, as D claimed.
+- **F2** (`report.ts:109`, measured+clamped suggestion): reverting to `Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT)` → `FAIL the suggested cap is within the accepted range`. Killed.
+- **F3** (`migrate.ts:127`, `preserveMarker`): removing the option → `FAIL a migrated capped memory keeps its marker`. Killed. The fake-`HOME`/`legacyOmpDir` encoding matches `paths.ts:83-86`.
+- Pristine rev12 suite: **12/12**. D's "no blocking/important finding left" holds up: my own adversarial read of the whole diff found no functional bug, no hashing/monkey-patching/exception-handling abuse, and no new over-design.
+
+## 2. fd0cc9e audit
+
+- **`memorySizeLabel`** (`document.ts:61-64`): behavior identical to both old inline expressions (same `empty` branch, same rounding, same cap string). Verified via direct call and both status paths. Safe.
+- **`capCeilingWarning`** (`index.ts:68-71`): removes the duplicated sentence, but **does change one user-visible string**. Old `max-memory` toast: `Memory cap set to 32000 characters, but it needs about 33024 …`. New: `Memory cap set to 32000 characters, but 32000 chars needs about 33024 …`. Numbers unchanged; only the subject text changed. The `status` warning is unchanged. This is a (minor) regression in message quality, not behaviour. D's finding 1 called the two sentences "nearly the same… only the prefix differs" — inaccurate; they differed in the subject (`it needs` vs `N chars needs`), which is exactly why the shared helper introduced the redundancy.
+- **Widened test is not meaningfully non-vacuous.** `report.ts:109` MAX-clamp leg removed entirely → **`ALL OK`** (12/12). The fixture (3990-char body, cap 4000) yields ~4008, so `suggested <= 200000` cannot fail. Even `Math.max(MIN_MEMORY_CHARS, Math.min(memoryText.length, …))` — an *insufficient* suggestion for the 4001–4018 measured range — passes (`ALL OK`). So the assertion adds no killing power for the upper bound and the test still pins only range, not sufficiency. D's finding 4 remains substantively open despite the commit message's claim.
+- **Over-abstraction/regression:** none. Each helper has two call sites; the `document.ts` placement of a display string is a mild SRP smell (D itself proposed that location), not a defect.
+
+## 3. Other residual items found (not blocking)
+
+- The `MIN_MEMORY_CHARS` leg in `report.ts:109` is dead: `neededChars` is only surfaced when `exceedsMemoryCap` is true, i.e. measured > cap ≥ 4000. Harmless over-guarding.
+- The round-4 test gap for the N4 percentage fix is still open: reverting both status sites to `memory.text.length` runs **12/12**. D did not mention this. (The heading-regex gap it also listed was closed by 2a38c5f: reverting the regex now fails `FAIL a non-canonical heading is not split`.)
+- D's review targets rev11 `2a38c5f`, so it does not vouch for `fd0cc9e`; the two things it flagged that `fd0cc9e` then "fixed" are the ones with issues above.
+
+## 4. D's claims that are wrong or overstated
+
+- F1: "`normalizeMemoryDocument` still stores the canonical 18-char header" — it stores 17 chars (`"# Project Memory\n"`, `trimEnd` drops the blank line).
+- F1: `index.ts:70`'s `chars === 0` branch — it is line 71 in rev11 (line 70 is the `memoryDocumentChars` call).
+- F2: "the suggestion is therefore sufficient, not merely in-range" — false for replies > 200000 chars: the clamp suggests 200000 and `normalizeMemoryDocument(…, 200000)` still emits a marker (probed at 200018/200118/250018 measured).
+- Finding 5: "the clamp absorbs the off-by-one for the 3983–4000 body range" — the clamp only binds when measured ≤ 4000 (body ≤ 3982); at body 3983–4000 the measured size itself is the suggestion.
+- Finding 6: "a reply whose body + marker straddles the cap … is clipped by `normalizeMemoryDocument`" — the copied marker is deliberately stripped by `normalizeMemoryReply`; body content is not clipped (no content loss). Overstated.
+- "only the prefix differs" (finding 1), as above.
+
+None of these change the substance of F1–F3, and the PASSED verdict was appropriate for `2a38c5f`. The `fd0cc9e` string change and the ineffective upper-bound assertion are nits/minor test-strength issues, not blockers.
+
+VERDICT: REVIEW-SOUND

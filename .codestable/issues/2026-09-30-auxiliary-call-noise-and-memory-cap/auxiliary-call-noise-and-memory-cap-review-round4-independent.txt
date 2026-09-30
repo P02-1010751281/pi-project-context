@@ -1,0 +1,61 @@
+# Meta-review of Reviewer C (rev9-round3) against `/tmp/pi-context-rev10`
+
+Method: read C's review, both earlier rounds, the full `009e12d..HEAD` diff, `a665f5d` and `71922d8` in isolation; cloned the repo to `/tmp/meta-probe` (never touched the sandbox tree) and ran the suite, direct probes, real-migration probes with a fake `HOME`, and mutation experiments. Reviewed revision is `a665f5d`; fixes are `71922d8`; current HEAD is `a76e91f`.
+
+## Item-by-item audit
+
+### B1 (`neededChars` block-scoped) — CONFIRMED; 71922d8 fixes it correctly
+Reproduced on `a665f5d` via the real `agent_settled` path: toast `Project memory update failed: neededChars is not defined`; `errors.log` has the cap line **and** `ReferenceError: neededChars is not defined at consolidate (.../report.ts:142:204)`; `MEMORY.md` already contains the marker. Exactly as C described.
+- Fix: `report.ts:93` hoists `let neededChars = 0;`, `:109` assigns, `:143` toast now emits. HEAD produces the correct cap toast with no error. The new test (`tests/memory-ops-test.mjs:128-143`) fails on `a665f5d`, passes on HEAD — non-vacuous overall.
+- No regression: the value is only consumed under `cappedMemory`, which implies `memoryChanged`.
+- One weak spot: `tests/memory-ops-test.mjs:143` (`!capToast.includes("not defined")`) is vacuously true when no toast exists; the preceding check is what kills the bug.
+
+### I1 (legacy import loses its marker) — CONFIRMED; 71922d8 fixes it (wiring untested)
+Reproduced through real `migrateProjectState` with a capped legacy OMP `MEMORY.md` under a fake `HOME`: on `a665f5d` `loadMemory(...).isMemoryTruncated === false`; on HEAD `true`.
+- Fix: `store.ts:45,76` adds `preserveMarker`; `migrate.ts:127` is the only caller that sets it; fresh replies still use `normalizeMemoryReply`. Read/fold paths (`journal.ts` fold, `poison.ts:memoryComparisonKey`, store base-history) still use marker-preserving `normalizeMemoryDocument`. No regression.
+- Coverage gap (C missed): the added test (`tests/memory-ops-test.mjs:152`) calls `recordMemoryDocument` directly, not `migrateProjectState`. Deleting `{ preserveMarker: true }` from `migrate.ts:127` still passes 12/12.
+
+### R1 (satisfiability doc overclaim) — CONFIRMED; 71922d8 addresses it
+`a665f5d` comment claimed the ceiling "is the one `fitMemoryInput`/`adaptiveOutputTokens` actually uses". Probes reproduce the false negatives: `fitMemoryInput(20000 dense, "", 8192, {maxTokens: 8192}, 32768)` clips while `memoryCapUnsatisfiable(...) === false`; same for reasoning and large-context cases.
+- Fix: `output-budget.ts:37-47` now says **upper bound** and "a false 'fits' is possible"; `docs/configuration.md`/`architecture.md` say 上界 and defer to the pass's `clipped` diagnostics. Underlying R3 remains by design, now transparent. No regression.
+
+### N1 (idempotence) — CONFIRMED; 71922d8 fixes it
+Exact repro on `a665f5d` (`once !== twice`, `twice` ends with the old 4000-char marker). HEAD: idempotent. My additional 20,000 randomized valid-Unicode inputs (with glued markers) found 0 non-idempotent cases. No regression.
+
+### N2 (`# Project Memory Notes`) — CONFIRMED; 71922d8 fixes it, but untested
+`a665f5d` produced `# Project Memory\n\nNotes\n\n- x`; HEAD keeps the original heading inside the body (no split/rename). Reverting the anchored regex (`document.ts:34`) to the old one still passes 12/12 — no test pins this fix.
+
+### N3 (render says 11 suites) — CONFIRMED at review time; fixed at HEAD by `a76e91f`
+`a665f5d` render: "11 suites"/"11/11". HEAD (`a76e91f`, after `71922d8`): "12 suites"/"12/12". C's "no render commit follows it at HEAD" was true then, stale now.
+
+### N4 (percentage includes marker) — CONFIRMED; 71922d8 fixes the symptom but introduces a regression (see missed #1), and is untested
+`a665f5d` used `memory.text.length` (`index.ts:70`, `report.ts:220`). HEAD uses `memoryDocumentChars`; a capped render now reports 97% in my probe (≤100%). However `memoryDocumentChars("") === 18`, so `index.ts:71`'s `chars === 0 ? "empty"` branch is dead: a fresh project's `status` prints `... (18 chars, 0% of the 32000-char cap)`. Reverting both call sites to `memory.text.length` still passes 12/12.
+
+### N5 (small quality items) — CONFIRMED; mostly fixed by 71922d8
+Single surrogate-helper copy (`shared/text.ts:47,51`); `store.ts:76` normalizes once; dead empty-map guards removed (`error-log.ts`); orphaned doc comment removed; `armed` comment now matches the current-state check. SRP observation about `report.ts` still true. No regressions.
+
+### Disposition summary — PARTIALLY-CONFIRMED
+Accurate on I2 (`50[0-4]`+ENOTFOUND), I3 (`call` wrapper, no local arming), I5 (condense try/catch + context merge), N2/N3/N4, N5a–e/N7, and on "not fixed" (N5d/N6/R3) *for `a665f5d`*. Two overstatements:
+- "Fixed correctly: I1" contradicts C's own round-3 I1 (only fully true after 71922d8).
+- "N1 (cross-kind counting + success reset, both pinned)" — removing `noteModelSuccess("autolearn", passRoot)` passes 12/12 (C's own Test/QA admits this); only the memory reset is e2e-pinned.
+
+## Claims wrong or overstated
+- The two disposition lines above (internal inconsistency; the autolearn half of "success reset" is not pinned).
+- "The new tests are generally non-vacuous": three `71922d8` fixes are unpinned — migrate wiring, N2 anchor, N4 percentage (each revert passes 12/12) — and the cap-toast "not a scoping failure" assertion is vacuous on the bug path. The blocking finding is still pinned by the preceding assertion.
+- "no render commit follows it at HEAD" is now stale (fixed by `a76e91f`).
+- Everything else in C's review (probes, line numbers, severity, fix boundaries) verified as accurate; the mutation survivors it lists reproduced exactly (see below).
+
+## Findings C missed (current code)
+1. **Empty-memory status regression** — `extensions/project-context/index.ts:70-71` with `extensions/project-context/memory/document.ts:45-46`. A project with no memory prints `18 chars, 0% of the 32000-char cap`; the `empty` branch is unreachable. Introduced by the N4 fix. Minimal fix: return 0 when the parsed body is empty, or branch on `memory.text.trim() === ""`.
+2. **Unsatisfiable cap suggestion** — `extensions/project-context/memory/report.ts:109`. `neededChars = Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT)` ignores the 18-char header, so a heading-less over-cap reply (body 3990, stored 4008) logs/toasts `max-memory 3990`, which the command rejects (`< 4000`). Minimal fix: `Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT))`.
+3. **Test non-vacuousness gaps** (the task's own audit axes):
+   - `tests/memory-ops-test.mjs:152` bypasses `migrateProjectState`; `shared/migrate.ts:127` dropping `preserveMarker` survives 12/12.
+   - `memory/document.ts:34` (N2) unpinned — old regex revert survives 12/12.
+   - `index.ts:70`/`report.ts:221` (N4) unpinned — `memory.text.length` revert survives 12/12; no test asserts the ≤100% behavior that motivated the finding.
+   - `tests/memory-ops-test.mjs:143` is a vacuous assertion when the toast is absent.
+4. Minor QA note: one transient suite failure under concurrent load (1 of 17 runs); not reproduced in 16 subsequent runs. Not enough evidence to call it a flake.
+
+## Judgement
+Reviewer C's blocking finding was real, precisely evidenced, and independently reproduced, and its minimal fix boundary is exactly what `71922d8` implemented; every other finding (I1, R1, N1–N5) was also real, with correct severities, and the mutation-survivor list reproduced exactly. The weaknesses are in polish rather than substance: two disposition-summary overstatements (I1, N1), and a test analysis that missed three unpinned accepted fixes plus the small empty-memory regression introduced by the N4 fix it requested. Its `CHANGES-REQUESTED` verdict was appropriate.
+
+VERDICT: REVIEW-SOUND

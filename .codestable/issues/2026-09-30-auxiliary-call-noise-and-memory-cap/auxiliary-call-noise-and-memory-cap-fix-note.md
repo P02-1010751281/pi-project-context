@@ -67,6 +67,9 @@ tags: [memory, autolearn, alerts, errors-log, memory-cap, output-budget, call-po
 - 既有用例中 3 条断言随文案/形态变化同步更新（`consolidation-test.mjs` × 2、`switches-test.mjs` × 1），
   均为预期的对外文案变化，不是放宽断言。
 - 无本地 tsc；类型由 jiti 运行时加载与测试执行间接验证。
+- **独立只读 sandbox 评审（三审三校，共 6 轮）**：`review-round1`…`review-round6`
+  的 prompt 与 transcript 均存于本目录。第 5 轮（审）对 `2a38c5f` 给出 PASSED，第 6 轮（校）
+  对 `fd0cc9e` 给出 **REVIEW-SOUND**；每轮均附只读零写入证据（baseline `git status` + `stat` 快照比对）。
 
 ## 6. 未完成 / 待办
 
@@ -75,5 +78,10 @@ tags: [memory, autolearn, alerts, errors-log, memory-cap, output-budget, call-po
 - **S1 + S3**（固定 schema + 指针化）：改变记忆对外形态、需向后兼容已有自由结构，
   按惯例走 `.agents/skills/pi-project-context-sandboxed-independent-review`。
 - **S2 + S5**（条目生命周期 + 增量 ops）：单独立项；S5=M5 属协议边界，需独立评审。
-- **独立评审**：M2/M6 属记忆/压缩协议边界，尚未跑独立只读 sandbox 评审（本 fix-note 未附评审轮次）。
+- **第 6 轮 meta-review 的残余（不阻塞，已接受）**：
+  - `fd0cc9e` 的共享 `capCeilingWarning` 让 `/project-context max-memory` 的 toast 主语从
+    “it needs about …” 变成 “N chars needs about …”（数字不变，仅措辞）。
+  - 放宽后的 `suggested <= MAX_MEMORY_CHARS_LIMIT` 断言在当前 3990 字符 fixture 下不可能失败，
+    对上限腿没有杀伤力；`report.ts:109` 的 `MIN_MEMORY_CHARS` 腿在调用路径上是死代码（`exceedsMemoryCap` 为真时 measured 必 > cap ≥ 4000）。
+  - N4 的百分比格式回归测试仍缺一条能杀死 `memory.text.length` 的断言（现有套件下 revert 仍 12/12）。
 - 运行中的 pi 仍是已安装的 v0.1.11 clone；本改动要生效需重新打包/发布/重装并重启。
