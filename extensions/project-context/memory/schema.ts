@@ -5,6 +5,8 @@
  * the schema is what the pass asks for, not a gate on what is stored.
  */
 
+import { MEMORY_HEADER } from "./document.ts";
+
 export type MemorySectionSpec = {
 	/** The `##` heading the section carries. */
 	heading: string;
@@ -25,12 +27,13 @@ export const MEMORY_SECTIONS: readonly MemorySectionSpec[] = [
 export type MemorySectionBudget = { heading: string; description: string; chars: number };
 
 /**
- * Characters the document header and the fixed section headings spend before any body text. The
- * per-section budgets are shares of the remainder: shares of the whole cap would let a document
- * that exactly fills every budget exceed the cap once the header and headings are added.
+ * Characters the document header, the fixed section headings, and the blank lines around the section
+ * bodies spend before any body text. The per-section budgets are shares of the remainder: shares of
+ * the whole cap would let a document that exactly fills every budget exceed the cap once the header,
+ * headings, and separating blank lines are added.
  */
-export function memorySchemaOverheadChars(sections: readonly MemorySectionSpec[] = MEMORY_SECTIONS): number {
-	return "# Project Memory\n\n".length + sections.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length, 0);
+export function memorySchemaOverheadChars(): number {
+	return MEMORY_HEADER.length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length + 2, 0);
 }
 
 /** Per-section body budgets for a document cap, floored so they plus the overhead never exceed it. */

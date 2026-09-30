@@ -47,15 +47,15 @@ tags: [memory, schema, pointerization, budgets, s1, s3]
 
 ## 决策 3：每节预算
 
-- 每节预算 = `maxMemoryChars` × share；建议 share：`Project 20% / Invariants 40% / Pitfalls 25% / Index 15%`。
+- 每节预算 = (`maxMemoryChars` − 固定开销) × share；固定开销 = `# Project Memory` 标题 + 各 `##` 节标题及其空行。建议 share：`Project 20% / Invariants 40% / Pitfalls 25% / Index 15%`。
 - prompt 注入“每节 ≤ N 字符，总计 ≤ cap；超了先节内合并、再跨节去重、最后删最不持久”。
 - 剪裁仍用 M3 头尾保留；**按节优先序丢是 S4，不在本次范围**（step 3 列为 `S1 + S3 + M3/M4/M7`，S4 未列）。
 
 ## S3 指针化规则（写进 prompt）
 
-- 正例：`- Handoff threshold uses the conservative 157K/450K fit; see docs/handoff.md.`
+- 正例：一行不变量 + 指向来源的指针，如 `see docs/<topic>.md` 或 `file.ts:123`。
 - 反例：内联 10 行公式、命令输出、表格。
-- **安全规则**：只能指向**已存在**的路径（对话或现有记忆里出现过），不得虚构路径；没有归属的细节保持一行内联，绝不“移出后不留指针”。
+- **安全规则**：只能指向本项目中**已存在且确实承载该细节**的路径，不得虚构路径；没有归属的细节保持一行内联，绝不“移出后不留指针”。
 - 命令 / 配置这类可再生的细节进 `Index`（`路径:行` 或命令名 + 一句作用）。
 
 ## 向后兼容与迁移

@@ -12,8 +12,8 @@ const MEMORY_TRUNCATION_PREFIX = "_[memory truncated";
 /** The marker line in full: `_[memory truncated at <limit> characters: <dropped> dropped]_`. */
 const MEMORY_TRUNCATION_LINE = /^_\[memory truncated at \d+ characters: \d+ dropped\]_$/;
 
-/** The canonical heading every stored memory document carries. */
-const MEMORY_HEADER = "# Project Memory\n\n";
+/** The canonical heading every stored memory document carries; the schema budget reserves it. */
+export const MEMORY_HEADER = "# Project Memory\n\n";
 
 /** The line a capped document ends with: a cut memory must never look like a complete one. */
 export function memoryTruncationMarker(dropped: number, limit: number): string {

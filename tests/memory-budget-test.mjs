@@ -45,13 +45,18 @@ try {
 	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
 	const freeFitted = fitMemoryInput("# Project Memory\n\n- a free-form fact\n", "", 8192, { maxTokens: 32768 });
 	const cap401 = 4_001;
-	const documented = [["Project", 0.2], ["Invariants", 0.4], ["Pitfalls", 0.25], ["Index", 0.15]];
+	const documented = [
+		["Project", "purpose, stack, structure", 0.2],
+		["Invariants", "standing decisions, conventions, hard constraints, user preferences", 0.4],
+		["Pitfalls", "operational traps and the lessons behind them", 0.25],
+		["Index", "pointers to docs, source files, and commands", 0.15],
+	];
 	const overhead = memorySchemaOverheadChars();
 	const intendedBudgets = memorySectionBudgets(cap401);
-	const expectedBudgets = documented.map(([heading, share]) => [heading, Math.floor((cap401 - overhead) * share)]);
+	const expectedBudgets = documented.map(([heading, , share]) => [heading, Math.floor((cap401 - overhead) * share)]);
 	check(
-		"the schema order and shares match the documented contract",
-		MEMORY_SECTIONS.map((section) => [section.heading, section.share]).every(([heading, share], index) => heading === documented[index][0] && share === documented[index][1]),
+		"the schema order, descriptions, and shares match the documented contract",
+		MEMORY_SECTIONS.every((section, index) => section.heading === documented[index][0] && section.description === documented[index][1] && section.share === documented[index][2]),
 	);
 	check(
 		"the budgets are the documented shares of the cap after the fixed overhead",
@@ -61,14 +66,11 @@ try {
 		"the budgets plus the fixed overhead stay within the cap",
 		overhead + intendedBudgets.reduce((sum, section) => sum + section.chars, 0) <= cap401 && intendedBudgets.every((section) => section.chars >= 0),
 	);
-	const realOverhead = "# Project Memory\n\n".length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length, 0);
-	check("the reserved overhead covers the header and every section heading", overhead >= realOverhead);
-	check(
-		"a document filling the real overhead and every budget stays within the cap",
-		realOverhead + intendedBudgets.reduce((sum, section) => sum + section.chars, 0) <= cap401,
-	);
+	const filled = `# Project Memory\n\n${intendedBudgets.map((section) => `## ${section.heading}\n\n${"x".repeat(section.chars)}\n`).join("\n")}`;
+	check("a document that fills every budget and the real structure stays within the cap", !doc.exceedsMemoryCap(filled, cap401) && doc.memoryDocumentChars(filled) <= cap401);
 	const schemaPrompt = buildPrompt("/tmp/p", freeFitted, "conversation", { maxMemoryChars: cap401, currentChars: 10 });
 	check("the prompt lists every section with its description and budget", intendedBudgets.every((section) => schemaPrompt.includes(`## ${section.heading}: ${section.description} (about ${section.chars} characters)`)));
+	check("the prompt uses the documented section descriptions", documented.every(([heading, description]) => schemaPrompt.includes(`## ${heading}: ${description} (`)));
 	check(
 		"the prompt fixes the section order before the fitted memory",
 		documented.every(
