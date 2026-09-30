@@ -2,7 +2,7 @@
 
 ## Project
 - **pi-project-context** is a TypeScript/ESM pi coding-agent extension suite providing durable project memory, session context, archiving, autolearn, and handoff summaries.
-- Stack: Node.js, `fs/promises`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`; tests are plain `.mjs` files run by `tests/run-all.mjs` (11 suites).
+- Stack: Node.js, `fs/promises`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`; tests are plain `.mjs` files run by `tests/run-all.mjs` (12 suites).
 - Main code is under `extensions/project-context/` with a split module layout: `memory/`, `autolearn/`, `handoff/` (facade `handoff.ts` re-exports) and `shared/` (config, llm, call-policy, project-state facade, paths, limits, files, notify, redact, lock, gitignore, error-log, migrate, text, output-budget, conversation).
 - Rendered state lives under each project's `.agents/memory/`. `.codestable/` stores issue reports, reviews, fix notes, release evidence; preserve `.codestable/features/2026-09-15-codex-project-context-port/`.
 
@@ -56,7 +56,7 @@
 - Memory render changes are tracked and normally committed as `docs(memory): refresh the memory render`, separate from code commits.
 - Directory-shaped extensions are installed only through pi packages (`pi install <source>@<ref>`); never copy them into `~/.pi/agent/extensions` (duplicate registration) and never add a `package.json` (pi's `extensions/` convention replaces npm install).
 - Threshold, cap and budget tests pin exact numeric values plus label/summarize strings, so mutating a constant or letting auto accept a fixed-mode ratio fails a test.
-- Full suite currently 11/11 (including `call-policy-test.mjs`, `memory-budget-test.mjs`); `git diff --check` kept clean.
+- Full suite currently 12/12 (including `call-policy-test.mjs`, `memory-budget-test.mjs`, `memory-ops-test.mjs`); `git diff --check` kept clean.
 - Real headless validations: free-model RPC handoff in a sandbox produced `HANDOFF.md`, journal records, backups, `CONTEXT.md` with no `errors.log`; the v0.1.10 settings-installed probe (`/tmp/pc-v0110-probe-bFwq`, `openai-codex/gpt-5.6-luna`) loaded the installed extension and wrote `CONTEXT.md` + `session-logs/` without `errors.log`.
 - Paid routes remain unavailable (deepseek 402 insufficient balance, scnet 429 quota, commandcode insufficient credits) and must never be reported as successful validation. Codex quota/usage-limit errors are a real observed failure class in live projects.
 - Released and installed state: v0.1.10 shipped the conservative-knee threshold; v0.1.11 followed (module split refactor, config whole-snapshot writer dropped, R3 loss-surface fixes, autolearn candidate shape rules, handoff manual target off the trigger line) with release-evidence commit `009e12d`. The installed clone under `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context/` runs the v0.1.11+ split layout. Protocol-level hardening and the new call-policy/memory-budget work are not yet released; running processes need a restart (and a rebuild/reinstall) to pick up new code.
