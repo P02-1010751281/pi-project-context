@@ -183,8 +183,9 @@ try {
 		await runHandlers(pi, "agent_settled", ctx);
 		await waitUntil(() => ctx.notifications.some(([message]) => String(message).includes("max-memory")), 5_000);
 		const toast = ctx.notifications.map(([message]) => String(message)).find((message) => message.includes("max-memory")) ?? "";
+		const { MAX_MEMORY_CHARS_LIMIT } = await loadNamespace(`${PC}/shared/limits.ts`);
 		const suggested = Number((toast.match(/max-memory (\d+)/) ?? [])[1]);
-		check("the suggested cap is within the accepted range", Number.isFinite(suggested) && suggested >= cap);
+		check("the suggested cap is within the accepted range", Number.isFinite(suggested) && suggested >= cap && suggested <= MAX_MEMORY_CHARS_LIMIT);
 	}
 
 	console.log("\n=== migration keeps a capped legacy memory's marker ===");

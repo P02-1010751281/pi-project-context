@@ -7,7 +7,7 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
 import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
-import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
+import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, memorySizeLabel, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { consolidateProjectState } from "./pass.ts";
 
@@ -219,7 +219,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const { maxMemoryChars } = await getConfig(projectRoot);
 			const memory = await loadMemory(projectRoot, maxMemoryChars);
 			const chars = memoryDocumentChars(memory.text);
-			const size = chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / maxMemoryChars) * 100)}% of the ${maxMemoryChars}-char cap`;
+			const size = memorySizeLabel(chars, maxMemoryChars);
 			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
 				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");
 			} else if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");

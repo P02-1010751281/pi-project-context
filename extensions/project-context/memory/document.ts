@@ -58,6 +58,11 @@ export function exceedsMemoryCap(value: string, limit: number = MAX_MEMORY_CHARS
 	return memoryDocumentChars(value) > limit;
 }
 
+/** The one label for a memory's size against its cap; `status` and `/memory` both render it. */
+export function memorySizeLabel(chars: number, cap: number): string {
+	return chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / cap) * 100)}% of the ${cap}-char cap`;
+}
+
 /** Largest whole-line prefix of `text` within `limit`; only a single over-long line is cut inside. */
 export function clipToLineBoundary(text: string, limit: number): string {
 	if (text.length <= limit) return text;

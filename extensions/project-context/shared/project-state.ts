@@ -1,7 +1,7 @@
 
 
 export { backupMemoryBeforeWrite } from "../memory/backup.ts";
-export { isMemoryTruncated, exceedsMemoryCap, memoryDocumentChars, memoryTruncationMarker, normalizeMemoryDocument, normalizeMemoryReply } from "../memory/document.ts";
+export { isMemoryTruncated, exceedsMemoryCap, memoryDocumentChars, memorySizeLabel, memoryTruncationMarker, normalizeMemoryDocument, normalizeMemoryReply } from "../memory/document.ts";
 export { appendMemoryOp, foldMemoryJournal, readMemoryJournal } from "../memory/journal.ts";
 export type { MemoryJournalEntry } from "../memory/journal.ts";
 export { withMemoryLock } from "./lock.ts";
