@@ -64,11 +64,15 @@ async function readRange(file: string, start: number): Promise<string> {
 	}
 }
 
-/** How much of the harness session file (or of the entry list) is already in the archive. */
+/**
+ * How much of the harness session file is already in the archive. The archive's own size is the
+ * append offset: it is exactly the bytes this process wrote, so it can never claim more coverage
+ * than the file has. A source stat captured before the read can be stale and run ahead of the
+ * copied bytes, and re-appending from it would duplicate entries.
+ */
 interface RawCursor {
 	source: string;
 	sourceIno: number;
-	sourceSize: number;
 	dest: ArtifactStamp;
 }
 
@@ -150,13 +154,19 @@ export async function writeSessionArtifacts(
 			&& cursor
 			&& cursor.source === source
 			&& cursor.sourceIno === sourceStat.ino
-			&& cursor.sourceSize <= sourceStat.size
+			&& cursor.dest.size <= sourceStat.size
 			&& sameStamp(await stampOf(rawPath), cursor.dest)
 		) {
-			if (sourceStat.size > cursor.sourceSize) {
-				await appendFile(rawPath, await readRange(source, cursor.sourceSize), "utf8");
-				const dest = await stampOf(rawPath);
-				if (dest) rawCursors.set(key, { source, sourceIno: sourceStat.ino, sourceSize: sourceStat.size, dest });
+			if (sourceStat.size > cursor.dest.size) {
+				// Read from the archive's own end, never from the source stat above: the writer can
+				// append between the two, and the tail read here may then extend past that stat. The
+				// archive size stays exact, so the next refresh resumes without an overlap.
+				const tail = await readRange(source, cursor.dest.size);
+				if (tail) {
+					await appendFile(rawPath, tail, "utf8");
+					const dest = await stampOf(rawPath);
+					if (dest) rawCursors.set(key, { source, sourceIno: sourceStat.ino, dest });
+				}
 			}
 			// A refresh that adds no bytes writes nothing at all.
 			appended = true;
@@ -165,14 +175,16 @@ export async function writeSessionArtifacts(
 
 	if (!appended) {
 		const existingRaw = source ? await readOptional(source) : "";
+		// Copy the source verbatim: a missing trailing newline is completed by the next append from
+		// the exact byte offset, so no synthetic byte can desynchronise the cursor from the archive.
 		raw = existingRaw.trim()
-			? (existingRaw.endsWith("\n") ? existingRaw : `${existingRaw}\n`)
+			? existingRaw
 			: [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 		await writeAtomic(rawPath, raw);
 		const dest = await stampOf(rawPath);
 		if (dest && source) {
 			const sourceStat = await stat(source).catch(() => undefined);
-			if (sourceStat) rawCursors.set(key, { source, sourceIno: sourceStat.ino, sourceSize: sourceStat.size, dest });
+			if (sourceStat) rawCursors.set(key, { source, sourceIno: sourceStat.ino, dest });
 		}
 	}
 

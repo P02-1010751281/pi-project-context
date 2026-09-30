@@ -246,6 +246,50 @@ console.log("\n=== session.jsonl appends incrementally ===");
 	await rm(tmp, { recursive: true, force: true });
 }
 
+console.log("\n=== session.jsonl does not duplicate under a concurrent writer ===");
+{
+	// A stale source stat must never be used as the append offset: the harness can grow between the
+	// stat and the read, and resuming from the stat would re-append the overlap.
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-race-"));
+	const { writeSessionArtifacts } = await loadNamespace(`${PC}/archive/session-log.ts`);
+	const source = path.join(tmp, "harness.jsonl");
+	const line = (i) => `${JSON.stringify({ type: "message", id: `r${i}`, message: { role: "user", content: `line ${i}` } })}\n`;
+	let content = "";
+	for (let i = 0; i < 4000; i += 1) content += line(i);
+	await writeFile(source, content);
+	const entries = [];
+	const sessionManager = {
+		getSessionId: () => "race-session",
+		getSessionFile: () => source,
+		getHeader: () => ({ type: "session", id: "race-session", timestamp: "2026-09-12T10:00:00.000Z", cwd: tmp }),
+		getEntries: () => entries,
+		getBranch: () => entries,
+		buildContextEntries: () => entries,
+		getLeafId: () => null,
+	};
+	const ctx = makeCtx(tmp, { sessionManager });
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+
+	let next = 4000;
+	const writer = (async () => {
+		for (let i = 0; i < 400; i += 1) {
+			await appendFile(source, line(next));
+			next += 1;
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+	})();
+	for (let i = 0; i < 400; i += 1) await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	await writer;
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+
+	const archive = await readFile(path.join(tmp, ".agents/memory/session-logs/race-session/session.jsonl"), "utf8");
+	const finalSource = await readFile(source, "utf8");
+	check("archive matches the source after concurrent appends", archive === finalSource);
+	const ids = archive.split("\n").filter(Boolean).map((entry) => JSON.parse(entry).id);
+	check("no entry is duplicated by the append cursor", ids.length === new Set(ids).size);
+	await rm(tmp, { recursive: true, force: true });
+}
+
 console.log("\n=== archive backfill import ===");
 {
 	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-import-"));
