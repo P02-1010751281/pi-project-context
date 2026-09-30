@@ -1,25 +1,29 @@
 # Project Context
 
-Last updated: 2026-09-19T14:05:00.000Z
+Last updated: 2026-09-30T10:04:12.250Z
 
 ## Summary
 
-Adaptive handoff threshold rework is code-complete on the conservative knee curve A: `knee(W) = W − (W − 157000)·σ(ln(W / 450000) / 0.04)`, `T0 = max(min(usable − 4000, knee), baseline + keep + handoffTargetTokens)`, caps summarizer → first pricing tier → `usable − 4000` (only lower), undefined below `baseline + keep + 8000`. `handoffThresholdRatio` is fixed-mode only; `/auto-handoff auto` takes no parameter. Code, tests, docs, review skill, MEMORY.md and the issue artifacts all carry the new semantics; `node tests/run-all.mjs` is 9/9 and the status-line probes match. Independent lane-A review round 1 (`/tmp/pc-threshold-review-v2`, `openai-codex/gpt-5.6-luna`) returned CHANGES-REQUESTED with proven zero sandbox writes; its Important findings were triaged: the tier-cap fail-closed fix and the ratio-parameter mutation-gap test landed, `summarizeTokens` was reworded to a projected prefix, stale memory/doc/migration text was fixed, and a sub-40k auxiliary summarizer stays a documented residual risk. Release bookkeeping (commit/tag/push/pin/probe) and a re-review are open.
+User asked to restore context: the two recently active projects (UniField, Quantum_Matrix) keep raising alerts. Root cause found: with empty `provider`/`model`, auxiliary consolidation and autolearn fall back to the session model (Codex), and provider failures (usage limit, 402/403/429, connection errors) retried on every settle, flooding `errors.log` (UniField 211 lines, Quantum_Matrix 769 lines / ~104 KB) and toasting repeatedly. A four-step improvement plan was agreed. Steps 1 and 2 are implemented and green but uncommitted; step 3 ops actions touch the user's live projects and await confirmation.
 
 ## Key points
 
-- Final formula: `knee(W) = W − (W − 157000)·sigmoid(ln(W / 450000) / 0.04)`; `usable = W − 16384`; `floor = B + K + 8000`; caps in order summarizer → first tier edge−4000 → `usable − 4000`, only lowering; below floor → undefined.
-- Curve basis: K=157K is the population median of measured MRCR 8-needle knees (46 models ≥1M: p25 127K / p50 157K / p75 190K); Wc=450K because every measured 500K+ declaration is inflated (grok-4.5/4.6 declare 500K, family ~195K; DeepSeek-V4.1-Flash / GLM-5.3 / Qwen3.8 declare 1M, measured 130–170K). Deliberately conservative for strong models (GPT-5.6 ~250K, Gemini 3.7 ~450K, GPT-6 ≥512K).
-- Withdrawn alternatives: v0.1.9's `min(S, room/2)` cap (auto stuck at 64K), the two-term `max(B+K+S, rW)` (auto degenerates to the share), the half-window and window-end rules, the flat `min(W, 157K)` plateau (too early for strong 1M models), and the 273K/650K fit (ran inflated declarations 2–3× past their knee).
-- `Threshold.summarizeTokens = tokens − baseline − keep` is the status line's projected summary input after caps (the real cut can only be shorter; a whole window in one turn makes the handoff skip with a warning). Falls back to configured `target` without usage.
-- Tier cap fail-closed: a first-tier edge below `floor + 4000` returns undefined instead of silently crossing the paid boundary; exactly at `floor + 4000` it caps to the floor.
-- Test pins: 1M → 157,000 (`auto 157k (16%)`, summarize 125,076); 400K → 379,616; 272K → 251,616; 768K → 157,001; heavy usage 512K → 583,924 (bound `target`); 120K tier → 116,000; tier edge at floor+4000 → 39,924; 128K summarizer → 127,156; 64K window → 43,616 (usable cap).
-- Review round 1 transcript: `.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/handoff-adaptive-threshold-semantics-review-round1-independent.txt`; verdict CHANGES-REQUESTED, no blocking findings.
+- Diagnosis: alerts come from auxiliary model calls failing (Codex usage limit, 402 insufficient balance, 403 auth, 429 quota, connection errors/stream termination) during consolidation and autolearn, plus a retry storm on every agent_settled and false 'hit the cap' warnings from copied truncation markers.
+- `errors.log` is unbounded/append-only and noisy: repeated identical entries, no rotation-based dedupe, and both live projects have `maxMemoryChars` set at or near the render size (UniField 36000, Quantum_Matrix 32000) while renders reached ~31 KB.
+- Step 1 (done): new `shared/call-policy.ts` with failure classes, per-project/per-scope cooldown, exponential backoff, and session disable after 5 consecutive provider failures; `shape` failures deliberately do not cool down routes; wired into `memory/pass.ts`, `memory/report.ts`, `autolearn/pass.ts` with class-specific toasts.
+- Step 2 (done): consolidation prompt now carries the real `maxMemoryChars` cap and current size and forbids writing truncation markers (M1); an over-cap reply gets one bounded condensation call instead of a silent tail drop (M2); `exceedsMemoryCap` stops a copied `_[memory truncated …]_` marker from faking a cap event (M6).
+- `docs/architecture.md` shared-module tree updated with `call-policy.ts`.
+- Verification: `node tests/run-all.mjs` is 11/11 (new `tests/call-policy-test.mjs`, `tests/memory-budget-test.mjs`); `git diff --check` clean.
+- Changed files: extensions/project-context/{memory/pass.ts,memory/report.ts,memory/prompt.ts,memory/document.ts,autolearn/pass.ts,shared/project-state.ts,docs/architecture.md} plus new shared/call-policy.ts and two test files — all uncommitted.
+- `.agents/memory/CONTEXT.md` and `.agents/memory/project-context.json` in this repo are modified by the live extension; per convention they are committed separately from code.
+- Running pi sessions PID 3225 (UniField) and PID 3278 (Quantum_Matrix) use the installed v0.1.11+ clone and cannot see these fixes until rebuilt/reinstalled and restarted.
 
 ## Open tasks
 
-- Re-run the independent review on the fix delta (`/tmp/pc-threshold-review-v3` or equivalent), then release: commit, annotated tag v0.1.10, push both remotes, bump the `pi-config` pin, verify installed blobs, run a settings-installed probe, record evidence.
-- Restart the live pi process (PID 367149) so it loads the new threshold code; until then the running session rewrites `.agents/memory/*` with the old semantics.
-- Project skills were consolidated and committed: `memory-recovery` absorbed the truncation triage and stale-writer checks, `release-tag-and-pin-sync` absorbed the release-verification candidate, `write-lock-hardening` was promoted, and `sibling-repo-memory-sync` / `sandboxed-independent-review` / `gate-probe-mutation-check` were kept (backup: `/tmp/pc-skills-backup-20260919-220834.tar.gz`).
+- Step 3 code-only remainder: B4 (merge duplicate `errors.log` lines / reduce noise) plus M3, M4, M7 memory-budget items.
+- Step 3 ops items require explicit confirmation before touching live projects: raise Quantum_Matrix `maxMemoryChars` (and reconcile its MEMORY.md/journal divergence and backups), review UniField settings, restart PIDs 3225 and 3278.
+- Step 4 (separate feature): S2 memory-entry lifecycle and S5 incremental ops protocol.
+- Run the sandboxed independent review skill over the M2/M5 protocol boundary changes.
+- Decide whether to create a CodeStable issue/feature record and commit the current work (code commit vs `docs(memory)` render commit separately).
 
-<!-- latest-session-title: Handoff adaptive threshold semantics: auto = conservative knee curve -->
+<!-- latest-session-title: Fixing recurring alerts in UniField and Quantum_Matrix -->

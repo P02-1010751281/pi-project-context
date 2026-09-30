@@ -1,78 +1,73 @@
-# pi 会话 01a0b992-9ad4-75fb-b815-6da5d4bcd963 的交接文档
+# pi 会话 01a0f19c-40e0-75f6-9452-fa8df68590f0 的交接文档
 
-- 生成时间：2026-09-19T13:19:06.954Z
+- 生成时间：2026-09-30T10:01:36.698Z
 - 项目：/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context
-- 会话日志：.agents/memory/session-logs/01a0b992-9ad4-75fb-b815-6da5d4bcd963/session.md
+- 会话日志：.agents/memory/session-logs/01a0f19c-40e0-75f6-9452-fa8df68590f0/session.md
 - 会话索引：.agents/memory/session-logs/INDEX.md
 
 ## 目标
-- 修正 `pi-project-context` 扩展的自适应 handoff 阈值（auto）语义：auto 应落在模型**质量拐点**上，公式简单、模型无关、对新模型安全，不接受参数。
-- 本轮具体产出：把拟合曲线改为「保守曲线 A」（K=157K / Wc=450K），同步代码/测试/文档/记忆/issue 工件，然后走独立 review → 发布 v0.1.10。
-- 已完成的数据调研（Context Arena API、厂商技术报告、community 自测）沉淀为技术报告工件。
+- 修复两个项目（UniField、Quantum_Matrix）pi-project-context 扩展"频频报警"的问题，并按批准的 A+B 方案落地改进。
+- 按最终确认的施工顺序实施：1) B1+B2/B3（降噪）；2) M1+M2+M6（闸门层）；3) S1+S3+M3/M4/M7（结构层+可见性）；4) S2+S5（单独立项）。
 
 ## 约束与偏好
-- `/auto-handoff auto` 不接受参数；`handoffThresholdRatio` 只服务固定模式（`/auto-handoff 0.6`）。
-- 公式要简单，不堆场景；caps 只降不升；文档用中文；提交信息英文 Conventional Commits。
-- owner 明确否决：逐模型表（会过时）、覆盖机制 `handoffOverrides`、纯平保守平台 `min(W, 157K)`（对强 1M 模型过早）。
-- owner 已授权 commit/tag/push/更新 `~/.pi`；不新增 `package.json`；目录仓库（`pi-custom-providers` 等）改动不属本任务。
-- 独立 review 必须在只读沙箱 `/tmp/pc-threshold-review` 进行，不得改动仓库沙箱。
+- 用户选择方案 (b)：**不配置** `provider`/`model`（不做 A1），但保留"连续失败自动停用本次会话"兜底（并入 B2 冷却逻辑）。
+- 改动需附带各自测试。
+- M2/M5 动到记忆/压缩协议边界，按项目惯例需走 `.agents/skills/pi-project-context-sandboxed-independent-review` 独立只读评审。
+- S 层会改变记忆对外形态，需向后兼容已有自由结构（不能重排导致丢事实）。
+- 用简体中文回复。
 
 ## 进展
 ### 已完成
-- owner 决策「保守曲线 A」：`K=157_000`、`Wc=450_000`、`s=0.04`（备选 B=200K/500K 未采用）。
-- `extensions/project-context/handoff.ts`：常量改为 `KNEE_ASYMPTOTE_TOKENS = 157_000`、`KNEE_TRANSITION_TOKENS = 450_000`、`KNEE_TRANSITION_STEEPNESS = 0.04`，注释重写（人群 p50、Wc=450K 依据、被替换的 273K/650K 拟合、刻意保守说明）。`kneeTokens()` 形式不变；`resolveThreshold` 逻辑不变。
-- `tests/handoff-test.mjs` 钉值更新并全绿：wide(1M) → `157_000` / `auto 157k (16%)` / summarize `125_076`；272K → `251_616`；400K → `379_616`；768K → `157_001`；heavy(usage 512K) → `583_924`（bound `target`，summarize `64_000`）；tier 夹具 200K 档 → `120_000` 档 → `116_000`（bound `tier`）；summarizer 夹具 200K → `128_000` → `127_156`（bound `summarizer`）；quiet fixture usage `200_000` → `120_000`（percent 12）并改注释。
-- 验证：`node tests/run-all.mjs` → **All 9 tests passed**；`git diff --check` 干净；`HANDOFF_DEBUG` 无残留。
-- 文档/记忆已更新：`docs/handoff.md`（纯文本公式、LaTeX、含义条目、状态行样例）、`docs/configuration.md`（L77 说明）、`.agents/memory/MEMORY.md`（adaptive threshold 描述、rejected alternatives、design references、状态行样例、pinned test values、regression signature）。
-- issue 工件已更新：`handoff-adaptive-threshold-semantics-analysis.md`（§1 新增第 6 条、§2 新增推翻段落、§3 公式与行为、§4 数值表、§5 决策说明、§6 新增来源）、`handoff-adaptive-threshold-semantics-fix-note.md`（§1 常量与理由、测试条目、§2 数值表 + 历史对照）、`handoff-adaptive-threshold-semantics-review-prompt.txt`（公式、依据、行为、状态行样例、改动清单、review 第 4/7/8 项）。
-- `handoff-adaptive-threshold-semantics-data-report.md` 已写好（§1–§12）：Context Arena 活接口结构、CSV 缺 `reasoning_mode` 的证据（gpt-5.5 五档 85.8/83.0/79.3/67.0/28.3 @128k）、OAI-MRCR 2/4/8 针（112 旧模型、与新站仅 1 个 slug 交集 `google/gemini-3-flash-preview`）、GraphWalks 404、外部测试评估、§11 厂商技术报告、§11.6 linux.do 的 V4.1-Flash 自测曲线。
+- 定位 "报警"：两个活着的 pi 进程 PID 3225（cwd=UniField）、PID 3278（cwd=Quantum_Matrix），均 11:22 启动。运行版本确认为 **v0.1.11**（pin `pi-project-context@v0.1.11`，已装 clone HEAD `ed2704c`），纠正了记忆里"跑 v0.1.10/旧进程"的过时信息。
+- 报警清单：`[memory]/[autolearn] Error: model call error: Connection error / Request timed out`、`memory exceeded maxMemoryChars (32000)`、`adopted an externally edited MEMORY.md`（QM 141 次、UniField 28 次）。会话模型 = `commandcode-c02-1010751281 / deepseek/deepseek-v4.1-flash`。
+- 根因：辅助模型回退到会话模型（`resolveAuxModel` in `shared/llm.ts`）；**autolearn 失败无退避**（03:13–03:19 六连发）；memory 有 5 分钟 throttle、handoff 有 `FAILURE_BACKOFF_MS`（`handoff/state.ts:10`）。
+- 已完成 B1 + B2/B3 实现：
+  - 新建 `extensions/project-context/shared/call-policy.ts`：`classifyModelFailure`、`noteModelFailure`、`noteModelSuccess`、`modelCooldownRemaining`、`modelAutoDisabled`、`modelBlocked`；常量 `AUTH_COOLDOWN_MS=30*60_000`、`QUOTA_COOLDOWN_MS=15*60_000`、`TRANSIENT_BASE_COOLDOWN_MS=5*60_000`、`TRANSIENT_MAX_COOLDOWN_MS=30*60_000`、`AUTO_DISABLE_AFTER=5`。
+  - 改 `memory/pass.ts`：throttle 后加 `if (!force && modelBlocked("memory", projectRoot)) return cached?.outcome;`；`call()` 成功时 `noteModelSuccess`、失败时 `noteModelFailure`。
+  - 改 `memory/report.ts`：新增 `memoryFailureNotice()`、`MEMORY_PAUSED_NOTICE`、`disablesAnnounced` Set，按失败类输出不同 toast 文案。
+  - 改 `autolearn/pass.ts`：gate 加 `if (!force && modelBlocked("autolearn", projectRoot)) return;`；首个 `completeText` 成功后 `noteModelSuccess`；catch 加 `noteModelFailure`。
+  - 新建 `tests/call-policy-test.mjs`（分类/冷却/退避/自动停用/autolearn 不重试/memory 退避端到端）。
+  - `node tests/run-all.mjs` → **All 10 tests passed**。
+- 修复了 `autolearn/pass.ts` 与 `tests/call-policy-test.mjs` 的缩进。
 
-### 已完成（本轮会话续跑）
-- [x] ✅ `report.md`「期望」段已改为保守曲线（157K/450K）。
-- [x] ✅ `audit.md` 公式与钉值已同步（含「本次（未发布）— auto = 保守拟合的拐点曲线」小节）。
-- [x] ✅ `data-report.md` §12 已补「已决（2026-09-19，owner 选 A）」。
-- [x] ✅ review skill `SKILL.md` 已核实并改为保守曲线（旧的 273K/650K 仅作为「已撤回」历史注记保留）。
-- [x] ✅ 独立 review round 1 完成（新沙箱 `/tmp/pc-threshold-review-v2`，零写入已证明）：VERDICT CHANGES-REQUESTED，无 blocking；tier cap fail-closed、ratio 测试变异盲区、记忆/文档同步已修，复审转录已归档。
+### 进行中
+- [ ] 复核 B1+B2/B3 的最终 diff（`git diff --check` 已 clean；无本地 tsc，需注意类型）。
 
-### 受阻
-- 无硬阻塞。注意 live pi 进程 PID `367149`（v0.1.7 时代代码）会重写 `.agents/memory/*`，未重启看不到新行为。
+### 阻塞
+- (无)
 
 ## 关键决策
-- **最终公式 = 保守曲线 A**：`knee(W) = W − (W − 157000)·σ(ln(W/450000)/0.04)`；`T0 = max(min(U−4000, knee(W)), baseline+keep+handoffTargetTokens)`；caps 依序 summarizer → first tier edge−4000 → U−4000，只降；低于 `baseline+keep+8000` 返回 undefined。
-- **依据**：46 个 ≥1M 模型实测拐点 p25=127K / p50=157K / p75=190K；所有 500K+ 声明实测虚高（grok-4.5/4.6 声明 500K、家族 ~195K；V4.1-Flash/GLM-5.3/Qwen3.8 声明 1M、实测 130–170K）；≤~400K 诚实窗口（Codex 272K/400K、Claude 200K）保持不变；强模型（GPT-5.6 ~250K、Gemini 3.7 ~450K、GPT-6 ≥512K）刻意偏早。
-- **否决项**：逐模型表、`handoffOverrides` 覆盖机制、纯平 `min(W,157K)` 平台、备选参数组 B(200K/500K)、旧的 273K/650K 拟合。
-- 已知差异由固定模式承担：`/auto-handoff <ratio>` 仍是会话内手动杠杆。
+- **报警确认口径**：两个项目 = UniField + Quantum_Matrix（扫描 Projects 下所有 `errors.log`，仅这两个 9-29/9-30 有报错，各 19 条）。
+- **根因分层**：结构无关（M1/M2/M6/M7：预算注入、压缩阶段、粘性 marker、上限对齐）vs 结构有关（S1–S4，S5 终极形态）。
+- **结构证据**：UniField 27604 字符/11 节/101 bullet（49 条 >200 字符，均长 269，知识库风格）；QM 11009 字符/5 节/50 bullet（索引风格）。0 条完全重复 → 靠"只增不删"膨胀。
+- **内存易触顶原因**：prompt 只写 "below 6000 words"、`maxMemoryChars` 从未注入；cap 只在写路径砍尾（`clipToLineBoundary`）；整篇重写；marker 会粘住；32000 中文字≈16k–32k token 撞 `MAX_ADAPTIVE_OUTPUT_TOKENS=32768`。
+- **检测到 `MEMORY.md` 与 journal 分叉**（QM 17:25 render=17998 而 journal 最新=11009；UniField render=27604 而 journal=18751），源于扩展外写入者（手改/`git checkout HEAD -- .agents/memory/MEMORY.md`）。
 
-## 后续步骤
-1. ~~完成剩余工件同步~~ ✅ 已完成；~~核实 review skill~~ ✅ 已核实。
-2. ~~重跑 `node tests/run-all.mjs` 与 `git diff --check`~~ ✅ 9/9、干净（复审修复后需再跑一次）。
-3. ~~独立 review（lane A）~~ ✅ round 1 已完成（CHANGES-REQUESTED）；待修复后跑 round 2 复验增量。
-4. review 通过 → commit → annotated tag v0.1.10 → Forgejo+GitHub 双推 → bump `~/.pi/agent/settings.json` 与 `~/.pi/README.md` 的 `@v0.1.9` → pi-config commit → `pi update --extensions` → 真机探针 → 证据落 `fix-note` §5。
-5. 提醒 owner：重启 live pi（PID 367149）；待定是否提交 `.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/`（含 data-report）与 4 个 autolearn skill。
+## 下一步
+1. 完成 B1+B2/B3 diff 复核（含类型/缩进）；确认无回归（已 `run-all.mjs` 全绿）。
+2. 进入 M1（把 `maxMemoryChars` 注入 `memory/prompt.ts`）+ M2（溢出即压缩第二阶段，复用 retry）+ M6（修粘性 truncation marker），附测试。
+3. 再做 S1（固定最小 schema + 每节预算）+ S3（指针化约束）+ M3/M4/M7。
+4. S2 + S5（增量 ops 协议）单独立项，走独立只读 sandbox 评审。
 
 ## 关键上下文
-- 仓库：`/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context`，master，HEAD `95a6590`，最新 tag `v0.1.9`（`0af9ec6`）。
-- 常量：`WINDOW_RESERVE_TOKENS=16_384`、`SUMMARY_OUTPUT_RESERVE_TOKENS=32_768`、`TIER_EDGE_MARGIN=4_000`、`MIN_SUMMARIZE_TOKENS=8_000`、`KNEE_* = 157_000/450_000/0.04`。
-- 函数：`kneeTokens(window)`、`resolveThreshold(ctx, usage, summaryModel?)`、`baselineTokens()`、`firstCostTierEdge(model)`、`statusText()`、`maybeTrigger()`、`runHandoff()`；`Threshold.bound ∈ adaptive|target|summarizer|tier|usable`。
-- 测试夹具：B=11,924、keep=20,000、S(handoffTargetTokens)=64,000；探针 `/tmp/knee-probe.mjs`、`/tmp/window-probe.mjs` 输出：64K→43,616(usable)、128K→107,616、200K→179,616、272K→251,616、400K→379,616、600K→157,333、768K→157,001、1M/1.05M→157,000。
-- 数据证据：Context Arena 新站接口 `contextarena.ai/api/{available-needles,models,needle-summary?needles=8&mode=full|lite}`（184 条 = 73 模型 × reasoning 变体，逐档 `avg_score/n_tests/ci_50~99`）；老站 `api.contextarena.ai/mrcr/*`（needles `[2,4,8]`，112 旧模型，无 `bin_metrics` 之外新模型）；DeepSeek V4 报告 arXiv 2606.19348 Figure 9：V4-Pro-Max 0.90/0.85/0.94/0.90/0.92/0.82/0.66/0.59、V4-Flash-Max 0.91/0.84/0.87/0.85/0.87/0.76/0.60/0.49（8k→1024k）；V4.1-Flash 报告 PDF md5 `4535b6de69ce4e3a965e2fdb0ace5d85`（`/home/user/DeepSeek_V41_Tech_Report.pdf`）无 MRCR，LongBench-V2 44.7/51.5/45.2；GPT-6 MRCR 256–512K 100%、512K–1M 96.3%（Sol 91.5%/73.8%）；linux.do 2892775 V4.1-Flash 自测 97.5/97.6/95.2/85.1/79.2/40.2/29.0，1M 档不可达（需 1,048,383 输入 token，窗口输入+输出共享）。
-- 本地工件：`/tmp/evals/`（`new-ns8.json` 1,337,559 B、`api-ns{2,4,8}.json`、`api-models.json`、`ds-fig9.png`、`ds-v41-pdf.txt`、`grok46-pdf.txt`、`Gemini-3-{7,8}-Flash-Model-Card.pdf/.txt`、`gpt6-card.txt`、`linuxdo.json`、`ld-081e287….png`）。
-- 未跟踪：`.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/`、`.agents/skills/pi-project-context-{memory-cap-truncation-triage,stale-writer-process-check,sandboxed-independent-review,gate-probe-mutation-check}/`、`.agents/memory/skill-candidates/`。
-- 常用命令：`node tests/run-all.mjs`、`node tests/handoff-test.mjs`、`git diff --check`、`tvly search/extract`（TAVILY_API_KEY 已配）。
+- 仓库根：`/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context`
+- 当前 git 工作树改动：`.agents/memory/CONTEXT.md`、`.agents/memory/project-context.json`（M），以及本次新增/修改的扩展与测试文件。
+- 关键常量/文件：`shared/limits.ts`（`MAX_MEMORY_CHARS=32_000`、`MIN_MEMORY_CHARS=4_000`、`MAX_MEMORY_CHARS_LIMIT=200_000`）、`shared/output-budget.ts`（`MAX_ADAPTIVE_OUTPUT_TOKENS=32_768`、`REPLY_OUTPUT_MARGIN_TOKENS=1024`、`RETRY_OUTPUT_HEADROOM_TOKENS=4096`）、`memory/document.ts`（`normalizeMemoryDocument`、`clipToLineBoundary`、`memoryTruncationMarker`）、`memory/input.ts`（`fitMemoryInput`）、`memory/store.ts:65`（adoption logError）、`shared/error-log.ts`（`MAX_ERROR_LOG_BYTES=1_000_000`）。
+- 测试运行：`node tests/run-all.mjs`（10 个测试文件，60s 超时）；harness `tests/harness.mjs`（`loadDefault`、`loadNamespace`、`makeCtx`、`makePi`、`makeSessionManager`、`runHandlers`、`waitUntil`、`PC`）。
+- 项目配置：UniField `maxMemoryChars=36000`；QM `maxMemoryChars=32000`；两者 `provider=""`/`model=""`、`consolidateTurns=6`、`consolidateIntervalMs=300000`、`autolearnTurns=20`、`autolearnIntervalMs=1800000`。
+- 历史 cap 命中：UniField 2 次、QM 5 次；6 个归档带截断标记。
+- 用户最后消息 "ok" 表示批准施工顺序并开始实施。
 
 <read-files>
-/tmp/evals/ds-fig9.png
-/tmp/evals/ld-081e28724cc427b616f3ae4c14358d10713a4ef3.png
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/store.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/shared/error-log.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/shared/notify.ts
 </read-files>
 
 <modified-files>
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.agents/memory/MEMORY.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/handoff-adaptive-threshold-semantics-analysis.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/handoff-adaptive-threshold-semantics-data-report.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/handoff-adaptive-threshold-semantics-fix-note.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/handoff-adaptive-threshold-semantics-review-prompt.txt
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/docs/configuration.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/docs/handoff.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/handoff.ts
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/tests/handoff-test.mjs
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/autolearn/pass.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/pass.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/report.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/shared/call-policy.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/tests/call-policy-test.mjs
 </modified-files>
