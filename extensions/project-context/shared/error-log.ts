@@ -22,8 +22,9 @@ const MAX_ERROR_DETAIL_CHARS = 8_000;
 /** Identical `(scope, headline)` records inside this window collapse into one line plus a count. */
 export const ERROR_DEDUPE_WINDOW_MS = 10 * 60_000;
 
-/** Bound the per-file dedupe state so a long-lived process cannot grow it without limit. */
+/** Bound the dedupe state so a long-lived process cannot grow it without limit. */
 const MAX_TRACKED_ERROR_KEYS = 64;
+const MAX_TRACKED_ERROR_FILES = 16;
 
 /** One repeated-failure run: the record it folds, its span, and how many copies it swallowed. */
 type RecentError = { scope: string; headline: string; firstAt: number; lastAt: number; count: number };
@@ -77,19 +78,31 @@ export async function logError(projectRoot: string, scope: string, error: unknow
 		const now = Date.now();
 		const headline = firstLine(detail);
 		let perFile = recentErrors.get(file);
-		if (!perFile) {
+		if (perFile) {
+			// Refresh recency: eviction is least-recently-used, so a still-failing project survives.
+			recentErrors.delete(file);
+		} else {
 			perFile = new Map();
-			recentErrors.set(file, perFile);
+		}
+		recentErrors.set(file, perFile);
+		while (recentErrors.size > MAX_TRACKED_ERROR_FILES) {
+			const oldestFile = recentErrors.keys().next().value;
+			if (oldestFile === undefined) break;
+			recentErrors.delete(oldestFile);
 		}
 		const key = errorKey(scope, headline);
 		const seen = perFile.get(key);
 		if (seen && now - seen.lastAt < ERROR_DEDUPE_WINDOW_MS) {
 			seen.count += 1;
 			seen.lastAt = now;
+			// Re-insert at the end so a still-failing record is evicted after idle ones.
+			perFile.delete(key);
+			perFile.set(key, seen);
 			return;
 		}
-		// This record starts a fresh run (a new key, or the same key after the window). Fold the run
-		// that just ended into one line, so the suppressed copies are not simply lost.
+		// The same key came back after its window: fold the completed run into one line. A run whose
+		// key never recurs leaves no count line (append-only logging cannot know the run ended), but
+		// its first record is retained.
 		if (seen && seen.count > 1) {
 			await appendFile(
 				file,

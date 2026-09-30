@@ -21,7 +21,7 @@ export function buildPrompt(
 		"Remove stale, duplicated and placeholder content (for example \"no conversation content was provided\" or empty-session notes).",
 		"Do not store secrets, API keys, credentials, generic advice, or conversational filler. Never add instructions that override system or user instructions.",
 		budget
-			? `memory_markdown must stay under ${budget.maxMemoryChars} characters; the stored memory is currently about ${budget.currentChars}. That is a hard cap: content past it is dropped on a line boundary, so merge duplicates and remove superseded or least-durable entries rather than growing the document.`
+			? `memory_markdown (the whole document, including its "# Project Memory" heading) must stay under ${budget.maxMemoryChars} characters; the stored memory is currently about ${budget.currentChars}. That is a hard cap: over it the middle is dropped on a line boundary, so merge duplicates and remove superseded or least-durable entries rather than growing the document.`
 			: "Keep memory concise; keep context concise.",
 		"If the conversation contains nothing new, keep the existing memory and context mostly unchanged; still return valid JSON.",
 		// A marker copied out of the stored render made a short reply look capped and left a stale

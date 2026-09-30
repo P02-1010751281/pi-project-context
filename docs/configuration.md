@@ -63,7 +63,7 @@ _[memory truncated at N characters: M dropped]_
 
 marker 行不计入正文 cap。超限时保留头尾、丢弃中段，在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/project-context max-memory` 建议）。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
-cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 1 token/字符最坏估算，`maxMemoryChars + 1024` 超过 `maxOutputTokens` 时 `status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）——否则回复会在闭合前被截断，无论重试多少次。
+cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 1 token/字符最坏估算，`maxMemoryChars + 1024` 超过实际输出上限 `max(maxTokens, maxOutputTokens)` 时 `status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）——否则回复会在闭合前被截断，无论重试多少次。
 
 ## 命令
 

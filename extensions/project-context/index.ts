@@ -68,7 +68,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 	/** What the memory injection currently uses, including how it is stored (the fix for the old bug). */
 	function memoryStatusLine(memory: LoadedMemory, cap: number): string {
 		const chars = memory.text.length;
-		const size = chars === 0 ? "empty" : `${chars} chars${cap > 0 ? `, ${Math.round((chars / cap) * 100)}% of the ${cap}-char cap` : ""}`;
+		const size = chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / cap) * 100)}% of the ${cap}-char cap`;
 		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
 		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;
 		if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
@@ -114,8 +114,9 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Context: ${await contextStatusLine(projectRoot)}`,
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
-				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxOutputTokens)) {
-					lines.push(`Memory cap warning: ${config.maxMemoryChars} chars needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above maxOutputTokens=${config.maxOutputTokens}; lower it with /project-context max-memory <n> or raise maxOutputTokens.`);
+				const ceiling = Math.max(config.maxTokens, config.maxOutputTokens);
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
+					lines.push(`Memory cap warning: ${config.maxMemoryChars} chars needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${ceiling}; lower it with /project-context max-memory <n> or raise maxTokens/maxOutputTokens.`);
 				}
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));
@@ -139,10 +140,10 @@ export default function projectContext(pi: ExtensionAPI): void {
 					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
 				}
 				const config = await getConfig(projectRoot);
-				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxOutputTokens)) {
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
 					notify(
 						ctx,
-						`Memory cap set to ${config.maxMemoryChars} characters, but it needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above maxOutputTokens=${config.maxOutputTokens}; raise maxOutputTokens too or replies can be truncated.`,
+						`Memory cap set to ${config.maxMemoryChars} characters, but it needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${Math.max(config.maxTokens, config.maxOutputTokens)}; raise maxTokens/maxOutputTokens too or replies can be truncated.`,
 						"warning",
 					);
 				} else {

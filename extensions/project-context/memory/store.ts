@@ -6,7 +6,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { clipToLineBoundary, normalizeMemoryDocument } from "./document.ts";
+import { clipToLineBoundary, normalizeMemoryDocument, normalizeMemoryReply } from "./document.ts";
 import { appendMemoryOp, foldMemoryJournal, newestMemoryArchive, readMemoryJournal, rotateMemoryJournalIfNeeded } from "./journal.ts";
 import { decodePoisonedMemory, memoryComparisonKey } from "./poison.ts";
 import { logError } from "../shared/error-log.ts";
@@ -66,10 +66,10 @@ export async function recordMemoryDocument(projectRoot: string, text: string, li
 			}
 		}
 	}
-	await appendMemoryOp(file, "replace", normalizeMemoryDocument(text, limit));
+	await appendMemoryOp(file, "replace", normalizeMemoryReply(text, limit));
 	await rotateMemoryJournalIfNeeded(projectRoot);
 	await ensureMemoryGitignore(memoryDir(projectRoot));
-	await writeAtomic(memoryFile(projectRoot), normalizeMemoryDocument(text, limit));
+	await writeAtomic(memoryFile(projectRoot), normalizeMemoryReply(text, limit));
 }
 
 /**

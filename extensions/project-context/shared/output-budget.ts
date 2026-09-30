@@ -31,12 +31,16 @@ export const MAX_ADAPTIVE_OUTPUT_TOKENS = 32_768;
  * before it closes no matter how the pass retries.
  */
 export function memoryReplyTokens(maxMemoryChars: number): number {
-	return Math.ceil(maxMemoryChars) + REPLY_OUTPUT_MARGIN_TOKENS;
+	return maxMemoryChars + REPLY_OUTPUT_MARGIN_TOKENS;
 }
 
-/** True when a memory of `maxMemoryChars` cannot be re-emitted inside `maxOutputTokens`. */
-export function memoryCapUnsatisfiable(maxMemoryChars: number, maxOutputTokens: number): boolean {
-	return memoryReplyTokens(maxMemoryChars) > maxOutputTokens;
+/**
+ * True when a memory of `maxMemoryChars` cannot be re-emitted inside the pass's output ceiling.
+ * The ceiling is the one `fitMemoryInput`/`adaptiveOutputTokens` actually uses: the larger of the
+ * configured request cap and the configured adaptive ceiling.
+ */
+export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number, maxOutputTokens: number): boolean {
+	return memoryReplyTokens(maxMemoryChars) > Math.max(maxTokens, maxOutputTokens);
 }
 
 /**

@@ -66,13 +66,22 @@ try {
 			clipped.split("\n").filter((line) => !line.startsWith("_[memory truncated")).join("\n").trimEnd().length <= 4_000,
 		);
 		check("a document that fits is untouched", doc.normalizeMemoryDocument(prefix, 4_000) === prefix);
+		// A single over-long line used to be non-idempotent: the heading separator was consumed by the cut.
+		const longLine = `# Project Memory\n\n${"x".repeat(10_000)}`;
+		const once = doc.normalizeMemoryDocument(longLine, 4_000);
+		check("an over-long single line clips idempotently", doc.normalizeMemoryDocument(once, 4_000) === once);
+		const emoji = `# Project Memory\n\n- ${"😀".repeat(4_000)}`;
+		const clippedEmoji = doc.normalizeMemoryDocument(emoji, 4_000);
+		const emojiBody = clippedEmoji.split("\n").filter((line) => !line.startsWith("_[memory truncated")).join("\n");
+		check("clipping never splits a surrogate pair", Buffer.from(emojiBody, "utf8").toString("utf8") === emojiBody);
 	}
 
 	console.log("\n=== M7: a cap the output ceiling cannot hold is flagged ===");
 	{
 		const budget = await loadNamespace(`${PC}/shared/output-budget.ts`);
-		check("32000 chars cannot be re-emitted in 32768 tokens", budget.memoryCapUnsatisfiable(32_000, 32_768) === true);
-		check("a smaller cap fits the same ceiling", budget.memoryCapUnsatisfiable(20_000, 32_768) === false);
+		check("32000 chars cannot be re-emitted in the default ceiling", budget.memoryCapUnsatisfiable(32_000, 8_192, 32_768) === true);
+		check("a smaller cap fits the same ceiling", budget.memoryCapUnsatisfiable(20_000, 8_192, 32_768) === false);
+		check("a larger request cap lifts the ceiling", budget.memoryCapUnsatisfiable(40_000, 42_000, 32_768) === false);
 		check("the needed tokens include the JSON margin", budget.memoryReplyTokens(32_000) === 32_000 + budget.REPLY_OUTPUT_MARGIN_TOKENS);
 	}
 
@@ -101,7 +110,7 @@ try {
 		check("a fitting cap raises no warning", !(await status()).includes("Memory cap warning"));
 
 		await pi.commands.get("project-context").handler("max-memory 32000", ctx);
-		check("an unsatisfiable cap is warned about on set", String(ctx.notifications.at(-1)?.[0] ?? "").includes("maxOutputTokens=32768"));
+		check("an unsatisfiable cap is warned about on set", String(ctx.notifications.at(-1)?.[0] ?? "").includes("output ceiling of 32768"));
 		check("the unsatisfiable cap is still persisted", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
 
 		await pi.commands.get("project-context").handler("max-memory 10", ctx);

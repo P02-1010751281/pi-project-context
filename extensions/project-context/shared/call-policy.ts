@@ -25,7 +25,7 @@ export const AUTO_DISABLE_AFTER = 5;
 const SHAPE_RE = /not a usable JSON object|cut off by the model output limit|no context section|did not return the expected JSON|was not a usable JSON object/i;
 const AUTH_RE = /\b40[13]\b|authentication failed|invalid api key|model_not_in_plan|permission denied|unauthori[sz]ed/i;
 const QUOTA_RE = /\b(402|429)\b|insufficient (balance|credits|quota)|usage limit|quota exceeded|rate limit/i;
-const TRANSIENT_RE = /connection error|timed? ?out|etimedout|econnreset|econnrefused|eai_again|socket hang up|fetch failed|network error|stream (error|ended|closed)|terminated|aborted|temporarily unavailable|\b50[234]\b/i;
+const TRANSIENT_RE = /connection error|timed? ?out|etimedout|econnreset|econnrefused|eai_again|enotfound|ehostunreach|socket hang up|fetch failed|network error|stream (error|ended|closed)|terminated|aborted|temporarily unavailable|\b50[0-4]\b/i;
 
 /**
  * Classify a thrown model error. Shape failures (a reply the parser refused) are not provider
@@ -43,14 +43,12 @@ export function classifyModelFailure(error: unknown): ModelFailureKind {
 
 type FailureState = { kind: ModelFailureKind; failures: number; until: number; disabled: boolean };
 
-/** What one recorded failure means for the caller: how long to park, and whether to speak. */
+/** What one recorded failure means for the caller: how long to park, and whether the pass is off. */
 export type FailureRecord = {
 	kind: ModelFailureKind;
 	failures: number;
 	cooldownMs: number;
 	disabled: boolean;
-	/** True for the first provider failure since the last success — the one worth surfacing. */
-	firstSinceSuccess: boolean;
 };
 
 const states = new Map<string, FailureState>();
@@ -81,15 +79,16 @@ export function noteModelFailure(scope: string, projectRoot: string, error: unkn
 			failures: previous?.failures ?? 0,
 			cooldownMs: 0,
 			disabled: previous?.disabled ?? false,
-			firstSinceSuccess: !previous || previous.failures === 0,
 		};
 	}
-	const sameEpisode = previous?.kind === kind && previous.failures > 0;
+	// Consecutive means consecutive provider failures, whatever their kind: a route flapping through
+	// 502 / 429 / auth is still broken, and a per-kind counter let it reset on every switch.
+	const sameEpisode = (previous?.failures ?? 0) > 0;
 	const failures = (sameEpisode ? previous.failures : 0) + 1;
 	const cooldownMs = cooldownFor(kind, failures);
 	const disabled = failures >= AUTO_DISABLE_AFTER;
 	states.set(id, { kind, failures, until: Date.now() + cooldownMs, disabled });
-	return { kind, failures, cooldownMs, disabled, firstSinceSuccess: !sameEpisode };
+	return { kind, failures, cooldownMs, disabled };
 }
 
 /** The route answered: any earlier outage is over and the failure count starts from zero. */

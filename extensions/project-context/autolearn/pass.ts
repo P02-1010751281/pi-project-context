@@ -5,7 +5,7 @@
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
-import { modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
+import { modelAutoDisabled, modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
 import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../shared/output-budget.ts";
 import { completeText, resolveAuxModel } from "../shared/llm.ts";
 import { MAX_SKILL_BODY_CHARS, contextFile, errorText, fileMtimeMs, getProjectRoot, globalSkillsDir, loadMemory, logError, memoryFile, notify, readOptional, sessionIndexFile, skillsDir, writeAtomic } from "../shared/project-state.ts";
@@ -19,6 +19,8 @@ import { skillDocument } from "./skill.ts";
 export function registerAutolearn(pi: ExtensionAPI): void {
 	/** Single-flight guard: session_start and agent_settled can both schedule a pass. */
 	let active: Promise<void> | undefined;
+	/** Projects already told (once per process) that repeated failures turned autolearn off. */
+	const pausedAnnounced = new Set<string>();
 	/** dsh-compatible throttle: accumulated turns since the last pass, per project. */
 	const throttle = new Map<string, { session: string; sessionTurns: number; turns: number }>();
 
@@ -83,13 +85,22 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				config.maxOutputTokens,
 			);
 
+			// Only the model calls feed the failure policy: a local fs/lock error must not park the route
+			// (the classifier maps "permission denied" to auth and a lock timeout to transient).
+			const call = async (prompt: string): Promise<string> => {
+				try {
+					const text = await completeText(ctx, prompt, { model: auxModel, maxTokens });
+					// The route answered: any earlier outage is over and the next failure starts a new episode.
+					noteModelSuccess("autolearn", projectRoot);
+					return text;
+				} catch (error) {
+					noteModelFailure("autolearn", projectRoot, error);
+					throw error;
+				}
+			};
+
 			// First look: consolidated artifacts + session index decide whether there is something to learn.
-			let decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions), {
-				model: auxModel,
-				maxTokens,
-			}));
-			// The route answered, whatever the decision: any earlier outage is over.
-			noteModelSuccess("autolearn", projectRoot);
+			let decision = parseDecision(await call(buildPrompt(projectRoot, memory, context, skills, sessions)));
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
 			if (!decision) {
@@ -100,10 +111,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			// Backtrack: fetch the raw evidence the first look asked for, then decide.
 			if (!decision.skill && decision.inspect.length > 0) {
 				const evidence = await collectEvidence(projectRoot, decision.inspect);
-				decision = parseDecision(await completeText(ctx, buildPrompt(projectRoot, memory, context, skills, sessions, { evidence }), {
-					model: auxModel,
-					maxTokens,
-				}));
+				decision = parseDecision(await call(buildPrompt(projectRoot, memory, context, skills, sessions, { evidence })));
 				if (!decision) {
 					if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");
 					return;
@@ -135,8 +143,12 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			notify(ctx, `Learned project skill: ${skill.name} → ${destination}`);
 		} catch (error) {
 			if (projectRoot) {
-				noteModelFailure("autolearn", projectRoot, error);
 				await logError(projectRoot, "autolearn", error);
+				// An automatic pass is silent, so the disable would otherwise be invisible outside errors.log.
+				if (modelAutoDisabled("autolearn", projectRoot) && !pausedAnnounced.has(projectRoot)) {
+					pausedAnnounced.add(projectRoot);
+					await logError(projectRoot, "autolearn", "autolearn is disabled for this session after repeated auxiliary-model failures; fix the route with /project-context model and retry with /autolearn");
+				}
 			}
 			if (!options.silent) notify(ctx, `Autolearn failed: ${errorText(error)}`, "warning");
 		}

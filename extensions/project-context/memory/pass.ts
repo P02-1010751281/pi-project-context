@@ -6,7 +6,7 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 import { getConfig } from "../shared/config.ts";
 import { modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
 import { type CompletionOutcome, completeWithMeta, resolveAuxModel } from "../shared/llm.ts";
-import { MAX_CONTEXT_CHARS, contextFile, exceedsMemoryCap, getProjectRoot, loadMemory, logError, notify, readOptional } from "../shared/project-state.ts";
+import { MAX_CONTEXT_CHARS, contextFile, errorText, exceedsMemoryCap, getProjectRoot, loadMemory, logError, notify, readOptional } from "../shared/project-state.ts";
 import { type MemoryInput, fitMemoryInput } from "./input.ts";
 import { type ConsolidatedResult, parseConsolidated } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
@@ -126,13 +126,29 @@ export async function consolidateProjectState(
 			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(completion.text)}`);
 		}
 		if (exceedsMemoryCap(result.memory, config.maxMemoryChars)) {
-			// The reply overflows the render cap, so the write path would drop its tail on a line
+			// The reply overflows the render cap, so the write path would drop its middle on a line
 			// boundary. One bounded condensation attempt turns that silent loss into a curated shrink;
-			// if even the second reply overflows, keep the original and let the cap warning speak.
+			// if it fails or still overflows, keep the first result and let the cap warning speak.
 			const limit = config.maxMemoryChars;
-			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown exceeded the ${limit}-character cap, so its tail would be dropped. Retry this same consolidation and rewrite memory_markdown to fit under ${limit} characters: keep every durable fact, merge duplicates, and remove the least durable entries. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
-			const condensed = parseConsolidated((await call(usedInput, condensePrompt)).text);
-			if (condensed && !exceedsMemoryCap(condensed.memory, limit)) result = condensed;
+			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown exceeded the ${limit}-character cap, so its middle would be dropped. Retry this same consolidation and rewrite memory_markdown to fit under ${limit} characters: keep every durable fact, merge duplicates, and remove the least durable entries. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
+			let condensed: ConsolidatedResult | undefined;
+			try {
+				condensed = parseConsolidated((await call(usedInput, condensePrompt)).text);
+			} catch (error) {
+				// A failed condensation must not discard the valid first result (which the cap warning still
+				// reports); `call` already recorded the failure, so only leave a diagnostic here.
+				await logError(projectRoot, "memory", new Error(`condensation retry failed; keeping the over-cap reply so its cap warning speaks: ${errorText(error)}`));
+			}
+			if (condensed && !exceedsMemoryCap(condensed.memory, limit)) {
+				// Adopt only the condensed memory: a compacted retry may drop the context section, and the
+				// first reply's context is real work that would otherwise be thrown away.
+				result = {
+					...result,
+					memory: condensed.memory,
+					context: condensed.context ?? result.context,
+					contextUnusable: condensed.context ? condensed.contextUnusable : result.contextUnusable,
+				};
+			}
 		}
 		const version = (nextVersion += 1);
 		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });

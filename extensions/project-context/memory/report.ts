@@ -4,8 +4,9 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { classifyModelFailure, modelAutoDisabled } from "../shared/call-policy.ts";
+import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
+import { MAX_MEMORY_CHARS_LIMIT } from "../shared/limits.ts";
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { consolidateProjectState } from "./pass.ts";
@@ -103,6 +104,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				wroteMemory = true;
 				// The marker is the durable trace; the log entry and the reply are the loud ones.
 				cappedMemory = exceedsMemoryCap(memoryText, maxMemoryChars);
+				// What the cap would have to be to keep this reply; clamped to what the config accepts.
+				const neededChars = Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT);
 				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned, capped: cappedMemory });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
@@ -111,11 +114,10 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					// A marker nobody reads is still a silent loss: say it once per project per process,
 					// and point at the knob that lifts the cap.
 					memoryCapWarned.add(projectRoot);
-					const needed = memoryText.length;
 					await logError(
 						projectRoot,
 						"memory",
-						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${needed} characters — raise it with /project-context max-memory ${needed} (or trim MEMORY.md)`,
+						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)`,
 					);
 				}
 			}
@@ -137,7 +139,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				} else if (cappedMemory) {
 					notify(
 						ctx,
-						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${memoryText.length} chars). Raise it with /project-context max-memory ${memoryText.length} or trim it.`,
+						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.`,
 						"warning",
 					);
 				} else if (report === "clipped") {
@@ -152,8 +154,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (projectRoot) await logError(projectRoot, "memory", error);
 			if (!silent) {
 				// The message may carry a raw-reply dump for errors.log; the toast shows the headline only.
-				const message = errorText(error);
-				notify(ctx, memoryFailureNotice(message.split("\n", 1)[0]), "warning");
+				const headline = errorText(error).split("\n", 1)[0];
+				// The class-specific wording only fits a provider failure that actually armed the route
+				// policy; a local failure (a lock timeout, an unreadable path) must not claim one.
+				const armed = projectRoot !== undefined && (modelCooldownRemaining("memory", projectRoot) > 0 || modelAutoDisabled("memory", projectRoot));
+				notify(ctx, armed ? memoryFailureNotice(headline) : `Project memory update failed: ${headline}`, "warning");
 				if (projectRoot && modelAutoDisabled("memory", projectRoot) && !disablesAnnounced.has(projectRoot)) {
 					disablesAnnounced.add(projectRoot);
 					notify(ctx, MEMORY_PAUSED_NOTICE, "warning");

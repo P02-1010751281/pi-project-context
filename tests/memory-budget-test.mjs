@@ -56,15 +56,49 @@ try {
 		ctx.modelRegistry.complete = async (_model, context) => {
 			const prompt = context.messages[0].content[0].text;
 			prompts.push(prompt);
-			const context1 = { title: "t", summary: "s", key_points: [], open_tasks: [] };
-			const memory = prompt.includes(`${cap}-character cap`) ? small : big;
-			return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: memory, context: context1 }) }] };
+			if (prompt.includes(`exceeded the ${cap}-character cap`)) {
+				// The condensation compacts the memory but drops the context section.
+				return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: small }) }] };
+			}
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({ memory_markdown: big, context: { title: "t", summary: "FIRST CONTEXT", key_points: [], open_tasks: [] } }),
+				}],
+			};
 		};
 		await pi.commands.get("memory-learn").handler("", ctx);
 		const written = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
+		const writtenContext = await readFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "utf8").catch(() => "");
 		check("the first reply overflowed and the condensation ran", prompts.length === 2 && prompts[1].includes(`exceeded the ${cap}-character cap`));
 		check("the condensed reply is written, not the truncated original", written.includes("- A short fact.") && !doc.isMemoryTruncated(written));
 		check("the prompt carried the real cap on both calls", prompts.every((p) => p.includes(`under ${cap} characters`)));
+		check("a condensed reply without context keeps the first reply's context", writtenContext.includes("FIRST CONTEXT"));
+	}
+
+	console.log("\n=== M2: a failed condensation keeps the valid over-cap reply ===");
+	{
+		const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-condense-fail-"));
+		tmpDirs.push(tmp);
+		await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
+		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), small);
+		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, autoConsolidate: true, autoLearn: false, handoffEnabled: false })}\n`);
+		const pi = makePi({ cwd: tmp });
+		await (await loadDefault(`${PC}/index.ts`))(pi);
+		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "condense-fail-session") });
+		let calls = 0;
+		ctx.modelRegistry.complete = async (_model, context) => {
+			calls += 1;
+			const prompt = context.messages[0].content[0].text;
+			if (prompt.includes(`exceeded the ${cap}-character cap`)) throw new Error("model call error: Connection error.");
+			return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: big, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }] };
+		};
+		await pi.commands.get("memory-learn").handler("", ctx);
+		const stored = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
+		const errors = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
+		check("the condensation was attempted and failed", calls === 2);
+		check("the over-cap reply is still written with its marker", doc.isMemoryTruncated(stored));
+		check("the condensation failure is logged", errors.includes("condensation retry failed"));
 	}
 
 	console.log("\n=== M6: a copied marker does not raise a false cap warning ===");
@@ -86,6 +120,13 @@ try {
 		await pi.commands.get("memory-learn").handler("", ctx);
 		const errors = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 		check("no cap warning is logged for a copied marker", !errors.includes("exceeded maxMemoryChars"));
+		// The reply is a fresh write, so the marker it copied describes an older clip and must not be
+		// carried into the render (it used to survive and drive `status`/`/memory` forever).
+		const stored = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
+		check("the copied marker is not carried into the render", !stored.includes("memory truncated"));
+		check("the stored body is the plain short memory", stored.trim() === small.trim());
+		await pi.commands.get("memory").handler("", ctx);
+		check("the memory command does not claim the cap was hit", !String(ctx.notifications.at(-1)?.[0] ?? "").includes("at the cap"));
 	}
 } finally {
 	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
