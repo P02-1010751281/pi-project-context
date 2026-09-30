@@ -50,25 +50,53 @@ function sameStamp(a: ArtifactStamp | undefined, b: ArtifactStamp | undefined): 
 	return a !== undefined && b !== undefined && a.size === b.size && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
 }
 
-/** Read a file's `[start, end)` bytes as UTF-8. */
-async function readRange(file: string, start: number): Promise<string> {
+/** Read up to `length` bytes (or to EOF when omitted) of `file` from `start`, as UTF-8. */
+async function readSlice(file: string, start: number, length?: number): Promise<string> {
 	const handle = await open(file, "r");
 	try {
 		const { size } = await handle.stat();
-		const length = Math.max(0, size - start);
-		const buffer = Buffer.alloc(length);
-		if (length > 0) await handle.read(buffer, 0, length, start);
-		return buffer.toString("utf8");
+		const available = Math.max(0, size - start);
+		const wanted = length === undefined ? available : Math.min(length, available);
+		if (wanted === 0) return "";
+		const buffer = Buffer.alloc(wanted);
+		// Honor `bytesRead`: a short read must not be padded into the archive as NUL bytes that the
+		// cursor would then record as copied.
+		const { bytesRead } = await handle.read(buffer, 0, wanted, start);
+		return buffer.subarray(0, bytesRead).toString("utf8");
 	} finally {
 		await handle.close();
 	}
+}
+
+function readRange(file: string, start: number): Promise<string> {
+	return readSlice(file, start);
+}
+
+/** Bytes compared at the append boundary to catch a same-inode source rewrite. */
+const BOUNDARY_PROBE_BYTES = 256;
+
+/**
+ * The archive's size is a valid append offset only while the bytes just before it still match the
+ * source. A truncate+rewrite on the same inode keeps `dest.size <= sourceStat.size`, so without
+ * this check the next append would extend a stale prefix into a chimera.
+ */
+async function appendBoundaryIntact(source: string, archiveFile: string, size: number): Promise<boolean> {
+	if (size === 0) return true;
+	const probe = Math.min(size, BOUNDARY_PROBE_BYTES);
+	const from = size - probe;
+	const [sourceTail, archiveTail] = await Promise.all([
+		readSlice(source, from, probe),
+		readSlice(archiveFile, from, probe),
+	]);
+	return sourceTail === archiveTail;
 }
 
 /**
  * How much of the harness session file is already in the archive. The archive's own size is the
  * append offset: it is exactly the bytes this process wrote, so it can never claim more coverage
  * than the file has. A source stat captured before the read can be stale and run ahead of the
- * copied bytes, and re-appending from it would duplicate entries.
+ * copied bytes, and re-appending from it would duplicate entries. This serializes callers inside a
+ * process; a cross-process writer on the same archive is still outside its scope.
  */
 interface RawCursor {
 	source: string;
@@ -125,16 +153,40 @@ function sessionMarkdown(ctx: ExtensionContext, raw: string): string {
 	);
 }
 
+/**
+ * Serializes one archive's writes inside this process: `archive.ts` queues the turn/settle paths,
+ * but the `/session-log` command and any direct caller can overlap, and two callers reading the
+ * same cursor would then append the same tail twice.
+ */
+const rawFlights = new Map<string, Promise<unknown>>();
+
 export async function writeSessionArtifacts(
 	projectRoot: string,
 	ctx: ExtensionContext,
 	options: { markdown?: boolean } = {},
 ): Promise<{ dir: string }> {
 	const id = safeSessionId(ctx.sessionManager.getSessionId());
+	const key = `${projectRoot}\u0000${id}`;
+	const previous = rawFlights.get(key) ?? Promise.resolve();
+	const run = previous.catch(() => undefined).then(() => writeSessionOnce(projectRoot, ctx, options, id, key));
+	const settled = run.catch(() => undefined);
+	rawFlights.set(key, settled);
+	void settled.then(() => {
+		if (rawFlights.get(key) === settled) rawFlights.delete(key);
+	});
+	return run;
+}
+
+async function writeSessionOnce(
+	projectRoot: string,
+	ctx: ExtensionContext,
+	options: { markdown?: boolean },
+	id: string,
+	key: string,
+): Promise<{ dir: string }> {
 	const dir = path.join(logsDir(projectRoot), id);
 	await ensureLogsIgnored(projectRoot);
 	const rawPath = path.join(dir, "session.jsonl");
-	const key = `${projectRoot}\u0000${id}`;
 	const source = ctx.sessionManager.getSessionFile() ?? "";
 	const entries = ctx.sessionManager.getEntries();
 	const header = ctx.sessionManager.getHeader() ?? {
@@ -156,6 +208,7 @@ export async function writeSessionArtifacts(
 			&& cursor.sourceIno === sourceStat.ino
 			&& cursor.dest.size <= sourceStat.size
 			&& sameStamp(await stampOf(rawPath), cursor.dest)
+			&& await appendBoundaryIntact(source, rawPath, cursor.dest.size)
 		) {
 			if (sourceStat.size > cursor.dest.size) {
 				// Read from the archive's own end, never from the source stat above: the writer can
@@ -175,8 +228,9 @@ export async function writeSessionArtifacts(
 
 	if (!appended) {
 		const existingRaw = source ? await readOptional(source) : "";
-		// Copy the source verbatim: a missing trailing newline is completed by the next append from
-		// the exact byte offset, so no synthetic byte can desynchronise the cursor from the archive.
+		// For a non-empty source, copy it verbatim: a missing trailing newline is completed by the
+		// next append from the exact byte offset, so no synthetic byte can desynchronise the cursor.
+		// An empty/unreadable source has no prefix to preserve and falls back to the entry list.
 		raw = existingRaw.trim()
 			? existingRaw
 			: [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";

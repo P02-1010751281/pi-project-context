@@ -1,0 +1,48 @@
+You are an independent code reviewer. Review the current state of the repository at:
+/tmp/pi-context-rev13
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev13.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments or the fix notes; verify against the code.
+
+CONTEXT
+This is a TypeScript/ESM pi coding-agent extension suite (pi-project-context). The change under
+review is the newest fix in the session archive layer, plus its regression test and issue record.
+
+Start with:
+  cd /tmp/pi-context-rev13
+  git show 1b01070
+  git show 718a441
+  git diff 42f0956..HEAD
+  cat .codestable/issues/2026-09-30-session-log-append-duplication/*.md
+Read extensions/project-context/archive/session-log.ts and the session-append blocks of
+tests/sync-test.mjs in full, plus archive/archive.ts (the caller) and archive/import-archive.ts.
+
+WHAT TO REVIEW
+1. Is the diagnosed root cause correct? The fix drops RawCursor.sourceSize and uses the archive's
+   own byte size (cursor.dest.size) as the append offset. Prove or refute that this cannot
+   duplicate or lose entries when the harness session file is appended concurrently between the
+   outer stat and the read. Consider: rebuild path, source shrink/replacement, archive stamp
+   mismatch, partial last line, and a read that returns fewer bytes than requested.
+2. Is anything now over-guarded, dead, or inconsistent (e.g. the `existingRaw` no-trailing-newline
+   behaviour, the `if (tail)` guard, cursor updates on empty reads)?
+3. Is the new test non-vacuous? Revert the production fix in a /tmp copy (never the sandbox) and
+   confirm the new assertions fail; then restore and confirm 12/12.
+4. Full adversarial pass on the whole diff with the quality bars, citing file:line for any
+   violation: over-design / over-abstraction / unnecessary indirection, fragmentation,
+   over-guarding, unclear boundaries, duplicated code, verbose or unclear logic, readability,
+   maintainability, file/function organisation and single responsibility, hashing abuse,
+   exception-handling abuse, monkey-patching/hooking.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (should be 12/12) and report what you saw. For the mutation matrix,
+state exactly which reverted production line kills which test.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise |
+residual-risk), file:line, evidence, impact, minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

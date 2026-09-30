@@ -1,0 +1,86 @@
+I reviewed the repository at HEAD (`718a441`, worktree clean), read the full diff `42f0956..HEAD`, `session-log.ts`, `archive.ts`, `import-archive.ts` and `sync-test.mjs` in full, ran the suite, and ran adversarial probes in a `/tmp` copy of the repo (`/tmp/pc-mut`) that I mutated freely; nothing in `/tmp/pi-context-rev13` was written.
+
+# Root-cause and invariant verdict (question 1)
+
+The diagnosis is **correct**. Pre-fix, `RawCursor.sourceSize` advanced to the *outer* `stat(source)` while `readRange` re-statted internally and returned everything to the then-current EOF; the next refresh re-read from the stale offset and re-appended the overlap. The fixed line set (`session-log.ts:164` read from `cursor.dest.size`, `:168` advance the cursor to the archive's own post-append stamp) makes the append offset exactly the archive's byte end. Under sequential calls, append-only same-inode source and full reads, archive ≡ source[0..dest.size), so no duplication; the rebuild path now also recovers bytes written between `readOptional(source)` and the cursor stamp that the old code silently marked as covered (a symmetric loss window). Verified by reverting to `42f0956`: exactly the two new checks fail (5/5 runs), all 35 other checks pass.
+
+However, the invariant is **not unconditionally true**; see I1–I3.
+
+# Findings
+
+## IMPORTANT
+
+### I1. Concurrent invocations of `writeSessionArtifacts` for the same key still duplicate entries; the fix note claims "overlap can never happen"
+`extensions/project-context/archive/session-log.ts:151-168` (cursor read at 151, append at 166, cursor update at 168 spread across awaits) plus `extensions/project-context/archive/archive.ts:162` (`/session-log` command calls `writeSessionArtifacts` directly, bypassing the `writeQueue` that serializes `turn_end`/`agent_settled` at `archive.ts:35,89-105,124-133`).
+
+Evidence (probe P6, fixed code): two overlapping `Promise.all([writeSessionArtifacts, writeSessionArtifacts])` calls against a concurrently growing source → `archive === source` **false**, archive and source both 9190 bytes, 300 ids with 254 unique (**46 duplicated**). Both calls capture the same `cursor` and pass `sameStamp` before either appends, so both append the overlapping tail; the cursor overwrite can then leave `dest.size <= sourceStat.size`, so the guard never triggers a healing rebuild. The new test (`tests/sync-test.mjs:281`) exercises *one* file writer plus *sequential* refreshes only, so it cannot see this. The issue record's "重叠追加不可能发生" (fix-note.md:19-20) is therefore false.
+
+Impact: permanent archive corruption (dup + lost entries) in the exact data-integrity class the fix targets, reachable from the product's own `/session-log` command while a queued write is in flight.
+
+Minimal fix boundary: serialize per `key` inside `session-log.ts` (per-key promise chain/mutex), and/or route the command path through the existing `writeArtifacts` queue; add a `Promise.all` regression test. Do not rely on the archive stamp as mutual exclusion.
+
+### I2. `readRange` ignores `bytesRead`, so a short read appends NUL bytes that the new cursor then treats as covered
+`extensions/project-context/archive/session-log.ts:52-63` (line 59 `await handle.read(buffer, 0, length, start)` result discarded, line 61 `buffer.toString("utf8")`), consumed at `:164-168`.
+
+Evidence (probe P4, exact `readRange` code shape): source truncated between `handle.stat()` and `handle.read()` → requested 1000, `bytesRead=10`, decoded string 1000 chars of which **990 are `\u0000`**. In the append path this string is appended verbatim and `stampOf(rawPath)` sets `cursor.dest.size = d + 1000` (the stale internal stat), i.e. the NUL region is permanently marked as copied. If the source regrows past that size before the next refresh, the `cursor.dest.size <= sourceStat.size` guard passes and the gap is never re-read; only an unrelated shorter-than-archive source triggers a rebuild.
+
+Impact: silent archive corruption / lost entries; downstream `JSON.parse` of NUL-containing lines fails. Pre-existing flaw, but the fix's cursor invariant is built on "archive size == bytes faithfully copied", which this violates — and the review brief explicitly asks about reads returning fewer bytes than requested.
+
+Minimal fix boundary: honor the read result (`buffer.subarray(0, bytesRead)`, or a read loop), and optionally assert `dest.size` after append equals the intended end before advancing the cursor. A shrink-race test belongs alongside the new race test.
+
+### I3. A same-inode source rewrite that does not shrink below the archive size is not detected: archive becomes a chimera
+`extensions/project-context/archive/session-log.ts:156-158` guards only `sourceIno` + `dest.size <= sourceStat.size`; the existing test `tests/sync-test.mjs:241-245` only rewrites to a *shorter* file.
+
+Evidence (probe P3, fixed code): archive source `line(1)+line(2)`; rewrite in place via `writeFile` with `line(9)+line(10)+line(11)` (same inode, larger size); next refresh appends `new[d..]` after the stale old prefix → `archive === source` **false**, archive starts with `id:"x1"/"x2"` and ends with `x9/x10/x11`. The guard's inode check does not detect truncate+rewrite on the same inode, and no source mtime is recorded.
+
+Impact: permanent divergence from the harness log for any non-append rewrite that keeps the inode and does not shrink; consumers (handoff replay/autolearn) see the wrong session. Pre-existing (the old cursor also only stored inode+size), but the issue record claims replacement is handled and `sameStamp` guarantees the archive "is the one we wrote" — it guarantees nothing about the source prefix.
+
+Minimal fix boundary: record the source stamp (size + mtimeMs) captured when the archive was copied and require it before appending, or cheaply verify the archive tail is a byte-prefix of the source before extending; add a growing in-place-rewrite test.
+
+## NIT
+
+### N1. Two fix lines are untested, and the equality boundary is only flakily tested
+- Removing `if (tail)` (`session-log.ts:165`, mutation V4) keeps 37/37 sync checks green; it is a live shrink-race guard, not dead, but no test pins it.
+- Reverting the verbatim copy (`session-log.ts:181`, mutation V5) keeps all tests green, yet probe P1 shows the old synthetic-newline code **loses every later append**: source `"A"` → archive `"A\n"`, append `"B"` → archive stays `"A\n"` while source is `"AB"`. So the change is necessary but unprotected.
+- `cursor.dest.size <= sourceStat.size` → `<` (`:157`, mutation V7) passes sync-test 4/5 times; the no-op assertion at `tests/sync-test.mjs:239` compares only size+mtimeMs, and the full rewrite often lands in the same millisecond. Probe P2 shows ino+mtime both change every refresh under V7. The assertion should compare `before.ino === after.ino` (or content) to be deterministic.
+- The read-offset line `:164` **is** well covered (mutation `sourceStat.size` kills "append keeps the first line", "external rewrite rebuilds", and the new race test) — see matrix.
+
+Minimal fix boundary: add tests for (a) no trailing newline + subsequent append, (b) source shrink between guard and read, (c) rewrite-with-growth, and strengthen `:239` with inode.
+
+### N2. Issue record references a review artifact that does not exist and overstates the invariant
+`.codestable/issues/2026-09-30-session-log-append-duplication/session-log-append-duplication-fix-note.md:48` points to `session-log-append-duplication-review-round1-independent.txt`; `find .codestable -iname '*session-log-append-duplication*'` shows only the two `.md` files. Lines 19-20 assert overlap "cannot happen", contradicted by I1/I3. Minimal fix boundary: add the artifact or drop the reference; qualify the claim.
+
+### N3. Comment over-claims "copy the source verbatim"
+`session-log.ts:178-182`: the verbatim guarantee applies only when `existingRaw.trim()` is truthy; an empty/whitespace-only (or unreadable, `readOptional` returns `""` on any error) source falls to the synthesized header+entries path, which is not a prefix of the source and can later be mixed with source tail bytes. Amend the comment to scope it; not a behavior request.
+
+## PRAISE
+
+- P1. The fix is the right shape: the cursor advances from the archive's own post-append stamp, not from a second source stat, closing both the duplication and the symmetric rebuild-window loss.
+- P2. The new test is genuinely non-vacuous: reverting the production hunk makes exactly its two checks fail (5/5 runs), while the fixed suite is 8/8 `ALL OK` and full `run-all` 12/12 (see below).
+- P3. No hashing, monkey-patching, or new exception swallowing in the diff; the guard/offset/update comments state the real reason for the design, and `RawCursor` losing a field is a simplification, not added indirection.
+
+## RESIDUAL-RISK
+
+- R1. Cross-process same-key writers (two pi instances on the same project/session) have the same overlap as I1; no cross-process lock exists for `session-logs` (only the index uses `withMemoryLock`).
+- R2. Decoding a byte range at an arbitrary offset (`readRange`) can split a multi-byte codepoint (e.g. a partially flushed harness write or previous race), producing U+FFFD drift so the archive can never equal the source; no test covers it.
+- R3. `handoff-test.mjs` cleanup is racy with fire-and-forget archive writes (`archive.ts:130-133`, test `finally` `rm`): observed once in the first `run-all` (ENOTEMPTY on `/tmp/pi-handoff-*/.agents/memory/session-logs`), then 3/3 full runs and 12/12 standalone handoff runs passed. Not caused by this diff.
+
+# Test And QA Focus
+
+`node tests/run-all.mjs`: first run **11/12** — `handoff-test.mjs` died with an uncaught `ENOTEMPTY` while removing its tmp `session-logs` (the R3 flake); next three runs `All 12 tests passed.`; `node tests/sync-test.mjs` 8/8 `ALL OK`. `git diff 42f0956..HEAD --check` clean; no `tsc`/`tsconfig`/`package.json` in the repo, so types are only checked via jiti loading, as the note says.
+
+Mutation matrix (each mutation applied in `/tmp/pc-mut`, fixed baseline restored in between; "killed" = deterministic failing check):
+
+| Reverted/mutated production line | Test that kills it | Result |
+| --- | --- | --- |
+| Whole hunk back to `42f0956` | `sync-test.mjs:287` "archive matches the source after concurrent appends" + `:289` "no entry is duplicated" | 2 FAIL, 5/5 runs |
+| `:164` `readRange(source, cursor.dest.size)` → `sourceStat.size` | `sync-test.mjs:234` "append keeps the first line", `:245` "external rewrite rebuilds", and both new checks | 3 checks FAIL |
+| `:157` dest-size guard removed | `sync-test.mjs:245` "external rewrite rebuilds" | 1 FAIL |
+| `:187` rebuild cursor removed | `sync-test.mjs:239` "a flush with no new bytes writes nothing" | 1 FAIL |
+| `:157` `<=` → `<` | **no deterministic kill**; `:239` fails only 1/5 runs; probe P2 shows ino+mtime churn | survivor |
+| `:165` `if (tail)` removed | none | survivor |
+| `:181` verbatim copy → synthetic `\n` | none; probe P1 shows append loss `"A\n"` vs `"AB"` | survivor |
+| `:168` cursor update after append removed | none (next call rebuilds; efficiency-only regression) | survivor |
+| `:156` inode guard removed | none | survivor |
+
+VERDICT: CHANGES-REQUESTED

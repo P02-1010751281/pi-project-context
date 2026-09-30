@@ -236,13 +236,76 @@ console.log("\n=== session.jsonl appends incrementally ===");
 	const before = await stat(artifacts);
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
 	const after = await stat(artifacts);
-	check("a flush with no new bytes writes nothing", before.size === after.size && before.mtimeMs === after.mtimeMs);
+	check("a flush with no new bytes writes nothing", before.size === after.size && before.mtimeMs === after.mtimeMs && before.ino === after.ino);
 
 	// An external rewrite must force a rebuild instead of a bad append.
 	await writeFile(source, `${JSON.stringify({ type: "message", id: "m3" })}\n`);
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
 	const rebuilt = await readFile(artifacts, "utf8");
 	check("external rewrite rebuilds", rebuilt.includes('"m3"') && !rebuilt.includes('"m1"'));
+	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== session.jsonl handles a partial line and a growing rewrite ===");
+{
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-edge-"));
+	const { writeSessionArtifacts } = await loadNamespace(`${PC}/archive/session-log.ts`);
+	const source = path.join(tmp, "harness.jsonl");
+	const sessionManager = {
+		getSessionId: () => "edge-session",
+		getSessionFile: () => source,
+		getHeader: () => ({ type: "session", id: "edge-session", timestamp: "2026-09-12T10:00:00.000Z", cwd: tmp }),
+		getEntries: () => [],
+		getBranch: () => [],
+		buildContextEntries: () => [],
+		getLeafId: () => null,
+	};
+	const ctx = makeCtx(tmp, { sessionManager });
+	const artifacts = path.join(tmp, ".agents/memory/session-logs/edge-session/session.jsonl");
+
+	// A line flushed in two pieces must not gain a synthetic newline between the halves.
+	await writeFile(source, '{"type":"message","id":"n1"');
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	check("a half-written line is copied without a synthetic byte", (await readFile(source, "utf8")).startsWith(await readFile(artifacts, "utf8")));
+	await appendFile(source, ',"x":1}\n');
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	check("a half-written line keeps appending in place", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
+
+	// An in-place rewrite that grows past the archive must rebuild, not extend the stale prefix.
+	const line = (i) => `${JSON.stringify({ type: "message", id: `x${i}`, message: { role: "user", content: `c${i}` } })}\n`;
+	await writeFile(source, line(1) + line(2));
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	await writeFile(source, line(9) + line(10) + line(11));
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	check("a growing in-place rewrite rebuilds", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
+	await rm(tmp, { recursive: true, force: true });
+}
+
+console.log("\n=== overlapping writes for one session are serialized ===");
+{
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-sync-concurrent-"));
+	const { writeSessionArtifacts } = await loadNamespace(`${PC}/archive/session-log.ts`);
+	const source = path.join(tmp, "harness.jsonl");
+	const line = (i) => `${JSON.stringify({ type: "message", id: `k${i}`, message: { role: "user", content: `c${i}` } })}\n`;
+	await writeFile(source, line(0));
+	const sessionManager = {
+		getSessionId: () => "concurrent-session",
+		getSessionFile: () => source,
+		getHeader: () => ({ type: "session", id: "concurrent-session", timestamp: "2026-09-12T10:00:00.000Z", cwd: tmp }),
+		getEntries: () => [],
+		getBranch: () => [],
+		buildContextEntries: () => [],
+		getLeafId: () => null,
+	};
+	const ctx = makeCtx(tmp, { sessionManager });
+	const artifacts = path.join(tmp, ".agents/memory/session-logs/concurrent-session/session.jsonl");
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	await appendFile(source, line(1));
+	await Promise.all([
+		writeSessionArtifacts(tmp, ctx, { markdown: false }),
+		writeSessionArtifacts(tmp, ctx, { markdown: false }),
+	]);
+	check("overlapping writes do not duplicate the tail", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
 	await rm(tmp, { recursive: true, force: true });
 }
 
