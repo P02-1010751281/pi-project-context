@@ -1,0 +1,42 @@
+You are an independent VERIFICATION reviewer. A prior round reviewed the session-archive fix at
+/tmp/pi-context-rev13 and returned CHANGES-REQUESTED with three important findings. The author
+remediated them. Review the remediation at /tmp/pi-context-rev14 independently.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev14.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments or the fix notes; verify against the code.
+
+INPUTS
+- Prior round: /tmp/rev13-round1-out.txt (CHANGES-REQUESTED; I1 overlapping same-key writes,
+  I2 readRange ignores bytesRead, I3 same-inode growing rewrite undetected, N1 weak tests,
+  N2 missing artifact reference, N3 over-broad comment).
+- Code: `cd /tmp/pi-context-rev14 && git diff 42f0956..HEAD -- extensions tests .codestable`.
+  Read extensions/project-context/archive/session-log.ts and the session-log blocks of
+  tests/sync-test.mjs in full.
+- Fix note: .codestable/issues/2026-09-30-session-log-append-duplication/*.md
+
+YOUR TASK
+1. Verify each prior finding is actually fixed and pinned by a test. Reproduce the mutations in a
+   /tmp copy (never the sandbox): remove `rawFlights` serialization; remove the
+   `appendBoundaryIntact` guard; restore the synthetic newline; make readSlice ignore bytesRead.
+   State which test kills each, and which (if any) survive.
+2. Adversarially hunt for any NEW problem introduced by the remediation: the per-key promise chain
+   (rejection handling, map cleanup, deadlock/reentrancy), the boundary probe (off-by-one, probe on
+   a shrinking source, extra I/O), the readSlice refactor, and the strengthened assertions.
+3. Apply the quality bars with file:line: over-design / over-abstraction / fragmentation /
+   over-guarding / unclear boundaries / duplicated code / verbose logic / readability /
+   maintainability / SRP / hashing abuse / exception-handling abuse / monkey-patching.
+4. Check the fix note's residual-risk list is honest and complete.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (should be 12/12) and report what you saw. For the mutation matrix,
+state exactly which reverted production line kills which test.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise |
+residual-risk), file:line, evidence, impact, minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

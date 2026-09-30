@@ -1,0 +1,86 @@
+I reviewed the remediation at `/tmp/pi-context-rev14` (HEAD `7f0e803`), read `session-log.ts` and the session-log blocks of `sync-test.mjs` in full, ran the suite, and ran mutation/probe work only in `/tmp` copies (`/tmp/pc-rev14-mut`, `/tmp/probe-rev14*.mjs`). Nothing in the sandbox was written.
+
+# Prior-finding verification
+
+| # | Prior finding | Status | Evidence |
+|---|---|---|---|
+| I1 | concurrent same-key append duplication | **Fixed + pinned** | `session-log.ts:161-177` per-key `rawFlights`; m1 (remove chain) killed by `sync-test.mjs:308` 3/3. Probe P-A: 25/25 with a live appender interleaved into concurrent calls, `archive===source`, no dup ids. P-B: first call rejects `ENOTDIR`, next two calls succeed, no `unhandledRejection`. |
+| I2 | `readRange` ignores `bytesRead` | **Fixed in code, NOT pinned** | `session-log.ts:64-65` now `buffer.subarray(0, bytesRead)`. m4 (ignore `bytesRead`) survives all 12 tests, 3/3. Fix note admits this (`fix-note.md:55,63`). |
+| I3 | same-inode growing rewrite undetected | **Partially fixed, NOT fully pinned** | `session-log.ts:75-92,204-212`; the prior exact counterexample is now killed (m2 → `sync-test.mjs:280` 3/3), but the 256-byte probe has a demonstrated blind spot; see F1. |
+| N1 | weak tests / flaky boundary | **Mostly fixed** | Synthetic newline now pinned (m3 → `sync-test.mjs:269` 3/3); `<=`→`<` now killed deterministically by the inode assertion (m6 → `sync-test.mjs:239` 3/3, was flaky 1/5). `if (tail)`, inode guard, probe-`size===0` remain unpinned (m5/m7/m8 survive). |
+| N2 | missing round-1 artifact / overclaim | **Artifact fixed** | The added round-1 `.txt` is byte-identical to `/tmp/rev13-round1-out.txt` (`diff` empty). A round-2 reference at `fix-note.md:70` is still dangling until this review is filed. |
+| N3 | comment over-claims "verbatim" | **Fixed** | `session-log.ts:231-233` now scopes the verbatim guarantee to non-empty sources and names the fallback. |
+
+# Findings
+
+## IMPORTANT
+
+### F1. I3 is narrowed, not closed: the boundary probe only protects the last 256 bytes; the issue record claims full remediation
+`extensions/project-context/archive/session-log.ts:75-92` and `:204-212`; test `tests/sync-test.mjs:274-280`; claims at `.codestable/issues/2026-09-30-session-log-append-duplication/session-log-append-duplication-fix-note.md:29-30,38,69`.
+
+**Evidence (probes in `/tmp`, current code):**
+- P-C2: source > 256 B, archive copied, then same-inode same-size `writeFile` changing only byte 0 of a 400-char field (the change is outside the last-256 window). After the next refresh `archive === source` is **false** and the archive still contains the old bytes (`archiveStale=true`). The guard passes, `sourceStat.size > cursor.dest.size` is false, so the call sets `appended=true` and the stale archive is never healed.
+- P-D2: same-inode rewrite changing only early bytes plus an appended tail. Probe passes; the new tail is appended to the stale prefix → `archive === source` **false**, archive still starts with the old content.
+- P-F: a difference 300 bytes from the end is **not** detected; a difference 255 bytes from the end is detected — confirming the window is exactly `[size-256, size)`.
+
+**Impact:** a same-inode rewrite that keeps the last 256 bytes and does not shrink still yields a silent chimera — the precise failure class of prior finding I3. Practical likelihood is low for a normal append-only harness log, but the fix note's "同 inode 覆盖写检测" / "本轮已全部修复" (`fix-note.md:29,69`) and the test name "a growing in-place rewrite rebuilds" (`sync-test.mjs:280`) overstate what is guaranteed; the limitation only appears in the residual section (`fix-note.md:63`).
+
+**Minimal fix boundary (do not implement here):** either (a) qualify the fix note/test name to "growing in-place rewrite whose last 256 bytes changed" and add a tail-preserving rewrite test that pins the documented bound, or (b) if full closure is required, verify the whole source prefix (content or maintained rolling hash) before appending — an O(n) per-refresh cost that must be an explicit design decision. A cheap full-coverage alternative does not exist; a source size+mtime stamp cannot work because every append changes it.
+
+## NIT
+
+### F2. I2's code fix is unpinned, and its mutation survives the whole suite
+`session-log.ts:64-65`; fix-note `:55,63`. The logic is clearly correct (`handle.read` result drives `subarray`), but no test can force a short read through the public surface, so m4 keeps `11/12 + sync 41/41` green. The record is honest about this ("无确定性用例"), but the review's "pinned by a test" bar is unmet. Minimal: extract the byte-counting into a pure/exported helper the test can call with a fake `read` result, or explicitly record I2 as accepted-without-regression-test in the issue.
+
+### F3. Three live guards still have no deterministic kill
+- `if (tail)` `session-log.ts:218` — m5 survives (real shrink-race guard).
+- `cursor.sourceIno === sourceStat.ino` `session-log.ts:208` — m7 survives; the existing "external rewrite" test shrinks the file so the size guard fires first.
+- `if (size === 0) return true` `session-log.ts:84` — m8 survives.
+This is the remainder of prior N1 (shrink-race and same-size replacement unpinned). Minimal: add a bounded shrink/rename-replacement test (e.g., replace source via rename with a same-size file, or truncate between guard and read) and a short-read test.
+
+### F4. Residual list is incomplete; forward reference dangling
+`fix-note.md:62-63` omits (a) the unpinned `if (tail)`/inode guards, (b) the shrink-race case from N1(b), and (c) round-1 residual R2 (UTF-8 split decode). R2 is real but self-healing in my probe P-G (partial `E4 B8` → archive `U+FFFD`; once the source completes, the probe rebuilds and `archive === source` byte-for-byte), so its omission is a nit. `fix-note.md:70` points at the not-yet-existing round-2 file. Minimal: extend the residual list and file the round-2 artifact (or drop the pointer until it exists).
+
+### F5. Comment scope vs `trim()` fallback; extra rewrites on trim-empty sources
+`session-log.ts:209` (guard uses `cursor.dest.size`) vs `:229-236` (fallback for `existingRaw.trim()` empty). For a whitespace-only or unreadable source, the first refresh registers a cursor whose `dest.size` (synthesized header+entries) exceeds the 1-2 byte source, so every subsequent refresh fails `dest.size <= sourceStat.size` and rewrites the archive. Probe P-D: `rewrite-on-refresh=true`. Pre-fix code (`git show 42f0956:...session-log.ts:153`) no-op'd in this case, so this is a behavior change introduced by the remediation. No corruption (the synthesized content is refreshed from entries), and real session files are never whitespace-only; the comment says "empty/unreadable" while the condition is trim-empty. Minimal: state "trim-empty" in the comment, or skip cursor registration for trim-empty sources.
+
+## SUGGESTION
+
+### S1. Compare bytes, not decoded strings, in the boundary probe
+`session-log.ts:87-91` does two UTF-8 decodes and compares strings. Two different malformed byte runs can decode to the same `U+FFFD` string, so a rewrite that mutates invalid bytes inside the window could still pass. Comparing `Buffer`s is also cheaper. Minimal: have `readSlice` (or a sibling) return `Buffer` for the probe and compare `equals`.
+
+### S2. A probe read error aborts the write instead of forcing a rebuild
+`session-log.ts:83-92`: if the source or archive disappears between `stampOf` and the probe's `open`, `readSlice` rejects and `writeSessionArtifacts` rejects (new archive-side failure window). Treating a failed probe read as "not intact" (rebuild) would be strictly more robust.
+
+### S3. `readRange` is now a one-line wrapper
+`session-log.ts:71-73`: `readRange(file, start)` adds no semantics over `readSlice(file, start)` and has exactly one caller (`:217`). Removing it reduces indirection.
+
+## PRAISE
+
+- The core fix shape is right: cursor offset from `cursor.dest.size`, cursor refresh from the archive's own `stampOf`, and the per-key chain closes I1 without over-engineering. P-A (25 interleaved concurrent iterations) and P-B (rejection recovery, no unhandled rejection) confirm the concurrency work is sound.
+- The new tests are strong where it matters: m1/m2/m3 are deterministic kills (3/3 each), and the inode assertion removed the round-1 flake (m6 now 3/3).
+- `readSlice`'s `bytesRead` handling is correct, and the probe's off-by-one is exact (P-F), including whole-file comparison for archives < 256 B (probe P-small).
+
+# Test And QA Focus
+
+- `node tests/run-all.mjs`: **All 12 tests passed** (3 consecutive runs; no handoff `ENOTEMPTY` flake observed this session).
+- `node tests/sync-test.mjs`: **41 OK / 0 FAIL, `ALL OK`**, stable 5/5 runs.
+- `git diff 42f0956..HEAD --check`: clean. `/tmp/pc-rev14-mut` was verified byte-identical to the sandbox before/after probing.
+
+Mutation matrix (copy `/tmp/pc-rev14-mut`; baselines restored between runs):
+
+| Reverted production line | Killing test | Result |
+|---|---|---|
+| `session-log.ts:170-177` `rawFlights` chain removed | `sync-test.mjs:308` "overlapping writes do not duplicate the tail" | FAIL 3/3 |
+| `session-log.ts:211` `appendBoundaryIntact` conjunct removed | `sync-test.mjs:280` "a growing in-place rewrite rebuilds" | FAIL 3/3 |
+| `session-log.ts:234-235` synthetic `\n` restored | `sync-test.mjs:269` "a half-written line is copied without a synthetic byte" | FAIL 3/3 |
+| `session-log.ts:64-65` `readSlice` ignores `bytesRead` | — | **ALL OK, 3/3 (survivor)** |
+| `session-log.ts:218` `if (tail)` removed (m5) | — | ALL OK (survivor) |
+| `session-log.ts:209` `<=`→`<` (m6) | `sync-test.mjs:239` "a flush with no new bytes writes nothing" | FAIL 3/3 (round-1 flake closed) |
+| `session-log.ts:208` inode guard removed (m7) | — | ALL OK (survivor) |
+| `session-log.ts:84` probe `size===0` early return flipped (m8) | — | ALL OK (survivor) |
+| `session-log.ts:238-242` rebuild cursor removed (m9) | `sync-test.mjs:239` | FAIL |
+
+Adversarial probes (all in `/tmp`): P-A per-key hardening 25/25; P-B rejection recovery `first=rej:ENOTDIR second=ok third=ok unhandled=0`; P-C2/P-D2/P-F I3 blind spot demonstrated (archive !== source); P-G partial UTF-8 self-heals byte-exact after completion; P-H rebuild then no-op keeps inode/size.
+
+VERDICT: CHANGES-REQUESTED

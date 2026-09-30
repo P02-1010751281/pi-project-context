@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
@@ -277,7 +277,19 @@ console.log("\n=== session.jsonl handles a partial line and a growing rewrite ==
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
 	await writeFile(source, line(9) + line(10) + line(11));
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
-	check("a growing in-place rewrite rebuilds", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
+	check("a growing in-place rewrite at the boundary rebuilds", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
+
+	// A replacement via rename changes the inode. This one keeps the size and the 256-byte probe
+	// window identical but changes the earlier lines, so only the inode check can catch it.
+	const pad = `${JSON.stringify({ type: "pad", id: "z", message: { role: "user", content: "p".repeat(300) } })}\n`;
+	const block = (tag) => Array.from({ length: 3 }, (_, i) => `${JSON.stringify({ type: "message", id: `${tag}${i}`, message: { role: "user", content: `${tag}${i}` } })}\n`).join("");
+	await writeFile(source, block("a") + pad);
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	const replacement = path.join(tmp, "replacement.jsonl");
+	await writeFile(replacement, block("b") + pad);
+	await rename(replacement, source);
+	await writeSessionArtifacts(tmp, ctx, { markdown: false });
+	check("an inode-changing replacement rebuilds", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
 	await rm(tmp, { recursive: true, force: true });
 }
 

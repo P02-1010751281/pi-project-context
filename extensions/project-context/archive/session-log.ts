@@ -12,7 +12,9 @@ import { logsDir, pathExists, readOptional, safeSessionId, writeAtomic } from ".
  * harness session file, each refresh appends only the new tail instead of rewriting the
  * whole log, so a long session does not rewrite itself on every turn. A stamp
  * (size + inode + mtime) guards that append: if the file on disk is no longer the one
- * this process wrote — an external truncation or replacement — the copy is rebuilt.
+ * this process wrote — an external truncation or replacement — the copy is rebuilt. The
+ * offset itself is the archive's own size, and the last 256 bytes of the source prefix are
+ * re-checked before each append so a same-inode rewrite is rebuilt rather than extended.
  */
 
 /** Keep local transcripts out of version control without touching project ignore files. */
@@ -50,26 +52,25 @@ function sameStamp(a: ArtifactStamp | undefined, b: ArtifactStamp | undefined): 
 	return a !== undefined && b !== undefined && a.size === b.size && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
 }
 
-/** Read up to `length` bytes (or to EOF when omitted) of `file` from `start`, as UTF-8. */
-async function readSlice(file: string, start: number, length?: number): Promise<string> {
+/** Read up to `length` bytes (or to EOF when omitted) of `file` from `start`. */
+async function readBytes(file: string, start: number, length?: number): Promise<Buffer> {
 	const handle = await open(file, "r");
 	try {
 		const { size } = await handle.stat();
 		const available = Math.max(0, size - start);
 		const wanted = length === undefined ? available : Math.min(length, available);
-		if (wanted === 0) return "";
+		if (wanted === 0) return Buffer.alloc(0);
 		const buffer = Buffer.alloc(wanted);
-		// Honor `bytesRead`: a short read must not be padded into the archive as NUL bytes that the
-		// cursor would then record as copied.
+		// Honor `bytesRead`: a short read must not be padded into the archive as NUL bytes.
 		const { bytesRead } = await handle.read(buffer, 0, wanted, start);
-		return buffer.subarray(0, bytesRead).toString("utf8");
+		return buffer.subarray(0, bytesRead);
 	} finally {
 		await handle.close();
 	}
 }
 
-function readRange(file: string, start: number): Promise<string> {
-	return readSlice(file, start);
+async function readSlice(file: string, start: number): Promise<string> {
+	return (await readBytes(file, start)).toString("utf8");
 }
 
 /** Bytes compared at the append boundary to catch a same-inode source rewrite. */
@@ -78,25 +79,30 @@ const BOUNDARY_PROBE_BYTES = 256;
 /**
  * The archive's size is a valid append offset only while the bytes just before it still match the
  * source. A truncate+rewrite on the same inode keeps `dest.size <= sourceStat.size`, so without
- * this check the next append would extend a stale prefix into a chimera.
+ * this check the next append would extend a stale prefix into a chimera. Only this window is
+ * compared: a rewrite that keeps it and does not shrink is not detected (see the issue fix note).
  */
 async function appendBoundaryIntact(source: string, archiveFile: string, size: number): Promise<boolean> {
-	if (size === 0) return true;
 	const probe = Math.min(size, BOUNDARY_PROBE_BYTES);
+	if (probe === 0) return true;
 	const from = size - probe;
-	const [sourceTail, archiveTail] = await Promise.all([
-		readSlice(source, from, probe),
-		readSlice(archiveFile, from, probe),
-	]);
-	return sourceTail === archiveTail;
+	try {
+		const [sourceTail, archiveTail] = await Promise.all([
+			readBytes(source, from, probe),
+			readBytes(archiveFile, from, probe),
+		]);
+		return sourceTail.equals(archiveTail);
+	} catch {
+		// A file that vanished mid-check can no longer prove the prefix; force a rebuild.
+		return false;
+	}
 }
 
 /**
  * How much of the harness session file is already in the archive. The archive's own size is the
  * append offset: it is exactly the bytes this process wrote, so it can never claim more coverage
  * than the file has. A source stat captured before the read can be stale and run ahead of the
- * copied bytes, and re-appending from it would duplicate entries. This serializes callers inside a
- * process; a cross-process writer on the same archive is still outside its scope.
+ * copied bytes, and re-appending from it would duplicate entries.
  */
 interface RawCursor {
 	source: string;
@@ -156,7 +162,7 @@ function sessionMarkdown(ctx: ExtensionContext, raw: string): string {
 /**
  * Serializes one archive's writes inside this process: `archive.ts` queues the turn/settle paths,
  * but the `/session-log` command and any direct caller can overlap, and two callers reading the
- * same cursor would then append the same tail twice.
+ * same cursor would then append the same tail twice. A cross-process writer is outside this scope.
  */
 const rawFlights = new Map<string, Promise<unknown>>();
 
@@ -214,7 +220,7 @@ async function writeSessionOnce(
 				// Read from the archive's own end, never from the source stat above: the writer can
 				// append between the two, and the tail read here may then extend past that stat. The
 				// archive size stays exact, so the next refresh resumes without an overlap.
-				const tail = await readRange(source, cursor.dest.size);
+				const tail = await readSlice(source, cursor.dest.size);
 				if (tail) {
 					await appendFile(rawPath, tail, "utf8");
 					const dest = await stampOf(rawPath);
@@ -228,15 +234,16 @@ async function writeSessionOnce(
 
 	if (!appended) {
 		const existingRaw = source ? await readOptional(source) : "";
+		const fromSource = existingRaw.trim().length > 0;
 		// For a non-empty source, copy it verbatim: a missing trailing newline is completed by the
 		// next append from the exact byte offset, so no synthetic byte can desynchronise the cursor.
-		// An empty/unreadable source has no prefix to preserve and falls back to the entry list.
-		raw = existingRaw.trim()
+		// A trim-empty/unreadable source has no prefix to preserve and falls back to the entry list.
+		raw = fromSource
 			? existingRaw
 			: [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 		await writeAtomic(rawPath, raw);
 		const dest = await stampOf(rawPath);
-		if (dest && source) {
+		if (dest && source && fromSource) {
 			const sourceStat = await stat(source).catch(() => undefined);
 			if (sourceStat) rawCursors.set(key, { source, sourceIno: sourceStat.ino, dest });
 		}
