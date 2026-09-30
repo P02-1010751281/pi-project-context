@@ -52,6 +52,7 @@ try {
 		["Index", "pointers to docs, source files, and commands", 0.15],
 	];
 	const overhead = memorySchemaOverheadChars();
+	check("the fixed overhead covers exactly the header, headings, and one blank line per section", overhead === 76);
 	const intendedBudgets = memorySectionBudgets(cap401);
 	const expectedBudgets = documented.map(([heading, , share]) => [heading, Math.floor((cap401 - overhead) * share)]);
 	check(
@@ -62,12 +63,15 @@ try {
 		"the budgets are the documented shares of the cap after the fixed overhead",
 		intendedBudgets.every((section, index) => section.heading === expectedBudgets[index][0] && section.chars === expectedBudgets[index][1]),
 	);
+	const budgets8001 = memorySectionBudgets(8_001);
+	const expected8001 = documented.map(([heading, , share]) => [heading, Math.floor((8_001 - overhead) * share)]);
+	check("the budget formula scales with the cap", budgets8001.every((section, index) => section.heading === expected8001[index][0] && section.chars === expected8001[index][1]));
 	check(
 		"the budgets plus the fixed overhead stay within the cap",
 		overhead + intendedBudgets.reduce((sum, section) => sum + section.chars, 0) <= cap401 && intendedBudgets.every((section) => section.chars >= 0),
 	);
 	const filled = `# Project Memory\n\n${intendedBudgets.map((section) => `## ${section.heading}\n\n${"x".repeat(section.chars)}\n`).join("\n")}`;
-	check("a document that fills every budget and the real structure stays within the cap", !doc.exceedsMemoryCap(filled, cap401) && doc.memoryDocumentChars(filled) <= cap401);
+	check("a document that fills every budget and the real structure stays within the cap", !doc.exceedsMemoryCap(filled, cap401));
 	const schemaPrompt = buildPrompt("/tmp/p", freeFitted, "conversation", { maxMemoryChars: cap401, currentChars: 10 });
 	check("the prompt lists every section with its description and budget", intendedBudgets.every((section) => schemaPrompt.includes(`## ${section.heading}: ${section.description} (about ${section.chars} characters)`)));
 	check("the prompt uses the documented section descriptions", documented.every(([heading, description]) => schemaPrompt.includes(`## ${heading}: ${description} (`)));

@@ -26,6 +26,9 @@ export const MEMORY_SECTIONS: readonly MemorySectionSpec[] = [
 
 export type MemorySectionBudget = { heading: string; description: string; chars: number };
 
+/** Characters of the blank line a section body ends with before the next heading or the document end. */
+export const MEMORY_SECTION_GAP_CHARS = 2;
+
 /**
  * Characters the document header, the fixed section headings, and the blank lines around the section
  * bodies spend before any body text. The per-section budgets are shares of the remainder: shares of
@@ -33,7 +36,7 @@ export type MemorySectionBudget = { heading: string; description: string; chars:
  * headings, and separating blank lines are added.
  */
 export function memorySchemaOverheadChars(): number {
-	return MEMORY_HEADER.length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length + 2, 0);
+	return MEMORY_HEADER.length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length + MEMORY_SECTION_GAP_CHARS, 0);
 }
 
 /** Per-section body budgets for a document cap, floored so they plus the overhead never exceed it. */

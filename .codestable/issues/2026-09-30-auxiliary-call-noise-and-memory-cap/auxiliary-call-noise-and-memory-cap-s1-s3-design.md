@@ -76,7 +76,7 @@ tags: [memory, schema, pointerization, budgets, s1, s3]
 
 ## 决策记录（本轮落地）
 
-owner 经「继续」委派推进，本轮按**推荐默认**落地：schema C（`Project / Invariants / Pitfalls / Index`）+ 软强制 fail-open + 份额 `20 / 40 / 25 / 15`。每节带一句内容说明（F3）；固定开销（标题 + 4 个节标题）先扣除再分预算（F1）；指针示例改为通用占位，且要求目标已存在并确实承载细节（F2）。三项确认仍待 owner 复核；若改选，只动 `memory/schema.ts` 常量与 prompt 文案，机制不变。
+owner 经「继续」委派推进，本轮按**推荐默认**落地：schema C（`Project / Invariants / Pitfalls / Index`）+ 软强制 fail-open + 份额 `20 / 40 / 25 / 15`。每节带一句内容说明（F3）；固定开销（标题 + 4 个节标题及其空行）先扣除再分预算（F1/R3）；指针示例改为通用占位，且要求目标已存在并确实承载细节（F2）。三项确认仍待 owner 复核；若改选，只动 `memory/schema.ts` 常量与 prompt 文案，机制不变。
 
 ## 残余（已知且接受）
 
