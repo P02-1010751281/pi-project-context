@@ -44,6 +44,22 @@ try {
 	const unbudgeted = buildPrompt("/tmp/p", fitted, "conversation");
 	check("without a budget the prompt keeps the concise wording", unbudgeted.includes("Keep memory concise") && !unbudgeted.includes("hard cap"));
 
+	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
+	const { MEMORY_SECTIONS, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
+	const sectionBudgets = memorySectionBudgets(4_000);
+	check("the shares cover the whole cap", Math.abs(MEMORY_SECTIONS.reduce((sum, section) => sum + section.share, 0) - 1) < 1e-9);
+	check(
+		"the prompt names every canonical section in order",
+		MEMORY_SECTIONS.every(
+			(section, index) =>
+				budgeted.includes(`## ${section.heading}`) &&
+				(index === 0 || budgeted.indexOf(`## ${MEMORY_SECTIONS[index - 1].heading}`) < budgeted.indexOf(`## ${section.heading}`)),
+		),
+	);
+	check("the prompt gives each section its cap-scaled budget", sectionBudgets.every((section) => budgeted.includes(`## ${section.heading}: about ${section.chars} characters`)));
+	check("the prompt asks for one-line pointers and forbids inventing paths", budgeted.includes("see docs/handoff.md") && budgeted.includes("never invent a path"));
+	check("without a cap the prompt still names the sections but gives no numbers", MEMORY_SECTIONS.every((section) => unbudgeted.includes(`## ${section.heading}`)) && !unbudgeted.includes("about 1600 characters"));
+
 	console.log("\n=== M2: an overflowing reply is condensed once, not silently truncated ===");
 	{
 		const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-memory-budget-"));
