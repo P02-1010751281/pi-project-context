@@ -5,6 +5,7 @@
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
+import { modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
 import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../shared/output-budget.ts";
 import { completeText, resolveAuxModel } from "../shared/llm.ts";
 import { MAX_SKILL_BODY_CHARS, contextFile, errorText, fileMtimeMs, getProjectRoot, globalSkillsDir, loadMemory, logError, memoryFile, notify, readOptional, sessionIndexFile, skillsDir, writeAtomic } from "../shared/project-state.ts";
@@ -29,6 +30,9 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			const config = await getConfig(projectRoot);
 			if (runIsDisabled() && !force) return;
 			if (!config.autoLearn && !force) return;
+			// A route that just failed stays parked; without this the pass retried on every settle and
+			// one provider outage became a burst. An explicit /autolearn passes `force` and still runs.
+			if (!force && modelBlocked("autolearn", projectRoot)) return;
 
 			const sessionId = ctx.sessionManager.getSessionId();
 			const turns = countUserTurns(ctx);
@@ -84,6 +88,8 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				model: auxModel,
 				maxTokens,
 			}));
+			// The route answered, whatever the decision: any earlier outage is over.
+			noteModelSuccess("autolearn", projectRoot);
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
 			if (!decision) {
@@ -128,7 +134,10 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			await writeAtomic(destination, skillDocument(skill, false));
 			notify(ctx, `Learned project skill: ${skill.name} → ${destination}`);
 		} catch (error) {
-			if (projectRoot) await logError(projectRoot, "autolearn", error);
+			if (projectRoot) {
+				noteModelFailure("autolearn", projectRoot, error);
+				await logError(projectRoot, "autolearn", error);
+			}
 			if (!options.silent) notify(ctx, `Autolearn failed: ${errorText(error)}`, "warning");
 		}
 	}

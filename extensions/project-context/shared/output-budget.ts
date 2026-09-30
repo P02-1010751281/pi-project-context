@@ -25,6 +25,21 @@ export const MIN_CLIP_CHARS = 400;
 export const MAX_ADAPTIVE_OUTPUT_TOKENS = 32_768;
 
 /**
+ * Output tokens a reply needs just to re-emit a memory of `maxMemoryChars` **dense** characters
+ * (the worst case: one token per CJK code point) plus the JSON scaffolding. `fitMemoryInput`
+ * charges those rates, so a cap above this ceiling can never be reached — the reply is cut off
+ * before it closes no matter how the pass retries.
+ */
+export function memoryReplyTokens(maxMemoryChars: number): number {
+	return Math.ceil(maxMemoryChars) + REPLY_OUTPUT_MARGIN_TOKENS;
+}
+
+/** True when a memory of `maxMemoryChars` cannot be re-emitted inside `maxOutputTokens`. */
+export function memoryCapUnsatisfiable(maxMemoryChars: number, maxOutputTokens: number): boolean {
+	return memoryReplyTokens(maxMemoryChars) > maxOutputTokens;
+}
+
+/**
  * Extra output tokens a reasoning model needs beyond the text it must re-emit. Providers report
  * those thinking tokens as a subset of the output, so a budget that only pays for the visible
  * memory and context gets its JSON cut off mid-string (`stopReason: "length"`).

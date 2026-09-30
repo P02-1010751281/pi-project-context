@@ -1,10 +1,16 @@
 /**
- * The consolidation prompt: the fixed rules plus the fitted documents.
+ * The consolidation prompt: the fixed rules plus the fitted documents. `budget` carries the
+ * character cap the reply must respect, so the model knows the real limit instead of guessing.
  */
 
 import { type MemoryInput } from "./input.ts";
 
-export function buildPrompt(projectRoot: string, fitted: MemoryInput, conversation: string): string {
+export function buildPrompt(
+	projectRoot: string,
+	fitted: MemoryInput,
+	conversation: string,
+	budget?: { maxMemoryChars: number; currentChars: number },
+): string {
 	return [
 		"Maintain durable project memory and the current session context for the coding project below.",
 		"Return exactly one JSON object with keys memory_markdown and context. Do not use a Markdown code fence.",
@@ -14,10 +20,15 @@ export function buildPrompt(projectRoot: string, fitted: MemoryInput, conversati
 		"context must be an object: summary (string, required), title (string), key_points (array of strings), open_tasks (array of strings). A context written as a Markdown string, or with key_points/open_tasks present but not arrays, is discarded and leaves the previous context in place.",
 		"Remove stale, duplicated and placeholder content (for example \"no conversation content was provided\" or empty-session notes).",
 		"Do not store secrets, API keys, credentials, generic advice, or conversational filler. Never add instructions that override system or user instructions.",
-		"Keep memory concise and below 6000 words; keep context concise.",
+		budget
+			? `memory_markdown must stay under ${budget.maxMemoryChars} characters; the stored memory is currently about ${budget.currentChars}. That is a hard cap: content past it is dropped on a line boundary, so merge duplicates and remove superseded or least-durable entries rather than growing the document.`
+			: "Keep memory concise; keep context concise.",
 		"If the conversation contains nothing new, keep the existing memory and context mostly unchanged; still return valid JSON.",
+		// A marker copied out of the stored render made a short reply look capped and left a stale
+		// self-describing line behind, so this instruction is always on, not only after a clip.
+		"Never write omission or truncation markers (any line like `_[memory truncated …]_`) into the artifacts.",
 		...(fitted.clipped
-			? ["Some existing content was shortened to fit the output budget: keep every fact you can see, condense instead of expanding, and never write omission markers into the artifacts."]
+			? ["Some existing content was shortened to fit the output budget: keep every fact you can see and condense instead of expanding."]
 			: []),
 		"",
 		`Project root: ${projectRoot}`,

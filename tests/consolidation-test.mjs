@@ -785,7 +785,7 @@ try {
 			check("the shape note is reported once per process", repeated.split("could not be used").length - 1 === 1);
 			await pi.commands.get("project-context").handler("status", ctx);
 			const statusText = String(ctx.notifications.at(-1)?.[0] ?? "");
-			check("status names the memory source", /Memory: .*memory\.jsonl \(\d+ chars\)/.test(statusText));
+			check("status names the memory source", /Memory: .*memory\.jsonl \(\d+ chars, \d+% of the \d+-char cap\)/.test(statusText));
 			check("status dates the context render", /Context: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(statusText));
 			// The schema drift started in the prompt: it described the context in prose only.
 			check("the prompt names the context keys", shapePrompt.includes("key_points") && shapePrompt.includes("open_tasks") && shapePrompt.includes("memory_markdown"));
@@ -924,7 +924,7 @@ try {
 			check("the cap is reported to errors.log", capLog.includes("exceeded maxMemoryChars (5000)"));
 			check("the command reply names the cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("maxMemoryChars cap"));
 			await pi.commands.get("project-context").handler("status", ctx);
-			check("status names the cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("at the maxMemoryChars cap"));
+			check("status names the cap", /at the cap, so both ends were kept/.test(String(ctx.notifications.at(-1)?.[0] ?? "")));
 		} finally {
 			await rm(capTmp, { recursive: true, force: true });
 		}

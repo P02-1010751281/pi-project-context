@@ -19,6 +19,30 @@ const KEEP_ERROR_LOG_CHARS = 64_000;
 /** Cap one appended record so a huge stack cannot dominate the (bounded) log. */
 const MAX_ERROR_DETAIL_CHARS = 8_000;
 
+/** Identical `(scope, headline)` records inside this window collapse into one line plus a count. */
+export const ERROR_DEDUPE_WINDOW_MS = 10 * 60_000;
+
+/** Bound the per-file dedupe state so a long-lived process cannot grow it without limit. */
+const MAX_TRACKED_ERROR_KEYS = 64;
+
+/** One repeated-failure run: the record it folds, its span, and how many copies it swallowed. */
+type RecentError = { scope: string; headline: string; firstAt: number; lastAt: number; count: number };
+
+/** Per-project dedupe state. Keyed by the log file, then by `scope\0headline`. */
+const recentErrors = new Map<string, Map<string, RecentError>>();
+
+function errorKey(scope: string, headline: string): string {
+	return `${scope}\u0000${headline}`;
+}
+
+function firstLine(detail: string): string {
+	return detail.split("\n", 1)[0].trim().slice(0, 200);
+}
+
+function isoTimestamp(at: number): string {
+	return new Date(at).toISOString();
+}
+
 /**
  * Keep the diagnostic file bounded. It is append-only and lives inside the
  * user's repository, so an unrotated file would grow without limit there.
@@ -47,7 +71,40 @@ export async function logError(projectRoot: string, scope: string, error: unknow
 		const full = error instanceof Error ? (error.stack ?? error.message) : String(error);
 		const safe = redactSecrets(full);
 		const detail = safe.length > MAX_ERROR_DETAIL_CHARS ? `${safe.slice(0, MAX_ERROR_DETAIL_CHARS)}\n[...detail truncated...]` : safe;
-		await appendFile(file, `${new Date().toISOString()} [${scope}] ${detail}\n`, { encoding: "utf8", mode: 0o600 });
+		// A provider outage repeats the identical message on every settle. Rewriting each one grew the
+		// log (and its rotation) without adding information; the first copy is kept and the rest are
+		// counted, so the file stays append-only but stops echoing the same line.
+		const now = Date.now();
+		const headline = firstLine(detail);
+		let perFile = recentErrors.get(file);
+		if (!perFile) {
+			perFile = new Map();
+			recentErrors.set(file, perFile);
+		}
+		const key = errorKey(scope, headline);
+		const seen = perFile.get(key);
+		if (seen && now - seen.lastAt < ERROR_DEDUPE_WINDOW_MS) {
+			seen.count += 1;
+			seen.lastAt = now;
+			return;
+		}
+		// This record starts a fresh run (a new key, or the same key after the window). Fold the run
+		// that just ended into one line, so the suppressed copies are not simply lost.
+		if (seen && seen.count > 1) {
+			await appendFile(
+				file,
+				`${isoTimestamp(now)} [${seen.scope}] ${seen.headline} — ${seen.count - 1} identical failure(s) suppressed between ${isoTimestamp(seen.firstAt)} and ${isoTimestamp(seen.lastAt)}\n`,
+				{ encoding: "utf8", mode: 0o600 },
+			);
+		}
+		perFile.delete(key);
+		perFile.set(key, { scope, headline, firstAt: now, lastAt: now, count: 1 });
+		while (perFile.size > MAX_TRACKED_ERROR_KEYS) {
+			const oldest = perFile.keys().next().value;
+			if (oldest === undefined) break;
+			perFile.delete(oldest);
+		}
+		await appendFile(file, `${isoTimestamp(now)} [${scope}] ${detail}\n`, { encoding: "utf8", mode: 0o600 });
 	} catch {
 		// Diagnostics must never throw.
 	}

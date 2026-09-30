@@ -3,6 +3,8 @@ import { stat } from "node:fs/promises";
 import { registerArchive } from "./archive/archive.ts";
 import { registerAutolearn } from "./autolearn/pass.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
+import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "./shared/limits.ts";
+import { memoryCapUnsatisfiable, memoryReplyTokens } from "./shared/output-budget.ts";
 import { registerConsolidation } from "./memory/report.ts";
 import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
@@ -64,14 +66,14 @@ export default function projectContext(pi: ExtensionAPI): void {
 	}
 
 	/** What the memory injection currently uses, including how it is stored (the fix for the old bug). */
-	function memoryStatusLine(memory: LoadedMemory): string {
+	function memoryStatusLine(memory: LoadedMemory, cap: number): string {
 		const chars = memory.text.length;
-		const size = chars === 0 ? "empty" : `${chars} chars`;
+		const size = chars === 0 ? "empty" : `${chars} chars${cap > 0 ? `, ${Math.round((chars / cap) * 100)}% of the ${cap}-char cap` : ""}`;
 		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
 		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;
 		if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
 		// A capped document ends with its own marker; surface it here too, next to the knob that lifts it.
-		if (isMemoryTruncated(memory.text)) return `${memory.source} (${size}) — at the maxMemoryChars cap, the tail was dropped (whole lines only); raise maxMemoryChars in project-context.json`;
+		if (isMemoryTruncated(memory.text)) return `${memory.source} (${size}) — at the cap, so both ends were kept and the middle dropped; raise it with /project-context max-memory <n>`;
 		return `${memory.source} (${size})`;
 	}
 
@@ -96,7 +98,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand("project-context", {
-		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default",
+		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default | max-memory <n>|default",
 		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
@@ -108,11 +110,44 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Project context: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
-					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars))}`,
+					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
 					`Context: ${await contextStatusLine(projectRoot)}`,
 				];
+				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxOutputTokens)) {
+					lines.push(`Memory cap warning: ${config.maxMemoryChars} chars needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above maxOutputTokens=${config.maxOutputTokens}; lower it with /project-context max-memory <n> or raise maxOutputTokens.`);
+				}
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));
+				return;
+			}
+			if (verb === "max-memory") {
+				const value = (parts[1] ?? "").trim();
+				const usage = `Usage: /project-context max-memory <${MIN_MEMORY_CHARS}–${MAX_MEMORY_CHARS_LIMIT}> | default`;
+				if (!value) {
+					notify(ctx, usage, "warning");
+					return;
+				}
+				if (value === "default") {
+					await updateConfig(projectRoot, { maxMemoryChars: DEFAULT_CONFIG.maxMemoryChars });
+				} else {
+					const chars = Number(value);
+					if (!Number.isFinite(chars) || chars < MIN_MEMORY_CHARS || chars > MAX_MEMORY_CHARS_LIMIT) {
+						notify(ctx, usage, "warning");
+						return;
+					}
+					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
+				}
+				const config = await getConfig(projectRoot);
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxOutputTokens)) {
+					notify(
+						ctx,
+						`Memory cap set to ${config.maxMemoryChars} characters, but it needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above maxOutputTokens=${config.maxOutputTokens}; raise maxOutputTokens too or replies can be truncated.`,
+						"warning",
+					);
+				} else {
+					notify(ctx, `Memory cap: ${config.maxMemoryChars} characters.`);
+				}
 				return;
 			}
 			if (verb === "model" || verb === "max-tokens") {
@@ -149,7 +184,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 				return;
 			}
 			if (verb !== "on" && verb !== "off") {
-				notify(ctx, `Usage: /project-context status | on|off <${FEATURE_NAMES.join("|")}|all> | model <provider>/<id>|off | max-tokens <n>|default`, "warning");
+				notify(ctx, `Usage: /project-context status | on|off <${FEATURE_NAMES.join("|")}|all> | model <provider>/<id>|off | max-tokens <n>|default | max-memory <n>|default`, "warning");
 				return;
 			}
 

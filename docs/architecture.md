@@ -60,7 +60,7 @@ session.jsonl ──► session.md ──► INDEX.md
 
 - 写入顺序在 `MEMORY.md.lock` 内完成：追加 journal、必要时轮换、备份、原子替换 render。
 - 跨进程锁有 stale-lock recovery，释放时校验唯一 token，避免误删别的进程的锁。
-- `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时按整行截断并追加 marker；marker 自身不计入正文预算。
+- `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时保留头尾、按整行丢弃中段并追加 marker；marker 自身不计入正文预算。cap 高到输出上限装不下时（`memoryReplyTokens` > `maxOutputTokens`）在 `status` 和配置时点名。
 - 限制由调用方显式传给 normalize、fold、comparison、load、write 和 legacy migration；没有进程级全局 cap，因此多项目不会串味。
 - OMP/旧布局在 `session_start` 迁移时使用当前项目的 `maxMemoryChars`，不会退回默认值。
 - 旧的 poisoned memory 只在内存中解码；下一次正常覆盖前才备份和修复，不在读取阶段产生副作用。
@@ -131,6 +131,7 @@ extensions/project-context/
 └── shared/                 # 四个能力共用
     ├── config.ts           #    配置与旧布局兼容
     ├── llm.ts              #    JSON LLM 调用与辅助路由
+    ├── call-policy.ts      #    辅助调用失败分类、冷却与会话停用
     ├── project-state.ts    #    项目状态**门面**（再导出原有公共 API）
     ├── paths.ts            #    项目根与路径助手
     ├── limits.ts           #    字符预算

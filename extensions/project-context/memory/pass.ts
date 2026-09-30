@@ -4,8 +4,9 @@
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig } from "../shared/config.ts";
+import { modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
 import { type CompletionOutcome, completeWithMeta, resolveAuxModel } from "../shared/llm.ts";
-import { MAX_CONTEXT_CHARS, contextFile, getProjectRoot, loadMemory, logError, notify, readOptional } from "../shared/project-state.ts";
+import { MAX_CONTEXT_CHARS, contextFile, exceedsMemoryCap, getProjectRoot, loadMemory, logError, notify, readOptional } from "../shared/project-state.ts";
 import { type MemoryInput, fitMemoryInput } from "./input.ts";
 import { type ConsolidatedResult, parseConsolidated } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
@@ -54,6 +55,9 @@ export async function consolidateProjectState(
 		const throttled = !force && (turns - baseline < config.consolidateTurns || Date.now() - (previous?.at ?? 0) < config.consolidateIntervalMs);
 		if (throttled) return cached?.outcome;
 		if (force && cached && Date.now() - cached.at < config.forceDedupeMs) return cached.outcome;
+		// A route that just failed stays parked: retrying on every settle is what turned one provider
+		// outage into a burst. Explicit commands pass `force` and are deliberately not parked.
+		if (!force && modelBlocked("memory", projectRoot)) return cached?.outcome;
 		const auxModel = resolveAuxModel(ctx, config);
 		if (!auxModel) {
 			notify(ctx, "Project state update skipped: no authenticated model available", "warning");
@@ -70,13 +74,21 @@ export async function consolidateProjectState(
 		const existingContext = (await readOptional(contextFile(projectRoot))).slice(0, MAX_CONTEXT_CHARS);
 		const conversation = conversationText(ctx.sessionManager.buildContextEntries());
 		const fitted = fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens);
+		// The reply must re-emit the whole document, so it is told the real render cap. Without this the
+		// model only saw a word-count hint and could satisfy it while still overflowing maxMemoryChars.
+		const budget = { maxMemoryChars: config.maxMemoryChars, currentChars: existing.text.length };
+		const promptFor = (input: MemoryInput): string => buildPrompt(projectRoot, input, conversation, budget);
 
 		// Record a failed attempt so a persistent failure backs off instead of retrying on every settle.
 		const call = async (input: MemoryInput, promptOverride?: string): Promise<CompletionOutcome> => {
 			try {
-				return await completeWithMeta(ctx, promptOverride ?? buildPrompt(projectRoot, input, conversation), { model: auxModel, maxTokens: input.maxTokens });
+				const completion = await completeWithMeta(ctx, promptOverride ?? promptFor(input), { model: auxModel, maxTokens: input.maxTokens });
+				// The route answered: any earlier outage is over and the next failure starts a new episode.
+				noteModelSuccess("memory", projectRoot);
+				return completion;
 			} catch (error) {
 				throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
+				noteModelFailure("memory", projectRoot, error);
 				throw error;
 			}
 		};
@@ -98,7 +110,7 @@ export async function consolidateProjectState(
 			const reminder = truncated
 				? "Your previous response was cut off by the output limit. Retry this same consolidation now; condense the memory and context so the complete JSON object fits in this response."
 				: "Your previous response was not a usable JSON object. Retry this same consolidation now.";
-			const retryPrompt = `${buildPrompt(projectRoot, usedInput, conversation)}\n\n${reminder} Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
+			const retryPrompt = `${promptFor(usedInput)}\n\n${reminder} Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
 			completion = await call(usedInput, retryPrompt);
 			result = parseConsolidated(completion.text);
 		}
@@ -112,6 +124,15 @@ export async function consolidateProjectState(
 			// Back off like any other failed pass, but never store the raw JSON as memory.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(completion.text)}`);
+		}
+		if (exceedsMemoryCap(result.memory, config.maxMemoryChars)) {
+			// The reply overflows the render cap, so the write path would drop its tail on a line
+			// boundary. One bounded condensation attempt turns that silent loss into a curated shrink;
+			// if even the second reply overflows, keep the original and let the cap warning speak.
+			const limit = config.maxMemoryChars;
+			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown exceeded the ${limit}-character cap, so its tail would be dropped. Retry this same consolidation and rewrite memory_markdown to fit under ${limit} characters: keep every durable fact, merge duplicates, and remove the least durable entries. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
+			const condensed = parseConsolidated((await call(usedInput, condensePrompt)).text);
+			if (condensed && !exceedsMemoryCap(condensed.memory, limit)) result = condensed;
 		}
 		const version = (nextVersion += 1);
 		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });

@@ -39,7 +39,7 @@
 | `archiveEnabled` | 是否自动存档会话 |
 | `autoConsolidate` | 是否自动更新 memory/context |
 | `autoLearn` | 是否自动沉淀项目 skill |
-| `maxMemoryChars` | `MEMORY.md` 正文 cap；4000–200000，默认 32000 |
+| `maxMemoryChars` | `MEMORY.md` 正文 cap；4000–200000，默认 32000；可用 `/project-context max-memory <n>` 修改 |
 | `provider` / `model` | consolidation/autolearn 的辅助模型路由；空值使用会话模型 |
 | `maxTokens` | consolidation/autolearn 输出上限；默认 8192，最低 256 |
 | `maxOutputTokens` | 辅助输出自适应上限；默认 32768 |
@@ -56,17 +56,20 @@
 `maxMemoryChars` 限制的是 `MEMORY.md` 正文，不是简单的裸字符切片：
 
 ```text
-正文（整行边界）
+正文头段（整行边界）
+正文尾段（整行边界）      ← 被丢弃的是中段
 _[memory truncated at N characters: M dropped]_
 ```
 
-marker 行不计入正文 cap。超限会在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
+marker 行不计入正文 cap。超限时保留头尾、丢弃中段，在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/project-context max-memory` 建议）。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
+
+cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 1 token/字符最坏估算，`maxMemoryChars + 1024` 超过 `maxOutputTokens` 时 `status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）——否则回复会在闭合前被截断，无论重试多少次。
 
 ## 命令
 
 | 命令 | 用法 |
 |---|---|
-| `/project-context` | `status`；`on|off <archive|memory|autolearn|handoff|all>`；`model <provider>/<id>|off`；`max-tokens <n>|default` |
+| `/project-context` | `status`；`on|off <archive|memory|autolearn|handoff|all>`；`model <provider>/<id>|off`；`max-tokens <n>|default`；`max-memory <n>|default` |
 | `/memory-learn` | 立即跑 consolidation，重写 `MEMORY.md` 和 `CONTEXT.md`；别名 `/context-update` |
 | `/memory` | 显示项目 memory 路径和状态 |
 | `/context` | 显示 context、session index、session log 路径 |

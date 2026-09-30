@@ -4,8 +4,9 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { configFile, getConfig, runIsDisabled } from "../shared/config.ts";
-import { backupMemoryBeforeWrite, contextFile, errorText, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryFile, migrateProjectState, normalizeMemoryDocument, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
+import { classifyModelFailure, modelAutoDisabled } from "../shared/call-policy.ts";
+import { getConfig, runIsDisabled } from "../shared/config.ts";
+import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { consolidateProjectState } from "./pass.ts";
 
@@ -20,6 +21,9 @@ const contextShapeWarned = new Set<string>();
 
 /** Projects already told that the memory render hit its character cap. */
 const memoryCapWarned = new Set<string>();
+
+/** Projects already told that repeated auxiliary-model failures parked the automatic pass. */
+const disablesAnnounced = new Set<string>();
 
 /**
  * Register the consolidation hooks and commands. Registered after the archive hooks so the
@@ -98,7 +102,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				storedPoisoned = snapshot.poisoned;
 				wroteMemory = true;
 				// The marker is the durable trace; the log entry and the reply are the loud ones.
-				cappedMemory = isMemoryTruncated(normalizeMemoryDocument(memoryText, maxMemoryChars));
+				cappedMemory = exceedsMemoryCap(memoryText, maxMemoryChars);
 				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned, capped: cappedMemory });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
@@ -107,10 +111,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					// A marker nobody reads is still a silent loss: say it once per project per process,
 					// and point at the knob that lifts the cap.
 					memoryCapWarned.add(projectRoot);
+					const needed = memoryText.length;
 					await logError(
 						projectRoot,
 						"memory",
-						`memory exceeded maxMemoryChars (${maxMemoryChars}): the tail was dropped on a line boundary, whole lines only — raise maxMemoryChars in project-context.json or trim MEMORY.md`,
+						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${needed} characters — raise it with /project-context max-memory ${needed} (or trim MEMORY.md)`,
 					);
 				}
 			}
@@ -126,13 +131,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				const clippedNote = report === "clipped" ? " The rewrite also shortened the content to fit the model output budget." : "";
 				if (storedPoisoned && memoryChanged) {
 					const capNote = cappedMemory
-						? ` It also hit its ${maxMemoryChars}-character cap; the tail was dropped on a line boundary.`
+						? ` It also hit its ${maxMemoryChars}-character cap; both ends were kept and the middle was dropped on a line boundary.`
 						: "";
 					notify(ctx, `Project memory was raw JSON from the old bug and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
 				} else if (cappedMemory) {
 					notify(
 						ctx,
-						`Project memory hit its ${maxMemoryChars}-character cap: the tail was dropped on a line boundary (whole lines only) and MEMORY.md ends with a truncation marker. Raise maxMemoryChars in ${configFile(projectRoot)} or trim it.`,
+						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${memoryText.length} chars). Raise it with /project-context max-memory ${memoryText.length} or trim it.`,
 						"warning",
 					);
 				} else if (report === "clipped") {
@@ -148,7 +153,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (!silent) {
 				// The message may carry a raw-reply dump for errors.log; the toast shows the headline only.
 				const message = errorText(error);
-				notify(ctx, `Project memory update failed: ${message.split("\n", 1)[0]}`, "warning");
+				notify(ctx, memoryFailureNotice(message.split("\n", 1)[0]), "warning");
+				if (projectRoot && modelAutoDisabled("memory", projectRoot) && !disablesAnnounced.has(projectRoot)) {
+					disablesAnnounced.add(projectRoot);
+					notify(ctx, MEMORY_PAUSED_NOTICE, "warning");
+				}
 			}
 			return "failed";
 		}
@@ -201,14 +210,18 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		description: "Show this project's memory location and status",
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			const memory = await loadMemory(projectRoot, (await getConfig(projectRoot)).maxMemoryChars);
+			const { maxMemoryChars } = await getConfig(projectRoot);
+			const memory = await loadMemory(projectRoot, maxMemoryChars);
+			const chars = memory.text.length;
+			const size = chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / maxMemoryChars) * 100)}% of the ${maxMemoryChars}-char cap`;
 			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
 				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");
 			} else if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
 			else if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
-			else if (memory.damaged) notify(ctx, `Project memory: ${memory.source} (${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log).`, "warning");
-			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
-			else notify(ctx, `Project memory: ${memory.source}`);
+			else if (memory.damaged) notify(ctx, `Project memory: ${memory.source} (${size}; ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log).`, "warning");
+			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (${size}; stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
+			else if (isMemoryTruncated(memory.text)) notify(ctx, `Project memory: ${memory.source} (${size}) — at the cap, so both ends were kept and the middle dropped; raise it with /project-context max-memory <n>.`, "warning");
+			else notify(ctx, `Project memory: ${memory.source} (${size})`);
 		},
 	});
 
@@ -242,6 +255,24 @@ const CLIPPED_NOTICE =
 const CLIPPED_NOTICE_NO_WRITE =
 	"Project memory and context were updated, but existing content was shortened to fit the model output budget; review MEMORY.md, CONTEXT.md and the .agents/memory backups if older details matter.";
 
+/** Shown once when repeated auxiliary-model failures park the automatic pass for the session. */
+const MEMORY_PAUSED_NOTICE =
+	"Project memory updates are paused for this session after repeated auxiliary-model failures. Fix the route with /project-context model, or retry by hand with /memory-learn.";
+
+/** A toast headline that names the failure class instead of repeating a raw provider string. */
+function memoryFailureNotice(headline: string): string {
+	switch (classifyModelFailure(headline)) {
+		case "quota":
+			return `Project memory update paused: the auxiliary model is out of quota (${headline}). Configure a dedicated model with /project-context model, or wait for the quota to reset.`;
+		case "auth":
+			return `Project memory update paused: the auxiliary model rejected the credentials (${headline}). Fix them, or point the pass elsewhere with /project-context model.`;
+		case "transient":
+			return `Project memory update failed: ${headline} It will retry with backoff instead of on every turn.`;
+		default:
+			return `Project memory update failed: ${headline}`;
+	}
+}
+
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
 export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo): string {
 	if (report === "failed") return "Project memory update failed; see .agents/memory/errors.log.";
@@ -249,9 +280,9 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
 	if (info?.repaired && info.backup) {
-		const capNote = info.capped ? " It also hit its maxMemoryChars cap and its tail was dropped on a line boundary." : "";
+		const capNote = info.capped ? " It also hit its maxMemoryChars cap; both ends were kept and the middle was dropped on a line boundary." : "";
 		return `Project memory and context updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}`;
 	}
-	if (info?.capped) return `Project memory updated, but it is at its maxMemoryChars cap and its tail was dropped (whole lines only); raise maxMemoryChars in project-context.json or trim MEMORY.md.`;
+	if (info?.capped) return "Project memory updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.";
 	return "Project memory and context updated.";
 }
