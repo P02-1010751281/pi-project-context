@@ -7,11 +7,10 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
 import { MAX_MEMORY_CHARS_LIMIT } from "../shared/limits.ts";
-import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
+import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { consolidateProjectState } from "./pass.ts";
 
-/** Run the consolidation pass. Callers own persisting the returned artifacts. */
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = { backup?: string; repaired: boolean; capped?: boolean };
 
@@ -90,6 +89,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let backup: string | undefined;
 			let storedPoisoned = false;
 			let cappedMemory = false;
+			// Declared at this scope: the non-silent toast below needs it, and the write is conditional.
+			let neededChars = 0;
 			if (memoryChanged) {
 				// Always keep the bytes that are on disk right now, whatever this pass believed
 				// earlier; the lock keeps another process from replacing them mid-write. The journal
@@ -105,7 +106,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				// The marker is the durable trace; the log entry and the reply are the loud ones.
 				cappedMemory = exceedsMemoryCap(memoryText, maxMemoryChars);
 				// What the cap would have to be to keep this reply; clamped to what the config accepts.
-				const neededChars = Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT);
+				neededChars = Math.min(memoryText.length, MAX_MEMORY_CHARS_LIMIT);
 				lastWrite.set(projectRoot, { backup, repaired: storedPoisoned, capped: cappedMemory });
 				if (storedPoisoned) {
 					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
@@ -155,8 +156,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (!silent) {
 				// The message may carry a raw-reply dump for errors.log; the toast shows the headline only.
 				const headline = errorText(error).split("\n", 1)[0];
-				// The class-specific wording only fits a provider failure that actually armed the route
-				// policy; a local failure (a lock timeout, an unreadable path) must not claim one.
+				// The class-specific wording fits a provider failure while the route policy is armed; a
+				// local failure (a lock timeout, an unreadable path) leaves it unarmed.
 				const armed = projectRoot !== undefined && (modelCooldownRemaining("memory", projectRoot) > 0 || modelAutoDisabled("memory", projectRoot));
 				notify(ctx, armed ? memoryFailureNotice(headline) : `Project memory update failed: ${headline}`, "warning");
 				if (projectRoot && modelAutoDisabled("memory", projectRoot) && !disablesAnnounced.has(projectRoot)) {
@@ -217,7 +218,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const { maxMemoryChars } = await getConfig(projectRoot);
 			const memory = await loadMemory(projectRoot, maxMemoryChars);
-			const chars = memory.text.length;
+			const chars = memoryDocumentChars(memory.text);
 			const size = chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / maxMemoryChars) * 100)}% of the ${maxMemoryChars}-char cap`;
 			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
 				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");

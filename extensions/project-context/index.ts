@@ -8,7 +8,7 @@ import { memoryCapUnsatisfiable, memoryReplyTokens } from "./shared/output-budge
 import { registerConsolidation } from "./memory/report.ts";
 import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
-import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, notify, type LoadedMemory } from "./shared/project-state.ts";
+import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, memoryDocumentChars, notify, type LoadedMemory } from "./shared/project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.
@@ -67,7 +67,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 
 	/** What the memory injection currently uses, including how it is stored (the fix for the old bug). */
 	function memoryStatusLine(memory: LoadedMemory, cap: number): string {
-		const chars = memory.text.length;
+		const chars = memoryDocumentChars(memory.text);
 		const size = chars === 0 ? "empty" : `${chars} chars, ${Math.round((chars / cap) * 100)}% of the ${cap}-char cap`;
 		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
 		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;

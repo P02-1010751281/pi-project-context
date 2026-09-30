@@ -38,7 +38,12 @@ function legacyMemory(text: string, source: string, limit: number): LoadedMemory
  * base, append the new replacement, collapse the journal when it grew too large and render
  * `MEMORY.md`. Callers hold the memory lock and have already backed up the current render.
  */
-export async function recordMemoryDocument(projectRoot: string, text: string, limit: number = MAX_MEMORY_CHARS): Promise<void> {
+export async function recordMemoryDocument(
+	projectRoot: string,
+	text: string,
+	limit: number = MAX_MEMORY_CHARS,
+	options: { preserveMarker?: boolean } = {},
+): Promise<void> {
 	const file = memoryJournalFile(projectRoot);
 	const base = await readMemoryJournal(file);
 	if (base.unreadable) throw new Error(`memory journal exists but cannot be read: ${file}`);
@@ -66,10 +71,13 @@ export async function recordMemoryDocument(projectRoot: string, text: string, li
 			}
 		}
 	}
-	await appendMemoryOp(file, "replace", normalizeMemoryReply(text, limit));
+	// A fresh model reply drops a marker it copied out of the stored render (it describes an older
+	// clip); a legacy import keeps its own marker, which is the only trace that the file was capped.
+	const rendered = options.preserveMarker ? normalizeMemoryDocument(text, limit) : normalizeMemoryReply(text, limit);
+	await appendMemoryOp(file, "replace", rendered);
 	await rotateMemoryJournalIfNeeded(projectRoot);
 	await ensureMemoryGitignore(memoryDir(projectRoot));
-	await writeAtomic(memoryFile(projectRoot), normalizeMemoryReply(text, limit));
+	await writeAtomic(memoryFile(projectRoot), rendered);
 }
 
 /**

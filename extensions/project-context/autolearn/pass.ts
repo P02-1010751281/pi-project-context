@@ -87,14 +87,16 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 
 			// Only the model calls feed the failure policy: a local fs/lock error must not park the route
 			// (the classifier maps "permission denied" to auth and a lock timeout to transient).
+			// Captured as a const so the closure keeps the resolved root (a captured `let` is not narrowed).
+			const passRoot = projectRoot;
 			const call = async (prompt: string): Promise<string> => {
 				try {
 					const text = await completeText(ctx, prompt, { model: auxModel, maxTokens });
 					// The route answered: any earlier outage is over and the next failure starts a new episode.
-					noteModelSuccess("autolearn", projectRoot);
+					noteModelSuccess("autolearn", passRoot);
 					return text;
 				} catch (error) {
-					noteModelFailure("autolearn", projectRoot, error);
+					noteModelFailure("autolearn", passRoot, error);
 					throw error;
 				}
 			};

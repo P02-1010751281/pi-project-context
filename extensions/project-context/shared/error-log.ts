@@ -85,11 +85,7 @@ export async function logError(projectRoot: string, scope: string, error: unknow
 			perFile = new Map();
 		}
 		recentErrors.set(file, perFile);
-		while (recentErrors.size > MAX_TRACKED_ERROR_FILES) {
-			const oldestFile = recentErrors.keys().next().value;
-			if (oldestFile === undefined) break;
-			recentErrors.delete(oldestFile);
-		}
+		while (recentErrors.size > MAX_TRACKED_ERROR_FILES) recentErrors.delete(recentErrors.keys().next().value!);
 		const key = errorKey(scope, headline);
 		const seen = perFile.get(key);
 		if (seen && now - seen.lastAt < ERROR_DEDUPE_WINDOW_MS) {
@@ -112,11 +108,7 @@ export async function logError(projectRoot: string, scope: string, error: unknow
 		}
 		perFile.delete(key);
 		perFile.set(key, { scope, headline, firstAt: now, lastAt: now, count: 1 });
-		while (perFile.size > MAX_TRACKED_ERROR_KEYS) {
-			const oldest = perFile.keys().next().value;
-			if (oldest === undefined) break;
-			perFile.delete(oldest);
-		}
+		while (perFile.size > MAX_TRACKED_ERROR_KEYS) perFile.delete(perFile.keys().next().value!);
 		await appendFile(file, `${isoTimestamp(now)} [${scope}] ${detail}\n`, { encoding: "utf8", mode: 0o600 });
 	} catch {
 		// Diagnostics must never throw.

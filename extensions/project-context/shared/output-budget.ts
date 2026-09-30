@@ -36,8 +36,10 @@ export function memoryReplyTokens(maxMemoryChars: number): number {
 
 /**
  * True when a memory of `maxMemoryChars` cannot be re-emitted inside the pass's output ceiling.
- * The ceiling is the one `fitMemoryInput`/`adaptiveOutputTokens` actually uses: the larger of the
- * configured request cap and the configured adaptive ceiling.
+ * The ceiling checked is `max(maxTokens, maxOutputTokens)`, an **upper bound** on what
+ * `fitMemoryInput` may use. A resolved model whose own `maxTokens` is smaller, a reasoning reserve
+ * or a large context can still clip below it, so a false "fits" is possible; the pass's own
+ * `clipped` diagnostics cover those cases.
  */
 export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number, maxOutputTokens: number): boolean {
 	return memoryReplyTokens(maxMemoryChars) > Math.max(maxTokens, maxOutputTokens);

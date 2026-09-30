@@ -4,6 +4,7 @@
  */
 
 import { MAX_MEMORY_CHARS } from "../shared/limits.ts";
+import { isHighSurrogate, isLowSurrogate } from "../shared/text.ts";
 
 /** Leading text of the marker line a capped memory carries; the full shape is matched below. */
 const MEMORY_TRUNCATION_PREFIX = "_[memory truncated";
@@ -30,7 +31,7 @@ function parseMemoryValue(value: string): { body: string; previous?: string } {
 		.replace(/^```(?:markdown)?\s*/i, "")
 		.replace(/\s*```$/, "")
 		.trim()
-		.replace(/^#\s*Project Memory\s*/i, "")
+		.replace(/^#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "")
 		.trim();
 	const lines = cleaned.split("\n");
 	// Only the exact marker shape is stripped; a regular memory line that merely starts with the
@@ -40,21 +41,18 @@ function parseMemoryValue(value: string): { body: string; previous?: string } {
 	return { body, previous };
 }
 
+/** Characters the cap is measured against: the heading plus the body, a carried marker excluded. */
+export function memoryDocumentChars(value: string): number {
+	return MEMORY_HEADER.length + parseMemoryValue(value).body.length;
+}
+
 /**
  * True when the value's own content exceeds the cap. A marker copied from the previous render does
  * not count: it describes an older trim, and letting it mark a short reply as capped produced a
  * false "hit the cap" warning and a stale self-describing line in the render.
  */
 export function exceedsMemoryCap(value: string, limit: number = MAX_MEMORY_CHARS): boolean {
-	return MEMORY_HEADER.length + parseMemoryValue(value).body.length > limit;
-}
-
-function isHighSurrogate(code: number): boolean {
-	return code >= 0xd800 && code <= 0xdbff;
-}
-
-function isLowSurrogate(code: number): boolean {
-	return code >= 0xdc00 && code <= 0xdfff;
+	return memoryDocumentChars(value) > limit;
 }
 
 /** Largest whole-line prefix of `text` within `limit`; only a single over-long line is cut inside. */
@@ -109,7 +107,10 @@ export function normalizeMemoryDocument(value: string, limit: number = MAX_MEMOR
 	const { body, previous } = parseMemoryValue(value);
 	const document = `${MEMORY_HEADER}${body}`;
 	if (document.length <= limit) return `${document}${previous ? `\n\n${previous}` : ""}`.trimEnd() + "\n";
-	const keptBody = clipToLineBoundaryBothEnds(body, Math.max(0, limit - MEMORY_HEADER.length)).trimEnd();
+	const clippedBody = clipToLineBoundaryBothEnds(body, Math.max(0, limit - MEMORY_HEADER.length));
+	// A marker-shaped line inside the body is an old marker, not content: drop it before the fresh
+	// one is appended, so a pass that only re-breaks it onto a line start cannot resurrect it.
+	const keptBody = stripMemoryMarker(clippedBody).trim();
 	const kept = `${MEMORY_HEADER}${keptBody}`;
 	return `${kept}\n\n${memoryTruncationMarker(document.length - kept.length, limit)}\n`;
 }

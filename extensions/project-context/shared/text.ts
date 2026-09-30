@@ -44,11 +44,11 @@ export function clipTo(text: string, limit: number): string {
 	return text.length <= limit ? text : limit <= 0 ? "" : clipText(text, limit);
 }
 
-function isHighSurrogate(code: number): boolean {
+export function isHighSurrogate(code: number): boolean {
 	return code >= 0xd800 && code <= 0xdbff;
 }
 
-function isLowSurrogate(code: number): boolean {
+export function isLowSurrogate(code: number): boolean {
 	return code >= 0xdc00 && code <= 0xdfff;
 }
 

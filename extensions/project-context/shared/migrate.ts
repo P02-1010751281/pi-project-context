@@ -124,7 +124,7 @@ export async function migrateProjectState(projectRoot: string, limit: number = M
 				if ((await readMemoryJournal(memoryJournalFile(projectRoot))).entries.length > 0) return;
 				const decoded = decodePoisonedMemory(raw, limit);
 				const text = decoded ? decoded.trim() : raw;
-				await recordMemoryDocument(projectRoot, text, limit);
+				await recordMemoryDocument(projectRoot, text, limit, { preserveMarker: true });
 				importedMemory = true;
 			});
 			break;

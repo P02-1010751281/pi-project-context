@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, PC } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Memory operations: error-log noise folding (B4), head+tail fallback clipping (M3), cap
@@ -31,6 +31,8 @@ async function makeProject(extra = {}) {
 }
 
 try {
+	const cap = 4_000;
+	const bigMemory = `# Project Memory\n\n${Array.from({ length: 60 }, (_, i) => `- fact ${i} ${"x".repeat(100)}`).join("\n")}\n`;
 	console.log("=== B4: identical errors collapse to one record plus a count ===");
 	{
 		const tmp = await makeProject();
@@ -74,6 +76,10 @@ try {
 		const clippedEmoji = doc.normalizeMemoryDocument(emoji, 4_000);
 		const emojiBody = clippedEmoji.split("\n").filter((line) => !line.startsWith("_[memory truncated")).join("\n");
 		check("clipping never splits a surrogate pair", Buffer.from(emojiBody, "utf8").toString("utf8") === emojiBody);
+		// A marker-shaped line glued mid-line must not resurrect once the clip re-breaks it onto a line start.
+		const glued = `x_[memory truncated 是遗留]_## S\n😀_[memory truncated at 4000 characters: 10 dropped]_`;
+		const gluedOnce = doc.normalizeMemoryDocument(glued, 100);
+		check("a glued marker does not break idempotence", doc.normalizeMemoryDocument(gluedOnce, 100) === gluedOnce);
 	}
 
 	console.log("\n=== M7: a cap the output ceiling cannot hold is flagged ===");
@@ -119,6 +125,36 @@ try {
 
 		await pi.commands.get("project-context").handler("max-memory default", ctx);
 		check("default restores the built-in cap", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
+	}
+
+	console.log("\n=== M4: the automatic cap toast names the cap (not a scope error) ===");
+	{
+		const tmp = await makeProject({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
+		const pi = makePi({ cwd: tmp });
+		await (await loadDefault(`${PC}/index.ts`))(pi);
+		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "cap-toast-session") });
+		ctx.modelRegistry.complete = async () => ({
+			content: [{ type: "text", text: JSON.stringify({ memory_markdown: bigMemory, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+		});
+		await runHandlers(pi, "agent_settled", ctx);
+		await waitUntil(() => ctx.notifications.some(([message]) => String(message).includes("-character cap")), 5_000);
+		const capToast = ctx.notifications.map(([message]) => String(message)).find((message) => message.includes("-character cap")) ?? "";
+		check("the automatic cap toast names the cap", capToast.includes(`${cap}-character cap`));
+		check("the automatic cap toast is not a scoping failure", !capToast.includes("not defined"));
+	}
+
+	console.log("\n=== marker provenance: an import keeps it, a fresh reply drops it ===");
+	{
+		const store = await loadNamespace(`${PC}/shared/project-state.ts`);
+		const doc = await loadNamespace(`${PC}/memory/document.ts`);
+		const tmp = await makeProject();
+		const clipped = doc.normalizeMemoryDocument(bigMemory, cap);
+		await store.recordMemoryDocument(tmp, clipped, cap, { preserveMarker: true });
+		const imported = await store.loadMemory(tmp, cap);
+		check("an import keeps a genuine truncation marker", doc.isMemoryTruncated(imported.text));
+		await store.recordMemoryDocument(tmp, clipped, cap);
+		const fresh = await store.loadMemory(tmp, cap);
+		check("a fresh reply drops a carried marker", !doc.isMemoryTruncated(fresh.text));
 	}
 } finally {
 	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
