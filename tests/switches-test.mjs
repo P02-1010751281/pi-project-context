@@ -185,9 +185,10 @@ try {
 	check("upgraded flat values kept", upgraded.handoffAdaptive === false && upgraded.handoffThresholdRatio === 0.6 && upgraded.autolearnAt === 456 && upgraded.autolearnTurns === 7);
 	check("upgraded cadence kept", upgraded.consolidateTurns === 9 && upgraded.consolidateIntervalMs === 300_000);
 	console.log("\n=== a handoff save must not revert another writer's switch ===");
-	// `saveConfig` wrote this module's whole session-start snapshot, and `/project-context off memory`
-	// publishes a NEW cached object, so the next `/auto-handoff` command silently turned the memory
-	// switch back on. One process, no crash, no notice.
+	// The whole-snapshot writer `saveConfig(projectRoot, config)` (removed in ed2704c) wrote this
+	// module's entire session-start snapshot, and `/project-context off memory` publishes a NEW cached
+	// object, so the next `/auto-handoff` command silently turned the memory switch back on. One
+	// process, no crash, no notice.
 	await command.handler("off memory", ctx);
 	check("memory is off before the handoff save", (await readConfig())?.autoConsolidate === false);
 	await pi.commands.get("auto-handoff").handler("lang zh", ctx);
