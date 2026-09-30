@@ -1,29 +1,26 @@
 # Project Context
 
-Last updated: 2026-09-30T10:04:12.250Z
+Last updated: 2026-09-30T14:32:43.938Z
 
 ## Summary
 
-User asked to restore context: the two recently active projects (UniField, Quantum_Matrix) keep raising alerts. Root cause found: with empty `provider`/`model`, auxiliary consolidation and autolearn fall back to the session model (Codex), and provider failures (usage limit, 402/403/429, connection errors) retried on every settle, flooding `errors.log` (UniField 211 lines, Quantum_Matrix 769 lines / ~104 KB) and toasting repeatedly. A four-step improvement plan was agreed. Steps 1 and 2 are implemented and green but uncommitted; step 3 ops actions touch the user's live projects and await confirmation.
+Restored state from git/artifacts, then audited `.agents/memory/session-logs/`. Found a real append-duplication bug in the session archive (12 archived `session.jsonl` files had adjacent duplicate entries while the harness source did not) and fixed `archive/session-log.ts`: append offset now comes from the archive's own byte size, per project+session writes are serialized, short reads are clamped, rebuilds add no synthetic bytes, and a 256-byte `Buffer.equals` probe guards same-inode rewrites. `tests/sync-test.mjs` gained four cases; suite is 12/12 and the mutation matrix kills each production line. Three independent read-only sandbox review rounds ran (rounds 1–2 CHANGES-REQUESTED → round 3 PASSED, only doc nits left). The earlier interrupted chain was also finished: the aux-call/memory-cap 6-round review artifacts were filed and everything was pushed; master is `eef592c` on both remotes with a clean tree.
 
 ## Key points
 
-- Diagnosis: alerts come from auxiliary model calls failing (Codex usage limit, 402 insufficient balance, 403 auth, 429 quota, connection errors/stream termination) during consolidation and autolearn, plus a retry storm on every agent_settled and false 'hit the cap' warnings from copied truncation markers.
-- `errors.log` is unbounded/append-only and noisy: repeated identical entries, no rotation-based dedupe, and both live projects have `maxMemoryChars` set at or near the render size (UniField 36000, Quantum_Matrix 32000) while renders reached ~31 KB.
-- Step 1 (done): new `shared/call-policy.ts` with failure classes, per-project/per-scope cooldown, exponential backoff, and session disable after 5 consecutive provider failures; `shape` failures deliberately do not cool down routes; wired into `memory/pass.ts`, `memory/report.ts`, `autolearn/pass.ts` with class-specific toasts.
-- Step 2 (done): consolidation prompt now carries the real `maxMemoryChars` cap and current size and forbids writing truncation markers (M1); an over-cap reply gets one bounded condensation call instead of a silent tail drop (M2); `exceedsMemoryCap` stops a copied `_[memory truncated …]_` marker from faking a cap event (M6).
-- `docs/architecture.md` shared-module tree updated with `call-policy.ts`.
-- Verification: `node tests/run-all.mjs` is 11/11 (new `tests/call-policy-test.mjs`, `tests/memory-budget-test.mjs`); `git diff --check` clean.
-- Changed files: extensions/project-context/{memory/pass.ts,memory/report.ts,memory/prompt.ts,memory/document.ts,autolearn/pass.ts,shared/project-state.ts,docs/architecture.md} plus new shared/call-policy.ts and two test files — all uncommitted.
-- `.agents/memory/CONTEXT.md` and `.agents/memory/project-context.json` in this repo are modified by the live extension; per convention they are committed separately from code.
-- Running pi sessions PID 3225 (UniField) and PID 3278 (Quantum_Matrix) use the installed v0.1.11+ clone and cannot see these fixes until rebuilt/reinstalled and restarted.
+- Previous context was stale: step 3 (B4/M3/M4/M7) was already committed and the aux/memory 6-round review was done; only archiving the artifacts and pushing were missing.
+- GitHub mirror had diverged (`8b300dc`); merged it and pushed `42f0956..eef592c` to both remotes.
+- Session-log audit: 12 archived `session.jsonl` files had duplicate entries; `INDEX.md` had 2 dangling lines (cleaned). Empty probe sessions and `manual-refresh-…` dirs are normal history, not gaps.
+- Fix commits: `1b01070`, `718a441`, `7f0e803`, `3ffdc26`, plus docs `eef592c`; new issue dir `.codestable/issues/2026-09-30-session-log-append-duplication/` holds 3 rounds of prompts/transcripts and the fix note.
+- Round-3 zero-write proof passed (sandbox `git status` and `stat` snapshots unchanged).
+- Live pi PIDs changed from 3225/3278 to 262684/263321/324402; they still run the installed v0.1.11+ clone.
+- `CONTEXT.md` remains from `10:04Z` because the last shutdown consolidation reply lost its context section; the next pass should refresh it.
 
 ## Open tasks
 
-- Step 3 code-only remainder: B4 (merge duplicate `errors.log` lines / reduce noise) plus M3, M4, M7 memory-budget items.
-- Step 3 ops items require explicit confirmation before touching live projects: raise Quantum_Matrix `maxMemoryChars` (and reconcile its MEMORY.md/journal divergence and backups), review UniField settings, restart PIDs 3225 and 3278.
-- Step 4 (separate feature): S2 memory-entry lifecycle and S5 incremental ops protocol.
-- Run the sandboxed independent review skill over the M2/M5 protocol boundary changes.
-- Decide whether to create a CodeStable issue/feature record and commit the current work (code commit vs `docs(memory)` render commit separately).
+- Release both unreleased fixes (aux-call/memory-cap and session-log) and reinstall, then restart running pi processes so they take effect.
+- Owner-confirmed ops on live projects: raise Quantum_Matrix `maxMemoryChars`, reconcile its `MEMORY.md`/journal divergence and backups, review UniField settings.
+- Next planned feature: S1+S3 (fixed schema + pointerization), which needs the sandboxed independent review before landing.
+- Confirm whether to start S1+S3 now or handle ops/release first.
 
-<!-- latest-session-title: Fixing recurring alerts in UniField and Quantum_Matrix -->
+<!-- latest-session-title: Session-log append-duplication fix and push -->
