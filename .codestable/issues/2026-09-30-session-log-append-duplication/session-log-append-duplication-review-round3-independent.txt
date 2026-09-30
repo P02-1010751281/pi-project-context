@@ -1,0 +1,69 @@
+# Round-3 Verification Review — `/tmp/pi-context-rev15` (HEAD `3ffdc26`)
+
+Sandbox was only read; all mutation/probe work happened in `/tmp/pc-rev15-mut` and `/tmp/rev15-probe`. Sandbox `git status` clean before/after; the mut copy was restored byte-identical.
+
+## Prior-finding verification
+
+| # | Round-2 finding | Status | Evidence (I verified, not the note) |
+|---|---|---|---|
+| F1 | I3 narrow to 256 B + over-claim | **Resolved / honestly bounded** | Fix note now states the bound at `fix-note.md:29-33` and `:64`; test renamed `tests/sync-test.mjs:280`; probe compares `Buffer`s (`session-log.ts:94`). Probes P1/P2 confirm the blind spot still exists and the window is exactly `[size-256, size)` (see Test & QA). No test pins the blind spot itself (N3 below). |
+| F2 | I2 unpinned | **Honestly recorded** | m5 (`readBytes` ignores `bytesRead`) survives `run-all` 12/12 3×; `fix-note.md:59,65-66` says exactly that. |
+| F3 | unpinned guards | **Inode pinned; `if (tail)` recorded** | m4 (remove `session-log.ts:214`) kills `"an inode-changing replacement rebuilds"` 3/3. m6 (remove `:224` `if (tail)`) survives full `run-all`; `fix-note.md:60,65-66` records it. |
+| F4 | residual list / artifact | **Resolved** | Artifacts are byte-identical to `/tmp/rev13-round1-out.txt` and `/tmp/rev14-round2-out.txt` (`diff` empty); residuals now cover window blind spot, unpinned guards, cross-process, UTF-8 (`fix-note.md:62-69`). |
+| F5 | trim-empty cursor churn | **Mostly resolved** | Comment scoped to "trim-empty/unreadable" (`session-log.ts:240`) and cursor is no longer registered (`:246`), both round-2 options. Remaining churn is N1. |
+| S1 | string probe compare | **Fixed** | `readBytes` returns `Buffer` (`:56-70`), `equals` at `:94`; P2 confirms byte-granular window detection. |
+| S2 | probe read error aborts | **Fixed** | `try/catch → false` (`:89-98`); P4 (`chmod 000` source) shows the call resolves and rebuilds instead of rejecting. Untested by suite (M8 survives) — N4. |
+| S3 | `readRange` wrapper | **Fixed** | Wrapper gone; `readSlice` (`:72-74`) has exactly the one caller at `:223`. |
+
+## Findings
+
+### N1 (nit) — trim-empty sources are still rewritten on every refresh; missing from residuals
+`extensions/project-context/archive/session-log.ts:235-249`; `fix-note.md:62-69`.
+Evidence: probe P5 — `"   \n"` source, three consecutive refreshes change the archive inode each time (`204840 → 204841 → 204842`). No cursor is registered now, so `!appended` is entered every call and `writeAtomic` runs each refresh; pre-`42f0956` code no-op'd after the first write. No corruption (content is re-synthesized). Impact: pointless writes/mtime churn for the pathological whitespace-only/unreadable case and a behavior difference vs. pre-fix. Minimal boundary: list it explicitly in §3 residual, or skip `writeAtomic` when the synthesized `raw` equals the current archive.
+
+### N2 (suggestion) — `if (probe === 0) return true` is redundant for correctness
+`session-log.ts:86-87`. Removing it (m7) changes nothing: `readBytes(..., 0)` returns `Buffer.alloc(0)` and `equals` is true; the branch only saves two file opens. It is not a live guard that needs pinning, so the residual list need not include it — but a comment saying "skip the two opens" would be clearer than an unexplained early return.
+
+### N3 (suggestion) — the accepted 256-byte blind spot has no characterization test
+`session-log.ts:85-98`; `tests/sync-test.mjs:272-292`; `fix-note.md:64`. Round-2 option (a) also asked for "a tail-preserving rewrite test that pins the documented bound". Probe P1 shows that a same-inode, same-size rewrite changing byte 0 of a >256 B field leaves `archive === source` false, and the next refresh does not heal. Impact: a future change to `BOUNDARY_PROBE_BYTES` or the guard could silently broaden the accepted hole with nothing naming the bound. Minimal boundary: add a test that performs an early-byte rewrite with a >256-byte identical tail and asserts the archive is (documented as) stale, or note "no test pins the bound" in §3.
+
+### N4 (suggestion) — residual "unpinned guards" list is incomplete
+`session-log.ts:89-98,246`; `fix-note.md:65-66`. Besides `readBytes`/`if (tail)`, the probe catch (m8 `catch→true`) and the `fromSource` cursor-registration condition (m9 registering trim-empty cursors) both survive the full suite. They are defensive/behavioral branches, but the note implies only two such branches exist. Minimal boundary: extend the residual bullet.
+
+### N5 (residual-risk) — probe failure on an unreadable source routes to the destructive rebuild
+`session-log.ts:95-97,235-244`. P4: after cursor establishment, `chmod 000` on the source makes `appendBoundaryIntact` return false, and the rebuild path's `readOptional` yields `""`, so the raw archive is **replaced by the synthesized header+entries**. rev14 rejected and left the archive intact. This is the behavior round-2 S2 asked for, and it self-heals once the source is readable again, but temporary source read errors can transiently degrade the raw copy's fidelity. Minimal boundary: record this in §3, or distinguish "source vanished" from "source unreadable" (e.g., probe only the archive side / preserve an existing archive when `readOptional` fails on a non-empty source).
+
+### N6 (nit) — §1's absolute "archive is always a byte prefix of source" claim needs UTF-8 scope
+`fix-note.md:23-26` vs. `:68-69`. The residual bullet correctly says a split decode can produce U+FFFD; §1 states the precondition absolutely. P6 confirms it self-heals after the codepoint completes. Minimal boundary: append "(valid UTF-8; see §3)" to §1.
+
+### Praise
+- The round-3 delta is small and targeted; I found no correctness regression in the `Buffer` probe, the `try/catch`, the `fromSource` skip, or the rename test.
+- The new inode test is well-constructed: identical size and identical 256-byte tail (`tests/sync-test.mjs:282-292`), so only the inode conjunct can make it pass/fail; m4 kills it 3/3 and m2 does not, i.e. the two guards have clean, separate kills.
+- Mutation matrix in `fix-note.md:54-60` reproduces exactly (I re-ran it), and the "whole hunk" row is conservative — reverting to `42f0956` fails 6 checks, not just the two race assertions.
+- Per-key `rawFlights` still handles rejection without poisoning the map (`session-log.ts:175-183`), and no flake appeared in 5× sync + 3× run-all + 1× sandbox run-all.
+
+## Test And QA Focus
+
+**What I ran**
+- Sandbox: `node tests/run-all.mjs` → `All 12 tests passed.` (exit 0); `git status` clean before/after (`REPO-UNCHANGED`); `git diff 42f0956..HEAD --check` clean.
+- Copy `/tmp/pc-rev15-mut`: `sync-test.mjs` 5× → `ALL OK` (42 checks each); `run-all.mjs` 3× → `All 12 tests passed.` No handoff `ENOTEMPTY` flake.
+- Probes (`/tmp/rev15-probe/probe.mjs`, writes only under `/tmp`): P1 blind spot `archive===source? false`; P2 window exact (change at `size-256` rebuilt, at `size-257` not); P4 unreadable source `resolved`, synthesized; P5 trim-empty churn `true`; P6 partial UTF-8 self-heals byte-exact; P7 rename replacement rebuilds.
+
+**Mutation matrix (each applied in `/tmp/pc-rev15-mut`, restored between runs)**
+
+| Reverted production line | Killing test | Result |
+|---|---|---|
+| `session-log.ts:176-182` `rawFlights` chain removed | `sync-test.mjs:320` "overlapping writes do not duplicate the tail" | FAIL 3/3 |
+| `session-log.ts:217` boundary conjunct removed | `sync-test.mjs:280` "a growing in-place rewrite at the boundary rebuilds" | FAIL 3/3 |
+| `session-log.ts:241-243` faithful synthetic `\n` restored (conditional, as at `42f0956`) | `sync-test.mjs:269` "a half-written line is copied without a synthetic byte" | FAIL 3/3 (crude unconditional `+ "\n"` kills 7 checks) |
+| `session-log.ts:214` inode conjunct removed | `sync-test.mjs:292` "an inode-changing replacement rebuilds" | FAIL 3/3 |
+| `session-log.ts:65-66` `readBytes` ignores `bytesRead` (`return buffer`) | — | **survivor**, sync 42/42 + run-all 12/12 |
+| `session-log.ts:224` `if (tail)` removed | — | **survivor**, run-all 12/12 |
+| whole hunk reverted to `42f0956` | `sync-test.mjs:269,272,280,320,362,364` (incl. both race assertions) | FAIL 6 checks, 3/3 |
+| extra: `:87` `probe === 0` removed | — | survivor (no behavior change) |
+| extra: `:97` catch `return false` → `true` | — | survivor |
+| extra: `:246` register cursor for trim-empty too | — | survivor |
+
+**Fix note honesty** — the matrix and residual list match the code and my re-runs; the round-1/2 review artifacts are present and byte-identical. The only completeness gaps are N1 (trim-empty churn), N4 (two more unpinned round-3 branches), and the §1 wording nuance of N6.
+
+VERDICT: PASSED

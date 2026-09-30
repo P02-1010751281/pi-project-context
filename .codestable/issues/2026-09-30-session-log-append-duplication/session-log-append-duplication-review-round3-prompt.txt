@@ -1,0 +1,41 @@
+You are an independent VERIFICATION reviewer. Round 1 found three important issues in the
+session-archive fix; round 2 verified the remediation and returned CHANGES-REQUESTED (I3 narrowed
+to a 256-byte window and over-claimed; unpinned readBytes/`if (tail)`/inode guards; probe string
+compare; probe error aborts; redundant readRange wrapper; trim-empty cursor churn). Review the
+round-3 revision at /tmp/pi-context-rev15.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev15.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments or the fix notes; verify against the code.
+
+INPUTS
+- Round 1: /tmp/rev13-round1-out.txt ; Round 2: /tmp/rev14-round2-out.txt.
+- Code: `cd /tmp/pi-context-rev15 && git diff 42f0956..HEAD -- extensions tests .codestable`.
+  Read extensions/project-context/archive/session-log.ts and the session-log blocks of
+  tests/sync-test.mjs in full.
+- Fix note: .codestable/issues/2026-09-30-session-log-append-duplication/*.md
+
+YOUR TASK
+1. Verify each round-2 finding is resolved or honestly recorded:
+   F1 (I3 bound + claim), F2 (I2 unpinned), F3 (unpinned guards), F4 (residual list / artifact),
+   F5 (trim-empty cursor), S1 (buffer compare), S2 (probe read failure), S3 (readRange wrapper).
+   Reproduce the mutation matrix in a /tmp copy: remove rawFlights serialization; remove the
+   boundary conjunct; restore the synthetic newline; remove the inode conjunct; ignore bytesRead;
+   remove `if (tail)`. State which test kills each and which survive.
+2. Adversarially hunt for any NEW problem in the round-3 delta (Buffer probe, try/catch, fromSource
+   cursor skip, new rename test) and in the whole file.
+3. Quality bars with file:line.
+4. Is the fix note now an honest, complete account of what is and is not guaranteed?
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (should be 12/12) and report what you saw. State exactly which
+reverted production line kills which test.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise |
+residual-risk), file:line, evidence, impact, minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

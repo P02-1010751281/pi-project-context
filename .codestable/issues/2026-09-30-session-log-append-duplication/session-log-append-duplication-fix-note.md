@@ -22,8 +22,8 @@ tags: [session-log, archive, session.jsonl, append-cursor, data-integrity]
   命令与任何直接调用者会绕过队列；两个调用者读到同一游标会各自追加同一段尾巴。新增按
   `projectRoot\0sessionId` 的 promise 链（`rawFlights`）串行 `writeSessionOnce`。
 - **重建路径不植入合成字节。** 源文件末尾没有换行时按原样复制，不再补 `\n`，保证
-  “archive 始终是 source 的字节前缀”，游标偏移与源偏移始终对齐；trim 后为空的源才回落到
-  header+entries 合成路径（此时不登记游标）。
+  “archive 始终是 source 的字节前缀”（对合法 UTF-8；跨字节切分见 §3），游标偏移与源偏移始终对齐；
+  trim 后为空的源才回落到 header+entries 合成路径（此时不登记游标）。
 - **短读不回填 NUL。** `readBytes` 使用 `handle.read` 返回的 `bytesRead` 截断 buffer；否则一次
   短读会把 `\0` 写进归档并被游标记为已复制。
 - **同 inode 覆盖写的边界检测。** 追加前用 `Buffer.equals` 比较 archive 与 source 在
@@ -62,8 +62,17 @@ tags: [session-log, archive, session.jsonl, append-cursor, data-integrity]
 ## 3. 残余（已知且接受）
 
 - **探针窗口盲区**：同 inode 重写若保持最近 256 字节且不缩小，不会被检测（§1 已限定）。
-- **未 pinned 的守卫**：`readBytes` 的 `bytesRead` 截断与追加路径的 `if (tail)` 都是防御性分支，
-  公开接口无法确定性触发短读/收缩竞态，故无回归用例；逻辑经代码审查确认。
+- **未 pinned 的防御分支**：`readBytes` 的 `bytesRead` 截断、追加路径的 `if (tail)`、
+  探针 `catch → false`、以及 trim 空源不登记游标这四处都是防御/边界分支，公开接口无法确定性
+  触发（短读、收缩竞态、读失败、纯空白源），故无回归用例；逻辑经代码审查确认。探针的
+  `probe === 0` 早退仅为省两次 open，去掉行为不变。
+- **trim 空源反复重建**：纯空白/不可读源不登记游标，每次刷新都会 `writeAtomic` 重建一份由
+  entries 合成的归档（无损坏，但会有 mtime/inode churn）；正常会话文件不会出现。
+- **探针读失败回退到重建**：源在中途不可读时，探针返回 false，随后重建路径的 `readOptional`
+  可能得到空串，把归档暂时换成合成的 header+entries；源恢复可读后自愈。比 rev14 的“直接拒绝”
+  更能保持可用，但存在短暂降级。
+- **256 字节边界无 characterization 测试**：已知盲区仅写入文档与代码注释；没有断言“陈旧”的
+  测试，避免把已接受的限制固化成期望行为。
 - **跨进程同会话写者**无锁（与 `session-logs` 既有做法一致）。
 - **UTF-8 跨字节切分**：`readBytes` 在某字节偏移解码可能产生 U+FFFD；完成下一轮后前缀探针会
   触发重建并恢复字节一致（复现探针 P-G 已确认自愈）。
@@ -81,3 +90,5 @@ tags: [session-log, archive, session.jsonl, append-cursor, data-integrity]
   未 pinned 守卫。
 - 本轮（对第 2 轮的响应）：探针改为 `Buffer.equals`、探针读失败强制重建、去掉单行 `readRange`
   包装、trim 空源不登记游标、补 inode 替换用例，并把 256 字节边界与残余写入记录。
+- 第 3 轮（`session-log-append-duplication-review-round3-independent.txt`）：**PASSED**。
+  复核确认 I1/I2/N1–N3/F1–F5/S1–S3 已修或已诚实限定，仅剩文档完整性类 nit（已在 §3 补齐）。
