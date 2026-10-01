@@ -81,3 +81,6 @@ owner 经「继续」委派推进，本轮按**推荐默认**落地：schema C�
 ## 残余（已知且接受）
 
 - 无符合度可见性（status 不报告记忆是否收敛到 schema）；模型可以永远忽略 prompt 的结构要求。属本设计明确的可选增强，留给 S4 / 后续。
+- `memorySectionBudgets` 的 `Math.max(0, cap − overhead)` 在 `MIN_MEMORY_CHARS = 4000` 下不可达（fixed schema 开销 76）；保留为防御分支，无回归用例。
+- `schema.ts` 从 `document.ts` 导入 `MEMORY_HEADER`。当前无环；S4（按节优先序丢）若落在 `document.ts` 的 clip 路径并反向引用 `schema.ts`，需先把 header 拆到叶子常量模块。
+- 固定开销对每节都预留一个空行（2 字符），最后一节多预留 1 字符；已用 `overhead === 76` 钉住，属保守方向。

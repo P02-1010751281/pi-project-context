@@ -38,7 +38,7 @@ try {
 	const { fitMemoryInput } = await loadNamespace(`${PC}/memory/input.ts`);
 	const fitted = fitMemoryInput(small, "", 8192, { maxTokens: 32768 });
 	const budgeted = buildPrompt("/tmp/p", fitted, "conversation", { maxMemoryChars: 4_000, currentChars: 1_234 });
-	check("the prompt states the cap and the current size", budgeted.includes("under 4000 characters") && budgeted.includes("currently about 1234"));
+	check("the prompt states the cap and the current size", budgeted.includes("at or under 4000 characters") && budgeted.includes("currently about 1234"));
 	check("the prompt calls it a hard cap", budgeted.includes("hard cap"));
 	check("the prompt forbids writing truncation markers", budgeted.includes("Never write omission or truncation markers"));
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
@@ -86,6 +86,12 @@ try {
 	check(
 		"the prompt asks for one-line pointers, forbids inventing paths, and uses no project-specific path",
 		schemaPrompt.includes("docs/<topic>.md") && schemaPrompt.includes("never invent a path") && !schemaPrompt.includes("157K/450K") && !schemaPrompt.includes("docs/handoff.md"),
+	);
+	check(
+		"the pointer rule requires the target to hold the detail and keeps homeless details inline",
+		schemaPrompt.includes("already exists in this project and actually holds the detail") &&
+			schemaPrompt.includes("never an inline formula, table, or command transcript") &&
+			schemaPrompt.includes("A detail with no home stays as one short line."),
 	);
 	check(
 		"the prompt conditions the drop rule on being over budget",

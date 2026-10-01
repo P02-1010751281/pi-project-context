@@ -31,6 +31,8 @@ tags: [memory, autolearn, alerts, errors-log, memory-cap, output-budget, call-po
 - **M1** `memory/prompt.ts`：`buildPrompt` 新增 `budget` 参数，注入真实字符上限与当前字数
   （“must stay under {cap} characters; the stored memory is currently about {n}. That is a hard cap …”），
   取代无效的 “below 6000 words”。`memory/pass.ts` 以 `promptFor(input)` 统一注入。
+  （S1/S3 起措辞改为 “at or under”，且新增固定 4 节 schema 与每节预算；见
+  `auxiliary-call-noise-and-memory-cap-s1-s3-design.md`。）
 - **M2** `memory/pass.ts`：回复 `exceedsMemoryCap` 时，先做**一次**有界压缩调用
   （保事实、并重复、删最不持久），成功且仍不超 cap 才采用；否则保留原回复并走原有 cap 告警。
 - **M6** `memory/document.ts`：新增 `exceedsMemoryCap`（剥离 marker 后测量），复制的旧 marker
@@ -75,8 +77,9 @@ tags: [memory, autolearn, alerts, errors-log, memory-cap, output-budget, call-po
 
 - **A2/A3/A4**（动活项目）：改 `project-context.json`、调 QM cap、处理 `MEMORY.md`/journal 分叉与备份、
   重启 PID 3225/3278 —— 需 owner 确认。
-- **S1 + S3**（固定 schema + 指针化）：改变记忆对外形态、需向后兼容已有自由结构，
-  按惯例走 `.agents/skills/pi-project-context-sandboxed-independent-review`。
+- **S1 + S3**（固定 schema + 指针化）：已在 `a3f8370`…`cfa4b6f` 落地（固定 4 节 + 每节预算 + 指针规则，
+  软强制 fail-open，向后兼容），设计见 `auxiliary-call-noise-and-memory-cap-s1-s3-design.md`；已过 6 轮独立只读评审，
+  仍待 owner 复核三项默认（schema 形态 / 软强制 / 份额）。
 - **S2 + S5**（条目生命周期 + 增量 ops）：单独立项；S5=M5 属协议边界，需独立评审。
 - **第 6 轮 meta-review 的残余（不阻塞，已接受）**：
   - `fd0cc9e` 的共享 `capCeilingWarning` 让 `/project-context max-memory` 的 toast 主语从
