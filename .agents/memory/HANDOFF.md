@@ -1,84 +1,105 @@
-# pi 会话 01a0f260-f2d6-75f6-9452-faae0134cf0d 的交接文档
+# pi 会话 01a0f2ba-f08a-75f6-9452-fabd2ee7aa17 的交接文档
 
-- 生成时间：2026-09-30T14:32:12.659Z
+- 生成时间：2026-10-01T00:34:13.282Z
 - 项目：/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context
-- 会话日志：.agents/memory/session-logs/01a0f260-f2d6-75f6-9452-faae0134cf0d/session.md
+- 会话日志：.agents/memory/session-logs/01a0f2ba-f08a-75f6-9452-fabd2ee7aa17/session.md
 - 会话索引：.agents/memory/session-logs/INDEX.md
 
 ## 目标
-- 恢复 pi-project-context 项目的上下文，检查 `.agents/memory/session-logs/` 会话归档是否有缺漏，然后继续未完成的施工链条。
-- （链式任务）上一会话已完成"辅助调用报警与记忆上限"问题的三审三校与提交，但从未 push；本轮需补齐评审证据、push、并推进下一步。
-- 修复会话归档 `session.jsonl` 的重复条目缺陷（新发现的独立缺陷）。
+- 恢复 pi-project-context 项目上下文，检查 `.agents/memory/session-logs/` 会话归档是否有缺漏，继续未完成的施工链条。
+- 修复会话归档 `session.jsonl` 的相邻重复条目缺陷。
+- 落地 S1+S3（记忆固定 schema + 指针化），走三审三校独立评审。
+- （最新）重新确认扩展中**其他部分**的 schema。
 
 ## 约束与偏好
-- 用简体中文回复；commit message 用英文 Conventional Commits（`type(scope): imperative summary`）；文档与面向用户写作使用简体中文。
-- 方案 (b)：**不配置** `provider`/`model`（不做 A1），但保留"连续失败自动停用本次会话"兜底。
-- 改动必须附带各自测试；记忆/压缩协议边界（M2/M5、S1/S3）须走 `.agents/skills/pi-project-context-sandboxed-independent-review` 独立只读评审。
-- 独立评审要求"三审三校"（审+校成对，共 6 轮），核心理念：保证正确性，无过度设计/碎片化/过度封装/过度守卫/边界不清/重复代码/逻辑冗长/可读性差/可维护性差/文件组织混乱；除运行中代码外不允许 patch 或 hook。
-- 独立评审须用**真实 headless pi 进程**、字节级相同的 `/tmp` 沙箱、以 before/after `git status` + `stat` 快照证明零写入。
-- 评审脚本命令：`pi -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash "$(cat <prompt>)"`。
+- 用简体中文回复；commit 用英文 Conventional Commits（`type(scope): imperative summary`）；文档与面向用户写作用简体中文。
+- 方案 (b)：**不配置** `provider`/`model`（不做 A1），保留“连续失败自动停用本次会话”兜底。
+- 改动必须附各自测试；记忆/压缩协议边界（M2/M5、S1/S3）须走 `.agents/skills/pi-project-context-sandboxed-independent-review` 独立只读评审，**三审三校共 6 轮**。
+- 评审须用真实 headless pi、字节级 `/tmp` 沙箱、before/after `git status` + `stat` 快照证明零写入；命令 `pi -p --no-session --no-extensions --no-skills --no-prompt-templates --tools read,bash "$(cat <prompt>)"`。
+- 除运行中代码外不允许 patch/hook；S 层须**向后兼容**已有自由结构（不得重排/丢事实）。
 - 项目根：`/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context`。
 
 ## 进展
 ### 已完成
-- [x] 恢复上下文：确认 Step 1/2/3 已提交（`d02e869`…`fd0cc9e`），测试 12/12；`CONTEXT.md`/`HANDOFF.md` 因上次 shutdown 合并丢失 context section 而陈旧。
-- [x] session-log 完整性检查：发现 12 个归档 `session.jsonl` 含**相邻重复条目**（如 `01a0a41a` @221/222、`01a0f19c` 9 处、`01a0f1c3` 7 处；harness 源文件无重复）；`INDEX.md` 有 2 条悬空行（`01a0a89f-…`、`01a0f261-…`）；另有 4 个零消息"探针"会话存根与 `manual-refresh-…` 维护目录（良性）。
-- [x] 定位根因：`extensions/project-context/archive/session-log.ts` 的 `writeSessionArtifacts` 从**读之前**的 `stat` 记录 `cursor.sourceSize`，而 `readRange` 内部再次 `stat` 并读到更新大小；若 harness 并发追加，下次刷新从陈旧偏移**重复追加**。
-- [x] 修复：`RawCursor` 去掉 `sourceSize`，改用 archive 自身大小 `cursor.dest.size` 作追加偏移；重建路径源文件原样复制（不补合成换行）。
-- [x] 三审三校完成：round1–round5 已存盘；`fd0cc9e` 对应的 round6（校）输出 `/tmp/rev12-round6-out.txt`（20:40 生成，前一会话未归档）判定 **REVIEW-SOUND**。
-- [x] 归档 round6 transcript/prompt 到 `.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/`；更新 fix-note §5/§6。
-- [x] 提交并 push 已评审工作：`5e1fc5c`(codestable) `d5a860a`(memory render) `75e429f`(skills)；push 时 GitHub mirror 因多出 `8b300dc`（switches 注释）而 non-fast-forward，用 merge `42f0956 chore: reconcile the GitHub mirror's switches-comment fix` 解决；两个远端现均在 `42f0956`。
-- [x] 就地清理 `INDEX.md` 2 条悬空行（INDEX 45 条，全部可解析；多出的 1 个目录是非会话维护标记）。
-- [x] session-log 修复第 1 轮独立评审（sandbox `/tmp/pi-context-rev13`）返回 **CHANGES-REQUESTED**：I1 并发同 key 写重复、I2 `readRange` 忽略 `bytesRead`、I3 同 inode 变大重写未检测、N1 弱测试、N2 缺产物引用、N3 注释过宽。
-- [x] 修复上述发现：新增按 `projectRoot\0sessionId` 的 `rawFlights` promise 链串行化；新增 `readSlice` 使用 `bytesRead`；新增 `appendBoundaryIntact`（256 字节边界探针，`BOUNDARY_PROBE_BYTES = 256`）。
-- [x] 强化/新增测试并验证变异矩阵（在 `/tmp` 副本上）：A 去串行化→"overlapping writes do not duplicate the tail"杀死；B 去边界守卫→"a growing in-place rewrite rebuilds"杀死；C 还原合成换行→"a half-written line is copied without a synthetic byte"杀死；D 忽略 `bytesRead`→无确定性用例（存活）。
-- [x] 提交 `1b01070`（初始 cursor 修复）、`718a441`（issue 记录）、`7f0e803`（闭合评审发现）。
-- [x] session-log 第 2 轮验证评审已在 sandbox `/tmp/pi-context-rev14` 跑完，输出 `/tmp/rev14-round2-out.txt`（10394 字节，exit=0）。
+- [x] 核对交接：`eef592c` 已推送、session-log round1–3 已归档、注释搬迁已提交；提交扩展刷新的记忆产物 `3980099`（`CONTEXT.md` 补回丢失的 context 段）并推送。
+- [x] session-log 修复（早前 3 轮评审：CHANGES→CHANGES→PASSED）已推送 `eef592c`。
+- [x] **S1/S3 落地**（`a3f8370`…`0b81099`）：
+  - 新增 `extensions/project-context/memory/schema.ts`：`MEMORY_SECTIONS`（`Project 20% / Invariants 40% / Pitfalls 25% / Index 15%`，各带 `description`）、`memorySchemaOverheadChars()`（= 76：`MEMORY_HEADER` + 各 `## 标题\n\n` + `MEMORY_SECTION_GAP_CHARS=2`）、`memorySectionBudgets(cap)`（先扣开销再按份额 floor）。
+  - `memory/prompt.ts`：`budget` 改为必填；注入 4 节 + 每节预算 + 指针规则（一行事实 + `docs/<topic>.md`/`file.ts:123`，只指已存在且确实承载细节的路径，不虚构；无归属细节一行内联）。
+  - `memory/document.ts`：导出 `MEMORY_HEADER` 供复用（`exceedsMemoryCap`、`normalizeMemoryDocument` 未改）；`memory/pass.ts:133` 措辞改为 “fit at or under”。
+  - 测试 `tests/memory-budget-test.mjs`：12 条新断言（含构造满预算文档不超 cap、开销恰为 76、预算随 cap 缩放、指针规则三子句）。
+  - 文档：`docs/architecture.md` 加 `schema.ts`；`docs/configuration.md` 更新 memory cap 段。设计：`.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md`（`status: implemented-pending-owner-review`）。
+- [x] S1/S3 **6 轮独立评审**：round1 CHANGES、round2 CHANGES、round3 PASSED、round4 REVIEW-SOUND、round5 CHANGES、round6 REVIEW-SOUND；12 份 transcript 存 issue 目录 `…-s1-s3-review-round{1..6}-*`。
+- [x] `node tests/run-all.mjs` **12/12**（多次）；变异矩阵（去 schema 块/补偿份额/ceil/+1/乱序/开销归零或低估/cap 硬编码/描述增删/指针三子句）全部被杀死。
+- [x] 推送两远端：`master = 0b81099`（`f34c4a9`→`c23cf5f`→`7fa5e3a`→`cfa4b6f`→`7ed538f`→`f81531f`→`cc625c9`→`a3f8370`）。
 
 ### 进行中
-- [ ] 读取并处置 round2 验证结论（`/tmp/rev14-round2-out.txt`）。已知 round2 发现：I2 代码已修但**未 pinned**；I3 部分修复，256 字节探针有**盲区（F1, IMPORTANT）**；N1 多数修复但 `if (tail)`、inode 守卫、探针 `size===0` 仍未 pinned；N2 产物的 round-2 引用在 `fix-note.md:70` 仍悬空。
-- [ ] 有一处未提交的注释搬迁编辑：`RawCursor` 注释去掉串行化句子、`rawFlights` 注释加"A cross-process writer is outside this scope"（在 `session-log.ts`）。
+- [ ] 用户要求“其他部分的 schema 也再重新确认”。已读：`memory/context-doc.ts`、`memory/parse.ts`、`autolearn/parse.ts`、`autolearn/candidate.ts`、`autolearn/skill.ts`、`handoff/prompt.ts`。**待读**：`handoff/summary.ts`、`archive/session-index.ts`、`shared/config.ts` 等，然后逐个报告并修正不一致。
 
 ### 受阻
-- (无严重阻塞) GitHub mirror 分歧已用 merge 化解。
+- （无严重阻塞）GitHub mirror 分歧已用 merge `42f0956` 化解。
 
 ## 关键决策
-- **以归档自身大小作追加偏移**：`cursor.dest.size` 恒等于已写字节，杜绝"stat 陈旧导致重叠追加"。
-- **同会话进程内串行化**：`archive.ts` 只对 turn/settle 排队，`/session-log` 命令绕过队列，故在 `session-log.ts` 内用 `rawFlights` 兜底。
-- **用 merge 而非 rebase 解决 mirror 分歧**：rebase 会重写已 push 的 SHA，使评审 transcript 引用的 `2a38c5f`/`fd0cc9e` 等失效。
-- **session-log 缺陷单独立 issue**：与 aux/memory issue 关注点不同，路径 `.codestable/issues/2026-09-30-session-log-append-duplication/`。
-- **push 前必须独立评审**：承接用户上轮"独立评审→push→接下一步"的指令。
+- **追加偏移用归档自身字节数** `cursor.dest.size`（杜绝 stat 陈旧导致重叠追加）；同会话进程内串行化 `rawFlights`（按 `projectRoot\0sessionId`）。
+- **用 merge 而非 rebase** 解决 mirror 分歧（避免重写已 push 的 SHA）。
+- **S1/S3 采用 schema C + 软强制 fail-open + 份额 20/40/25/15**；不改剪裁（沿用 M3 头尾），S4（按节优先序丢）与符合度可见性**明确出范围**；机制与常量解耦（改选只动 `schema.ts` 常量与 prompt 文案）。
+- **失败关闭先例仅用于 context**（短状态可重建）；记忆是长期事实，故 fail-open。
 
 ## 后续步骤
-1. 读取 `/tmp/rev14-round2-out.txt`；若 CHANGES-REQUESTED，修复 F1 探针盲区等并补测试；若 PASSED，则归档 round2 transcript/prompt 到 issue 目录并更新 `session-log-append-duplication-fix-note.md` 第 4 节引用。
-2. 提交注释搬迁编辑与 round2 证据（如 `docs(codestable)`），运行 `node tests/run-all.mjs` 确认 12/12、`git diff --check` 干净。
-3. push 本地 3+ 个 session-log 提交到两个远端（`git push origin master`）。
-4. 汇报恢复的下一施工步骤：A2/A3/A4（动活项目 UniField/Quantum_Matrix，**需 owner 确认**）、S1+S3（固定 schema+指针化）、S2+S5（单独立项）——均属 `.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap` 未完成项。
+1. 读完 `handoff/summary.ts`、`archive/session-index.ts`、`shared/config.ts` 等，产出“其他 schema 复核报告”（字段、校验位置、cap）。
+2. 若发现不一致：修复并补测试；触及协议边界则走独立评审。
+3. 等 owner 复核 S1/S3 三项默认（schema 形态 C / 软强制 / 份额）。
+4. 发布：打包/打 tag/重装并重启 pi（现 PID 262684/263321/324402 仍跑 v0.1.11+ clone）。
+5. 活项目 ops（UniField/Quantum_Matrix）需 owner 确认。
 
 ## 关键上下文
-- 工作仓库：`/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context`；当前会话 `PI_SESSION_ID=01a0f260-f2d6-75f6-9452-faae0134cf0d`。
-- Remotes：`origin` fetch=`ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git`；push URLs=该 forgejo + `ssh://git@ssh.github.com:443/P02-1010751281/pi-project-context.git`。`42f0956` 为当前远端最新；本地 HEAD=`7f0e803`（另有未 push 的 `1b01070`、`718a441`）。
-- 关键源文件：`extensions/project-context/archive/session-log.ts`（`writeSessionArtifacts`→`writeSessionOnce`、`readSlice`/`readRange`、`appendBoundaryIntact`、`RawCursor`、`rawCursors`、`rawFlights`、`ArtifactStamp`/`stampOf`/`sameStamp`）；调用方 `archive/archive.ts`（`writeQueue`，行 35/89-105/124-133/162）；`archive/import-archive.ts`。测试：`tests/sync-test.mjs`。
-- Issue 目录：`.codestable/issues/2026-09-30-session-log-append-duplication/`（`-analysis.md`、`-fix-note.md`、`-review-round1-independent.txt`、`-review-round1-prompt.txt`；round2 待归档）。aux/memory issue：`.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/`（round1–round6）。
-- 沙箱与产物：`/tmp/pi-context-rev13`（round1）、`/tmp/pi-context-rev14`（round2）；prompt/output：`/tmp/rev13-round1-{prompt,out}.txt`、`/tmp/rev14-round2-{prompt,out}.txt`；baseline：`/tmp/rev{13,14}-baseline-{status,files}.txt`。
-- 测试命令：`node tests/run-all.mjs`（当前 12/12）；`node tests/sync-test.mjs`。无本地 tsc，类型由 jiti 运行时加载验证。
-- 变异矩阵（副本 `/tmp/pc-mut13`）：A（去 `rawFlights`）→ FAIL "overlapping writes do not duplicate the tail"；B（去 `appendBoundaryIntact`）→ FAIL "a growing in-place rewrite rebuilds"；C（还原合成换行）→ FAIL "a half-written line is copied without a synthetic byte"；D（`readSlice` 忽略 `bytesRead`）→ 存活（无确定性用例）。
-- 未清理的历史数据：12 个归档里的既有重复条目未回改（`session-logs/` 被本地 `.gitignore` 忽略）；扩展跑在 `~/.pi/agent/git/...` 的 v0.1.11+ clone 上，本修复需重新打包/发布/重装并重启才生效。
-- round2 关键发现（来自 `/tmp/rev14-round2-out.txt` 片段）：I1 Fixed+pinned；I2 Fixed in code NOT pinned（`m4` 存活）；I3 partially fixed，256 字节探针盲区（F1）；N1 多数修复但 `m5/m7/m8` 存活；N2 round-1 产物字节一致但 round-2 引用悬空；N3 Fixed。
+- 当前会话 id `01a0f260-f2d6-75f6-9452-faae0134cf0d`；原始 JSONL：`/home/user/.pi/agent/sessions/--run-media-user-6b058d20-a617-484d-b7c6-cd7146baf77c-Projects-pi-project-context--/2026-09-30T12-53-55-031Z_01a0f260-f2d6-75f6-9452-faae0134cf0d.jsonl`。
+- Remotes：fetch `ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git`；push 再加 `ssh://git@ssh.github.com:443/P02-1010751281/pi-project-context.git`。最新 tag `v0.1.11`@`5ffec44`。
+- 已确认 schema（本会话读到的）：
+  - `MEMORY.md`：`# Project Memory` + 固定 4 节（`schema.ts`）。
+  - `CONTEXT.md`（`context-doc.ts`）：`# Project Context` / `Last updated:` / `## Summary` / `## Key points` / `## Open tasks` / `<!-- latest-session-title: … -->`；caps `MAX_CONTEXT_CHARS`、`MAX_SUMMARY_CHARS`、`MAX_LIST_ITEM_CHARS`、`MAX_LIST_ENTRIES=50`；`parse.ts` 的 `ContextUpdate{title,summary,key_points,open_tasks}` 对错类型 list **fail-closed**。
+  - autolearn（`autolearn/parse.ts`）：`Decision{skill:{name,description,body,evidence[],candidate,reason}|null, inspect[]}`；`candidate.ts` 的 `shapeRejection(description, body)` 共用同一套规则；`skill.ts`：`MIN_SKILL_BODY_CHARS=160`、`MAX_SKILL_DESCRIPTION_CHARS=1024`、`UNSAFE_SKILL_PATTERNS`。
+  - handoff（`handoff/prompt.ts`）：`SUMMARY_HEADINGS`（zh/en 固定小节映射）。
+- 测试命令：`node tests/run-all.mjs`（12/12）、`node tests/memory-budget-test.mjs`。已知偶发：handoff `ENOTEMPTY` 抖动。
+- 评审沙箱/基线：`/tmp/pi-context-rev16…rev21`，`/tmp/rev{16..21}-baseline-{status,files}.txt`；输出 `/tmp/rev{n}-round{m}-out.txt`。
+- 关键源文件：`memory/{schema.ts,prompt.ts,document.ts,pass.ts,parse.ts,context-doc.ts}`；`archive/{archive.ts,session-log.ts,session-index.ts}`；`tests/sync-test.mjs`。
+- 历史数据：`session-logs/` 既有重复条目未回改（本地 `.gitignore` 忽略）；修复需重装发布才生效。
 
 <read-files>
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.agents/memory/HANDOFF.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.agents/skills/pi-project-context-sandboxed-independent-review/SKILL.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/archive/archive.ts
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/archive/session-index.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-analysis.md
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/autolearn/candidate.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/autolearn/parse.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/autolearn/skill.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/handoff/prompt.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/context-doc.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/input.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/parse.ts
+/tmp/rev16-round1-out.txt
+/tmp/rev17-round2-out.txt
+/tmp/rev18-round3-out.txt
+/tmp/rev19-round4-out.txt
+/tmp/rev20-round5-out.txt
+/tmp/rev21-round6-out.txt
 </read-files>
 
 <modified-files>
 /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-fix-note.md
-/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-30-session-log-append-duplication/session-log-append-duplication-analysis.md
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md
 /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/.codestable/issues/2026-09-30-session-log-append-duplication/session-log-append-duplication-fix-note.md
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/docs/architecture.md
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/docs/configuration.md
 /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/archive/session-log.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/document.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/pass.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/prompt.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/extensions/project-context/memory/schema.ts
+/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/tests/memory-budget-test.mjs
 /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context/tests/sync-test.mjs
-/tmp/rev13-round1-prompt.txt
-/tmp/rev14-round2-prompt.txt
+/tmp/rev15-round3-prompt.txt
+/tmp/rev16-round1-prompt.txt
+/tmp/rev17-round2-prompt.txt
+/tmp/rev18-round3-prompt.txt
+/tmp/rev19-round4-prompt.txt
+/tmp/rev20-round5-prompt.txt
+/tmp/rev21-round6-prompt.txt
 </modified-files>
