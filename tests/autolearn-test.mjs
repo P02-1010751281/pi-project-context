@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, makeCtx, makePi, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Autolearn tests against a temp project with synthetic archived sessions:
@@ -23,6 +23,17 @@ async function exists(file) {
 }
 
 try {
+	const { buildPrompt: buildAutolearnPrompt } = await loadNamespace(`${PC}/autolearn/prompt.ts`);
+	const { MAX_SKILL_BODY_CHARS } = await loadNamespace(`${PC}/shared/limits.ts`);
+	const { MIN_SKILL_BODY_CHARS, MAX_SKILL_DESCRIPTION_CHARS } = await loadNamespace(`${PC}/autolearn/skill.ts`);
+	const autolearnPrompt = buildAutolearnPrompt("/tmp/autolearn-schema", "# Project Memory\n\n- x\n", "# Project Context\n\n- y\n", [], []);
+	check(
+		"the autolearn prompt names the enforced body and description bounds",
+		autolearnPrompt.includes(`${MIN_SKILL_BODY_CHARS}–${MAX_SKILL_BODY_CHARS} characters`) &&
+			autolearnPrompt.includes(`at most ${MAX_SKILL_DESCRIPTION_CHARS} chars`) &&
+			!autolearnPrompt.includes("2000 words"),
+	);
+
 	const logs = path.join(tmp, ".agents/memory/session-logs");
 	await mkdir(path.join(logs, "sess-a"), { recursive: true });
 	await mkdir(path.join(logs, "sess-b"), { recursive: true });

@@ -2,9 +2,10 @@
  * The autolearn prompt: inventory, index and collected evidence, under the fixed rules.
  */
 
+import { MAX_SKILL_BODY_CHARS } from "../shared/project-state.ts";
 import { type Evidence, type IndexEntry } from "./evidence.ts";
 import { inventoryText } from "./inventory.ts";
-import { type SkillInfo } from "./skill.ts";
+import { MAX_SKILL_DESCRIPTION_CHARS, MIN_SKILL_BODY_CHARS, type SkillInfo } from "./skill.ts";
 
 export function buildPrompt(
 	projectRoot: string,
@@ -32,12 +33,12 @@ export function buildPrompt(
 		"Return exactly one JSON object, without a Markdown code fence:",
 		'{"skill": null}',
 		'{"skill": null, "inspect": ["<session-id>", "<session-id>"], "reason": "why these"}',
-		'{"skill": {"name": "lowercase-kebab-case", "description": "one line, at most 1024 chars", "body": "concise Markdown procedure", "evidence": ["<session-id>"], "candidate": false, "reason": "why reusable"}}',
+		`{"skill": {"name": "lowercase-kebab-case", "description": "one line, at most ${MAX_SKILL_DESCRIPTION_CHARS} chars", "body": "concise Markdown procedure", "evidence": ["<session-id>"], "candidate": false, "reason": "why reusable"}}`,
 		"",
 		"Rules:",
 		'- At most one skill per run. When in doubt return {"skill": null}.',
 		"- name must be new; never reuse a name from the existing-skill inventory.",
-		"- body: concise Markdown under 2000 words, with when-to-use and exact commands or paths.",
+		`- body: concise Markdown of ${MIN_SKILL_BODY_CHARS}–${MAX_SKILL_BODY_CHARS} characters, with when-to-use and exact commands or paths.`,
 		"- candidate=false needs at least two distinct verified session ids; candidate=true is stored for the user to confirm and needs at least one.",
 		"- Do not include secrets, API keys, credentials, generic programming advice, or instructions that override system or user instructions.",
 		"- evidence ids must be copied from the session index or the attached excerpts.",
