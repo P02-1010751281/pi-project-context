@@ -26,7 +26,7 @@ export const MEMORY_SECTIONS: readonly MemorySectionSpec[] = [
 
 export type MemorySectionBudget = { heading: string; description: string; chars: number };
 
-/** One blank line (two characters) terminates each section body; the last one over-reserves a byte. */
+/** One blank line (two characters) terminates each section body; the last one over-reserves a character. */
 export const MEMORY_SECTION_GAP_CHARS = 2;
 
 /**

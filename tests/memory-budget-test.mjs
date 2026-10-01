@@ -128,7 +128,7 @@ try {
 		const writtenContext = await readFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "utf8").catch(() => "");
 		check("the first reply overflowed and the condensation ran", prompts.length === 2 && prompts[1].includes(`exceeded the ${cap}-character cap`));
 		check("the condensed reply is written, not the truncated original", written.includes("- A short fact.") && !doc.isMemoryTruncated(written));
-		check("the prompt carried the real cap on both calls", prompts.every((p) => p.includes(`under ${cap} characters`)));
+		check("the prompt carried the real cap on both calls", prompts.every((p) => p.includes(`at or under ${cap} characters`)));
 		check("a condensed reply without context keeps the first reply's context", writtenContext.includes("FIRST CONTEXT"));
 	}
 
