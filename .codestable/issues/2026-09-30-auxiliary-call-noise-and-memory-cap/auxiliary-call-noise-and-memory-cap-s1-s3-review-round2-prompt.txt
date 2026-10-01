@@ -1,0 +1,55 @@
+You are an independent VERIFICATION reviewer. Round 1 returned CHANGES-REQUESTED on the S1/S3
+memory-schema change; the author has since remediated it. Review the current HEAD of
+/tmp/pi-context-rev17 (f81531f, on top of a3f8370/cc625c9).
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev17.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes/mutants may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Full change: `git diff 3980099..HEAD -- extensions tests docs .codestable`.
+- Remediation only: `git diff cc625c9..HEAD`.
+- Round-1 output: /tmp/rev16-round1-out.txt (read it).
+- Code: extensions/project-context/memory/schema.ts, memory/prompt.ts, tests/memory-budget-test.mjs;
+  design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md.
+
+CONTEXT / INTENT
+- S1 = fixed minimal memory schema + per-section char budgets; S3 = pointerization.
+- Hard constraint: backward compatible with existing free-form MEMORY.md (no reorder / no fact loss).
+- Chosen approach: prompt-side schema (fail-open); no clipping change; S4 (priority clipping) and hard
+  enforcement are explicitly OUT of scope. `budget` is now a required buildPrompt argument.
+
+YOUR TASK
+1. Verify each round-1 finding is resolved or honestly recorded: F1 (budget sum vs fixed overhead),
+   F2 (project-specific pointer example / existence), F3 (section content semantics), F4 (self-referential
+   tests; formula/order mutations), F5 (duplicated drop rule), F6 (false "cover exactly" comment),
+   F7 (production-dead no-budget branch), F8 (redundant as const), F9 (design artifact status/decision),
+   F11 (conformance signal).
+2. Re-run the mutation matrix in a /tmp copy and state which check kills each, and which survive:
+   remove the schema block from prompt.ts; compensated shares (0.2/0.4 -> 0.3/0.3); Math.floor->ceil;
+   `+1` on the budget; swap Project/Invariants order; set the overhead to 0; drop the numeric budgets;
+   drop the pointer line; remove the descriptions. Are the new checks non-vacuous (do they test against
+   the documented contract, not the mutated module)?
+3. Adversarially hunt for NEW problems introduced by the remediation (overhead math off-by-one;
+   description wording; the conditioned drop rule; the required-budget signature change breaking any
+   caller; docs drift).
+4. Is the design note now an honest, complete account (status, decisions, residuals)?
+5. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 12/12) and `node tests/memory-budget-test.mjs`. Report what you saw.
+State exactly which reverted production line kills which test.
+
+SCOPE DISCIPLINE
+- S4 and hard enforcement remain OUT of scope; do not flag them as missing features.
+- DO flag if the code/doc pretends to do them, or if the out-of-scope boundary is now unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

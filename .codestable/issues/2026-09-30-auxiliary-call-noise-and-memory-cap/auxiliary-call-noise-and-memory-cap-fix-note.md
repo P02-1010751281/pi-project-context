@@ -79,8 +79,9 @@ tags: [memory, autolearn, alerts, errors-log, memory-cap, output-budget, call-po
   重启 PID 3225/3278 —— 需 owner 确认。
 - **S1 + S3**（固定 schema + 指针化）：已在 `a3f8370`…`7fa5e3a` 落地（固定 4 节 + 每节预算 + 指针规则，
   软强制 fail-open，向后兼容），设计见 `auxiliary-call-noise-and-memory-cap-s1-s3-design.md`。
-  6 轮独立只读评审进行中（第 5 轮对 `7fa5e3a` 给出 CHANGES-REQUESTED，已修）；
-  transcript 存本目录 `auxiliary-call-noise-and-memory-cap-s1-s3-review-roundN-*`。仍待 owner 复核三项默认（schema 形态 / 软强制 / 份额）。
+  6 轮独立只读评审已完成（对 `a3f8370`…`c23cf5f`）：round1 CHANGES-REQUESTED → round2 CHANGES-REQUESTED
+  → round3 PASSED → round4 REVIEW-SOUND → round5 CHANGES-REQUESTED → round6 REVIEW-SOUND；每轮均附只读零写入证据，
+  transcript 全部存本目录 `auxiliary-call-noise-and-memory-cap-s1-s3-review-roundN-*`。仍待 owner 复核三项默认（schema 形态 / 软强制 / 份额）。
 - **S2 + S5**（条目生命周期 + 增量 ops）：单独立项；S5=M5 属协议边界，需独立评审。
 - **第 6 轮 meta-review 的残余（不阻塞，已接受）**：
   - `fd0cc9e` 的共享 `capCeilingWarning` 让 `/project-context max-memory` 的 toast 主语从

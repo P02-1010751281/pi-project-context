@@ -1,0 +1,73 @@
+Read-only audit complete. All probes/mutants ran under `/tmp` only; the sandbox repo stayed clean (`git status --porcelain -uall` empty, `git diff --check` clean, HEAD `7ed538f`).
+
+## Round-2 finding disposition (verified against code, not notes)
+
+| # | Round-2 finding | Status |
+|---|---|---|
+| R1 | Description check self-referential; remove/blank descriptions survived | **Resolved.** `tests/memory-budget-test.mjs:57-60` pins heading+description+share against hard-coded literals; `:73` checks the prompt against the same literals. Mutants removing (`schema.ts:21-24`), blanking (`M9`), or de-rendering (`prompt.ts:16`) descriptions are all killed. |
+| R2 | Design doc stale formula/pointer wording | **Resolved.** Design `:50` now reads `(maxMemoryChars − 固定开销) × share` with “固定开销 = …标题及其空行”; `:56` is the generic `docs/<topic>.md` / `file.ts:123` example; `:58` says “已存在且确实承载该细节”. One residual doc nit (N6). |
+| R3 | Blank-line reserve; filled-document context | **Resolved.** `schema.ts:36` reserves `+2/section`; `tests/memory-budget-test.mjs:69-70` constructs a real filled document (hard-coded header/headings, production budgets) and measures it with `exceedsMemoryCap`. Probe over caps 4000–200000 (conventional layout): ≥2 chars slack; even two blank lines between sections measures ≤ cap; removing `+2` is killed by `:70` only. |
+| R4 | Header constant duplicated across modules | **Resolved.** `schema.ts:8,36` imports and uses `MEMORY_HEADER` (`document.ts:16`). No import cycle: `document.ts` imports only `shared/limits.ts` + `shared/text.ts`. Test still hard-codes the header (line 69) deliberately as an independent anchor. |
+| R5 | Unused `sections` parameter | **Resolved.** `schema.ts:35` takes no parameter; `rg` shows no caller passes one. |
+
+No blocking or important finding remains. New findings are nits/residuals:
+
+**N1 (nit) — per-section budget cap-scaling is untested; design test plan says it should be.**
+`tests/memory-budget-test.mjs:55` (only `cap401`), design `…-s1-s3-design.md:70` (“预算数字随 `maxMemoryChars` 变化”).
+Evidence: mutant making `memorySectionBudgets` ignore `cap` and hardcode `4001 − overhead` (`schema.ts:41`) runs **ALL OK**, because `expectedBudgets` (`test:56`) also derives from the production overhead.
+Impact: an explicit cap-hardcode or cap-substitution bug in the one function this change exists to ship can pass. Not reachable by plausible refactors (using `MIN_MEMORY_CHARS`/`MAX_MEMORY_CHARS` is caught), so nit.
+Minimal fix boundary: compute `memorySectionBudgets` at a second cap (e.g. 8001) and assert the documented formula there too.
+
+**N2 (residual-risk) — the overhead reserve is only lower-bounded; over-reserve silently shrinks budgets.**
+`schema.ts:36`.
+Evidence: `+2 → +3` per section (M19) and `+2 → +100` per section (M18) both run ALL OK — the contract/expected checks recompute from the same overhead, the within-cap check is satisfied, and a smaller filled document trivially fits. Excess overhead is the safe direction but costs usable memory.
+Minimal fix boundary: pin an exact/expected overhead (e.g. `memorySchemaOverheadChars() === 76` for the 4 fixed sections) or an upper bound (e.g. ≤ 5 % of cap), or record it as an accepted residual.
+
+**N3 (nit) — unexplained `+ 2` magic literal.**
+`schema.ts:36`: `…\n\n\`.length + 2`. The doc comment says “blank lines” but doesn’t tie `2` to one separator newline; the last section is also over-reserved (no separator needed). Impact: readers can’t tell whether `2` is load-bearing; future heading/layout edits risk a silent budget change. Minimal fix boundary: name the constant (e.g. separator newline length) and state exactly what it covers.
+
+**N4 (nit) — redundant conjunct in the filled assertion.**
+`tests/memory-budget-test.mjs:70`: `!doc.exceedsMemoryCap(filled, cap401) && doc.memoryDocumentChars(filled) <= cap401`. `exceedsMemoryCap` is literally `memoryDocumentChars(value) > limit` (`document.ts:56-58`), so the second conjunct can never add information. Minimal fix boundary: keep one (prefer `exceedsMemoryCap`).
+
+**N5 (suggestion) — forward-looking import direction risk, not a current defect.**
+`schema.ts:8 → document.ts`. No cycle today, but S4 (“按节优先序丢”) would most naturally live in `document.ts`’s clip path and need `MEMORY_SECTIONS`/order from `schema.ts`, which would create `document → schema → document`. Minimal fix boundary (when S4 lands, not now): keep the canonical header in a leaf constants module, or pass section order into the clip function. S4 itself correctly remains out of scope.
+
+**N6 (nit) — decision-record line still omits the blank-line reserve.**
+Design `:79` says “固定开销（标题 + 4 个节标题）”, while the authoritative formula at `:50` and the code (`schema.ts:36`) include blank lines. Impact: a reader skimming the decision record gets the pre-R3 formula. Minimal fix boundary: docs-only parenthetical.
+
+**Praise (learning).** The remediation is real, not veneer: R1 is fixed with hard-coded literals while production remains the single source; the filled-document check (`test:69-70`) is a genuine end-to-end fixture using production measurement; the second description assertion (`test:73`) is *not* redundant — it is the only check that kills a wrong `description` mapping inside `memorySectionBudgets` (M17). Backward compatibility is intact: `store.ts`, `input.ts`, `parse.ts`, `pass.ts`, `poison.ts`, `journal.ts`, `backup.ts` are byte-identical (sha256) to `3980099`; only `document.ts` changed by adding `export` to an existing constant (no behavior change). Nothing in any read/write/clip path imports `schema.ts`; only `prompt.ts:7` and the test do.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (pristine copy `/tmp/rev18-verify`): **All 12 tests passed (12/12)**.
+- `node tests/memory-budget-test.mjs` (same copy): **31 OK, 0 FAIL, ALL OK**.
+
+Mutation matrix (each mutant applied to `/tmp/rev18-mut`, reset via `git checkout -- .`; harness loads modules with jiti `moduleCache:false`):
+
+| Mutation | Result | Killed by |
+|---|---|---|
+| remove schema block from prompt | KILLED | `test:72`, `:73`, `:74-81` |
+| compensated shares 0.2/0.4→0.3/0.3 | KILLED | `test:57-60`, `:61-64` |
+| `Math.floor`→`Math.ceil` | KILLED | `test:61-64`, `:65-68` |
+| budget `+1` | KILLED | `test:61-64`, `:65-68`, `:70` |
+| reorder Project/Invariants | KILLED | `test:57-60`, `:61-64`, `:74-81` |
+| overhead→0 | KILLED | `test:70` only |
+| drop blank-line reserve (`+2`) | KILLED | `test:70` only |
+| drop descriptions (schema) | KILLED | `test:57-60`, `:73` |
+| blank a description | KILLED | `test:57-60`, `:73` |
+| drop `${section.description}` from prompt | KILLED | `test:72`, `:73`, `:74-81` |
+| drop pointer line | KILLED | `test:82-85` |
+| drop drop-rule line | (round-2) KILLED | `test:86-89` |
+| drop filled assertion (`test:70`, test mutation) | nothing fails; with it removed, **overhead→0** and **reserve-drop survive** | — |
+| drop documented-description assertion (`test:73`) + wrong `description` in `memorySectionBudgets` | **SURVIVED** (M17b) | — (so `:73` is load-bearing) |
+| hardcode body `4001 − overhead` (ignore `cap`) | **SURVIVED** | — (N1) |
+| overhead `+3`/section, `+100`/section | **SURVIVED** (safe direction) | — (N2) |
+| R4 regression: inline `"# Project Memory\n\n"` instead of import | **SURVIVED** (behavior-identical) | — |
+| R5 regression: re-add/use `sections` parameter | **SURVIVED** (unused) | — |
+| drop `Math.max(0, …)` | survives; unreachable at `MIN_MEMORY_CHARS = 4000` | — (accepted) |
+
+Exact reverted-line→check mapping: `prompt.ts:15-17/24` → `test:72,73,74-81`; `prompt.ts:26` → `test:82-85`; `prompt.ts:25` → `test:86-89`; `schema.ts:21-24` order/shares → `test:57-60,61-64` (order also `74-81`); descriptions → `test:57-60,73`; `schema.ts:36` overhead/`+2` → `test:70`; `schema.ts:42` floor/mapping → `test:61-64,65-68` (+`70` for `+1`, `:73` for description mapping); `prompt.ts:13` required budget → no direct test (production `pass.ts:80` always passes it; no caller omits it).
+
+Accepted residuals: over-reserve upper bound unpinned (N2); `Math.max(0,…)` unreachable; extra blank-line padding beyond two per gap can exceed at some caps (exotic model formatting, not “逐节刚好填满”); schema conformance is still unobservable (explicitly S4/fail-open, correctly not pretended); the parent-issue fix note still quotes the old “must stay under” prompt wording — historical artifact predating `3980099`. S4 and hard enforcement remain clearly out of scope in code, `docs/configuration.md:66`, and design `:46,:52,:83`.
+
+VERDICT: PASSED

@@ -1,0 +1,45 @@
+You are an independent AUDIT reviewer (round 5 of 6). Round 4 (meta-review) returned REVIEW-SOUND with
+only nits M1–M5; the author has remediated them. Review the frozen HEAD of /tmp/pi-context-rev20
+(7fa5e3a on top of cfa4b6f / 7ed538f / f81531f / cc625c9 / a3f8370).
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev20.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes/mutants may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Full change: `git diff 3980099..HEAD -- extensions tests docs .codestable`.
+- Last remediation: `git diff cfa4b6f..HEAD`.
+- Prior rounds: /tmp/rev16-round1-out.txt, /tmp/rev17-round2-out.txt, /tmp/rev18-round3-out.txt,
+  /tmp/rev19-round4-out.txt.
+- Design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md;
+  parent note: auxiliary-call-noise-and-memory-cap-fix-note.md.
+
+YOUR TASK
+1. Verify M1–M5 are resolved: M1 (pin the safety-rule second half, negative example, no-home line),
+   M2 ("at or under" wording), M3 (GAP comment), M4 (parent fix-note stale quote + S1/S3 status),
+   M5 (design residuals for Math.max(0) and the S4 import direction).
+2. Re-run the mutation matrix in a /tmp copy and state which check kills each, and which survive:
+   remove the schema block; compensated shares; ceil; +1; reorder; overhead->0; drop the blank-line
+   reserve; drop descriptions; blank a description; ignore the cap; overhead +3/section; drop
+   "actually holds the detail"; drop the negative example; drop the no-home line; revert "at or under".
+3. Adversarially hunt for any NEW problem (nothing is presumed found): the import graph; the test's
+   literal-anchor discipline; docs drift; whether any assertion is still vacuous.
+4. State whether any blocking/important finding remains.
+5. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 12/12) and `node tests/memory-budget-test.mjs`. Report what you saw.
+
+SCOPE DISCIPLINE
+- S4 and hard enforcement remain OUT of scope; do not flag them as missing features.
+- DO flag if the code/doc pretends to do them.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

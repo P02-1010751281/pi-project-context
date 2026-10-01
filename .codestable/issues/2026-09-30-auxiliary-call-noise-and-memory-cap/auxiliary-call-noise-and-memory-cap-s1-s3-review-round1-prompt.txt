@@ -1,0 +1,49 @@
+You are an independent audit reviewer. Review the S1/S3 change (fixed memory schema +
+pointerization) on the current HEAD of /tmp/pi-context-rev16 (a3f8370 + cc625c9).
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev16.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Commit: `git diff 3980099..HEAD -- extensions tests docs .codestable`.
+- Code: extensions/project-context/memory/schema.ts, memory/prompt.ts, tests/memory-budget-test.mjs.
+- Design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md.
+
+CONTEXT / INTENT
+- S1 = fixed minimal memory schema + per-section character budgets; S3 = pointerization (memory keeps
+  index + invariants + paths; long detail goes to versioned docs).
+- Hard constraint: backward compatible with existing free-form MEMORY.md (must not reorder or drop facts).
+- Chosen approach: prompt-side schema (fail-open). The schema is one constant table; there is NO change
+  to clipping (M3 head+tail stays) and NO hard enforcement. S4 (priority clipping) is explicitly out of scope.
+
+YOUR TASK
+1. Does the change actually deliver S1/S3, or is it a prompt veneer? Is fail-open the right call given the
+   "must not lose facts" constraint? Give your reasoning.
+2. Adversarially review schema.ts: justified single source of truth, or dead abstraction? Are the shares
+   and budgets correct (sum, flooring, cap semantics including the "# Project Memory" header)? Any off-by-one?
+3. Backward compatibility: prove a free-form memory (no canonical headings) still normalizes/renders/clips/
+   loads identically, and hunt for any read/write path that now depends on the schema.
+4. Adversarially review prompt.ts: correctness, duplication, ordering, and whether the pointer rule can
+   cause fact loss (e.g. pointing at a nonexistent path). Note lasting language/format issues.
+5. Test strength: run the mutation matrix in a /tmp copy. Remove the schema block from prompt.ts; change a
+   share; drop the numeric budgets. State which check kills each and which survive. Are the new checks non-vacuous?
+6. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 12/12) and `node tests/memory-budget-test.mjs`; report what you saw.
+State exactly which reverted production line kills which test.
+
+SCOPE DISCIPLINE
+- S4 (priority clipping) and hard enforcement are OUT of scope: do not flag them as missing features.
+- DO flag if the implementation pretends to do them, or if the out-of-scope boundary is unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

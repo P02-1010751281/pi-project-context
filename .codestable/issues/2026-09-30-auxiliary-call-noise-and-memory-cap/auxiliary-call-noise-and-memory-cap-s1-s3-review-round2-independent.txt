@@ -1,0 +1,65 @@
+Read-only verification complete. All probes/mutants ran only under `/tmp`; `/tmp/pi-context-rev17` stayed clean (`git status --porcelain -uall` empty before and after, `git diff --check` clean, HEAD `f81531f`).
+
+## Round-1 finding disposition
+
+| # | Status |
+|---|---|
+| F1 budget vs overhead | **Resolved** in the main: `memorySchemaOverheadChars` (schema.ts:32-34) is subtracted before shares (schema.ts:38), `overhead + Σbudgets ≤ cap` is asserted (test:60-69), and "under N" became "at or under N" (prompt.ts:31) matching `exceedsMemoryCap`'s `>` (document.ts:58). Residual R3 below. |
+| F2 project-specific pointer | **Resolved**: generic ``docs/<topic>.md`` / `file.ts:123` placeholder plus "already exists in this project and actually holds the detail" (prompt.ts:27); test pins absence of the repo fact (test:80-83). |
+| F3 section semantics | **Resolved in code** (`description` per section, schema.ts:19-22, incl. "user preferences" under Invariants; rendered prompt.ts:16). **Test coverage is still vacuous — R1.** |
+| F4 self-referential tests | **Mostly resolved**: hard-coded `documented` contract (test:48) + independently recomputed `realOverhead` (test:64) kill compensated shares, ceil, `+1`, order swap, no-floor, and schema-block removal. Description mutation still survives — R1. |
+| F5 duplicated drop rule | **Resolved**: one conditioned sentence (prompt.ts:25), pinned byte-exact (test:84-87); the unconditional "drop the least durable entry" is gone. |
+| F6 false "cover exactly" | **Resolved**: comments now say "floored … never exceed" (schema.ts:29-30,36-38); tests assert both directions (test:60-69). |
+| F7 production-dead branch | **Resolved**: `budget` required (prompt.ts:13), branch removed; only callers are pass.ts:80 and tests:40,70 — all pass a budget. |
+| F8 redundant `as const` | **Resolved** (schema.ts:18). |
+| F9 status/decision | **Mostly resolved**: `implemented-pending-owner-review` + decision record + residual (design:4,77-83) honestly state the delegation and pending confirmations. Two stale bullets inside the same doc remain — R2. Value is nonstandard vocabulary but self-describing; no action needed. |
+| F11 conformance signal | **Resolved as a record**: explicit residual (design:81-83) and "符合度可见性仍待后续" (docs/configuration.md:66). |
+
+## Findings
+
+**R1 (important) — the description regression check is still self-referential; "remove the descriptions" survives the suite.**
+`tests/memory-budget-test.mjs:71`, `schema.ts:19-22`, `prompt.ts:16`.
+The expected string is built from `section.description` loaded from the same module being tested, so it only proves the prompt agrees with the mutated table. Mutation evidence (mutant copies in `/tmp`): removing the four `description` properties (prompt then renders `- ## Project: undefined (about 786 characters)`) and blanking/replacing the values both leave the suite **ALL OK**. Removing `${section.description}` from the prompt itself is caught (test:71), so only prompt↔module coupling is tested, not the documented content. Impact: the F3 fix (including "user preferences" having a home) can be silently reverted while the check named "the prompt lists every section with its description" stays green. Minimal fix boundary: add the four description strings to the hard-coded `documented` contract (test:48) and assert the prompt contains those literals (or at minimum assert `description.length > 0` and key terms); do not implement here.
+
+**R2 (nit) — design doc still states the superseded formula and a weaker pointer rule than the code it records as implemented.**
+`auxiliary-call-noise-and-memory-cap-s1-s3-design.md:50` (`每节预算 = maxMemoryChars × share`) contradicts `schema.ts:38` (overhead deducted first); `:56` still uses the repo-specific `157K/450K … docs/handoff.md` example and `:58` says only "已存在…对话或现有记忆里出现过", weaker than prompt.ts:27 ("already exists in this project and actually holds the detail"). The decision record `:79` says these were changed. Impact: a future S4 reader can implement the wrong formula/rule from the review-bound artifact. Minimal fix boundary: update/mark superseded 决策 3 and §S3 bullets; docs only.
+
+**R3 (nit, residual of F1) — overhead reserves the header and heading prefixes but not the newlines separating section bodies, so the "逐节刚好填满也不会超 cap" guarantee is not literally true at some caps.**
+`schema.ts:32-34`, `docs/configuration.md:66`, `tests/memory-budget-test.mjs:66-69`.
+Probe (pristine copy, cap 4003): budgets `[787,1574,983,590]`, `overhead+Σ = 4002` (slack 1). A conventional document with each section body exactly its budget *including its final `\n`* and one blank line between sections measures `memoryDocumentChars = 4004 > 4003`, `exceedsMemoryCap = true`, and `normalizeMemoryDocument` emits a truncation marker. 68,600 of the 196,001 caps in [4000,200000] can exceed by 1–2 under that convention. The test's named "a document filling the real overhead and every budget stays within the cap" only adds numbers; it never constructs a blank-line-separated document. Impact bounded (1–2 chars, budgets are "about N"), but the docs claim a guarantee and a real exact-fill can still trigger the condensation call / middle clip. Minimal fix boundary: reserve one newline per section boundary in `memorySchemaOverheadChars` (and/or make the test construct the document at a slack-zero cap such as 4003), or soften the docs claim.
+
+**R4 (suggestion) — the document header/heading format is duplicated across module boundaries.**
+`schema.ts:33` hard-codes `"# Project Memory\n\n"` and `## H\n\n`, while `document.ts:16` owns the private `MEMORY_HEADER`; `tests/memory-budget-test.mjs:64` repeats it again. If the header changes, the budget overhead goes silently wrong. Minimal fix boundary: export/reuse the canonical header constant; not required for this change.
+
+**R5 (nit) — unused flexibility in `memorySchemaOverheadChars(sections = MEMORY_SECTIONS)`.**
+`schema.ts:32` — no caller passes `sections` (test:49 calls it bare and recomputes its own anchor at test:64), and `memorySectionBudgets` (schema.ts:37-39) maps `MEMORY_SECTIONS` while calling the parameterless overhead, so any caller using the parameter would desynchronize budgets. Minimal fix boundary: drop the parameter until S4 has a caller, or thread the same `sections` through `memorySectionBudgets`.
+
+**Praise** — the F1/F2/F5/F7/F8 fixes are real, not veneer: overhead is a named, testable function; the fixture is free-form (test:46) so the `## Project` false positive is gone; order is anchored before `<existing-memory>` (test:72-79); the drop rule is one conditioned sentence; and the five data-path files are byte-identical to `3980099` (sha256 verified), so free-form `MEMORY.md` compatibility is preserved.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (pristine `/tmp/rev17-verify` copy): **All 12 tests passed (12/12)**.
+- `node tests/memory-budget-test.mjs` (same copy): **31 OK, 0 FAIL, ALL OK**.
+- Zero-write evidence: original repo `git status --porcelain -uall` empty and `git diff --check` clean after every read/probe; mutants live only under `/tmp/rev17-mut-*`, `/tmp/rev17-probe*`.
+- Mutation matrix (each mutant, memory-budget-test only):
+
+| Mutation | Result | Killed by |
+|---|---|---|
+| remove schema block from prompt.ts (`prompt.ts:15-17`) | KILLED (2 FAILs) | test:71 "lists every section with its description and budget"; test:72-79 order |
+| compensated shares 0.2/0.4→0.3/0.3 | KILLED | test:52-55 documented contract; test:56-59 |
+| `Math.floor`→`Math.ceil` (schema.ts:39) | KILLED | test:56-59; test:60-63; test:66-69 |
+| `+1` on budget (schema.ts:39) | KILLED | test:56-59; test:60-63; test:66-69 |
+| swap Project/Invariants (schema.ts:19-20) | KILLED | test:52-55; test:56-59; test:72-79 |
+| overhead→0 (schema.ts:33) | KILLED | test:65; test:66-69 |
+| drop numeric budgets (prompt.ts:16) | KILLED | test:71 |
+| drop pointer line (prompt.ts:27) | KILLED | test:80-83 |
+| remove descriptions from prompt (prompt.ts:16) | KILLED | test:71 |
+| **remove `description` from schema objects / blank the values** | **SURVIVED (all green)** | nothing — **R1** |
+| overhead `+1` | survived (safe direction; exact-value pin absent) | — |
+| drop `Math.max(0, …)` (schema.ts:38) | survived; unreachable in production because `MIN_MEMORY_CHARS = 4000` (shared/limits.ts:9) | — |
+| docs-only share drift | survived (expected; tests hard-code the contract, don't parse docs) | — |
+
+- Exact line→check mapping for reverted production lines: `prompt.ts:16` → test:71 (plus test:72-79 if the whole block goes); `prompt.ts:25` → test:84-87; `prompt.ts:27` → test:80-83; `prompt.ts:31` cap wording → test:41 (`under 4000 characters` still matches "at or under"); `schema.ts:19-22` order/shares → test:52-55; `schema.ts:38-39` overhead/floor → test:56-63 and 65-69; `schema.ts:19-22` descriptions → **no test**.
+- Non-vacuity: formula, order, shares, overhead floor, prompt budget numbers, pointer rule, and drop rule are now pinned against hard-coded documented contracts and independently recomputed anchors — non-vacuous. The description half of test:71 is the one remaining self-referential check, and `remove the descriptions` is the one requested mutant that survives.
+
+VERDICT: CHANGES-REQUESTED

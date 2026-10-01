@@ -1,0 +1,126 @@
+# Meta-Review — S1/S3 schema + pointerization, frozen HEAD `cfa4b6f`
+
+Read-only audit of `/tmp/pi-context-rev19` (HEAD `cfa4b6f` on `7ed538f`/`f81531f`/`cc625c9`/`a3f8370`). All probes/mutants ran under `/tmp` (`/tmp/rev19-mut`, `/tmp/rev19-*.py`, `/tmp/rev19-overhead-probe.mjs`); the sandbox repo was not written to.
+
+## 1. Process integrity — round-1/2/3 disposition, verified against code
+
+| Finding | Status (code/test evidence) |
+|---|---|
+| F1 budget vs overhead | Resolved. Overhead deducted first (`schema.ts:38-45`), `overhead===76` pinned (`test:55`), within-cap + filled checks (`test:69-74`). |
+| F2 project-specific pointer | Resolved in artifact (`prompt.ts:26` generic `docs/<topic>.md`/`file.ts:123`, "already exists … actually holds the detail"); only partly pinned — see M1. |
+| F3 section semantics | Resolved. Descriptions in `schema.ts:21-24`, rendered `prompt.ts:15-17`, pinned by hard-coded literals `test:48-53,58-61,77`. |
+| F4 self-referential tests | Resolved. All requested mutants now die (matrix below). |
+| F5 duplicated drop rule | Resolved. Single conditioned sentence `prompt.ts:25`, byte-pinned `test:90-93`. |
+| F6 false "cover exactly" | Resolved. Comments `schema.ts:33-36,42`, both-direction assertions `test:69-72`. |
+| F7 dead budgetless branch | Resolved. `budget` required `prompt.ts:13`; only `pass.ts:80` and tests call it. |
+| F8 `as const` | Resolved (`schema.ts:20`). |
+| F9 design status/decision | Resolved as a record: `design:3,79` state `implemented-pending-owner-review` and the 3 pending confirmations instead of pretending approval. |
+| F11 conformance signal | Resolved as a record: `design:81-83`, `docs/configuration.md:66`. |
+| R1 description check | Resolved. `test:48-53,58-61,77` use hard-coded literals; description removal/blank/mapping mutants die. |
+| R2 design formula/pointer wording | Resolved. `design:50` `(maxMemoryChars − 固定开销) × share`; `:56/:58` generic + "已存在且确实承载该细节". |
+| R3 blank-line reserve | Resolved. `schema.ts:30,39` (+2/section), `test:73-74`; my probe over caps 4000–200000 finds **0 over-cap caps**, min raw slack 1 (cap 4016). |
+| R4 header duplication | Resolved. `schema.ts:8` imports `MEMORY_HEADER` (`document.ts:16`); test:73 keeps an intentional literal anchor. |
+| R5 unused `sections` param | Resolved (`schema.ts:38,43` parameterless). |
+| N1 cap-scaling untested | Resolved. `test:66-68` (8001); hard-coded-4001 mutant dies. |
+| N2 overhead only lower-bounded | Resolved. `test:55` exact 76; +1/section and +3/section mutants die. |
+| N3 magic `+2` | Resolved (`MEMORY_SECTION_GAP_CHARS`, `schema.ts:30`) — comment inaccuracy M3. |
+| N4 redundant conjunct | Resolved (`test:74`). |
+| N5 S4 import-direction risk | Still open as a forward-looking suggestion (`schema.ts:8` ⇒ `document.ts`); no cycle now, S4 out of scope. |
+| N6 decision record omitted blank lines | Resolved (`design:79` "及其空行"). |
+
+### Mutation matrix (each applied to a `/tmp` copy, `memory-budget-test.mjs` only)
+
+| Mutation | Result | Killed by |
+|---|---|---|
+| remove schema block from prompt | KILLED | test:76,77,78-85 |
+| compensated shares 0.2/0.4→0.3/0.3 | KILLED | test:58-61,62-65,68 |
+| `Math.floor`→`Math.ceil` | KILLED | test:62-65,68,69-72 |
+| budget `+1` | KILLED | test:62-65,68,69-72,73-74 |
+| reorder Project/Invariants | KILLED | test:58-61,62-68,78-85 |
+| overhead → 0 | KILLED | test:55,73-74 |
+| drop blank-line reserve (`+2`) | KILLED | test:55,73-74 |
+| drop descriptions | KILLED | test:58-61,77 |
+| blank a description | KILLED | test:58-61,77 |
+| ignore cap (hardcode `4001 − overhead`) | KILLED | test:66-68 |
+| overhead +3/section (GAP 2→5) | KILLED | test:55 |
+| *(extra)* wrong description in `memorySectionBudgets` | KILLED | test:77 |
+| drop `Math.max(0, …)` guard | **SURVIVED** | unreachable at `MIN_MEMORY_CHARS=4000` (`config.ts:238`) — accepted residual |
+| drop "and actually holds the detail" | **SURVIVED** | test:86-89 checks only "never invent a path" — M1 |
+| drop negative pointer example ("never an inline formula…") | **SURVIVED** | design test plan asks for 反例; not pinned — M1 |
+| drop "A detail with no home stays as one short line." | **SURVIVED** | — M1 |
+| "must stay at or under" → "must stay under" | **SURVIVED** | test:41 still matches — M2 |
+
+Verdict on integrity: the fixes are real, not assertions mirroring the module. The hard-coded `documented` contract, the `overhead === 76` literal, and the second cap (8001) are genuine independent anchors; every requested production mutation is killed. No test was weakened to pass.
+
+## 2. Non-vacuity and fixture fidelity
+
+- All S1/S3 assertions read against the independent literals (`test:48-53`) or exact strings (`test:55,77,92`); the two checks that consume module output (`test:62-65,76`) are protected by the contract cap pin that runs first.
+- The filled fixture (`test:73`) reconstructs `# Project Memory\n\n` + `## H\n\n<body>\n` joined by `\n`, using production budgets and production `exceedsMemoryCap`; that matches the real render shape in `.agents/memory/MEMORY.md` (blank line after header/heading and between sections). It is a faithful structural fixture; the single-line bodies do not change the overhead arithmetic.
+- My independent recomputation reproduced overhead 76 (18 header + 12/15/13/10 headings + 8 gap) and the fixture fits every cap 4000–200000 (min slack 1), so `docs/configuration.md:66` "逐节刚好填满也不会超 cap" is literally true for the conventional layout.
+
+## 3. Findings
+
+**M1 (nit) — the F2 safety rule's second half and the design's negative pointer example are not pinned.**
+`tests/memory-budget-test.mjs:86-89`, `prompt.ts:26`, `design:58,68`.
+Evidence: deleting "and actually holds the detail", the anti-inline example, or the no-home line leaves the suite **ALL OK**; only the whole "never invent a path" clause is caught.
+Impact: a future prompt edit could silently drop the fact-preservation half of S3 (point only where the detail actually lives) with green tests; behavior at this HEAD is correct.
+Minimal fix boundary: extend the literal assertion to include "already exists in this project and actually holds the detail" (and optionally the negative example). Test-only.
+
+**M2 (nit) — "at or under" wording regression is unpinned.**
+`tests/memory-budget-test.mjs:41`, `prompt.ts:31`, `document.ts:58`.
+Evidence: reverting to "must stay under" keeps `includes("under 4000 characters")` true → ALL OK.
+Impact: the prompt could again claim a stricter bound than `exceedsMemoryCap` (`>`); conservative direction, so low.
+Minimal fix boundary: assert `"at or under 4000 characters"`. Test-only.
+
+**M3 (nit) — `MEMORY_SECTION_GAP_CHARS` comment overstates the document-end case.**
+`schema.ts:29-30`, `schema.ts:39`.
+Evidence: the constant reserves 2 chars for every section, but the last section needs only its terminating newline (1); the reserve is intentionally conservative but the comment says it covers "the document end" as if exact. The exact 76 pin now bounds it, so the safety margin is recorded by the test, not by the comment.
+Impact: a future "tighten the reserve" edit could under-reserve the separator; misleads readers.
+Minimal fix boundary: reword the comment (separator + terminator, last section over-reserves 1). Code unchanged.
+
+**M4 (nit) — the parent fix note is stale relative to this HEAD.**
+`.codestable/issues/.../auxiliary-call-noise-and-memory-cap-fix-note.md:32` still quotes "must stay under {cap} characters", while `prompt.ts:31` now says "at or under"; `:78` lists S1+S3 as pending work while `design:3` records it implemented. The note predates this changeset (not in the diff) and its `status: fixed` refers to the parent change.
+Impact: a reader skimming the issue artifacts gets a pre-S1/S3 picture.
+Minimal fix boundary: mark the quote and §6 as superseded by the S1/S3 design at `cfa4b6f`. Docs only.
+
+**M5 (suggestion) — the design's 残余 section records only the conformance gap; the branch-level accepted residuals are only in the /tmp review transcripts.**
+`design:81-83`; mutations `Math.max(0,…)` survive, `schema.ts:8 → document.ts` may become a cycle when S4 lands.
+Impact: the repo convention (unpinned defensive branches must be explicitly listed) is not fully satisfied by the frozen artifact.
+Minimal fix boundary: add one residual bullet for the unreachable `Math.max(0,…)` and note the S4 import direction. Docs only; not required for the code to ship.
+
+**Praise (learning).** The remediation is substantive: `overhead === 76` is a one-literal bound on over-reserve, the 8001 recomputation kills cap hard-coding, and the filled fixture exercises the production measurement. Backward compatibility is intact — `store/input/parse/pass/journal/backup/poison/report/context-doc/limits` are sha256-identical to `3980099`, `document.ts` gained only an `export`, and `schema.ts` is imported solely by `prompt.ts` + the test.
+
+**Residual-risk (accepted, out of scope).** `Math.max(0, cap − overhead)` (`schema.ts:44`) is unreachable at `MIN_MEMORY_CHARS=4000` and survives its mutant; schema conformance remains unobservable (design:81-83, docs:66); S4 priority-drop is not implemented and no code/doc pretends it is. Conservative over-reserve is now pinned, not loose.
+
+## 4. Docs/artifact honesty
+
+- `docs/configuration.md:66` matches the code: shares 20/40/25/15, overhead-first budgets, generic pointer rule, explicit soft/fail-open framing.
+- `design:50/:56/:58/:79` match `schema.ts:21-24,38-45` and `prompt.ts:26`; `:68` test plan is satisfied except the 反例 pin (M1); `:81-83` honest.
+- The only stale artifact is the parent fix note (M4). No doc claims S4 or hard enforcement.
+
+## 5. Zero-write proof
+
+`/tmp/rev19-baseline-files.txt` (349 files, `.git` excluded; path/size/mtime) is byte-identical to the post-run `find` snapshot; `/tmp/rev19-baseline-status.txt` (empty) equals post-run `git status --porcelain -uall`; HEAD unchanged at `cfa4b6f0230ff01249635ffc7e15c2787f620571`. All mutants/probes lived under `/tmp/rev19-mut*`, `/tmp/rev19-*.py`, `/tmp/rev19-*.mjs`.
+
+## 6. Quality bars
+
+- Over-guarding: `Math.max(0,…)` (`schema.ts:44`) and `chars >= 0` (`test:71`) unreachable at the 4000 floor — accepted residual (M5).
+- Unclear boundary: `schema.ts:8` reaches into `document.ts` for the header; fine today, possible S4 cycle (N5).
+- Duplication: `## H\n\n` layout appears in `schema.ts:39` and `test:73` (deliberate independent anchor); docs:66 restates shares (documented contract, test hard-codes independently).
+- Fragmentation/over-engineering: none material — `schema.ts` is 46 lines with one production consumer.
+- Unreadable code: none; `schema.ts`/`prompt.ts` are short and commented.
+
+## 7. Blocking/important findings
+
+None. The process was sound: each round-1/2/3 finding is either genuinely fixed with a non-vacuous, independently anchored check or is an explicitly bounded residual. The remaining items (M1–M5) are test-pinning/doc nits, not defects in the frozen artifact.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` on the sandbox repo: **All 12 tests passed (12/12)**; no ENOTEMPTY flake occurred.
+- `node tests/memory-budget-test.mjs`: **33 OK, 0 FAIL, ALL OK** (8 cap/marker + 3 prompt cap + 11 S1/S3 + 4 + 3 + 4).
+- Requested mutation sweep: 11/11 requested production mutants killed (mapping in §1); the only survivors are the known-unreachable `Math.max(0,…)` and the unpinned prompt clauses M1/M2.
+- Independent overhead/fit probe: overhead 76 (18+12+15+13+10+8), 0 over-cap caps across 4000–200000, min slack 1 at cap 4016.
+
+Zero writes: baseline status/files matched post-run exactly; sandbox HEAD `cfa4b6f` unchanged.
+
+VERDICT: REVIEW-SOUND

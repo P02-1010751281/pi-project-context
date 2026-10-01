@@ -78,6 +78,8 @@ tags: [memory, schema, pointerization, budgets, s1, s3]
 
 owner 经「继续」委派推进，本轮按**推荐默认**落地：schema C（`Project / Invariants / Pitfalls / Index`）+ 软强制 fail-open + 份额 `20 / 40 / 25 / 15`。每节带一句内容说明（F3）；固定开销（标题 + 4 个节标题及其空行）先扣除再分预算（F1/R3）；指针示例改为通用占位，且要求目标已存在并确实承载细节（F2）。三项确认仍待 owner 复核；若改选，只动 `memory/schema.ts` 常量与 prompt 文案，机制不变。
 
+独立只读评审 6 轮已完成（对 `a3f8370`…`c23cf5f`，transcript 见本目录 `…-s1-s3-review-roundN-*`）：round1/2/5 CHANGES-REQUESTED，round3/6 PASSED/REVIEW-SOUND，round4 REVIEW-SOUND。
+
 ## 残余（已知且接受）
 
 - 无符合度可见性（status 不报告记忆是否收敛到 schema）；模型可以永远忽略 prompt 的结构要求。属本设计明确的可选增强，留给 S4 / 后续。

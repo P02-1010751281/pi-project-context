@@ -1,0 +1,74 @@
+# Round 5 Audit — S1/S3 schema + pointerization, frozen HEAD `7fa5e3a`
+
+Read-only audit of `/tmp/pi-context-rev20` (HEAD `7fa5e3a` on `cfa4b6f`/`7ed538f`/`f81531f`/`cc625c9`/`a3f8370`). All mutants/probes ran in `/tmp/rev20-audit/{copy,pristine}`; the sandbox repo was never written to (file list byte-identical pre/post, `git status --porcelain -uall` empty, `git diff --check` clean, HEAD unchanged).
+
+## 1. M1–M5 disposition (verified against code, not notes)
+
+| Item | Status | Evidence |
+|---|---|---|
+| M1 safety-rule second half / negative example / no-home line | **Resolved** | `tests/memory-budget-test.mjs:90-94` pins all three exact clauses (line 92 "already exists in this project and actually holds the detail", 93 negative example, 94 no-home line). Each partial-drop mutant dies on this check. Production strings at `prompt.ts:26`. |
+| M2 "at or under" | **Resolved** | `test:41` now asserts `at or under 4000 characters`; reverting `prompt.ts:31` to "under" is killed. |
+| M3 GAP comment | **Resolved** (one wording nit) | `schema.ts:29` now explains one blank line (two chars) per body and the last-section over-reserve. It says "over-reserves a byte" — see NIT-1. |
+| M4 stale quote | **Quote resolved, status line wrong** | `fix-note.md:32-35` now annotates the historical "must stay under" quote with the S1/S3 change. But the rewritten §6 line `fix-note.md:81` adds a false claim — see NEW-1. |
+| M5 design residuals | **Resolved** | `design:84` (unreachable `Math.max(0,…)`, no regression case), `:85` (S4 import-direction/cycle risk), `:86` (blank-line over-reserve, `overhead === 76` pin). All three match the code. |
+
+## 2. Mutation matrix (each applied to `/tmp/rev20-audit/copy`, restored from pristine; `memory-budget-test.mjs`)
+
+| Mutation | Result | Check that kills it |
+|---|---|---|
+| remove schema block from prompt | KILLED | `test:76`, `:77`, `:78-85` |
+| compensated shares 0.2/0.4→0.3/0.3 | KILLED | `test:58-61`, `:62-65`, `:66-68` |
+| `Math.floor`→`Math.ceil` | KILLED | `test:62-65`, `:66-68`, `:69-72` |
+| budget `+1` | KILLED | `test:62-65`, `:66-68`, `:69-72`, `:73-74` |
+| reorder Project/Invariants | KILLED | `test:58-61`, `:62-65`, `:66-68`, `:78-85` |
+| overhead → 0 | KILLED | `test:55` (exact 76), `:73-74` |
+| drop blank-line reserve (`+2`) | KILLED | `test:55`, `:73-74` |
+| drop descriptions | KILLED | `test:58-61`, `:77` |
+| blank a description | KILLED | `test:58-61`, `:77` |
+| ignore the cap (hardcode `4001 − overhead`) | KILLED | `test:66-68` (8001 scaling) only |
+| overhead `+3`/section (GAP 2→5) | KILLED | `test:55` only |
+| drop "actually holds the detail" | KILLED | `test:90-94` |
+| drop negative pointer example | KILLED | `test:90-94` |
+| drop "A detail with no home stays as one short line." | KILLED | `test:90-94` |
+| revert "at or under" → "under" | KILLED | `test:41` |
+| *extra:* swap Pitfalls/Index | KILLED | `test:58-61`, `:62-65`, `:66-68`, `:78-85` |
+| *extra:* drop whole pointer line | KILLED | `test:86-89`, `:90-94` |
+| *extra:* wrong `description` in `memorySectionBudgets` | KILLED | `test:77` |
+| *extra:* GAP 2→1 / rename heading / share 0.2→0.21 | KILLED | `:55` / `:55,58-61,77` / `:69-72,:73-74` |
+| *extra:* drop `Math.max(0,…)` guard | **SURVIVED** | documented residual (`design:84`); unreachable at `MIN_MEMORY_CHARS = 4000` (`shared/limits.ts:9`) |
+
+All 15 requested mutants die; the only survivor is the explicitly recorded defensive branch.
+
+## Findings
+
+**NEW-1 (important) — the fix note now falsely claims the mandatory 6-round review is complete.**
+`.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-fix-note.md:81` (in the S1+S3 bullet) says "已过 6 轮独立只读评审". Evidence: only four S1/S3 rounds had completed when this text was committed (`/tmp/rev16-round1` cc625c9, `/tmp/rev17-round2` f81531f, `/tmp/rev18-round3` 7ed538f, `/tmp/rev19-round4` cfa4b6f); this audit is round 5 and round 6 is pending. The design lists 6 rounds as the *plan* (`design:21,75`) and the module is still `status: implemented-pending-owner-review` (`design:3`). The `review-round1…6` artifacts in the issue dir belong to the parent issue (their prompts review `/tmp/pi-context-rev8…rev12`), and no S1/S3 transcripts are filed there. Impact: the artifact of record asserts the mandatory "三审三校 6 轮" gate is closed for the S1/S3 shape change when it is not, which could let the owner skip round 6. Minimal fix boundary: reword that sentence to the true state (e.g. "评审进行中：截至 7fa5e3a 完成 4/6 轮，第 5/6 轮待做/进行中") or attribute the six rounds to the parent change; docs-only, one sentence.
+
+**NIT-1 (nit) — "byte" is the wrong unit in the new GAP comment.**
+`extensions/project-context/memory/schema.ts:29`: "the last one over-reserves a byte". JS string `.length` counts UTF-16 code units, and the design bullet correctly says "1 字符" (`design:86`). Impact: cosmetic unit confusion only. Minimal fix: s/byte/character/.
+
+**SUG-1 (suggestion) — the condensation-call cap assertion still accepts the old wording.**
+`tests/memory-budget-test.mjs:131`: `prompts.every((p) => p.includes(\`under ${cap} characters\`))` matches both "under" and "at or under", so the M2 wording is pinned only at `:41`. Impact: if `:41` were ever removed, a wording revert would pass silently. Minimal fix: assert `at or under ${cap} characters` there too. Test-only, not a correctness issue today.
+
+**Residual-risk (accepted) — `Math.max(0, cap − overhead)`.** `schema.ts:44` is unreachable at the 4000 floor and its removal mutant survives; `design:84` records it with "无回归用例". No action required; do not add a fake test.
+
+**Praise (learning).** The remediation is real: `test:90-94` is an exact, three-clause anchor that kills each partial dropout independently; `test:41` now pins the semantics matching `exceedsMemoryCap` (`>`); `test:55/66-68` pin overhead exactly and force cap-scaling; `design:84-86` honestly records the accepted residuals. No test was weakened to pass.
+
+## Quality Bars
+
+- **Over-guarding / over-engineering:** `schema.ts:44` unreachable `Math.max(0,…)` and `test:71` `chars >= 0` are unreachable under `MIN_MEMORY_CHARS = 4000`; both are accepted/documented residuals rather than defects.
+- **Unclear boundary:** `schema.ts:8` imports `MEMORY_HEADER` from `document.ts`; no cycle today (verified import graph: `schema → document → shared/{limits,text}`; only `prompt.ts:7` and the test consume `schema`), and the S4 forward risk is documented at `design:85`.
+- **Duplication:** deliberate and healthy — the documented contract is hard-coded in `test:48-53,58-61,77`; `docs/configuration.md:66` restates the shares as the contract; the header is no longer duplicated (`document.ts:16`).
+- **Fragmentation:** none; `schema.ts` is 46 lines with one production consumer.
+- **Unreadable code:** none; prompt and schema are short, commented, and consistent with `docs/architecture.md:103` and `docs/configuration.md:66`.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (sandbox repo): **All 12 tests passed (12/12)** — includes `memory-budget-test.mjs`, `memory-ops-test.mjs`, `consolidation-test.mjs`.
+- `node tests/memory-budget-test.mjs`: **34 OK, 0 FAIL, ALL OK** (8 cap/marker + 3 prompt cap + 12 S1/S3 + 4 condensate + 3 condensate-fail + 4 M6), one more OK than round 4's 33 due to the new M1 check.
+- Requested mutation sweep: **15/15 killed** (mapping above); extras killed except the documented `Math.max(0,…)` survivor.
+- Independent fit probe (`/tmp/rev20-audit/fit-probe.mjs`): overhead 76 (18 header + 50 headings + 8 gaps), 0 over-cap caps across 4000–200000 (step 7), min slack 2 at that step (slack 1 at cap 4016 per round 4); `docs/configuration.md:66` "逐节刚好填满也不会超 cap" holds.
+- Non-vacuity: every S1/S3 assertion is protected by the independent literals (`test:48-53`, overhead 76, 8001 recomputation); the only weak spot is `test:131` (SUG-1).
+- Zero-write proof: pre/post `find` file lists identical, `git status --porcelain -uall` empty, `git diff --check` clean, HEAD `7fa5e3a` unchanged; test runs wrote only under `os.tmpdir()`.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,90 @@
+# Independent Audit — S1/S3 fixed schema + pointerization (HEAD `cc625c9`)
+
+Reviewed read-only: `git diff 3980099..HEAD` (only `prompt.ts` changed among memory modules; `schema.ts` new), design doc, tests. All test runs/probes were executed in `/tmp` copies; the repo stayed clean (`git status --porcelain -uall` empty, `git diff --stat` empty, HEAD `cc625c9`).
+
+## Direct answers
+
+**Q1 — Delivered or veneer?** It delivers the *scoped* design (prompt-side schema + pointer rules) and nothing more: no code parses headings, allocates per-section budget, or enforces anything. `schema.ts` is consumed only by `prompt.ts` and the test; read/write/clip/load paths are untouched. Given "must not reorder or drop facts", fail-open is the right call: any enforcement over existing free-form memory must either reject a round's whole memory or silently reshape long-term facts, both worse than an unenforced instruction. The docs are honest about it (`docs/configuration.md:66`: "schema 不是存储闸门… S4 仍待后续"), so this is not pretense. Residual: convergence is unmeasurable, and the prompt itself now authorizes dropping "the least durable entry" (line 25), so fail-open protects storage, not the model rewrite.
+
+**Q2 — schema.ts:** justified as a small shared seam (prompt + test + docs, planned S4 order), not dead. But the budget math is only correct for the stored header in isolation, not for the document (F1), the "cover exactly" comment is false under flooring (F6), and the no-budget half is production-dead (F7).
+
+**Q3 — Backward compat:** proven. `document.ts`, `store.ts`, `input.ts`, `parse.ts`, `pass.ts` are byte-identical to `3980099` (sha256 for the four data-path files matched old↔new). A differential probe (free-form with no canonical headings, headerless, canonical, long free-form, empty, copied marker; caps 4000/4003/4101; `normalize`/`render`/`shape`/`exceeds`/`idempotence`/`loadMemory`) produced byte-identical 30,825-byte output on old vs new trees. No read/write path imports `schema.ts`.
+
+**Q4:** see F2/F3/F5 for pointer-rule fact loss, missing section semantics, duplication, and language.
+
+## Findings
+
+**F1 (important) — Per-section budgets sum to the full cap, but the document also spends the header/heading overhead; literal compliance busts the cap and drops the middle.**
+`extensions/project-context/memory/schema.ts:15-27`, `memory/prompt.ts:23-24,31-32`, `memory/document.ts:16,44-58`.
+Evidence (probe): cap 4000 → budgets `[800,1600,1000,600]`, sum 4000. A document whose section bodies exactly fill the budgets is 4070 chars *including* `MEMORY_HEADER` + `##` lines; `exceedsMemoryCap` is true and `normalizeMemoryDocument` clips to 2468 chars with a truncation marker. A fully compliant reply therefore triggers the condensation call, and if that fails, the exact fact-dropping (middle clip) the design wants to avoid. Also note the prompt says "must stay **under** N" while code uses `> limit` (`document.ts:58`), and "about N" is unquantified.
+Impact: S1's budget guidance can cause the fact loss it is meant to prevent; every compliant full document is at least condense-or-clip.
+Fix boundary: reserve the fixed overhead (`MEMORY_HEADER` length + the four `## …` lines + blank lines) before applying shares, or define budgets as heading-inclusive; reword "under" vs `>`. Do not implement here.
+
+**F2 (important) — The safety rule is undercut by a project-specific example and no existence check.**
+`memory/prompt.ts:26`, pinned by `tests/memory-budget-test.mjs:60`.
+Evidence: the example `"- Handoff threshold uses the conservative 157K/450K fit; see docs/handoff.md."` is a real fact from *this* repo's own memory (`.agents/memory/MEMORY.md:11,51`). For any other project that path and fact are foreign; models frequently echo the strongest in-context example. Nothing anywhere verifies pointer targets (only `prompt.ts` imports the schema).
+Impact: cross-project fact injection and/or a dangling pointer, i.e. the detail is "moved out" to a path that doesn't contain it — effective fact loss, which S3's rule exists to prevent.
+Fix boundary: use a placeholder (`docs/<topic>.md`) or qualify "if that path exists in this project", and say the target must actually hold the detail; don't pin a concrete path in the test.
+
+**F3 (important) — Fixed headings without content semantics; "user preferences" has no canonical home.**
+`schema.ts:8-21`, `prompt.ts:22-23`.
+Evidence: line 22 still lists "user preferences" as required memory content, the section list adds only bare names, the design's role table (Project= purpose/stack/structure, Invariants=decisions/conventions/hard constraints, Pitfalls, Index=pointers) never reaches the prompt, and "Pitfalls" appears nowhere else.
+Impact: classification varies pass to pass; preferences (and anything the model deems homeless) can be silently dropped during the mandated reshape — again against the "no fact loss" constraint.
+Fix boundary: add a `description` per section to `MEMORY_SECTIONS` and render it (keeps the single source of truth), or one prompt line mapping content to sections.
+
+**F4 (important) — New checks are self-referential; formula and order mutations survive.**
+`tests/memory-budget-test.mjs:48-61`; `schema.ts:15-27`.
+Evidence (mutation matrix in `/tmp` copies, full check list): revert `prompt.ts` → C2/C3/C4/C5 fail (suite 11/12); share `0.2→0.3` → only C1 fails; compensated shares `0.2→0.3, 0.4→0.3` → **all pass**; `Math.floor→Math.ceil` → **all pass** (cap 4001 then totals 4004 > cap); `cap*share+1` → **all pass**; swap `Project`/`Invariants` order → **all pass**; drop the numeric interpolation → only C3 fails; drop the pointer line → only C4 fails. No test asserts `sum(budgets) ≤ cap`, an odd-cap value, or the documented 20/40/25/15 (`docs/configuration.md:66` hard-codes them too, with no drift check). C2's `budgeted.includes("## Project")` can also be satisfied by the fixture's `<existing-memory>` (it contains `## Project`), so a fixture with all four headings would pass C2 with the schema block removed.
+Impact: a wrong budget formula or ordering can ship green, on a change whose entire product is prompt text + constants.
+Fix boundary: pin expected per-section values for a non-multiple-of-20 cap (e.g. 4001) from the documented percentages, assert total ≤ cap, assert the ordered heading list appears before `<existing-memory>`; use a fixture without canonical headings.
+
+**F5 (nit) — Duplicated and now-unconditional drop instruction; inconsistent wording.**
+`prompt.ts:25` vs `prompt.ts:32` ("least durable" vs "least-durable"; both say merge/drop), and the earlier line already says `Replace or remove superseded entries` (`:22`). Line 25 reads as standing behavior even under budget, broadening the prior "superseded" rule to "least durable".
+Impact: wasted tokens every consolidation; slightly increased risk of pre-emptive fact deletion.
+Fix boundary: one sentence, explicitly conditioned "when over budget: merge, then dedupe, then drop the least durable".
+
+**F6 (nit) — Misleading comments/labels.**
+`schema.ts:15` ("cover the cap exactly") is false under `Math.floor` for caps not divisible by 20 (4001 → sum 4000; 4003 → sum 4001) and false against the document cap (F1). The test label "shares cover the whole cap" only checks `sum(share) ≈ 1`.
+Impact: future readers/S4 can trust a false invariant.
+Fix boundary: add `sum(budgets) ≤ cap` as an explicit contract (comment + test).
+
+**F7 (nit) — The no-budget prompt branch is production-dead.**
+`prompt.ts:15-17`; production always passes a budget (`pass.ts:79-80`). The only budgetless caller is `tests/memory-budget-test.mjs:44`.
+Impact: three new lines and a dedicated check cover a path users cannot reach through the pass; inflates apparent coverage.
+Fix boundary: make `budget` required, or document why the fallback must stay.
+
+**F8 (nit) — Redundant `as const`.**
+`schema.ts:16,21`: the literal is explicitly typed `readonly MemorySectionSpec[]`, which already widens the literals; `as const` adds nothing (or is misleading if literal types were intended).
+Impact: none functional; small readability cost.
+Fix boundary: drop `as const` or the annotation.
+
+**F9 (suggestion) — Design artifact lands as `proposed` while implementing its defaults.**
+`.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md:3` (`status: proposed`) and `:78-83` (three unanswered confirmation questions), yet `a3f8370` implements C + fail-open + 20/40/25/15.
+Impact: the review-bound record doesn't show the owner's decision; a future reader can't tell whether the split/approach was approved.
+Fix boundary: docs-only — record the confirmation and set status.
+
+**F10 (praise) — Backward compatibility is genuinely preserved.**
+Hashes: `document.ts`/`store.ts`/`input.ts`/`parse.ts` sha256 identical to `3980099`; only `prompt.ts` gained an import + prompt text. `grep` shows `schema.ts` is imported only by `prompt.ts` and the test; no read/write/status path references headings. The differential probe confirmed identical old/new behavior for free-form memories. The out-of-scope boundary (S4, hard enforcement) is stated in code comments and `docs/configuration.md:66`, and nothing pretends to enforce per-section caps.
+
+**F11 (residual-risk) — No conformance signal.**
+There is no diagnostic, status line, or warning that tells whether a project's memory ever converged to the schema; the model can ignore lines 23-26 forever. The repo's own memory is still free-form (10+ `##` headings) and will be reshaped by the next consolidation with no fact-preservation check. Accepted by the design (optional status display, S4 pending), so not a defect — but S1's "结构不再自由生成" is not observable.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (pristine `/tmp` copy of HEAD): **All 12 tests passed** (12/12).
+- `node tests/memory-budget-test.mjs` (pristine copy): **ALL OK** — all pre-existing checks plus the 5 new S1/S3 checks.
+- Full-suite mutation reality check: reverting `prompt.ts` to `3980099` gives **11 of 12 tests failed? No — 1 of 12 failed** (`memory-budget-test.mjs`, 4 FAILs); the other 11 suites are green. No other suite references the new prompt strings (`grep` confirmed).
+- Mutation matrix (each run per mutant copy; C1..C5 = the five new checks in orderC):
+  - M1 revert `prompt.ts`: C2, C3, C4, C5 fail; C1 passes.
+  - M2 `Project 0.2→0.3`: C1 fails only.
+  - M3 `0.2→0.3` + `0.4→0.3`: all pass (survives).
+  - M4 `Math.floor→Math.ceil`: all pass (survives); cap 4001 yields `[801,1601,1001,601]` = 4004 > cap, untested.
+  - M5 `cap*share+1`: all pass (survives).
+  - M6 remove `: about ${section.chars} characters`: C3 fails only.
+  - M7 remove pointer line: C4 fails only.
+  - M8 swap `Project`/`Invariants` order: all pass (survives).
+- Exact line-to-check mapping for reverts: `prompt.ts:23`/`:24` (heading list) kill C2 (and C3 when `:15-17` is also reverted); `prompt.ts:16`'s `: about ${section.chars} characters` kills C3; `prompt.ts:26` kills C4; `prompt.ts:15-17` kills C5's budgetless branch; `schema.ts:17-20` kills C1 only when the sum leaves 1; `schema.ts:27` (`Math.floor`) is untested.
+- Non-vacuity: direct deletions are killed, but correctness mutations (compensated split, ceil, +1, reorder) survive — the checks verify consistency with the module being mutated, not against the documented contract.
+- Zero-write evidence: `git status --porcelain -uall` and `git diff --stat` clean on `/tmp/pi-context-rev16` after all runs; probes and mutants live only under `/tmp/pc-*`.
+
+VERDICT: CHANGES-REQUESTED
