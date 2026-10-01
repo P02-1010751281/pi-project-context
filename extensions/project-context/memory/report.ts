@@ -6,9 +6,10 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
-import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
+import { MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, memorySizeLabel, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
+import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState } from "./pass.ts";
 
 /** Info about the newest memory write, so explicit commands can point at the backup. */
@@ -21,6 +22,9 @@ const contextShapeWarned = new Set<string>();
 
 /** Projects already told that the memory render hit its character cap. */
 const memoryCapWarned = new Set<string>();
+
+/** Projects already told that the CONTEXT.md render clipped an over-budget section. */
+const contextCapWarned = new Set<string>();
 
 /** Projects already told that repeated auxiliary-model failures parked the automatic pass. */
 const disablesAnnounced = new Set<string>();
@@ -123,7 +127,14 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				}
 			}
 			if (update) {
-				await writeAtomic(contextFile(projectRoot), renderContextDocument(update, { updatedAt: new Date().toISOString() }));
+				const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
+				await writeAtomic(contextFile(projectRoot), contextDocument);
+				const dropped = contextTruncationDropped(contextDocument);
+				if (dropped !== undefined && !contextCapWarned.has(projectRoot)) {
+					// The marker is the durable trace; say it once per project per process, like the memory cap.
+					contextCapWarned.add(projectRoot);
+					await logError(projectRoot, "memory", `CONTEXT.md was clipped (a section budget, the ${MAX_LIST_ITEM_CHARS}-character item cap, or the ${MAX_LIST_ENTRIES}-entry list cap); ${dropped} characters were dropped`);
+				}
 			}
 			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
 			if (outcome.clipped && (memoryChanged || update)) {

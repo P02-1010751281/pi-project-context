@@ -11,7 +11,7 @@ export type { LoadedMemory } from "../memory/store.ts";
 export { logError } from "./error-log.ts";
 export { fileMtimeMs, pathExists, readOptional, writeAtomic } from "./files.ts";
 export { ensureMemoryGitignore } from "./gitignore.ts";
-export { MAX_CONTEXT_CHARS, MAX_CONVERSATION_CHARS, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS, MAX_MEMORY_CHARS_LIMIT, MAX_SKILL_BODY_CHARS, MAX_SUMMARY_CHARS, MIN_MEMORY_CHARS } from "./limits.ts";
+export { MAX_CONTEXT_CHARS, MAX_CONVERSATION_CHARS, MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS, MAX_MEMORY_CHARS_LIMIT, MAX_SKILL_BODY_CHARS, MAX_SUMMARY_CHARS, MIN_MEMORY_CHARS } from "./limits.ts";
 export { migrateProjectState } from "./migrate.ts";
 export type { MigrationResult } from "./migrate.ts";
 export { errorText, notify } from "./notify.ts";

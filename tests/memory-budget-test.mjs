@@ -40,7 +40,7 @@ try {
 	const budgeted = buildPrompt("/tmp/p", fitted, "conversation", { maxMemoryChars: 4_000, currentChars: 1_234 });
 	check("the prompt states the cap and the current size", budgeted.includes("at or under 4000 characters") && budgeted.includes("currently about 1234"));
 	check("the prompt calls it a hard cap", budgeted.includes("hard cap"));
-	check("the prompt forbids writing truncation markers", budgeted.includes("Never write omission or truncation markers"));
+	check("the prompt forbids writing truncation markers and names both shapes", budgeted.includes("Never write omission or truncation markers") && budgeted.includes("_[context truncated: … characters dropped]_"));
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
 	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
 	const freeFitted = fitMemoryInput("# Project Memory\n\n- a free-form fact\n", "", 8192, { maxTokens: 32768 });

@@ -101,6 +101,7 @@ extensions/project-context/
 │   ├── parse.ts            #    回复解析（容错 JSON + 逐字段裁决）
 │   ├── document.ts         #    MEMORY.md 规范化与截断标记
 │   ├── schema.ts           #    固定小节 schema 与每节字符预算
+│   ├── context-schema.ts   #    CONTEXT.md 固定小节 schema 与每节预算
 │   ├── journal.ts          #    memory.jsonl 追加日志（折叠 / 轮转 / 归档）
 │   ├── store.ts            #    读路径与一次写入事务
 │   ├── backup.ts           #    写入前字节级备份与清理
