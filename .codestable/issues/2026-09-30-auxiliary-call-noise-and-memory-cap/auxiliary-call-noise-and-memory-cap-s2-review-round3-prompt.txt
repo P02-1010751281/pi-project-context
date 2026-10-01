@@ -1,0 +1,70 @@
+You are an independent AUDIT reviewer (round 3 of 6). Rounds 1–2 assessed the S2 change (CONTEXT.md
+fixed schema + per-section budgets + truncation marker); round 2 returned PASSED but raised nits N1–N4
+and several surviving mutants. The author has since remediated them. Independently audit the CURRENT
+tree of /tmp/pi-context-rev24 — do not inherit round 2's PASSED.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev24.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes/mutants may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Full change: `git status --short`, then `git diff -- extensions tests docs` and the untracked files
+  extensions/project-context/memory/context-schema.ts and tests/context-schema-test.mjs.
+- Prior round state (byte copy, pre-remediation): /tmp/pi-context-rev23. Delta: `diff -ru` the trees.
+- Round-1 and round-2 outputs: /tmp/rev22-round1-out.txt, /tmp/rev23-round2-out.txt (read them).
+- Code: extensions/project-context/memory/{context-schema.ts,context-doc.ts,prompt.ts,report.ts},
+  shared/{limits.ts,project-state.ts}; tests/context-schema-test.mjs.
+- Design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s2-context-design.md
+
+CONTEXT / INTENT
+- S2 = fixed CONTEXT.md section table + per-section character budgets from MAX_CONTEXT_CHARS + a strict
+  truncation marker replacing the old silent mid-line slice; prompt and renderer share the one table.
+- Sections use `entry` (summary prose / key_points list / open_tasks list), shares 0.4/0.35/0.25,
+  Summary additionally capped by MAX_SUMMARY_CHARS=6000. Lists cap at MAX_LIST_ITEM_CHARS=800 per item
+  and MAX_LIST_ENTRIES=50 entries; `dropped` measures against the untrimmed render so every clip reason
+  is reported.
+- Hard constraint: backward compatible with existing free-form CONTEXT.md; archive injects it read-only;
+  the JSON parse/fail-closed path in memory/parse.ts is untouched.
+- Out of scope: S4, a configurable context cap, CONTEXT.md read-side migration.
+
+ROUND-2 FINDINGS TO VERIFY
+- N1: empty/whitespace list items rendered a dangling bullet; now filtered.
+- N2: test holes — fallback-summary loss, the both-lists total, and the surrogate/normalization path were
+  unpinned. Verify the new assertions kill M15 (.slice in trimLine), M16b (fallback pre-trim), M22a
+  (drop openTasks from the total), M26 (trimLine without normalize).
+- N3: the configuration.md sentence about inner cuts was stale.
+- N4: MAX_LIST_ENTRIES placement and unreachable `Math.max`/`?? 0` guards.
+Also recheck the round-1 fixes F1–F6 and F8 still hold.
+
+YOUR TASK
+1. Verify each N1–N4 and F1–F6/F8 is resolved or honestly recorded, with evidence.
+2. Re-run the mutation matrix in a /tmp copy and state which check kills each and which survive:
+   remove Summary maxChars; change a share; drop the marker reserve; never/always append the marker;
+   disable the list budget loop; drop the prompt context sections; make the detector always
+   false/true; ignore overhead in the budget; remove the MAX_LIST_ENTRIES slice; off-by-one the dropped
+   count; count against trimmed items; omit openTasks from the total; disable the empty-item filter;
+   fallback pre-trim; `.slice()` in trimLine; trimLine without normalize; leave budgetByEntry unfilled;
+   swap the section order; change the marker wording.
+3. Adversarially hunt for NEW problems in the whole change: is the marker count exact for every clip
+   combination? Can normalization/trim change meaning (e.g. backslash, non-breaking space) in a way the
+   marker misreports? Is the cap guarantee still real? Any dead branch or drift left?
+4. Is the design note an honest account (status, decisions, residuals, test claims)?
+5. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 13/13) and `node tests/context-schema-test.mjs`. Report what you saw.
+State exactly which reverted production line kills which test.
+
+SCOPE DISCIPLINE
+- S4, a configurable context cap, and read-side migration are OUT of scope: do not flag them as missing.
+- DO flag if the implementation pretends to do them, or if the out-of-scope boundary is unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

@@ -1,0 +1,104 @@
+# S2 Round-3 Independent Audit — `/tmp/pi-context-rev24`
+
+Read-only honored: every test, probe and mutant ran under `/tmp/s2audit3/**`; the sandbox was only read. `git status --porcelain` plus sha256 of all 371 non-`.git` files were identical before/after (`SANDBOX-UNTOUCHED`). Prior state at rev23 and both round outputs were read directly.
+
+What I audited: `git status --short`, `git diff -- extensions tests docs`, untracked `context-schema.ts` / `context-schema-test.mjs`, the F1–F6/F8 and N1–N4 code paths, and the design note. Diff vs HEAD is exactly the S2 scope: `context-doc.ts`, `prompt.ts`, `report.ts`, `limits.ts`, `project-state.ts`, `docs/{architecture,configuration}.md`, the new `context-schema.ts` + `tests/context-schema-test.mjs`, and the session artifact `HANDOFF.md`. `parse.ts`, `archive/`, `pass.ts` have 0-line diffs.
+
+## Round-2 findings (N1–N4)
+
+### N1 (nit) — empty/whitespace bullets: RESOLVED
+- `extensions/project-context/memory/context-doc.ts:49` filters normalize-empty items before building `full`/`kept`, so `listMarkdown` (`:28-30`) emits `- None recorded` and blank items add nothing to `dropped`.
+- Evidence: `tests/context-schema-test.mjs:99-101` asserts two placeholders and no `"\n\n- \n"`; my probe also confirmed NBSP-only (`"\u00a0"`) items are filtered. Reverting the filter (`M15`, `.filter(() => true)`) fails **only** that check; it passes no other and is killed.
+
+### N2 (nit) — the four surviving round-2 mutants: all four now killed
+| Round-2 mutant | Reverted rev24 line | Killed by (in `context-schema-test.mjs`) |
+|---|---|---|
+| M15 `.slice()` in `trimLine` | `context-doc.ts:25` | `a trimmed item or title does not leave a lone surrogate` (:108) |
+| M16b fallback pre-trim | `context-doc.ts:89` | `the fallback summary loss is reported` (:124) |
+| M22a omit `openTasks.dropped` | `context-doc.ts:78` | `the marker total sums every clipped section` (:131) |
+| M26 `trimLine` without `normalizeLine` | `context-doc.ts:25` | `a title with whitespace is normalized to one line` (:115) |
+
+All four are killed by the S2 test alone (13/13 not needed). Adjacent normalization gaps remain — see NEW-1/NEW-2.
+
+### N3 (nit) — stale `configuration.md` sentence: RESOLVED
+`docs/configuration.md:68` now says list items are cut at `MAX_LIST_ITEM_CHARS=800`, entries at `MAX_LIST_ENTRIES=50`, then tail items dropped, and that `dropped` is measured against the untrimmed render. This matches `context-doc.ts:47-54` exactly. No other stale copy found (`grep` for "只有单项" etc. hits only the design note's problem statement, which is historical).
+
+### N4 (suggestion) — constant placement / dead guards: RESOLVED
+- `MAX_LIST_ENTRIES` moved to `shared/limits.ts:24`, re-exported at `shared/project-state.ts:14`; `report.ts:9` imports it from `limits`, `context-doc.ts:3` via `project-state`.
+- `Math.max(0, full−kept)` and `budgetFor(...) ?? 0` are gone; `budgetByEntry` (`context-doc.ts:58-59`) is a `Record` with all three unions initialized, so the lookup cannot miss. Reverting to an unfilled record (`M19`) fails 6 checks. A new `Math.max(0, limit)` survives in `clipProse` (`:36`) — kept, but it is a generic-function guard, not the cited dead code (NEW-6).
+
+## Round-1 fixes F1–F6/F8 — still hold
+
+- **F1 (marker under-report): holds and is now measured.** Independent oracle (`/tmp/s2audit3/probe.mjs`) reimplementing normalization/trim/entry-cap/budget-drop separately matched the written marker on **800/800 randomized docs** (whitespace, CR/LF/tab, NBSP, ideographic space, backslash, emoji, empty items, 0–80 items, 0–20k summaries). Extreme cases balanced too: 60×999k chars → marker 59 929 911 and doc 10 669; all sections blown → marker 107 034, doc 24 013. Negative `dropped` is structurally impossible (full is a superset).
+- **F2 (wrong once-per-project log): holds.** `report.ts:135` lists the three real causes (section budget, 800-char item cap, 50-entry cap) and says the marker reports how many characters were dropped; no "cut on a line boundary"/"cap exceeded" claim remains. The `MAX_SUMMARY_CHARS` case is the section's own effective budget (`context-schema.ts:82`), so "a section budget" covers it.
+- **F3 (surrogate split): holds and is pinned.** `trimLine`/`clipProse` route through `clipToLineBoundary` (`document.ts:60-70`); `tests/context-schema-test.mjs:103-108` covers both a list item and the title. `M17` is killed by that check; the randomized oracle used an independent surrogate-safe cutter with exact agreement.
+- **F4 (unreachable single-item branch): holds.** Branch gone; the invariant is the honest assertion `min(budgets) > MAX_LIST_ITEM_CHARS + 2` (`context-schema-test.mjs:51`, min budget 7912 > 802).
+- **F5 (dead `kind`): holds.** `ContextSectionSpec` has only `entry` (`context-schema.ts:13-24`); prompt/renderer dispatch on `entry` only.
+- **F6 (test holes): resolved for the cited holes; one residual honestly recorded.** Entry cap, per-item trim, exact totals, fallback and title normalization are now pinned (`M9/M11/M12/M13/M14/M23` all killed). The marker reserve (`M3`, `M22`) is still killed only by the `overhead === 349` constant, and the design note now explicitly admits no full-budget render is constructed (`…-s2-context-design.md:44`) — that is honest recording, not a false claim.
+- **F8 (read-side silent slice): unchanged, correctly out of scope.** `archive/archive.ts` and `pass.ts:74` are byte-identical; the design note keeps read-side migration and a configurable cap explicitly out, and no code pretends otherwise.
+
+## New findings
+
+1. **nit (test hole) — `clipProse`'s normalization is unpinned.** `extensions/project-context/memory/context-doc.ts:34`. Replacing `const normalized = normalizeLine(value)` with the raw value **survives 13/13 and all 33 S2 checks**; a summary `"a\n\n\n\nb"` then renders as four lines instead of `a b`. Every test summary is whitespace-free. Impact: a real normalization regression is invisible. Minimal fix boundary: add one summary containing newlines/tabs asserting the collapsed single-line body and exact `dropped`.
+
+2. **nit (test hole) — the `full` baseline's normalization is unpinned.** `context-doc.ts:49-50`. `content = items.filter((item) => normalizeLine(item).length > 0)` (keeping raw items) survives 13/13; probe shows `key_points:["  a  b  "]` then emits a **false** `_[context truncated: 5 characters dropped]_` although nothing was clipped — exactly the misreport class round 1 targeted. Minimal fix boundary: assert a whitespace-padded item renders normalized with no marker, or assert exact `dropped` excludes normalization.
+
+3. **nit (test hole) — the once-per-project gate is masked by `logError`'s own dedupe.** `report.ts:27,132` vs `shared/error-log.ts:23,91`. Removing `!contextCapWarned.has(projectRoot)` survives 13/13: identical `(scope, headline)` records inside the 10-minute window are swallowed, so `"a second truncated pass does not log again"` (`context-schema-test.mjs:141`) is satisfied even without the Set. Impact: the Set could regress to a no-op unnoticed. Minimal fix boundary: make the second pass materially different (new headline/version) or clear the error-log dedupe state between passes.
+
+4. **nit — `isContextTruncated` accepts a singular "character".** `context-schema.ts:48` uses `characters?`, while the generator (`:52`) and docs emit `characters`. `isContextTruncated("_[context truncated: 5 character dropped]_")` is true, so the "strict shape" isn't exactly one shape. Impact is negligible (only affects diagnostics detection) and the test's near-miss still catches non-digit forms. Minimal fix boundary: plural-only regex, or state the tolerance in the comment.
+
+5. **learning — whitespace normalization is silent and uncounted by design.** `context-doc.ts:19-20`. Backslashes survive unchanged; NBSP/U+3000/CR/LF collapse to a single space and empty items disappear, none of which enters `dropped`. The marker never misreports a cap loss, but `docs/configuration.md:68`'s "以未 trim 的完整渲染为基准" could be read as the raw input rather than the *normalized* untrimmed render. Not a defect; wording could say "normalized but untrimmed".
+
+6. **nit (quality) — two minor boundary smells.** `context-doc.ts:58-59` initializes a Record with zeros and fills it in a loop, only for `contextSectionBudgets()` to be called a second time at `:74`; and `clipProse`'s `Math.max(0, limit)` at `:36` is unreachable because budgets are already clamped non-negative (`context-schema.ts:82`). Impact: readability/duplication only; hoisting `const budgets = contextSectionBudgets()` and dropping the clamp would be equivalent.
+
+## Praise
+
+- The one-table guarantee is real: `context-schema.ts:27-31` feeds prompt (`prompt.ts:19-21`) and renderer (`context-doc.ts:59,74`); shares sum to 1; floor + `min(share, maxChars)` is correct.
+- The marker arithmetic is now genuinely exact, not shape-only: 800 randomized differential cases agree byte-for-byte, and all 23 mandated mutants plus 4 extras die in the S2 test alone.
+- The cap guarantee is still real with wide margin: `overhead(349) + Σbudgets(24989) = 25338 ≤ 32000`; the extreme render is 24 013, a 60 MB-class input is 10 669, and even an 8-digit dropped count cannot consume the ~6.6k headroom. The 5-digit reserve is conservative, never load-bearing at the fixed cap.
+- Backward compatibility is untouched: `parse.ts` fail-closed path and the archive read-only injection have zero diff; free-form CONTEXT.md loading is unchanged.
+
+## Residual risk
+
+- **F8 read-side silent slice remains** (`archive/archive.ts`, `pass.ts:74`): an externally written free-form CONTEXT.md > 32 000 chars is still sliced mid-line on injection with no marker. Explicitly out of scope in the design note and not pretended otherwise; the "no silent truncation" guarantee applies only to extension-written files.
+- **The marker reserve is cap-parameter-independent** (`context-schema.ts:71` always sizes for `MAX_CONTEXT_CHARS`); harmless now, but if a configurable context cap (out of scope) ever lands, the reserve must follow the passed `cap`.
+
+## Test And QA Focus
+
+Environment: `/tmp/s2audit3/repo` (`cp -a` of rev24); tests never ran in the sandbox.
+
+- `node tests/run-all.mjs` → **All 13 tests passed.**
+- `node tests/context-schema-test.mjs` → **ALL OK, 33 checks** (11 schema, 2 renderer, 14 clipping, 3 prompt, 3 log).
+- Differential probes: 800/800 marker counts exact vs an independent oracle; 800/800 renders ≤ 32000; marker present iff `dropped > 0`; detector strictness (inline text/sign rejected); surrogate-safe trim confirmed.
+
+Mutation matrix (each mutant is a single reverted production line in a /tmp copy, S2 test only):
+
+| # | Reverted rev24 line | Result | Killed by (first checks) |
+|---|---|---|---|
+| 1 | `context-schema.ts:28` remove Summary `maxChars` | killed | budgets-exact, summary-cap, summary-clipped, summary-exact, fallback, both-lists |
+| 2 | `context-schema.ts:29` share 0.35→0.30 | killed | contract, shares-sum, budget-formula, scaled |
+| 3 | `context-schema.ts:71` marker reserve = 0 | killed | `overhead === 349` only |
+| 4 | `context-doc.ts:80` never append marker | killed | 6 marker/count/log checks |
+| 5 | `context-doc.ts:80` always append marker | killed | fitting-no-marker |
+| 6 | `context-doc.ts:52` disable budget loop | killed | fits-cap, lists-clipped, written-fits-cap |
+| 7 | `prompt.ts:19-21` drop context sections | killed | prompt-lists, prompt-order |
+| 8 | `context-schema.ts:57` detector false | killed | detector, marked, written-marked, log-once, log-second |
+| 9 | `context-schema.ts:57` detector true | killed | detector-near-miss, fitting-no-marker |
+| 10 | `context-schema.ts:77` ignore overhead | killed | budget-formula, scaled |
+| 11 | `context-doc.ts:51` remove `MAX_LIST_ENTRIES` slice | killed | entry-exact, both-lists |
+| 12a/12b | `context-doc.ts:53` dropped ∓1 | killed | exact-count checks (5 / 6) |
+| 13 | `context-doc.ts:50` count against trimmed items | killed | per-item-exact, both-lists |
+| 14 | `context-doc.ts:78` omit `openTasks.dropped` | killed | both-lists only |
+| 15 | `context-doc.ts:49` disable empty filter | killed | empty-items |
+| 16 | `context-doc.ts:89` fallback pre-trim | killed | fallback-loss |
+| 17 | `context-doc.ts:25` `.slice()` in `trimLine` | killed | lone-surrogate |
+| 18 | `context-doc.ts:25` `trimLine` without normalize | killed | title-normalized |
+| 19 | `context-doc.ts:59` `budgetByEntry` unfilled | killed | 6 checks incl. layout |
+| 20 | `context-schema.ts:29-30` swap section order | killed | 6 checks incl. layout + prompt order |
+| 21 | `context-schema.ts:52` marker wording | killed | 6 checks incl. shape + overhead |
+| + | `context-schema.ts:69` title reserve = 0 | killed | overhead only |
+| + | `limits.ts:24` entry cap 49 | killed | entry-exact, both-lists |
+
+Surviving mutants (not mandated; new test holes in NEW-1..NEW-3): `clipProse` without normalize; `full` built from raw items; `report.ts` once-per-project gate removed. Nothing in the mandated matrix survives, and no production defect is present in the current tree. Non-vacuousness: the exact-count, fallback, entry-cap, surrogate, title-normalization, empty-item, prompt and log checks are genuinely non-vacuous; only the reserve/cap-fit family remains algebraically (not behaviourally) pinned, and the design note now states that limitation.
+
+VERDICT: PASSED

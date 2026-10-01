@@ -1,0 +1,69 @@
+You are an independent VERIFICATION reviewer (round 6 of 6, the final round). Round 5 returned PASSED
+with one unpinned test case (R5-1) and a prompt-wording suggestion (R5-3); the author has since
+remediated them. Verify the CURRENT tree of /tmp/pi-context-rev27 and give the final assessment.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev27.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes/mutants may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Full change: `git status --short`, then `git diff -- extensions tests docs` and the untracked files
+  extensions/project-context/memory/context-schema.ts and tests/context-schema-test.mjs.
+- Prior round state (byte copy, pre-remediation): /tmp/pi-context-rev26. Delta: `diff -ru` the trees.
+- Round 1..5 outputs: /tmp/rev22-round1-out.txt .. /tmp/rev26-round5-out.txt.
+- Code: extensions/project-context/memory/{context-schema.ts,context-doc.ts,prompt.ts,report.ts},
+  shared/{limits.ts,project-state.ts}; tests/context-schema-test.mjs.
+- Design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s2-context-design.md
+
+CONTEXT / INTENT
+- S2 = fixed CONTEXT.md section table + per-section character budgets from MAX_CONTEXT_CHARS + a strict
+  truncation marker replacing the old silent mid-line slice; prompt and renderer share the one table.
+- `entry` selects the field/rendering; shares 0.4/0.35/0.25; Summary also capped by MAX_SUMMARY_CHARS;
+  lists cap at MAX_LIST_ITEM_CHARS per item and MAX_LIST_ENTRIES entries; `dropped` is measured against
+  the normalized-but-untrimmed render. The marker is the document's last non-empty line; report.ts logs
+  its count once per project per process.
+- Hard constraint: backward compatible with existing free-form CONTEXT.md; archive injects it read-only;
+  memory/parse.ts is untouched.
+- Out of scope: S4, a configurable context cap, CONTEXT.md read-side migration.
+- Accepted residuals from earlier rounds: the marker reserve is pinned only by `overhead === 349`; the
+  title's 160-char trim is a documented silent metadata cap; tail-scoping is a fresh-render policy.
+
+ROUND-5 FINDINGS TO VERIFY
+- R5-1: the scanner's whitespace tolerance (padding/CRLF/trailing blanks) was unpinned; verify the new
+  assertion kills the trim-only scanner mutant.
+- R5-2 (learning): tail-scoping is correct for the in-memory render; no fix expected — confirm it is not
+  a defect.
+- R5-3: the prompt's marker example now includes the context shape; verify.
+- R5-4 (learning): the overhead over-reserves the marker by one char; confirm benign.
+
+YOUR TASK
+1. Verify R5-1 and R5-3 with evidence; confirm R5-2/R5-4 are not defects.
+2. Re-run the mutation matrix in a /tmp copy and state which check kills each and which survive:
+   remove Summary maxChars; change a share; drop the marker reserve; never/always append the marker;
+   disable the list budget loop; drop the prompt context sections; detector always false/true; ignore
+   overhead; remove the MAX_LIST_ENTRIES slice; dropped ∓1; count against trimmed items; omit openTasks;
+   disable the empty filter; fallback pre-trim; `.slice()` in trimLine; trimLine without normalize;
+   clipProse without normalize; raw `full` items; unfilled budgetByEntry; remove the once-per-project
+   gate; singular detector; scanner any-line/first-line/trim-only; crDropped →0/NaN; log without the
+   count; swap order; change marker wording.
+3. Adversarially hunt for NEW problems one last time; if none are blocking/important, say so plainly.
+4. Final honesty check of the design note (status, decisions, residuals, test claims).
+5. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 13/13) and `node tests/context-schema-test.mjs`. Report what you saw.
+State exactly which reverted production line kills which test.
+
+SCOPE DISCIPLINE
+- S4, a configurable context cap, and read-side migration are OUT of scope: do not flag them as missing.
+- DO flag if the implementation pretends to do them, or if the out-of-scope boundary is unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

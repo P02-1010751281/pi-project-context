@@ -1,0 +1,74 @@
+You are an independent VERIFICATION reviewer (round 2 of 6). Round 1 returned CHANGES-REQUESTED on the
+S2 change (CONTEXT.md fixed schema + per-section budgets + truncation marker); the author has since
+remediated it. Review the current tree of /tmp/pi-context-rev23.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev23.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes/mutants may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust code comments, the design doc, or the fix notes; verify against the code.
+
+INPUTS
+- Full change: `git status --short`, then `git diff -- extensions tests docs` and the untracked files
+  extensions/project-context/memory/context-schema.ts and tests/context-schema-test.mjs.
+- Round-1 state (byte copy, pre-remediation): /tmp/pi-context-rev22. Remediation delta: diff the two
+  trees, e.g. `diff -ru /tmp/pi-context-rev22/extensions /tmp/pi-context-rev23/extensions` (also for
+  tests/ and docs/).
+- Round-1 output: /tmp/rev22-round1-out.txt (read it).
+- Code: extensions/project-context/memory/{context-schema.ts,context-doc.ts,prompt.ts,report.ts},
+  shared/limits.ts; tests/context-schema-test.mjs.
+- Design: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s2-context-design.md
+
+CONTEXT / INTENT
+- S2 = fixed CONTEXT.md section table + per-section character budgets from MAX_CONTEXT_CHARS + a strict
+  truncation marker replacing the old silent mid-line slice. Prompt and renderer share the one table.
+- Sections: Summary (entry summary, prose, share 0.4, maxChars MAX_SUMMARY_CHARS=6000), Key points
+  (entry key_points, list, 0.35), Open tasks (entry open_tasks, list, 0.25).
+- Hard constraint: backward compatible with existing free-form CONTEXT.md; archive injects it read-only;
+  the JSON parse/fail-closed path in memory/parse.ts is untouched.
+- Out of scope: S4, a configurable context cap, CONTEXT.md read-side migration.
+
+ROUND-1 FINDINGS TO VERIFY
+- F1 (important): the marker under-reported losses — list items were trimmed to 800 before `clipList`
+  computed `dropped`, and `fallbackUpdate` pre-trimmed the summary. Verify the fix counts the per-item
+  trim and the entry-cap drop against the untrimmed render, and that `fallbackUpdate` no longer hides a cut.
+- F2 (important): the report log claimed "exceeded a section budget / cut on a line boundary" even on the
+  entry-cap path. Verify the message is now factually true for every clip reason.
+- F3 (nit): `trimLine` split surrogate pairs. Verify titles/items now cut surrogate-safely.
+- F4 (nit): the "single over-long item" branch was unreachable. Verify the branch is gone (or made
+  reachable) and the leftover cap guarantee is honestly bounded (an invariant test that the smallest
+  section budget exceeds the per-item cap).
+- F5 (nit): `kind` was dead metadata. Verify it is used or removed.
+- F6 (nit): test holes — exact dropped count, the MAX_LIST_ENTRIES interaction, and a vacuous cap-fit.
+  Verify the new assertions kill the corresponding mutants.
+- F8 (residual-risk): read-side silent slice in archive.ts/pass.ts is out of scope; verify the diff does
+  not pretend to fix it.
+
+YOUR TASK
+1. For each round-1 finding, state resolved / partially / not resolved with evidence.
+2. Re-run the mutation matrix in a /tmp copy and state which check kills each and which survive:
+   remove Summary maxChars; change a share; drop the marker reserve; never append the marker; disable
+   the list budget loop; drop the prompt context sections; make the detector always false; ignore
+   overhead in the budget; remove the MAX_LIST_ENTRIES slice; off-by-one the dropped count; count
+   against trimmed items; swap the section order; change the marker wording.
+3. Adversarially hunt for NEW problems introduced by the remediation: is the marker count now exact for
+   every clip reason (per-item trim, entry cap, budget drop, and combinations)? Can `dropped` ever be
+   wrong-signed or double-count? Is the cap guarantee still real? Any new dead branch or drift?
+4. Is the design note an honest account (status, decisions, residuals)?
+5. Quality bars with file:line: over-engineering, fragmentation, over-guarding, unclear boundaries,
+   duplication, unreadable code.
+
+TEST AND QA FOCUS
+Run `node tests/run-all.mjs` (expect 13/13) and `node tests/context-schema-test.mjs`. Report what you saw.
+State exactly which reverted production line kills which test.
+
+SCOPE DISCIPLINE
+- S4, a configurable context cap, and read-side migration are OUT of scope: do not flag them as missing.
+- DO flag if the implementation pretends to do them, or if the out-of-scope boundary is unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line, evidence, impact, minimal fix boundary (do not implement). Then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

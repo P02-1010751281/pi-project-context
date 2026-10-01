@@ -1,0 +1,106 @@
+# S2 Round-2 Verification — current tree of /tmp/pi-context-rev23
+
+Read-only honored: every probe/test/mutant ran in `/tmp/s2v/repo` (byte copy); `git status --short` in the sandbox is unchanged before/after. The round-1→round-2 delta is exactly `context-doc.ts`, `context-schema.ts` (kind removal), `report.ts`, `prompt.ts`, `tests/context-schema-test.mjs`, plus the design note; `archive/`, `pass.ts`, `parse.ts`, `shared/` are byte-identical to rev22.
+
+## Round-1 findings
+
+### F1 (important) — marker under-reported per-item / fallback losses: **RESOLVED**
+- `context-doc.ts:51-54`: `full` is built from `normalizeLine(item)` (untrimmed), `kept` from `trimLine(item)` + `MAX_LIST_ENTRIES` slice + budget loop; `dropped = full.join − kept.join` therefore counts per-item trim, entry-cap drop and budget drop exactly once each.
+- `context-doc.ts:84-93`: `fallbackUpdate` returns the raw text; `clipProse` (36-41) counts the cut.
+- Probes (`/tmp/s2v/probe-exact.mjs`, `probe-combined.mjs`), all matched the independently reconstructed raw-vs-kept loss byte-for-byte:
+  - 1×5000-char item → marker 4200 (was: no marker);
+  - 60 short items → marker 150 (entry cap);
+  - 50×702-char items (budget drop) → 24710;
+  - 60 items mixing >800 trims + entry cap + budget drop → 36807;
+  - all three sections clipped → 79853; “everything clipped” (15000-char summary + both lists) → 115708;
+  - fallback: raw 7002-char summary → marker 1002 = 7002−6000.
+- No wrong sign, no double count: every `dropped` is a plain set difference between untrimmed render length and kept render length; the six combination probes all balance. The `Math.max(0, …)` guard is provably unreachable but harmless.
+
+### F2 (important) — report log was factually wrong on the entry-cap path: **RESOLVED**
+- `report.ts:135` now says “CONTEXT.md was clipped (a section budget, the 800-character item cap, or the 50-entry list cap) … how many characters were dropped”. Each clip path maps to one of the listed reasons; no “exceeded a section budget/cut on a line boundary” claim remains. The E2E check (`context-schema-test.mjs:135,138`) exercises the log once / not twice.
+
+### F3 (nit) — surrogate splitting: **RESOLVED (unpinned by tests)**
+- `context-doc.ts:27-29` routes `trimLine` through `clipToLineBoundary` (`document.ts:60-70`), which strips a trailing high surrogate. Probe: item `799×'a' + 😀 + 100×'b'` keeps 799 `a` (no lone code unit); 165-char title keeps 159 `t`. However, re-introducing `.slice()` (M15) and even removing `normalizeLine` from `trimLine` (M26) pass all 13 tests — see Test gaps.
+
+### F4 (nit) — unreachable single-item branch: **RESOLVED**
+- The `if (kept.length === 1 && kept[0].length > limit)` branch is gone (`context-doc.ts:50-54`); the cap guarantee is now the honest invariant at `context-schema-test.mjs:51` (`min(budgets) > MAX_LIST_ITEM_CHARS + 2`), which holds at every 5-digit `MAX_CONTEXT_CHARS` and is pinned by the `overhead === 349` check. The comment at `context-doc.ts:48` states the invariant rather than a promise.
+
+### F5 (nit) — dead `kind`: **RESOLVED**
+- `context-schema.ts:17-22` has only `entry`; test contract and prompt/renderer dispatch use `entry` (`context-schema-test.mjs:26-29,46`; `context-doc.ts:60-68`); prompt output verified.
+
+### F6 (nit) — test holes: **PARTIALLY RESOLVED**
+- Exact dropped count is now genuinely non-vacuous: `dropped−1` kills 2 checks, `dropped+1` kills 4, counting against trimmed items (old behavior) kills the per-item check, `MAX_LIST_ENTRIES` removal kills the new entry-cap check + sync-test. Summary exactness kills M1's arithmetic.
+- Still open: the marker reserve is killed **only** by the magic `overhead === 349` (`context-schema-test.mjs:36`) — no behavioural near-cap render; M3 (reserve=0) fails nothing else. No test renders a budget-filled document (see design note).
+- New gaps discovered by mutants: `fallbackUpdate` pre-trim (clean `slice(0,6000)`), omitting `openTasks.dropped` from the total, and surrogate/normalization regressions all survive 13/13 — see “New findings”.
+
+### F8 (residual-risk) — read-side silent slice: **unchanged, correctly out of scope**
+- `archive/archive.ts:120` and `memory/pass.ts:74` are diff-identical to rev22; the design note still lists read-side migration and the configurable cap as out of scope, and no code pretends otherwise.
+
+## New findings from the remediation
+
+### N1 — nit — empty/whitespace items now render a dangling bullet
+`extensions/project-context/memory/context-doc.ts:31-33,51-52`
+- Evidence: rev22’s `listMarkdown` had `lines.filter(line => line.length > 0)`; rev23 removed it. Probe: `{key_points:[""], open_tasks:["   "]}` renders `## Key points\n\n- ` and `## Open tasks\n\n- ` instead of `- None recorded`; no marker (dropped 0) and no cap impact.
+- Impact: cosmetic only; the “empty section” placeholder silently changes behaviour for degenerate model output.
+- Minimal fix boundary: filter empty normalized items before building `full`/`kept` (or restore the filter in `listMarkdown`) and keep the dropped accounting consistent.
+
+### N2 — nit — remediation test holes let real regressions survive
+`tests/context-schema-test.mjs` (whole), `extensions/project-context/memory/context-doc.ts:79,84-93`
+- Evidence (mutants under `/tmp/s2v/mutants2`, all run in copies):
+  - `fallbackUpdate` replaced by `text.slice(0, 6000)` → **all 13 pass** (F1’s fallback half is unpinned).
+  - `dropped = summary.dropped + keyPoints.dropped` (drop the Open-tasks contribution) → **all 13 pass**; the big render test only asserts a positive count.
+  - `trimLine` without `clipToLineBoundary` or without `normalizeLine` → **all 13 pass** (F3/normalization unpinned).
+- Impact: exactly the two high-value behaviours round 1 cared about (fallback loss reporting, exact count) can regress unnoticed.
+- Minimal fix boundary: add a long-summary `fallbackUpdate` + `renderContextDocument` exact-marker assertion, an exact total for a doc that clips **both** lists, and a surrogate-boundary item/title assertion.
+
+### N3 — nit — `docs/configuration.md:68` sentence is stale about where inner cuts happen
+- The doc says “列表丢尾项、只有单项过长才切内部”, but the removed branch means the only inner cut is now the unconditional per-item `MAX_LIST_ITEM_CHARS=800` trim (`context-doc.ts:52`); the 800/50 caps and the fact that the marker counts them are not mentioned. No cap/marker consequence; fix is a sentence.
+
+### N4 — suggestion — constant placement / dead guards
+`extensions/project-context/memory/context-doc.ts:19,54,60`, `report.ts:11`, `shared/limits.ts:21`
+- `MAX_LIST_ENTRIES` (render cap) lives in the renderer and is imported by `report.ts` only to build the log message, while its sibling `MAX_LIST_ITEM_CHARS` lives in `shared/limits.ts`; `Math.max(0, …)` at `:54` and `?? 0` at `:60` are unreachable (kept is a prefix of full; the `Record` type guarantees the lookup). Minor boundary/over-guarding smell, no functional impact.
+
+### Design note honesty
+`.codestable/issues/...-s2-context-design.md:3` (`status: implemented-pending-owner-review`) is accurate; it was updated in remediation to `entry`, the untrimmed `dropped` baseline, the 800/50 caps and the single-item invariant, and it keeps S4/read-side/configurable cap explicitly out. One small overstatement: the test list claims “满预算文档 ≤ cap”, but the test only checks `overhead + Σbudgets ≤ cap` (and the invariant), never a rendered budget-filled document; the reserve is pinned only by the `overhead === 349` constant. Nit, not a false claim about production behaviour.
+
+## Praise
+- The core deliverable is real: one table feeds prompt and renderer; the old `document.slice(0, MAX_CONTEXT_CHARS)` and unreachable branch are gone; the marker is emitted iff `dropped > 0`; the report wording now matches every clip path.
+- Cap guarantee verified vacuous-proof: layout = 299, every section filled to budget + 160-char title + marker = 25337 ≤ 32000; even a 6–7-digit marker can’t exhaust the >6.6k headroom left by `MAX_SUMMARY_CHARS`, so the marker-digit reserve assumption cannot break the cap.
+- Backward compatibility intact: `parse.ts`, `archive/`, `pass.ts`, `shared/` untouched; free-form read-side path unchanged.
+
+## Test And QA Focus
+
+Environment: `/tmp/s2v/repo` = `cp -a` of rev23. Commands:
+- `node tests/run-all.mjs` → **All 13 tests passed.**
+- `node tests/context-schema-test.mjs` → **ALL OK, 28 checks** (11 schema, 2 renderer, 9 clipping, 3 prompt, 3 log).
+- Mutation matrix run in `/tmp/s2v/mutants{,2}`; each mutant is a single-file copy with one production edit.
+
+Mutation → killing check (reverted production line):
+
+| Mutant (reverted line) | Killed by | Survives? |
+|---|---|---|
+| M1 remove Summary `maxChars` | budgets-exact, summary-cap, summary-clipped, marker-exact-summary | killed |
+| M2 share 0.35→0.30 | contract, shares-sum, budget-formula, scaled | killed |
+| M3 reserve=0 (`context-schema.ts:71`) | `overhead === 349` **only** | killed, weakly pinned |
+| M4 never append marker | 8 checks incl. all exact + log-once/second | killed |
+| M5 disable list budget loop | fits-cap, lists-clipped, written-fits-cap | killed |
+| M6 drop prompt context sections | prompt-lists, prompt-order | killed |
+| M7 detector always false | detector, marked, written-marked, log-once, log-second | killed |
+| M8 ignore overhead in budget | budget-formula, scaled (cap-sum survives: summary cap slack) | killed |
+| M9 remove `MAX_LIST_ENTRIES` slice | entry-cap-exact + `sync-test` “capped at 50” | killed |
+| M11a `dropped−1` | per-item-exact, entry-exact | killed |
+| M11b `dropped+1` | fitting-no-marker, summary-exact, per-item, entry-exact | killed |
+| M12 count against trimmed items | per-item-exact **only** | killed |
+| M13 swap section order | 7 checks incl. renderer layout + prompt order | killed |
+| M14a/b marker wording | shape + detector + all exact/marked/log checks | killed |
+| M17 detector always true | detector-near-miss, fitting-no-marker | killed |
+| M24/M25 drop gap/trailing reserve | `overhead === 349` only | killed |
+| M27 `MAX_LIST_ENTRIES=49` | entry-exact + sync-test | killed |
+| **M15** `trimLine` uses `.slice()` (surrogate) | **nothing** | **survives 13/13** |
+| **M16b** `fallbackUpdate` pre-trims 6000 | **nothing** | **survives 13/13** |
+| **M22a** total omits `openTasks.dropped` | **nothing** | **survives 13/13** |
+| **M26** `trimLine` without `normalizeLine` | **nothing** | **survives 13/13** |
+
+Non-vacuousness: the exact-count checks are now real (M11a/M11b/M12/M9 die), the summary/cap checks are real (M1), and the report/renderer checks are real (M4/M7). The only remaining near-vacuous area is cap-fit/reserve (M3/M8), which is asserted algebraically rather than by a rendered near-cap document.
+
+VERDICT: PASSED

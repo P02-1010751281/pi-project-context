@@ -1,0 +1,101 @@
+# S2 Audit — CONTEXT.md fixed schema + per-section budgets + truncation marker
+
+Audit performed read-only on `/tmp/pi-context-rev22` (all probes and test runs in `/tmp/s2-audit/repo`, a byte-identical copy). Final `git status --short` is identical to the start; no file in the sandbox was written.
+
+## Findings
+
+### 1. important — The marker silently under-reports field-cap losses (per-item 800 / fallback summary 6000)
+`extensions/project-context/memory/context-doc.ts:21-22,44-48,81`
+
+`trimLine` slices every list item to `MAX_LIST_ITEM_CHARS=800` **before** `clipList` builds `all`, so the cut characters never enter `dropped` (`clipList`'s comment at :40-41 "counts every character the render would have carried" is false). Same for `fallbackUpdate:81` (`trimLine(text, MAX_SUMMARY_CHARS)` before `clipProse`).
+
+Evidence (probe, /tmp copy):
+- `key_points: ["x".repeat(5000)]` → rendered item length 802, `isContextTruncated` false, **no marker at all**; 4200 chars vanish while the document looks complete.
+- Two 5000-char items → still no marker; 8400 chars lost.
+- `["x".repeat(5000), 30×900-char items]` → marker says `14454 dropped`, but the big item's extra 4200 chars were discarded unaccounted.
+
+Impact: this is exactly the failure mode S2 was meant to remove ("被裁掉的会话状态看起来像完整文档"). The marker/log are only as complete as `dropped`, which here is not complete.
+
+Minimal fix boundary: compute the `trimLine` loss in `clipList`/`fallbackUpdate` and add it to `dropped` (or explicitly narrow the marker contract and state it in the prompt). Do not touch budgets.
+
+### 2. important — The once-per-project log message is factually wrong in a reachable case
+`extensions/project-context/memory/report.ts:132-135`
+
+`isContextTruncated` also fires when the 50-entry (`MAX_LIST_ENTRIES`) cap drops items, and the summary is always a single normalized line, so "cut on a line boundary" is false for the most common clip. E2E probe: 60 short key points → CONTEXT.md = 957 chars, no section budget or 32000 cap exceeded, yet errors.log says:
+
+`CONTEXT.md exceeded a section budget (32000-character document cap): the over-long section was cut on a line boundary…`
+
+Impact: misleading diagnostics; steers operators at a cap that wasn't hit (and isn't configurable in scope).
+
+Minimal fix boundary: reword to "a section was clipped" / report which section(s); or only emit this message when a section's own budget was exceeded, not on the entry-cap path.
+
+### 3. nit — `trimLine` cuts surrogate pairs, bypassing the deliberate guard
+`extensions/project-context/memory/context-doc.ts:21-22`
+
+`.slice(0, 160/800)` can split a pair; probe left a lone high surrogate in the title (`…aaa\ud83d -->`) and in a list item (`- aaa\ud83d`). `clipToLineBoundary` (`document.ts`) explicitly avoids this, but the reachable per-item/title cut happens before it. Pre-existing behavior, no cap/marker impact (UTF-16 length unchanged), but the output mangles a character with no report. Minimal fix: route `trimLine` through a code-point/surrogate-aware cut.
+
+### 4. nit — The "single over-long item" branch is unreachable and untested
+`extensions/project-context/memory/context-doc.ts:47`; `docs/configuration.md:68`
+
+At fixed constants the smallest budget is 7912 (Open tasks) and a prefixed item is ≤802, so `kept[0].length > limit` can never be true; the branch (and the `listMarkdown` empty-filter at :26 that guards its `""` result) is dead in production. Mutant M12 (disable it) passes all 13 tests, and the docs claim "只有单项过长才切内部". Minimal fix boundary: delete it or make the budget/clip test exercise a small cap; don't leave it as an untested promise.
+
+### 5. nit — `kind` is dead production metadata
+`extensions/project-context/memory/context-schema.ts:19,30-32,35,80-85`
+
+The renderer dispatches on `entry` (`context-doc.ts:58-61`) and the prompt ignores `kind`; only the test asserts it. It can drift from `entry` without effect. Either use it to select the clipper or drop it.
+
+### 6. nit — Test holes that let real regressions survive
+`tests/context-schema-test.mjs:35,48,75`
+
+- The marker reserve is pinned only by the magic `overhead === 349`; the cap-fit checks have ~6.7k slack (exact-fill doc = 25288 vs cap 32000, because Summary's `maxChars=6000` frees 0.4·body−6000), so M3 (reserve=0) passes every cap-fit check, and M8 (ignore overhead) is only caught by the exact-formula checks (:40-44, :51).
+- Marker count is shape-checked only (`\d+`, :74); M11 (`dropped−1`) passes all 13 tests.
+- The `MAX_LIST_ENTRIES` interaction (:68, 50 items exactly) isn't covered; M9 survives the new test (killed only by `sync-test` "capped at 50 key points").
+
+Minimal fix boundary: fill sections to exactly their budgets (incl. >50 items and one over-800 item), assert the marker count equals measured loss, and assert the fixed layout equals the overhead formula; the summary cap means a "tight cap" assertion needs an explicit test seam or accepted magic constants.
+
+### 7. praise — The core deliverable is real, not a veneer
+- One table (`context-schema.ts:29-33`) feeds both the prompt (`prompt.ts:19-21`) and the renderer (`context-doc.ts:53`); shares sum to 1, floor + `min(share, maxChars)` is correct (`:85`).
+- Overhead math is sound: measured fixed layout (ISO + 160-char title, empty bodies) = 299 = formula-without-marker; truncated worst case = `overhead + Σbudgets − 1`, i.e. covers the header, timestamp, 3 headings, trailing comment and marker (1 char slack). The guarantee is real, though never binding (exact-fill doc 25288).
+- The old write-side `document.slice(0, MAX_CONTEXT_CHARS)` is gone from context-doc.ts — no dead guard left there.
+- Backward compat verified: free-form CONTEXT.md injected verbatim and unchanged (probe), `parse.ts` diff is 0 lines, archive/pass/shared diffs are empty, and only report/prompt/context-doc import the schema.
+- Prompt section list/order/budgets are generated from the table and the JSON key contract is intact.
+- `report.ts` once-per-process is correctly keyed (`contextCapWarned` by projectRoot); second truncated pass logs nothing (test passes).
+
+### 8. residual-risk — Read-side silent slice still exists (explicitly out of scope)
+`extensions/project-context/archive/archive.ts:120`, `extensions/project-context/memory/pass.ts:74`
+
+An externally written free-form CONTEXT.md >32000 is still silently sliced mid-line on injection (probe: 40007-char file injected as 32000). The design scopes read-side migration out, and the diff doesn't pretend to cover it — but the "no silent truncation" guarantee applies only to extension-written files.
+
+## Test And QA Focus
+
+Commands (run in `/tmp/s2-audit/repo`; identical tree): `node tests/run-all.mjs` → **All 13 tests passed**; `node tests/context-schema-test.mjs` → **ALL OK** (25 checks). Both were also run directly in the sandbox earlier? No — to honor the read-only rule they were run only in the copy; `git status` confirms no sandbox writes.
+
+Mutation matrix (per-mutant copies under `/tmp/s2-audit/mutants`):
+
+| Mutant | Killed by (context-schema-test check) | Full suite |
+|---|---|---|
+| M1 remove Summary `maxChars` | budgets-exact, summary-cap, summary-clip | killed |
+| M2 Key points share 0.35→0.30 | contract, shares-sum, budget-formula, scaled | killed |
+| M3 drop marker reserve | **only** `overhead === 349` | killed (same check) |
+| M4 never append marker | marked-truncated, positive-count, written-marked, log-once, log-second | killed |
+| M5 disable clipList budget loop | truncated-fits-cap, lists-clipped, written-fits-cap | killed |
+| M6 drop `...contextSections` from prompt | prompt-lists, prompt-order | killed |
+| M7 detector always false | detector-near-miss, marked, written-marked, log-once, log-second | killed |
+| M8 ignore overhead in budgets | budget-formula, scaled **only** (cap-fit survives) | killed (same) |
+| M9 remove `MAX_LIST_ENTRIES` slice | *nothing* | **survives S2 test; killed by sync-test 'capped at 50 key points'** |
+| M10 detector always true | detector-near-miss, fitting-no-marker | killed |
+| M11 `dropped` off-by-one | *nothing* | **survives all 13** |
+| M12 disable single-item inline clip | *nothing* | **survives all 13 (branch unreachable)** |
+
+Exact reverted production line → killing check:
+- `context-doc.ts:73` (`return document;`) → 5 checks including both log-once checks.
+- `context-doc.ts:46` (no list budget clipping) → cap/lists/written checks.
+- `context-schema.ts:30` (drop `maxChars`) → 3 checks; `:31` (change share) → 4 checks.
+- `context-schema.ts:73` (reserve=0) → only the `overhead === 349` constant.
+- `context-schema.ts:79` (`body = cap`) → 2 formula checks only.
+- `context-schema.ts:58-60` (detector false) → 5 checks; `prompt.ts:34` (drop context sections) → 2 checks.
+- `context-doc.ts:45` (drop entry cap) → no new check (sync-test covers); `context-doc.ts:48` (count arithmetic) → no check.
+
+Non-vacuousness: schema-contract, share/floor, prompt, marker-presence and report-log checks are genuinely non-vacuous; the cap-fit checks (`:48`, `:75`, `:64`, `:114`) are near-vacuous because the Summary `maxChars` leaves 6660+ chars of headroom, and two real behaviors (dropped count, single-item clip) are entirely unasserted.
+
+VERDICT: CHANGES-REQUESTED

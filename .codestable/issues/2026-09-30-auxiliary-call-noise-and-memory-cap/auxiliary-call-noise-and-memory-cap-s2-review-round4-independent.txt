@@ -1,0 +1,102 @@
+# S2 Round-4 Verification — `/tmp/pi-context-rev25`
+
+Read-only honored: every test/probe/mutant ran in `/tmp/s2r4/**` (a byte copy; `diff -rq /tmp/s2r4/repo /tmp/pi-context-rev25` is empty after all runs). `git status --short` and the working-tree file set are unchanged from the start; no file in the sandbox was written. The delta rev24→rev25 is exactly 5 files + the design note wording (context-doc.ts, context-schema.ts, report.ts, tests/context-schema-test.mjs, docs/configuration.md, design note), plus the round-3 review artifacts.
+
+## Round-3 findings NEW-1..NEW-6
+
+### NEW-1 — `clipProse` normalization unpinned: **RESOLVED**
+`tests/context-schema-test.mjs:118-119` now renders `summary:"a\n\n\n\nb"` and asserts `## Summary\n\na b\n`. Reverting `const normalized = normalizeLine(value)` (`context-doc.ts:34`) to the raw value fails **only** `a summary and item are normalized to one line` in the S2 test (M19 killed, 13/13 alone no longer passes). Evidence: mutation run + 2000-case fuzz (normalization never enters `dropped`).
+
+### NEW-2 — `full` baseline normalization unpinned: **RESOLVED**
+`tests/context-schema-test.mjs:120` asserts a padded item (`"  a  b  "`) renders normalized **and** raises no marker. Mutating `content` to keep raw items (`context-doc.ts:49-50`, M20) makes `full` 10 chars vs `kept` 5 and emits a false `_[context truncated: 5 characters dropped]_`; killed **only** by `normalization alone does not raise a truncation marker` (`:120`).
+
+### NEW-3 — once-per-project gate masked by `logError` dedupe: **RESOLVED, but the pin is fragile (new nit below)**
+The second pass now returns `reply("s".repeat(15_000))` (`tests/context-schema-test.mjs:180`) vs the first `longSummary` (9 000), so the logged count changes; removing `!contextCapWarned.has(projectRoot)` (`report.ts:134`, M22) fails **only** `a second truncated pass does not log again` (`:184`). Adding the count to the message (`report.ts:136`) was the enabling change. Caveat: combined mutants `gate-off + crDropped→0`, `gate-off + crDropped→NaN`, `gate-off + count-less message` all **survive 13/13** (see new finding 1) because no check asserts the logged number.
+
+### NEW-4 — singular marker accepted: **RESOLVED**
+`context-schema.ts:48` is now `/^_\[context truncated: (\d+) characters dropped\]_$/`. Re-adding `?` (M23) fails **only** `the detector rejects the singular marker shape` (`tests/context-schema-test.mjs:121`).
+
+### NEW-5 — docs "normalized but untrimmed": **PARTIALLY RESOLVED**
+`docs/configuration.md:68` and design line 18 now say `dropped` 以归一化但未 trim 的完整渲染为基准. However the design note's own design bullet still says `dropped` 以“未 trim 的完整渲染”为基准 (**design:32**) — same stale wording, one copy left. The cited docs location is fixed; the residual is documentation drift only.
+
+### NEW-6 — hoist + dead clamp: **RESOLVED**
+`context-doc.ts:58` now hoists `const budgets = contextSectionBudgets()` and uses it at `:60` and `:75` (one call per render; confirmed by grep). `clipProse` (`:33-37`) has no `Math.max(0, limit)`; the clamp at `context-schema.ts:86,91` is reachable for `cap < overhead` and remains. No production defect.
+
+## F1–F6/F8, N1–N4 re-check
+
+- **F1 (marker exactness)** holds and got stronger: my independent oracle (separate budget/overhead formula, code-point cutter) matched the appended marker on **2000/2000** randomized renders, marker-present iff `dropped>0`, and every render `≤ 32000`; per-item (`:86-87`), entry-cap (`:90-96`), fallback (`:130`) and all-sections (`:137`) checks still kill their mutants.
+- **F2 (log wording)** holds: `report.ts:136` lists the three real causes and the count; the "cut on a line boundary / exceeded a section budget" claim is gone. Normalization-only renders have no marker → `contextTruncationDropped` undefined → no log (probe).
+- **F3 (surrogates)** holds: `trimLine:25`→`clipToLineBoundary`; M17 (`.slice()`) is killed by `:108`. M18 (`trimLine` without normalize) dies at `:115`.
+- **F4 (unreachable single-item branch)** holds: branch gone; invariant pinned at `:51` (min budget 7912 > 802).
+- **F5 (dead `kind`)** holds: no `kind` anywhere in `context-schema.ts`.
+- **F6 (test holes)** holds for all previously pinned holes (M9/M11/M12/M13/M14/M15/M16/M19/M20/M21/M23 all killed by S2); reserve still pinned only by the magic `overhead === 349` (`:36`) and no full-budget render is constructed — the design note honestly records that (**design:44**).
+- **F8 (read-side silent slice)** unchanged and correctly out of scope: `git diff --stat` for `memory/parse.ts`, `archive/`, `memory/pass.ts` is empty; design still scopes read-side migration and a configurable cap out, and no code pretends to do them.
+- **N1** empty-item filter holds (M15 → `empty items render as None recorded`, `:101`). **N2** all four round-2 survivors now die (M14/M16/M17/M18). **N3** docs updated (configuration.md:68). **N4** constant moved to `limits.ts:24`, both cited dead guards gone; the unfilled-record mutant (M21) now dies on two checks.
+
+## New findings
+
+1. **nit (test hole / fragile pin) — the logged dropped count is never asserted, so NEW-3's pin can be silently re-masked.**
+   `extensions/project-context/memory/context-schema.ts:61-67`, `report.ts:132,136`, `tests/context-schema-test.mjs:177,184`.
+   Evidence: mutants `contextTruncationDropped` returns `0` (M26), `Number(match[0])` = `NaN` (M27), and message without `${dropped}` (M29) each **survive all 13 tests**; combined with gate-off they also survive (the second message becomes byte-identical and `logError`'s `scope\0headline` dedupe, `shared/error-log.ts:23,35,91`, swallows it). So the gate kill only works while the count happens to be present and change.
+   Impact: `errors.log` can report `0`/`NaN` or omit the count unnoticed, and the once-per-project Set can regress to a no-op again without any test failing.
+   Minimal fix boundary: in the second-pass block, assert `logged[0]` contains the exact number the written marker carries (e.g. `contextTruncationDropped(written)` compared against the marker) and that the two logged numbers differ; no production change needed.
+
+2. **nit — `contextTruncationDropped` picks the *first* marker-shaped line, not the appended one.**
+   `context-schema.ts:61-66` vs `isContextTruncated:56-58`; consumed at `report.ts:132-136`.
+   Evidence (probe): `{summary:"_[context truncated: 5 characters dropped]_", key_points:["y".repeat(5000)]}` renders a file whose real marker is `4200`, but `contextTruncationDropped` returns `5`; with no real clip (`summary` only) it returns `5` and `report.ts` would log “CONTEXT.md was clipped … 5 characters were dropped” although nothing was clipped (summary is a section body, so a whole line can match the anchored regex). Prior `isContextTruncated` had the same false-positive class, but the new function turns it into a fabricated number.
+   Impact: wrong/phantom clip diagnostics once per project per process (the stored file is unaffected); trigger is a model summary exactly equal to the marker line — the prompt forbids markers, but the previous render is injected and models drift.
+   Minimal fix boundary: make detection tail-scoped (marker must be the last non-empty line) or scan lines in reverse; one shared helper for both predicates.
+
+3. **nit (design-note drift) — the design still credits `isContextTruncated` to report and keeps the old `dropped` wording.**
+   `design:18` (“导出 `isContextTruncated` 供 report 告警”) vs `report.ts:12,132` which imports `contextTruncationDropped`; `isContextTruncated` is now test-only in production. `design:32` still says “未 trim 的完整渲染” while `:18` and configuration.md:68 say “归一化但未 trim”. Impact: reviewers/implementers reading the note get the wrong function and an incomplete baseline. Minimal fix boundary: two sentences in the design note.
+
+4. **suggestion (duplication) — two independent line scanners for one marker.**
+   `context-schema.ts:56-58` and `:61-66` parse/scan separately; this is exactly how finding 2's first-vs-any-line drift arose. Minimal fix boundary: implement `isContextTruncated(text) = contextTruncationDropped(text) !== undefined` (or a private `findMarkerLine`) once.
+
+5. **residual-risk — the 160-char title trim is still a silent field loss.**
+   `context-doc.ts:57` + `context-schema.ts:41-42`: a >160-char `title` is cut and never enters `dropped`/the marker (the test only checks surrogate safety, `:105-108`). This is deliberate metadata capping and predates S2 (not a section budget), but it is the one remaining `trimLine` loss with no trace; worth one sentence in the design's residual list.
+
+Quality bars: no over-engineering/fragmentation beyond the duplicated scanner; the one-table design (`context-schema.ts:27-31` → `prompt.ts:19-21`, `context-doc.ts:58-75`) is clean and the comments match the code; boundaries between renderer, prompt, report and archive are clear; the `ContextSectionBudget` file is readable and mutation-tight (23/23 mandated mutants killed). The `entry` union is spelled out in three places (`context-schema.ts:13-24,33`, `context-doc.ts:59,65`) — a tiny DRY nit, not worth changing alone.
+
+## Test And QA Focus
+
+Environment: `/tmp/s2r4/repo` = byte copy of `/tmp/pi-context-rev25`; nothing run in the sandbox.
+
+- `node tests/run-all.mjs` → **All 13 tests passed.**
+- `node tests/context-schema-test.mjs` → **ALL OK, 36 checks** (11 schema, 2 renderer, 15 clipping, 3 prompt, 3 log, +2 normalization/singular).
+- Independent differential probe: **2000/2000** renders had `dropped` == oracle, marker present iff `dropped>0`, `contextTruncationDropped` == appended marker, and length ≤ 32000.
+- `git diff --check` clean; `parse.ts`/`archive/`/`pass.ts` 0-line diff.
+
+Mandated mutation matrix (single reverted line, S2 test only; all are killed):
+
+| Reverted production line | Result | Killing check(s) |
+|---|---|---|
+| `context-schema.ts:28` remove Summary `maxChars` | killed | budgets-exact (`:41`), summary-cap (`:54`), summary-clipped (`:71`), marker-exact (`:72`), fallback (`:130`), both-lists (`:137`) |
+| `context-schema.ts:29` share 0.35→0.30 | killed | contract/shares-sum (`:31-33`), budget-formula (`:41`), scaled (`:53`) |
+| `context-schema.ts:80` marker reserve = 0 | killed | `overhead === 349` (`:36`) only |
+| `context-doc.ts:81` never append marker | killed | 6 marker/exact/log checks |
+| `context-doc.ts:81` always append marker | killed | fitting-no-marker (`:66`), normalization-no-marker (`:120`) |
+| `context-doc.ts:52` disable budget loop | killed | truncated-fits (`:81`), lists-clipped (`:82`), written-fits (`:176`) |
+| `prompt.ts:19-21` drop context sections | killed | prompt-lists (`:149`), prompt-order (`:150`) |
+| `context-schema.ts:56-58` detector false | killed | detector (`:38`), marked (`:79`), written (`:176`) |
+| detector true (same) | killed | near-miss (`:38`), fitting (`:66`), normalization (`:120`), singular (`:121`) |
+| `context-schema.ts:86` ignore overhead | killed | budget-formula (`:41`), scaled (`:53`) |
+| `context-doc.ts:51` remove `MAX_LIST_ENTRIES` slice | killed | entry-exact (`:96`), both-lists (`:137`) |
+| `context-doc.ts:53` `dropped ∓1` | killed | 5 / 6 exact checks |
+| `context-doc.ts:50` count against trimmed items | killed | per-item (`:87`), both-lists (`:137`) |
+| `context-doc.ts:79` omit `openTasks.dropped` | killed | both-lists (`:137`) only |
+| `context-doc.ts:49` disable empty filter | killed | empty-items (`:101`) |
+| `context-doc.ts:90` fallback pre-trim | killed | fallback (`:130`) |
+| `context-doc.ts:25` `.slice()` in `trimLine` | killed | lone-surrogate (`:108`) |
+| `context-doc.ts:25` `trimLine` without normalize | killed | title-normalized (`:115`) |
+| `context-doc.ts:34` `clipProse` without normalize | killed | summary/item-normalized (`:119`) |
+| `context-doc.ts:49` raw `full` items | killed | no-marker-on-normalization (`:120`) |
+| `context-doc.ts:60` unfilled `budgetByEntry` | killed | entry-exact (`:96`), both-lists (`:137`) |
+| `report.ts:134` remove once-per-project gate | killed | second-pass-no-log (`:184`) |
+| `context-schema.ts:48` singular detector | killed | singular-reject (`:121`) |
+| `context-schema.ts:28-30` swap order | killed | contract/budgets/layout/prompt-order |
+| `context-schema.ts:52` marker wording | killed | shape/detector/all exact/log checks |
+
+Survivors (not mandated, all test-only): `contextTruncationDropped → 0` (M26), `→ NaN` (M27), message without count (M29) — each survives all 13; adding back the removed gate masks the gate kill in each combination. No mandated mutant survives, and no production defect was found.
+
+VERDICT: PASSED

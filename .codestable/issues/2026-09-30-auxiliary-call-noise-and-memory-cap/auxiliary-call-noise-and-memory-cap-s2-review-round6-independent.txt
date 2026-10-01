@@ -1,0 +1,97 @@
+All verification work is complete. Here is the final report.
+
+# S2 Round-6 Final Verification — `/tmp/pi-context-rev27`
+
+Read-only honored: every probe/mutant ran in `/tmp/r6/**` (byte copies). I also ran `node tests/context-schema-test.mjs` directly in the sandbox and confirmed the tree was byte-identical before/after (`STATUS-CLEAN`, `FILES-CLEAN` against `/tmp/rev27-pre-{status,files}.txt`). `git diff --check` clean. No file in `/tmp/pi-context-rev27` was written.
+
+Delta rev26→rev27 is exactly two files (`diff -rq`): `extensions/project-context/memory/prompt.ts` and `tests/context-schema-test.mjs`, plus the round-5 review artifacts and session log. No production logic changed in this remediation.
+
+## 1. Round-5 findings
+
+**R5-1 — scanner whitespace tolerance unpinned: RESOLVED.**
+`tests/context-schema-test.mjs:46-51` adds `the scanner tolerates padding, CRLF and trailing blank lines`, feeding hand-built strings (not the production marker builder) to `contextTruncationDropped`: padded marker (`"  _[...]_  "`), CRLF (`"\r\n"`), and trailing blank lines. Mutating `context-schema.ts:61` from `text.split("\n").map(trim).filter(len>0)` to the trim-only `text.split("\n").filter(len>0)` now **fails only that check** (previously it survived all 38). I also killed three adjacent scanner mutants: dropping the blank filter (6 checks), `trimEnd()`-only (new check only), and last-raw-line (new check only). No scanner whitespace variant survives.
+
+**R5-3 — prompt names only the memory marker shape: RESOLVED.**
+`prompt.ts:41` now reads `... any line like \`_[memory truncated …]_\` or \`_[context truncated: … characters dropped]_\` ...`. The injected `<existing-context>` marker shape is therefore named. `memory-budget-test` still passes (it pins only the sentence prefix at `tests/memory-budget-test.mjs:43`). See nit below.
+
+**R5-2 — tail-scoping as a fresh-render policy: NOT A DEFECT (confirmed).**
+`context-schema.ts:60-64` tests only the last non-empty line; the sole consumer `report.ts:132` runs on the just-rendered `contextDocument` (`report.ts:129-131`) whose last non-empty line is the appended marker or the trailing title comment. The phantom test (`tests/context-schema-test.mjs:81-82`) pins that a marker-shaped summary is not a clip. Probe: a mid-file marker returns `undefined`; marker-only synthetic text is detected. Correct-by-contract.
+
+**R5-4 — overhead over-reserves the marker by one char: NOT A DEFECT (confirmed).**
+`context-schema.ts:82` reserves `marker(32000).length + 3`; `context-doc.ts:81` appends net `marker + 2` (drops the final `\n`, adds `\n\n` + marker + `\n`). One spare character, conservative. The cap still holds even when the dropped count grows past 5 digits because the Summary `maxChars=6000` leaves 6662 chars of slack: my extremes show a 1.5M-char summary → 6221 chars and dense 50×800 lists → 23855 chars, both ≤ 32000.
+
+## 2. Mutation matrix (all in `/tmp/r6`, S2 test only)
+
+Every mandated mutant is killed; **no mandated mutant survives**. "Reverted line → killing checks":
+
+| Reverted production line | Killing check(s) |
+|---|---|
+| `context-schema.ts:28` remove Summary `maxChars` | budgets-exact; summary-cap; summary-clipped; marker-exact; fallback; both-lists |
+| `context-schema.ts:29` share 0.35→0.30 | contract; shares-sum; budget-formula; scaled |
+| `context-schema.ts:82` marker reserve = 0 | `overhead === 349` only (see residual) |
+| `context-doc.ts:81` never append marker | marker-exact; marked; positive-count; per-item; entry-cap; fallback; both-lists; written; log-count; second-clip; second-no-log |
+| `context-doc.ts:81` always append marker | fitting-no-marker; phantom; normalization-no-marker |
+| `context-doc.ts:52` disable budget loop | truncated-fits-cap; lists-clipped; written-fits |
+| `prompt.ts:19-21` drop context sections | prompt-lists; prompt-order |
+| `context-schema.ts:60-63` detector false | detector; **scanner-tolerance**; marked; written; log-count; second-no-log |
+| `context-schema.ts:67-69` detector true | near-miss; fitting; phantom; normalization; singular |
+| `context-schema.ts:88` ignore overhead | budget-formula; scaled |
+| `context-doc.ts:51` remove `MAX_LIST_ENTRIES` slice | entry-exact; both-lists |
+| `context-doc.ts:53` dropped **+1** | fitting; phantom; marker-exact; per-item; entry-exact; normalization-no-marker; fallback; both-lists |
+| `context-doc.ts:53` dropped **−1** | marker-exact; per-item; entry-exact; fallback; both-lists |
+| `context-doc.ts:50` count against trimmed items | per-item; both-lists |
+| `context-doc.ts:79` omit `openTasks.dropped` | both-lists only |
+| `context-doc.ts:49` disable empty filter | empty-items |
+| `context-doc.ts:90` fallback pre-trim | fallback only |
+| `context-doc.ts:25` `.slice()` in `trimLine` | lone-surrogate |
+| `context-doc.ts:25` `trimLine` without normalize | title-normalized |
+| `context-doc.ts:34` `clipProse` without normalize | summary/item-normalized |
+| `context-doc.ts:49` raw `full` items | empty-items; normalization-no-marker |
+| `context-doc.ts:60` unfilled `budgetByEntry` | layout + 10 more |
+| `report.ts:133` remove once-per-project gate | second-pass-no-log only |
+| `context-schema.ts:48` singular detector | singular-reject only |
+| `context-schema.ts:62` scanner any-line | phantom only |
+| `context-schema.ts:62` scanner first-line | detector; **scanner-tolerance**; marked; written; log-count; second-no-log |
+| `context-schema.ts:61` scanner **trim-only (R5-1)** | **scanner-tolerance only** |
+| `context-schema.ts:63` crDropped → 0 | **scanner-tolerance**; log-count |
+| `context-schema.ts:63` crDropped → NaN | **scanner-tolerance**; log-count |
+| `report.ts:136` log without the count | log-count only |
+| `context-schema.ts:28-30` swap order | contract; budgets-exact; schema-order; budget-formula; summary-cap; layout; prompt-order |
+| `context-schema.ts:52` change marker wording | overhead; shape; detector; marker-exact; marked; positive-count; per-item; entry; fallback; both-lists; written; log-count; second-clip; second-no-log |
+
+Extra scanner variants I added: drop-blank-filter (6 checks), `trimEnd`-only (scanner-tolerance), last-raw-line (scanner-tolerance) — all killed. **32/32 mandated + 3 extra probes killed; zero survivors.**
+
+Fresh differential fuzz (independent oracle reimplementing normalization, code-unit surrogate-safe cutting, the budget formula, and the list algorithm): **3004/3004 exact document equality, 0 marker mismatches, 0 over-cap** (maxLen 8076 on the random corpus); deterministic extremes gave exact marker counts and cap compliance (6221 / 23855 / 7160), marker always the last non-empty line, no lone surrogates.
+
+## Findings
+
+1. **praise — the R5-1 remediation is a genuine, minimal pin.** `tests/context-schema-test.mjs:46-51`. Evidence: the previously surviving trim-only mutant at `context-schema.ts:61` is now killed by exactly this check (and only it), plus adjacent scanner variants. Impact: the scanner's tolerance for padded/CRLF/trailing-blank markers can no longer regress silently. No fix.
+
+2. **nit — the new prompt marker-shape phrase is not pinned by any test.** `prompt.ts:41` vs `tests/memory-budget-test.mjs:43` (asserts only `"Never write omission or truncation markers"`). Impact: a future rewrite could drop the context-shape example unnoticed, causing the model to occasionally copy `_[context truncated: …]_` from `<existing-context>` into section bodies (no false clip — tail-scoping still protects the detector). Minimal fix boundary: extend the existing memory-budget prompt assertion to require the context shape; no production change.
+
+3. **nit (test hygiene) — `MARKER_LINE` at `tests/context-schema-test.mjs:20` is unanchored.** `markerCount()` scans the whole file, so if a future fixture combined a marker-shaped summary with a real clip it would read the summary's number. Current fixtures cannot hit this (the log test uses `longSummary`/`"s".repeat(15_000)`). Minimal fix boundary: anchor to the last non-empty line or reuse the tail policy in the test-local reader; no production change.
+
+4. **nit (cosmetic duplication) — the `entry` union is spelled twice.** `context-schema.ts:13` (`ContextSectionSpec.entry`) and `:33` (`ContextSectionBudget.entry`), plus the two `Record<…["entry"], …>` maps at `context-doc.ts:59,65`. Same as prior rounds; readable, harmless, not worth churn alone.
+
+5. **residual-risk (accepted) — the marker reserve is pinned only by the magic constant `overhead === 349`.** `context-schema.ts:82`, `tests/context-schema-test.mjs:43`. Mutating the reserve to zero kills only that one assertion; no full-budget render is constructed. The reserve itself is conservative (finding R5-4), so this is a pin-strength residual, not a correctness gap. Minimal fix boundary (optional): one render built exactly at `overhead + Σbudgets + marker` and asserted `≤ cap`.
+
+6. **learning — `isContextTruncated` has no production consumer.** `context-schema.ts:67-69`; `report.ts` uses `contextTruncationDropped` directly, tests use both. It mirrors the memory-module symmetry and is exercised, so no action.
+
+7. **learning — S2 remains forward-compatible with free-form CONTEXT.md.** `parse.ts`, `archive/`, `memory/pass.ts` have 0-line diffs; `archive.ts:117` only reads (`readOptional`) and injects. Nothing pretends to implement S4, a configurable context cap, or read-side migration; the design explicitly scopes them out.
+
+## Design-note honesty
+
+The note is accurate against the code: `status: implemented-pending-owner-review` matches an unreleased working tree; the fixed table/shares/`maxChars`/`MAX_LIST_ITEM_CHARS`/`MAX_LIST_ENTRIES`/`dropped`-baseline/marker/tail-scope/log-once claims all match `context-schema.ts`, `context-doc.ts`, `report.ts`; the title-160 trim is honestly recorded under `已知残留`; the test section's claims (contract, overhead, formula+scaling, invariants, prompt budgets, exact loss counts, surrogate safety, phantom rejection, no-marker on fitting docs, tail-strict detector) all exist in `tests/context-schema-test.mjs`, and the parenthetical `（不构造满预算渲染文档）` is honest. It does not enumerate the new whitespace-tolerance check, but the list is representative, not an inventory — no drift.
+
+Quality bars: no over-engineering, fragmentation, over-guarding, unclear boundaries, or unreadable code. The one-table design (`context-schema.ts:27-31` → `prompt.ts:19-21`, `context-doc.ts:58-75`) keeps renderer/prompt/report/archive boundaries clean; the only duplication is the cosmetic `entry` union noted above.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (byte copy `/tmp/r6/base`) → **All 13 tests passed** (`context-schema-test.mjs … ok`).
+- `node tests/context-schema-test.mjs` → **ALL OK, 39 checks** (was 38; +1 scanner-tolerance check), both in the byte copy and directly in `/tmp/pi-context-rev27` (tree verified byte-identical after).
+- Mutation matrix: **32/32 mandated + 3 extra scanner probes killed, zero survivors**; the R5-1 line `context-schema.ts:61` trim-only mutant is killed only by `tests/context-schema-test.mjs:46-51`; `crDropped→0/NaN` are now double-killed (scanner-tolerance + log-count).
+- Fuzz: 3004/3004 exact renders vs an independent oracle; 0 over-cap; extremes exact; no lone surrogates.
+- Scope: `parse.ts`/`archive/`/`pass.ts` 0-line diff; no out-of-scope code.
+- Adversarial hunt found **no new blocking or important problem**; the items above are nits/learnings/accepted residuals.
+
+VERDICT: PASSED
