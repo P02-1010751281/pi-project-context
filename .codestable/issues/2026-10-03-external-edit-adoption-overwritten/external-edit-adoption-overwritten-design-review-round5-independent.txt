@@ -1,0 +1,101 @@
+# R5 独立设计评审（lane A）——设计 v4.1
+
+审于 `/tmp/pi-context-rev32`（HEAD `2ef637a`，设计 md5 `220728ac7b89ea59c01df6647408f97c` = `/tmp/rev32-live-md5.txt`）。只读：`git status --porcelain -uall` 仅 4 个 `.agents/memory/*` 开轮前已有改动，无新增/未跟踪文件；设计 md5 未变。复现脚本退出码 0（bug 仍在，符合"未实施"预期）；`memory-ops-test` 全绿。探针在 `/tmp/rev32-probes/`：`lib-v41.mjs`（用真实 `journal/document/poison/files/gitignore/store` 原语逐字实现 v4.1 §6 九步）、`probe-v41-timings.mjs`（41 断言全绿）、`probe-existing-combo.mjs`（3 断言全绿，用于 IM-1）。
+
+---
+
+## A. R4 逐条复核
+
+| R4 项 | v4.1 处置（章节/行） | 判定 | 依据 |
+|---|---|---|---|
+| **IM-1** 发布侧副作用未门在 `written:true` | §9 两类分开，`design:197-214`；验收线进 T9 `design:316` | **部分解决（残留 important）** | 方向对：class 1 覆盖了 overflow/cap 计算/三类 errors.log/notify/`memoryRemovalWarned`/`contextShapeWarned`；`lastWrite` 用 keep-adoption `delete` 兜住 `:204-216` 的下游。但（a）class 1 清单把整个 `:232-259` 列入，其中 `:234-237` 的 `!memoryChanged` toast **不描述 memory 发布**，字面门在 `written:true` 会杀掉"CONTEXT 被重写而 memory 保留"这个 design 自称"合法组合"的可见性（probe 实测今天必发此 toast，见 IM-1）；（b）`contextShapeWarned`（`:138/:145`）的门谓词应是"回复被丢弃"而非"发布过 memory"（probe 实测非 stale 的 heading-only 路径今天会烧掉并留错日志，v4.1 字面实现会永久压制）；（c）漏 `report.ts:228-230` 的 clipped errors.log（见 IM-2）。 |
+| **IM-2** §8 句表缺"重跑产出但 `memoryChanged===false`" | §8 补第 6 行，`design:192`；退出形态四种 `design:225-226` | **已解决（分类唯一性成立）** | 枚举可验证：`outcome2===undefined` 或 `version===outcome1.version`（`pass.ts:150/154` 的 cached 回放）⇒ row 4；`version` 递增且 `memoryChanged===false`（`report.ts:132`，无 `MemoryWriteResult`）⇒ row 6；`version` 递增且 `memoryChanged===true` 时必进写路径，`written:false`（step 4 或 step 8）⇒ row 5，`written:true` ⇒ row 3。四者互斥完备。行 6 与 `update` 的交互有措辞瑕疵（nit-4）。 |
+| nit-1 `pass.ts:151` | F6 `design:77`、`design:31` | 已解决 | `pass.ts:151` 确为 forceDedupe 返回。 |
+| nit-2 `store.ts:87-160` | `design:88` | 已解决 | `loadMemory` 起 `:87`、闭合 `:160`（文件末行）。 |
+| nit-3 读侧 clip `:138-142` | `design:93` | 已解决 | `store.ts:138` `raw.trim()`、`:142` `clipToLineBoundary(current…)`。 |
+| nit-4 清空守卫 `store.ts:106` | R-1 `design:283` | 已解决 | `:106` 是读侧 `renderRaw.trim()` 守卫；写侧 `:63` 同时保留。 |
+| nit-5 T2 断言 | T2 `design:309` | 已解决 | `resolveAuxModel` undefined ⇒ `pass.ts:158-159` 返回 undefined；断言 `outcome2===undefined` 可判。 |
+| nit-6 命令回复文本钉死 | §17.1 `design:362-366` | **部分解决（nit 残留）** | 只给了"二选一，实施时定并写进本项"；文本仍未定稿。 |
+| nit-7 row 5 括注限定 step 8 | `design:191` | 已解决 | 已写"仅当该次在第 8 步被判陈旧…否则从未 append"。 |
+| nit-8 cap 变更假陈旧 | R-17 `design:296` | 已解决 | 已记录；`report.ts:126` 与 `pass.ts:161` 两次读 config 是事实依据。 |
+| nit-9 `kept` 非文件字节 | `design:120-121` | 已解决 | probe 复核 `kept==fold==loadMemory().text`，CRLF/尾空格下与 `MEMORY.md` 原始字节不同。 |
+| nit-10 D2 两处 + residual-1 | `design:220-222` | 已解决 | fix note §3 `over-cap-reply-persistence-fix-note.md:72` 与 §4 `:97` 确实都要改；§5 residual-1 `:106-108` 行动项已点名。 |
+| nit-11 step8 append 在 rotation 后 | R-12b `design:295` | 已解决 | `journal.ts:111` rotation 用默认 32000 折叠；append 发生在 `recordMemoryDocument` step 7 之后，描述准确。 |
+
+---
+
+## blocking
+
+无。v4.1 的九步流程经四时序探针（41 断言）未发现数据丢失/活锁/陈旧发布/编辑丢失；no-edit 与今天逐 op/text 及 `MEMORY.md` 字节一致；窗口编辑被 step 8 捕获并成为重跑基线。
+
+## important
+
+**IM-1 §9 class 1 谓词过宽：`!memoryChanged` notify 与 `contextShapeWarned` 被错误归入"memory 发布"，字面执行会回归 design 自己声明要保护的既有组合。**
+- `file:line`：`design:201-206`（class 1 含 `:232-259` 全块、`:138/:145`）；`report.ts:232-237`（`!memoryChanged` toast）、`:135-151`（contextShapeWarned 消费）、`:202-203`（"context rewritten while memory kept"注释）、`:217-226`。
+- 影响：`memoryChanged===false`（heading-only/opaque<40）时 `recordMemoryDocument` **根本不会被调用**，按 `design:205-206` 的字面写法它也是 `written:false` 的 attempt ⇒ ①今天必发的 toast `Project context updated; project memory was kept unchanged`（probe 输出 `["info:Project context updated; project memory was kept unchanged."]`）消失；②`contextShapeWarned` 永不消费/永不落日志——对"模型长期只回四标题骨架 + context 形状漂移"的稳态，今天的 once-per-process 日志被永久压掉（probe 两 fixture 今天均落 `carried a context section that could not be used`）。注意这与"回复被丢弃"无关：这条路径的 context 会被写入/保留，回复并未被丢弃，`design:203-204` 给出的豁免理由（"回复被丢弃时不该烧掉"）不适用。
+- 修复边界：class 1 只保留"描述 memory 发布"的分支（`storedPoisoned`/`cappedSections`/`cappedMemory`/`clipped`/`updated` 五个 notify 分支与三类 errors.log）；`!memoryChanged` toast 保持今天行为；`contextShapeWarned` 的门改为"该 attempt 被 superseded/回复被丢弃"，非 stale 的 no-write 路径照旧消费。
+
+**IM-2 class 1 清单漏 `report.ts:228-230` 的 clipped errors.log。**
+- `file:line`：`design:202-203`（清单）；`report.ts:228-230`。
+- 影响：条件 `outcome.clipped && (memoryChanged || update)` 在"最终 attempt 陈旧（`written:false`）但 memoryChanged===true、update===undefined"时仍成立 ⇒ 写出 `consolidation shortened the existing memory or context…`——关于一次并未发生的发布的 errors.log。这正是 R4-IM-1 要消灭的日志类，且 §8 row 5/6 与 INV-3 都要求该路径不得有发布侧后果。触发需要 clipped prompt + stale，窄但确定。
+- 修复边界：把 `:228` 纳入 class 1（或以 `written || update` 收紧条件），并在 §8 row 5/6 的"不执行任何发布侧副作用"里点名该类 errors.log。
+
+**IM-3 T9 的验收线与 §9 class 2 直接矛盾，且 pass 侧 removal 日志使其在自然 fixture 下不可满足。**
+- `file:line`：`design:316`（"keep-adoption 退出后 … CONTEXT.md 未变"）；`design:207-209`（CONTEXT 写入与 memory 发布解耦）；`pass.ts:300-317`（regression 计算与 `:315` 的 errors.log 在 pass 阶段、早于 report 的陈旧判定）。
+- 影响：①只要 keep-adoption 那次重跑带可用 context（row 6 的 opaque<40 完全可能带 context；row 4 用的是被丢弃 attempt 1 的 outcome），`:217-226` 按 class 2 就会写 CONTEXT.md ⇒ "CONTEXT.md 未变"为假。②若被丢弃的回复删了条目，`pass.ts:315` 已在 errors.log 留下 `memory regression: N … no longer present`；report 层的 `memoryRemovalWarned` 门拦不住它 ⇒ "errors.log 无 removal 行"为假。T9 作为 R4-IM-1 的验收线需要 fixture 前置条件或改断言，否则实施者会为让 T9 绿而把 CONTEXT 也门掉（即 v4.1 自己避免的回归）。
+- 修复边界：T9 明写"重跑回复不带 context（或既有 CONTEXT 非空、update=undefined）"；断言改为"CONTEXT.md 未因 memory 发布而变；若回复带 context 则按既有无门路径更新"；对 `pass.ts:315` 决定"移到 report 并门在发布"或"接受并把这行加入 T9 的例外"。
+
+## nit
+
+1. `design:30/229/358` 引 `report.ts:226`：`memoryChanged || update ? … : "unchanged"` 的实际赋值在 **`:227`**（`:226` 是 `if (update)` 的闭括号）。v4.1 自己新增的行号偏移，2 处。
+2. `design:25-26/208` 引 `report.ts:203-205` 的注释：注释实际在 **`:202-203`**，`:204` 已是 `lastWrite.set`。同上，2 处。
+3. `design:203` 引 `report.ts:185-197` 概括三类 errors.log：cap 那条调用跨 **`:195-199`**，区间截断在语句中间；建议写 `:185-199`。
+4. §8 row 6（`design:192`）措辞"the re-run's reply carried nothing usable and was discarded"未区分 memory/context：row 6 完全可能带合法 context 并被 class 2 写入。建议改成"carried no usable memory"。同一问题使 T9 更需前置条件（IM-3）。
+5. 重跑自身若在 step 2 采纳了新的外部编辑（`adopted` 来自 attempt 2），§8 的 row 3-6 句子都不提它；row 1 的采纳句按"循环状态优先"不会出现。只有 store 的中性日志（`design:179`）可见。属可接受的可见性损失，但建议在 §8 注明"重跑的采纳只走中性日志"。
+6. R4 的 residual-risk（进程在 step 6 与 step 8 之间被杀、窗口编辑只在 `MEMORY.md` 上，下次 step 2 因 journal mtime 更新而不采纳）**未进 §12**；v4.1 只保留 R-2（step 8 读→rename）。两窗口性质不同，建议并入 R-2 或新增 R 项。
+7. `design:300` R-16 说"`MEMORY.md` 保留编辑、journal 末条是该编辑、且 `rendered` 在历史中"三者自洽——探针确认（fold==`resolveMemory().text`==`key(MEMORY.md)`，文件仍 `nowRaw`）。但 R-16 未说明*重跑成功后*末条不再是编辑；T13 的两段已覆盖，措辞可收紧。
+8. R4 suggestion"R-4 概率不变"未采纳：重跑把 `activeConsolidation`（`pass.ts:135`，模块级、不按 root 键）join 机会从 1 次变 2 次；且 §7 的 version 断言**识别不了跨 project 的 join**（version 全局递增，别的 project 的 outcome 版本不同）。最坏后果被 step 3 的 `basisKey` 比较兜住（不会写错 memory），但结果句会误报"pass was re-run"。建议把 R-4 措辞改回 R4 的建议并在 §7 注明"version 断言只排除 cached 回放，不排除 join"。
+9. T9 `design:316` 的"`consolidateReply("superseded")` 在 `memoryKept` 分支之前短路"：既然 keep-adoption 要求 `lastWrite.delete`，`info` 为 undefined，`memoryKept` 分支本就不可达；短路顺序对"superseded"而言是多余的。真正需要的是 `consolidateReply` 里新增的 `report==="superseded"` 分支（§17.1 未定稿）。
+10. T11 `design:318`"留档失败不阻断"在现行真实 fs 测试下**不可构造**：`saveOverflowReply` 在发布后、无 seam 可注入失败，`saveOverflowReply` 未导出；需新增 post-publish 失败 seam 或明示该断言降级为单元级（直接调用不可行）。
+11. T13 `design:320` 引 `resolveMemory().text`：§5 明确 `resolveMemory()` 是**内部**函数，测试只能断言 `loadMemory().text`。措辞应改。
+12. T10 `design:317`"实测 completion 数 = 具名常量"：§3 `design:60-62` 未给常量名（如 `MAX_ATTEMPTS_PER_CONSOLIDATE`/`MAX_COMPLETIONS_PER_ATTEMPT`）与取值，测试计划无法先写死断言。
+
+## suggestion
+
+- 在 §9 增加一张"副作用 × 主体"小表（memory 发布 / context 发布 / 回复形状 / 回复留档），把每条 effect 的归属写死；本轮的两处分类错误都来自按行块而不是按主体归类。
+- T9 增补 fixture 前置条件；T11 的"留档失败"若不做 seam，就把该条移到 store 级单测并说明。
+- §8 增一行"最终 attempt 陈旧 + 重跑抛异常（provider 失败）"的落点说明：今天走 `catch` 返回 `"failed"`，用户看不到"编辑已保住"；至少让 §12 记录"此时唯一可见的'not published'是 store 的中性 errors.log 行"。
+
+## learning
+
+- **"written:true"不是"回复未被丢弃"的充分谓词**：`memoryChanged===false` 是一条**既有的 no-write 路径**，在这条路径上 CONTEXT 可写、回复并未被丢弃。门控应按"决策状态"（published / superseded-discarded / no-write-as-before）三态，而不是按写结果两态。
+- step 8 的**字节谓词顺带关闭了 R-1 的窗口变体**：mtime 被回拨（`cp -p`）的编辑若落在 step 1 之后，step 8 仍以 `nowKey !== renderKey` 检出并 append；R-1 只覆盖"编辑早于 pass 读取"的 mtime 回拨。这里"读自己的字节"比读有效内容强的第二层价值，值得写进 §6 要点。
+- `kept`/`adopted` 都是规范化键；probe 再次确认 `journal` 末条、fold、`loadMemory().text` 三者逐字节一致，而 `MEMORY.md` 可保留 `nowRaw`。测试断言应只比较 `memoryComparisonKey`/fold。
+
+## praise
+
+- §9 的"两类分开"方向正确且必要：自查抓住了 `lastWrite`/CONTEXT 的真回归，避免了 R4-IM-1 字面执行。
+- 四时序回归探针全绿：no-edit 与今天逐 op/text 和 `MEMORY.md` 字节一致；窗口编辑 → `written:false external-edit-during-publish`、`nowKey` append、`MEMORY.md` 保留 `nowRaw`、重跑 `basisKey === key(E)` 且含 E 字节、最终 `E→D`；清空按 R-15 发布且无"未发布"日志；clear-then-write、same-as-rendered、CRLF 均符合 §6 定稿。
+- R-16 经探针独立验证：`resolveMemory().text === fold`、`key(MEMORY.md) === fold`（文件仍 `nowRaw`）。
+- R4 的 11 条 nit 中 10 条真解决，行号修正（`:151`/`:160`/`:138-142`/`:106`/`:92-93`）经源码逐一对照无误。
+
+## residual-risk
+
+- R-2（step 8 读→rename）与 R-1（mtime 回拨、窗口清空）仍成立；新增未记录的 step6→step8 崩溃窗口（nit-6）。
+- keep-adoption（row 4/6）下被丢弃回复的 context 仍按 class 2 写入/保留，日志只谈 memory——设计明示接受的解耦，但测试必须显式覆盖该组合，否则会像 T9 一样写出自相矛盾的断言。
+- F9 跨 project join + rerun：写路径靠 `basisKey` 兜底，不丢数据；但 version 断言不足以说明"重跑发生"（nit-8）。
+- R-5（未升级 peer）、R-13（留档只增不减）、R-17（cap 中途变更）按设计接受，复核无变化。
+
+---
+
+## Test And QA Focus
+
+1. **最高优先**：把 `/tmp/rev32-probes/probe-v41-timings.mjs` 的 8 组时序（no-edit / edit-early / during-call / step3-6 window / clear / clear-then-write / same-as-rendered / CRLF）固化为 `tests/external-edit-test.mjs` 的 T6/T13；no-edit 用"真实 `recordMemoryDocument`（无 basisKey）vs 九步流程"的 op/text 序列 + `MEMORY.md` 字节双 md5 断言。
+2. **IM-1 验收线**（补 T9）：构造 heading-only + unusable context 的 **非 stale** pass，断言今天的两条行为仍成立——toast `Project context updated; project memory was kept unchanged` 存在、errors.log 有 `carried a context section that could not be used`；再构造 stale keep-adoption，断言 `memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned`/`contextShapeWarned` 未消费、无 cap/removal 发布侧行。
+3. **IM-3 fixture 前置**：keep-adoption 用例的二段 reply 明确不带 context（或既有 CONTEXT 非空使 `update===undefined`）；另加一条"重跑带 context"用例断言 class 2 按既有路径写 CONTEXT 且结果句仍为 superseded。
+4. **IM-2**：stale final attempt + `outcome.clipped===true` + `update===undefined`，断言 errors.log **不**出现 `consolidation shortened`。
+5. §8 row 4/5/6 区分：断言只看 `outcome2===undefined || version===outcome1.version`（row 4）/ `version` 递增 + 无 `MemoryWriteResult`（row 6）/ `written:false`（row 5）；row 5 再分 step 4 与 step 8 两个注入点断言回复是否在 journal 历史（`design:191`）。
+6. 命令路径：`/memory update` 在 keep-adoption 下断言 `consolidateReply` 命中 `"superseded"` 分支、不落 `memoryKept`/fallback 文案；文本定稿后写进 §17.1 与测试。
+7. §17 定稿后再开 R6；本轮 R4 的 10/11 nit 已闭合，IM-1 的谓词与 T9 前置是下一版最小改动面。
+
+VERDICT: CHANGES-REQUESTED

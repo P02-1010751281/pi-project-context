@@ -1,0 +1,50 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 5 轮）**。被审工件 = **设计 v4.1**（尚未实施，无代码 diff）。工作区 `/tmp/pi-context-rev32`（**先 cd 进去**）。
+
+**独立性**：前四轮结论是同行意见，不是事实。R1（v1）2 blocking+8 important；R2（v2.1）0+5；R3（v3）**1 blocking**（第 8 步检出却不 append）+1 important+12 nit；R4（v4）**0 blocking+2 important**（发布侧副作用未门在 `written:true`；§8 句表缺一格）+11 nit。v4.1 声称已按 R4 处置，**且在开本轮前自查发现 R4-IM-1 的字面执行会造成回归**（`lastWrite` 与 CONTEXT.md 写入今天就与 `memoryChanged` 解耦，`report.ts:203-205` 的注释明确"context rewritten while memory kept"是合法组合），故 §9 改为"两类副作用分开"。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev32`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`）。四轮共靠 probe 找出 3 条 blocking 与 8 条 important。也允许跑 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev32-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（v4.1）
+3. 同目录 `external-edit-adoption-overwritten-report.md`、`external-edit-adoption-overwritten-review-report.md`、`...-design-review-round{1,2,3,4}-independent.txt`、`repro-write-ordering.mjs`
+4. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document,prompt,input}.ts`；`extensions/project-context/shared/{lock,gitignore,project-state,migrate,files,llm}.ts`
+5. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 本轮必须做的四件事
+
+**A. 逐条判定 R4 的 IM-1 / IM-2 / 11 nit 是否真解决**（给 v4.1 章节 + 源码头文件行号 + 依据）。IM-1 要特别判断 v4.1 的"两类分开"是否**既修掉了谎报、又不破坏既有组合**：
+   - 类别 1（门在 `written:true`）的清单是否**完整且正确**（有没有漏掉某个"描述刚发布了一次 memory"的副作用，例如 `neededChars`/`cappedMemory`/`cappedSections` 的下游消费者、`report` 变量的 `"clipped"` 分支、`:228` 的 clipped errors.log）；
+   - 类别 2（保持解耦）是否真的与 `report.ts:203-226` 一致；`"superseded"` 早于 `:226` 赋值、并短路 `:232`/`:345` 的改法在现有控制流里是否可实现、有无遗漏消费点。
+
+**B. 攻 v4.1 新引入/改动的部分**（本轮重点）：
+   - §8 句表现在六行：**互斥性与完备性**逐行验（含"重跑产出 outcome 但 `memoryChanged === false`"新格与 `update` 存在/不存在两种子情形）；断言"重跑未发生/未产出 outcome"与"产出但也被判陈旧"能由 `outcome2 === undefined` / version / attempt2 的 `MemoryWriteResult` 唯一区分。
+   - §6 第 8 步的触发式 + append `nowKey`：**四时序穷举回归**（编辑早于读取 / 模型调用期间 / 发布窗口内（含清空、CRLF、与 `rendered` 同键、先清空再写）/ 无编辑），给出每种"第几步触发、最终 fold 与 `MEMORY.md`、日志句"。用 probe 验最关键的两条：**无编辑时逐字节等于今天**、**窗口编辑后重跑 `basisKey` 含该字节**。
+   - §9 的 overflow 移到"发布成功之后"：与 `memoryCapWarned` / toast 文案/ `saveOverflowReply` 失败路径的交互；对 D2 fix note 要求的两处同步是否已写全。
+   - §12 的 R-16（"三者自洽"）：验 `resolveMemory().text`、`foldMemoryJournal`、`MEMORY.md` 在窗口陈旧后的关系（含 `nowKey` 被 append 而文件上仍是 `nowRaw` 的情形）。
+   - §13 的 T1–T14：逐条判"能否构造、断言是否可判"；尤其 T6（seam 位置）、T7（row 5/6 两格）、T9（副作用门验收线）、T11（去重）、T13（rotation 限定）。
+
+**C. 对抗性一轮**：假定 v4.1 仍藏 bug（数据丢失 / 活锁 / 编辑仍未保住 / 正常路径被误判陈旧 / 日志说谎 / 既有组合被破坏）去找它。找不到要说清搜过哪些面。
+
+**D. 文档准确性**：v4.1 引用的行号、常量、函数名、断言方向是否都对（前四轮共抓到 8 处行号偏移，含本轮 v4.1 自己新增的）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节复核表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条 `file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出。
+- 只有以下情况给 `PASSED`：R4 的 IM-1/IM-2/11 nit 全部真解决、v4.1 新改动（尤其 §9 的"两类分开"）你**实测/逐行**判定无 blocking/important、四时序回归无倒置、§17 四项定稿合理。
+- 若设计已可实施，把"实施时必须注意但不必再改设计"的点放进 `learning`/`residual-risk`，不要为凑发现而降级判定。

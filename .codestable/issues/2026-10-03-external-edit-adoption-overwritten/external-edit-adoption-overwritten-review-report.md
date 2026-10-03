@@ -14,6 +14,7 @@
 | R2 | 设计 v2.1（v2 + 开轮前自纠；沙箱 HEAD `0118cab`） | **CHANGES-REQUESTED** | **0 blocking** + 5 important（IM-1…IM-5）+ 10 nit + 4 suggestion + 3 learning；R1 的 B1/B2/I1/I3/I7/I8 判「已解决」，I2/I4/I5/I6 判「部分解决」 |
 | R3 | 设计 v3（沙箱 HEAD `8907b3a`） | **CHANGES-REQUESTED** | **1 blocking**（B-1）+ 1 important + 12 nit。R2 的 IM-1…IM-5 判「已解决」（契约/类型层面）；B-1 是 v2→v3 重排时**丢掉了 R1 修复边界里明写的那个动作** |
 | R4 | 设计 v4（沙箱 HEAD `06f0903`） | **CHANGES-REQUESTED** | **0 blocking** + 2 important（IM-1 发布侧副作用未以 `written:true` 为门；IM-2 §8 句表缺一格）+ 11 nit。R3 的 B-1/IMPORTANT-1/12 nit 除 N-2 判「部分解决」外全部「已解决」，且 B-1 用 probe 在 7 种编辑形态上验证闭合 |
+| R5 | 设计 v4.1（沙箱 HEAD `2ef637a`） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（class 1 谓词过宽；§9 漏 `:228-230`；T9 断言与设计自相矛盾）+ 12 nit。四时序探针 41 断言无数据丢失/活锁/倒置；no-edit 与今天逐 op/text 及字节一致；R4 的 11 nit 中 10 条真解决 |
 
 ### R1 发现（按评审分桶）
 
@@ -243,3 +244,63 @@ md5sum -c /tmp/rev31-live-md5.txt                                              �
 ### R4 处置
 
 → 设计改 **v4.1**（IM-1/IM-2 + 11 nit），然后按协议**开 R5**。
+
+## R5 轮次详情
+
+| 项 | 值 |
+|---|---|
+| 被审候选 | 设计 v4.1（沙箱 HEAD `2ef637a`） |
+| 裁决 | **CHANGES-REQUESTED**（**0 blocking** + 3 important + 12 nit） |
+| transcript | `external-edit-adoption-overwritten-design-review-round5-independent.txt`（16195 字节） |
+| 沙箱 | `/tmp/pi-context-rev32`（342 文件基线） |
+| provider 失败 | 无 |
+
+### R5 的核心结论（已按它改 v5）
+
+**学习 L-1（改变了设计）：`written:true` 不是"回复未被丢弃"的充分谓词。**
+`memoryChanged === false`（heading-only / opaque < 40 字符）是一条**既有的 no-write 路径**：`recordMemoryDocument`
+根本不被调用、CONTEXT 照写、回复并未被丢弃。v4.1 把副作用按"写结果两态"门控，按行块圈定，于是同时**多**门掉
+`!memoryChanged` 的 toast 与 `contextShapeWarned`（回归既有稳态）、**少**门 `:228-230`（写出关于一次并未发生
+的发布的 errors.log）。v5 改为**三态**（published / superseded-discarded / no-write-as-before）+ "副作用 × 主体"表。
+
+### R5 的 3 条 important
+
+| # | 内容 | v5 处置 |
+|---|---|---|
+| IM-1 | class 1 谓词过宽：`!memoryChanged` 的 keep 类 toast 与 `contextShapeWarned` 被错归入"memory 发布" ⇒ 字面执行会回归 design 自己声明要保护的既有组合（probe：今天必发的 `Project context updated; project memory was kept unchanged` 消失、`contextShapeWarned` 永不消费） | 三态门控；`contextShapeWarned` 只在 superseded-discarded 态不消费；keep 类 toast 绑定 `memoryChanged===false` |
+| IM-2 | class 1 清单漏 `report.ts:228-230` 的 `consolidation shortened…`（条件 `outcome.clipped && (memoryChanged \|\| update)` 在 stale 且 `update===undefined` 时仍成立） | 纳入 published 类；行号整理为 `:185-199` |
+| IM-3 | T9 的验收线与 §9 class 2 **直接矛盾**，且 `pass.ts:315` 的 pass 侧 removal 日志使其在自然 fixture 下不可满足 ⇒ 实施者会为让 T9 绿而把 CONTEXT 也门掉（即 v4.1 避免的回归） | T9 拆两条用例 + 写明 fixture 前置（重跑回复不带 context / `update===undefined`）+ `/memory update` 断言改为命中 `consolidateReply("superseded")` 新分支；`pass.ts:315` 列为例外 |
+
+### R5 的 12 条 nit（v5 已逐条处置）
+
+`report.ts:227`（2 处）、`:202-203`（2 处）、`:185-199` 区间；§8 row 6 改 "carried no usable memory"；
+重跑自身采纳只走中性日志（明示可见性损失）；step6→step8 崩溃窗口（新增 R-18）；
+跨 project join 概率 1→2 与 version 断言限界（新增 R-19 + §7 注明）；R-16 措辞收紧；
+`consolidateReply` 新分支是**必需项**而非短路顺序（`lastWrite.delete` 后 `info` 为 undefined）；
+T6 固化 8 组时序；T10 具名常量；T11"留档失败不阻断"降级；T13 改 `loadMemory().text`。
+
+### R5 零写入证明
+
+```
+cd /tmp/pi-context-rev32
+git status --porcelain -uall | sort | diff - /tmp/rev32-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev32-baseline-files.txt → 无差异（342 文件基线）
+md5sum -c /tmp/rev32-live-md5.txt                                              → 活仓库设计文件未变
+```
+
+### 收敛观察（R1→R5）
+
+| 轮 | blocking | important | 性质 |
+|---|---|---|---|
+| R1 | 2 | 8 | 入口不存在 / 窗口未处理（根本性） |
+| R2 | 0 | 5 | 报告级语义、契约、流程表（结构性） |
+| R3 | 1 | 1 | 重排丢了一次 append（回归型）+ seam 位置 |
+| R4 | 0 | 2 | 规格级澄清（副作用门、句表补格） |
+| R5 | **0** | 3 | 谓词精确性（三态 vs 两态）、漏一条 errors.log、测试前置条件 |
+
+R4/R5 均无 blocking，且 R5 的探针（四时序 41 断言）确认核心机制闭合。**剩余发现的性质已从"机制"转为"规格措辞与测试前置"**。
+
+### R5 处置
+
+→ 设计改 **v5**（三态门控 + 12 nit）。R5 建议"§17 定稿后再开 R6"。
