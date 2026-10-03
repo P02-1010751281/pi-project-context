@@ -21,7 +21,7 @@ tags: [process, design-review, complexity, evidence, handoff, config, strict-mod
 | P4 | `errors.log` 里的 handoff 故障 | **有 6 条栈**（含 `handoff/run.ts:262` 与命令入口 `:490`，另有旧合并文件 `handoff.ts:1180/1235/1275`） |
 | P5 | `prompt.ts` 的标题映射 vs pi 真模板 | 模板 = `pi/dist/core/compaction/compaction.js:379` `SUMMARIZATION_PROMPT`（更新用模板在 `:411`，标题集相同）：`## Goal`/`## Constraints & Preferences`/`## Progress`(+`### Done`/`### In Progress`/`### Blocked`)/`## Key Decisions`/`## Next Steps`/`## Critical Context` = **9 行**，**全部被映射、无死项**（见 §3.1） |
 | P6 | `saveConfig` 是否走锁 + 新鲜读 | 走 `updateConfig`（`withMemoryLock` + 重新 `parseConfig`）✓（见 §3.2） |
-| P7 | `run.ts` 的测试覆盖 | `tests/handoff-test.mjs` 覆盖纯构造器 + `statusText`/`resolveThreshold`/`resolveLanguage`/replay/marker；**`maybeTrigger` 与 `runHandoff` 无测试** |
+| P7 | `run.ts` 的测试覆盖 | `tests/handoff-test.mjs` 覆盖纯构造器 + `statusText`/`resolveThreshold`/`resolveLanguage`/replay/marker，**并且用 `newSession` mock 覆盖了 `runHandoff` 的五条路径与 `maybeTrigger` 的「不叠加」负断言**（见 §2.4 更正） |
 
 ## 2. 发现
 
@@ -55,11 +55,21 @@ catch-all 提示 + 失败退避。
 - 这**证实**了失败退避/提示机制有据（不是预防性代码）。
 - 同时记一条**跨特性耦合残留**：handoff 事务的成功依赖 memory 特性不在 shutdown 抛错。本次审计不改它（无新机制诉求即有据，但有据也需要单独立项）。
 
-### 2.4【残留·已接受】触发门与事务没有测试
+### 2.4【已更正·原为误判】触发门与事务其实有测试
 
-P7：现场故障的栈点恰好都落在**没有测试**的两个函数里（`maybeTrigger` 的触发判定、`runHandoff` 的事务）。
-要测它们需要假 `ExtensionContext`（`errors.log` 级别的真实失败只能靠集成跑）。**已接受**：这是测试基建缺口，
-不是「再加一层机制」的理由；与本轮 v0.2.1 引入的 `--no-session`/headless 探针思路同类，留作可选后续。
+> **更正（2026-10-04，补审二实测）**：本节原文写「`maybeTrigger` 与 `runHandoff` 无测试」，**是错的**。
+> `tests/handoff-test.mjs` 第 10 行的自述就是「the `runHandoff` call sites are pinned through a stubbed summarizer
+> plus a `newSession` mock (review round 5, F3/F5)」，实测也确实如此：
+> - `maybeTrigger`：`runHandlers(..., "agent_settled")` 触发，断言发出了 `/handoff force-auto`（:368-370），
+>   并有负断言「an attempted auto handoff does not retrigger on the next settle」（:377）；
+> - `runHandoff`：经 `commands.get("handoff").handler(...)` 进入，五条路径都有 mock ——
+>   空会话/keep 窗口内跳过（:321-345）、成功路径（`captureNewSession`，:750/:803）、cancel（:1021）、throw（:1032）。
+>
+> 该误判的来源是把「`maybeTrigger`/`runHandoff` 未被**直接**导出测试」读成了「未被测试」。项目记忆里同一条错误结论
+> 已在本次更正（见补审二 §D1）。
+
+**更正后**：`maybeTrigger` 与 `runHandoff` 的行为面（触发、不叠加、五条退出路径）**已由测试钉住**；
+真正未被测试的只是需要真实 pi 会话才能覆盖的端到端切换本身（那是集成测试的范围，不是本模块的缺口）。
 
 ## 3. 已核无误（负结果同样是审计结论）
 

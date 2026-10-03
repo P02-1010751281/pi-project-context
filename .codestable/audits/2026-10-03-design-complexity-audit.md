@@ -85,8 +85,16 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
 > `handoff/settings.ts`/`summary.ts`）已在 `2026-10-03-design-complexity-audit-addendum-handoff-config.md` 里逐条查完，
 > 判据同本文。结论摘要：handoff 的 8 个旋钮在本机 9 个配置里**从未被改过**（唯一被改的是 `maxMemoryChars`）；
 > 旧配置兼容层 0/9 无现场证据（可定退役窗口）；`prompt.ts` 标题映射与 pi 真模板**完全对齐无死项**；
-> `saveConfig` **无**本文点名的丢失更新问题；真实 handoff 故障链路是 memory 在 `session_shutdown` 抛错；
-> 触发门与事务仍无测试（已接受残留）。补审的第二轮未查清单见该文 §6。
+> `saveConfig` **无**本文点名的丢失更新问题；真实 handoff 故障链路是 memory 在 `session_shutdown` 抛错。
+> **更正**：本注早先写的「触发门与事务仍无测试（已接受残留）」是**误判**，`tests/handoff-test.mjs` 用
+> `newSession` mock 覆盖了 `runHandoff` 的跳过/成功/cancel/throw 路径与 `maybeTrigger` 的触发+不叠加，
+> 详见补审二 §D1。两轮补审的第二轮未查清单见各自文末（仅余 `autolearn/*` 与 `archive/*`）。
+>
+> **2026-10-04 补审二完成**：主审计未名的其余模块（58/58 全量）已在
+> `2026-10-04-design-complexity-audit-addendum-2-module-inventory.md` 里过完。新增结论：
+> `memory/journal.ts::newestMemoryArchiveSync` 是 8 行死导出；legacy 迁移每次 `session_start` 都跑但 0/9 现场；
+> CipherCat 留下 22 个陈旧 `.lock`（证明锁的陈旧窃取路径有现场依据）；现场日志里 `[memory]` 369 条，
+> 其中 216 条正是「外部编辑采纳」，36 条「无 context 节」、8 条 cap 丢尾、7 条不可解析回复。
 
 - ~~`handoff/run.ts`（**538 行，全仓最大模块**）的机制——`language auto/zh/en`、replay 过滤、staged settings、
   切点选择——**未逐条核对**是否有现场依据。建议单独审计一次（判据同上）。~~（已补审，见上）
