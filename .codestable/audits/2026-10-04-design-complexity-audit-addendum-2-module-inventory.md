@@ -81,11 +81,18 @@ handoff its model and thinking level」），不是现场事故。按判据 1 �
 结论：轮转/备份/日志三条都有现场或预期解释 ✓；journal 轮转是防文件无界增长的预防性机制（有单测），
 **无现场**但成本是一次大小比较，保留。
 
-### D7【现场】陈旧锁真的会留下
+### D7【已更正】陈旧锁确实存在，但**不能**归属给 `lock.ts`
 
-`lock.ts` 的陈旧窃取路径有现场依据：CipherCat 的 `.agents/memory/session-logs/*/` 下躺着 **22 个 0 字节 `.lock`**
-（2026-09-15 ~ 2026-10-02），即写入者中断后锁文件不会被自动清理。⇒ 「超过陈旧视界可窃取 + 窃取者写自己的
-token + 原持有者只删自己的锁」不是过度设计。**顺带记一条卫生问题**：这些残留无人回收，可考虑由归档层顺手清理（非本轮范围）。
+> **更正（2026-10-04，补审三 §2 归属核查）**：本节原文把 CipherCat 那 22 个 0 字节 `.lock` 当作
+> `lock.ts` 陈旧窃取路径的现场依据，**是错的**。核查：`lock.ts` 的锁路径是 `${target}.lock`，当前全部
+> 调用点只锁 `memory/session-index.lock`、`MEMORY.md.lock`、`project-context.json.lock`；
+> `git log --all -p -- extensions/project-context/` 全历史里 `withMemoryLock(...)` 只出现过
+> `sessionIndexLockTarget(projectRoot)` 一种参数 ⇒ **本仓从未锁过会话目录**；兄弟移植用的是
+> `fcntl.flock`（不产生锁文件）⇒ 移植侧也不是来源。
+
+事实部分保留：CipherCat 的 `.agents/memory/session-logs/*/` 下确有 **22 个 0 字节 `.lock`**
+（2026-09-15 ~ 2026-10-02），**无人回收**（卫生问题），但**归属不明**，不能作为本扩展的现场依据。
+`lock.ts` 的存在理由回到它自己的代码依据（陈旧窃取 + inode 绑定 + 持有者自删），**不再声称有现场证据**。
 
 ### D8【已核非复杂度】`maybeTrigger` → `/handoff force-auto` 的消息往返是 API 约束
 
