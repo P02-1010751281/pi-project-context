@@ -1,7 +1,7 @@
 ---
 doc_type: design
 issue: 2026-10-03-external-edit-adoption-overwritten
-status: draft
+status: design-frozen
 created_at: 2026-10-03
 revision: 9 (B 版：最小修复面 + R6/R7/R8 的修正)
 related: [external-edit-adoption-overwritten-design-full-v5-archive.md, external-edit-adoption-overwritten-report.md, external-edit-adoption-overwritten-review-report.md, repro-write-ordering.mjs]
@@ -17,6 +17,11 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 > **三轮的发现全部是【修正已有机制】，无一条要求新机制。** R8 的唯一 important 是**账面同步**：既有测试
 > `tests/consolidation-test.mjs:542` 的 mid-call-writer check 依赖"陈旧回复被发布"，修复后该 check 必须拆开。
 > 本 revision 9 折入 R8 的 1 important + 4 nit + 2 suggestion。
+>
+> **2026-10-03：本设计已实现于 `00bf797`**（`tests/run-all.mjs` 15/15，回归线 `repro-write-ordering.mjs` 退出 0）。
+> 实施记录见 `external-edit-adoption-overwritten-fix-note.md`；独立**代码**评审轮已就位但因 provider 周限
+> （`429`，**2026-10-08T08:37:39Z** 复位）未能开跑 —— prompt 已存档为 `…-code-review-round1-prompt.txt`。
+> 发版（`v0.2.1`）建议等这一轮通过。
 > v5 全文存档于 `…-design-full-v5-archive.md`（**不要照它实施**）。
 
 ## 0. 最小修复面（对照）
@@ -240,7 +245,7 @@ process.exit(fixed ? 0 : 1);   // 0 = 回归线通过（修复生效）
 | --- | --- |
 | R-1 | **mtime 回退或同刻**的编辑（`cp -p`/`rsync --times`/粗粒度 mtime 相等）不被采纳检测看到（今天也如此；§2.2 也看不见 ⇒ 发布并覆盖） |
 | R-2 | recheck 的**接线**没有集成测试（只测导出的判定函数）；由代码评审覆盖 |
-| R-3 | owner **清空** `MEMORY.md` 时回复胜出（既有语义；两个判据的空守卫正是为此） |
+| R-3 | owner 把 `MEMORY.md` 清成**零字节/纯空白**时回复胜出（既有语义；两个判据的空守卫正是为此）。**实测校准**：只剩 `# Project Memory` 头的文件**不算空白**（`memoryComparisonKey` 返回非空键）⇒ 它被当作一次真实编辑，**拒发、保留该文件**。两种行为都由 `tests/external-edit-test.mjs` 的 `cleared memory` 两条钉死 |
 | R-4 | 被丢弃的回复没有副本（靠下一轮重做） |
 | R-5 | **未升级的 peer 进程**仍会顶掉编辑：全部进程升级后才对所有交错成立 |
 | R-6 | recheck 之后 → rename 之间的编辑仍丢字节；Node 无 CAS，窗口 μm–ms 级 |

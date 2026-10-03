@@ -1,0 +1,65 @@
+你是 pi-project-context 仓库的**独立代码评审（lane A）**。被审工件 = **HEAD 提交 `00bf797`**（`fix(memory): keep an external edit that lands while a reply is being built`），即设计 revision 9 的实现。工作区 `/tmp/pi-context-rev36`（**先 cd 进去**）。本仓库**没有 `tsc`、没有 package.json**，测试都是 `node tests/*.mjs`（自动发现，当前 15 个）。
+
+**背景（同行意见，不是事实）**：该 issue 的设计经 8 轮独立设计评审（R6 审 134 行的 B 版、R7/R8 审 revision 7/8）：R6 1 blocking、R7 0 blocking、R8 0 blocking；三轮的发现全是【修正已有机制】、无一条要求新机制。**这些结论都可能错，不要继承——请自己读代码判定。** v5 完整版存档于 `...-design-full-v5-archive.md`，**不是**实施依据。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev36`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`（注意 `/tmp` 空间紧张，用完删掉自己的临时目录）。
+- **鼓励**写 probe 用真实原语实测（`tests/harness.mjs` 的 `loadNamespace` / `loadDefault` / `makePi` / `makeCtx`）。
+- 活仓库待审文件 md5 在 `/tmp/rev36-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审 diff**：`git show --stat HEAD`、`git show HEAD`（提交信息含实施意图）
+3. **设计依据**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（revision 9；判据 = **§0 最小修复面 / §2.0 六步顺序 / §2.2 / §2.3 / §2.4 应跳不应跳表 / §4 测试 / §5 残留**）
+4. 同目录 `...-review-report.md`（R1–R8 轮次表与处置）、`...-report.md`、`repro-write-ordering.mjs`（已从"复现"翻成"回归线"）
+5. 被改源码 + 依赖：`extensions/project-context/memory/{store,pass,report}.ts`、`memory/{journal,document,poison,input}.ts`、`shared/{project-state,lock,files,error-log,gitignore}.ts`
+6. 测试：`tests/external-edit-test.mjs`（新增 T1–T6）、`tests/consolidation-test.mjs`（被改的那条 check）、`tests/harness.mjs`
+
+工作树里 `.agents/memory/*` 的改动是扩展自己的渲染 churn，`/.agents/skills/pi-project-context-design-review-round-budget/SKILL.md` 是未跟踪的无关文件 —— **都不属于本次改动**。
+
+## 每个发现必须标注
+
+**【修正已有机制】**（revision 9 已有机制的实现写错了）或 **【新增机制】**（要求本设计没有的机制）。
+后者必须先指出它对应设计 §1 的哪条现场事实（F1–F4）；指不出就写进 `residual-risk`，不算重要发现。
+**不要因为"v5 里有、revision 9 里没有"就要回机制**——取消重跑是 owner 的决定。
+
+## 必须做的七件事
+
+**A. 实现 vs 设计逐条对账**：§2.0 六步顺序、§2.2 的双侧 `memoryComparisonKey` + `current.text.trim()` 空守卫、§2.3 的 `nextRenderSupersedes(renderKey, nowKey, publishKey)` 与"返回前 append `nowKey`"、§2.4 的应跳/不应跳表与 `contextWritten`/`keepReason:"stale"`、§3 的接口签名。逐条给"一致/不一致 + 行号 + 影响"。
+
+**B. 攻实现（重点）**：
+   - **数据丢失**：还有路径让外部编辑丢字节吗？（①/② 之间、②/③ 之间、recheck→rename、写前备份、被跳过的 `rotateMemoryJournalIfNeeded`）
+   - **误判陈旧**：有没有路径让**正常**回复被拒？两侧 `memoryComparisonKey` 是否真幂等？`limit` 两侧同源吗（`pass.ts` 的 `basisKey` 用 `config.maxMemoryChars`，`report.ts:171` 传的 `maxMemoryChars` 是否同一个值）？
+   - **拒绝态的诚实性**：`memoryRefused` 能否在 `memoryChanged === false` 时为真、或被漏设？所有"声称已写"的副作用是否都按 §2.4 表处理？**特别核** `memoryRefused` 时 `storedPoisoned`/`backup` 仍被赋值，有无消费者因此说谎？
+   - **`wroteMemory = snapshot.written`**：与 `written.delete` 的 claim 释放语义是否自洽；拒绝后抛错重放会不会意外发布。
+   - **overflow 副本后置**：`memoryText` 此时是否仍是未裁剪原文；`:198`/`:254` 的 `overflowPath` 插值在发布成功路径上是否仍有值；`saveOverflowReply` 抛错路径与 D2 的 best-effort 语义是否一致。
+   - **类型**（无 `tsc`）：`keepReason`、`contextWritten`、`MemoryWriteResult`、`nextRenderSupersedes`、`{...kept, written}` 在消费者处是否自洽（读代码判定）。
+   - **既有行为**：不传 `basisKey` 的路径（`migrate.ts` + 4 个既有测试）是否逐字节与改动前一致；`consolidation-test.mjs` 被改的 check 是否仍覆盖它原本保护的东西（写前备份 + poison 修复日志）。
+
+**C. 测试质量（不得空转）**：`tests/external-edit-test.mjs` 的断言是否**可判且非永真**；"与不传 `basisKey` 的路径逐字节相同"会不会"两条都错还相等"；T2 是否真走 report/pass 全链路；**`cleared memory` 那对断言（空白文件 ⇒ 回复胜出；只剩 header 的文件 ⇒ 拒发）与 §5 R-3 的措辞是否一致——若不一致，报哪个对**。**实际运行** `node tests/run-all.mjs`（应 15/15）与 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`（应退出 0），并**另写 probe 构造反例**。
+
+**D. 对抗性一轮**：假定实现仍藏 bug（编辑仍丢 / 正常回复被误拒 / 新项目自锁 / 日志或命令回复说谎 / 破坏既有合法组合 / 死锁或锁重入 / migration 路径回归）去找它；找不到说清搜过哪些面。
+
+**E. 设计偏差**：实现有没有偏离 revision 9（更严或更松）？哪些可以接受、哪些必须改？
+
+**F. 与 R8 的交接**：① `tests/consolidation-test.mjs` 的 check 拆分是否按其边界做了；② R8 留的三条既有残留（rotation 归档遮蔽 render、published 路径的 context 措辞、`activeConsolidation` 模块级）是否被本提交引入/扩大。
+
+**G. 文档准确性**：提交信息、设计 §2.4 表的行号、代码注释里的行号/函数名是否都对。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节对账表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条标注【修正已有机制】/【新增机制】+ F 编号、`file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出；**必须自己运行测试与脚本**。
+- 只有以下情况给 `PASSED`：§2.0/§2.2/§2.3/§2.4 全表实现一致、无数据丢失路径、无误拒路径、拒绝态无任何虚假声明、15/15 与 repro 退出 0 实测通过、新增断言非永真。
+- 若实现已可交付，把"后续注意但不必现在改"的点放进 `learning`/`residual-risk`，**不要为凑发现而降级判定**，也不要提机制类新要求。

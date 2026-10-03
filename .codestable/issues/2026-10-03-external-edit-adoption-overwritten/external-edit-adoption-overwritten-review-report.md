@@ -504,3 +504,24 @@ md5sum -c /tmp/rev35-live-md5.txt                                             �
 ### R8 处置
 
 → 设计改 **revision 9**（折入 IM-1 + 4 nit + 2 suggestion，新增残留 R-14/R-15）。
+
+## 代码评审轮（待跑，被 provider 周限阻塞）
+
+- 设计侧 8 轮已完成（R6 1 blocking / R7 0 / R8 0）。实现 = `00bf797`（对应设计 revision 9）。
+- prompt 已存档：`external-edit-adoption-overwritten-code-review-round1-prompt.txt`。
+- 沙箱配方与零写入证明（照 `pi-project-context-sandboxed-independent-review` skill）：
+  `/tmp/pi-context-rev36`（`cp -a` 自活仓库，353 文件基线），
+  `git status --porcelain -uall | diff` 与 `find … stat | diff` 前后**均为空**（`.agents/memory` 按 skill prune），
+  活仓库 5 个待审文件 md5 未变。
+
+### 两次启动记录
+
+| 时间（UTC） | 结果 | 原因 |
+| --- | --- | --- |
+| 14:05 | 未启动 | `cp -a` 失败：`/tmp` **磁盘写满**（协议沙箱 `rev8…rev36` 各约 100 MB，累计填满 16 GB tmpfs）。已清理 `rev8…rev36` 与陈旧 transcript 后重做 |
+| 14:12 | **0 字节 transcript** | `429 You've reached your weekly usage limit for your plan`（复位 **2026-10-08T08:37:39Z**） |
+
+按协议，**0 字节 transcript = provider 失败，不算一轮**，复位后重跑即可（prompt 与沙箱配方都已就位）。
+`commandcode/deepseek/deepseek-v4.1-flash-fast` 是这台机器上唯一可用的评审路由，故本轮在复位前无法完成。
+
+**结论**：本修复目前是"**已实现、已自测验证、未独立评审**"。`v0.2.1` 建议等这一轮通过再切。

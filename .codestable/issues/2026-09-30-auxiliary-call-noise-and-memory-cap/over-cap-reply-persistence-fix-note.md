@@ -69,14 +69,22 @@ middle dropped on a line boundary; the reply needed about 32228 characters — r
 - 新增 `saveOverflowReply(projectRoot, text)`（`:56`）：把**未裁剪的原始回复**写到
   `.agents/memory/memory-overflow-<ISO 时间戳>.md`（时间戳里的 `:`、`.` 替换为 `-`），用
   `writeAtomic` 落盘，返回文件路径。
-- 落盘时机在**任何裁剪发生之前**（`:163`）：
+- 落盘时机（`00bf797` 起）：**发布成功之后**；原文仍是未裁剪的原始回复：
   ```ts
-  if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
-      overflowPath = await saveOverflowReply(projectRoot, memoryText);
+  if (!memoryRefused) {
+      if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
+          overflowPath = await saveOverflowReply(projectRoot, memoryText);
+      }
+      …
   }
   ```
   其中 `sectioned = outcome.kind !== "fallback-opaque"`（`:131`）——即**只有 opaque 条目需要副本**，
   另两条由 renderer 按条丢并报计数。
+  
+  > **2026-10-03 同步**：`1f0672c` 当时写的是"落盘时机在**任何裁剪发生之前**（`:163`）"。
+  > 外部编辑撞车修复（`00bf797`）把拒绝态的发布侧副作用全部跳过（拒绝时那一次的回复没有对应
+  > 的 `MEMORY.md` 可指，留副本只会是孤儿），于是这一句从"裁剪之前"变成"发布成功之后"。
+  > 同一提交的 fix note：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/`。
 - **best-effort**：写副本失败只记一行 `errors.log`（`…could not be kept locally: …`），不抛出、
   不阻断受限写入本身。
 - 诊断指向：cap 的 `errors.log` 行（`:198`）与非静默 toast（`:254`）都在末尾追加
@@ -94,8 +102,10 @@ middle dropped on a line boundary; the reply needed about 32228 characters — r
 
 - **只覆盖 opaque，这是刻意的**：另两条由 `renderMemoryDocument` 按整条丢并报 `sectionDropped`，
   无损字节裁剪可言；给它们也写副本只会增加无谓 IO。
-- **写副本在前、写受限文档在后**：若受限写入随后失败，磁盘上会留下一个没有对应 `MEMORY.md` 的
-  副本。方向安全（多一份东西，不少一份），不额外处理。
+- **副本在受限文档落盘之后**（`1f0672c` 时是"写副本在前、写受限文档在后"）：方向因此从
+  "留下一个没有对应 `MEMORY.md` 的副本"倒转为**一个"发布成功但副本缺失"的窗口**
+  （`writeAtomic` 成功 → 副本写入之前进程被杀）。副本仍是 best-effort：缺一件物证不影响记忆
+  本身，不额外处理（外部编辑修复的设计 §5 R-13）。
 - **副本不参与读取**：`loadMemory` / `foldMemoryJournal` 完全不看 `memory-overflow-*.md`，它不进
   journal、不进 fold、不影响任何记忆决策，纯粹是可回退的物证。
 - **不改变记忆正文的正确性**：受影响的只有"丢了能不能找回"，因此严重度**低**。这也是它可以选择
