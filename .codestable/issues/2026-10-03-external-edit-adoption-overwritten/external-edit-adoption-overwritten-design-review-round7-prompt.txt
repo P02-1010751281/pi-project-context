@@ -1,0 +1,69 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 7 轮）**。被审工件 = **设计 revision 7**（尚未实施，无代码 diff）。工作区 `/tmp/pi-context-rev34`（**先 cd 进去**）。
+
+**背景（同行意见，不是事实）**：同一 issue 的"完整版"v1–v5（415 行，含"判陈旧后重跑一轮"）经 5 轮评审后被 owner 判定过度复杂 ⇒ 重写为 B 版（134 行，取消重跑）。R6 审 B 版，判 `CHANGES-REQUESTED`：**1 blocking**（§2.3 的 `renderKey` 未定义 + 缺空守卫 ⇒ `memoryComparisonKey("")` 返回 `"# Project Memory\n"`，全新项目会永久拒发）+ **3 important**（§2.2 落点三种读法只有一种对；§2.4 拒绝态在 §3 接口里表达不出、跳过清单不全；`repro-write-ordering.mjs:44` 未传 `basisKey` ⇒ 翻期望必假红）+ 6 nit。**revision 7 已折入这四条**（§2.0 写死执行顺序、§2.2 空守卫、§2.3 导出纯函数 `nextRenderSupersedes`、§2.4 应跳/不应跳表 + `keepReason:"stale"`、§4 repro 说明、§5 补四条残留）。v5 存档于 `...-design-full-v5-archive.md`（**不要照它实施**）。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev34`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`）；也允许跑 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev34-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（revision 7）
+3. 对照件：同目录 `...-design-review-round{5,6}-independent.txt`（尤其 R6）、`...-design-full-v5-archive.md`、`...-report.md`、`...-review-report.md`、`repro-write-ordering.mjs`
+4. 审计纪律来源：`.codestable/audits/2026-10-03-design-complexity-audit.md`
+5. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document,input}.ts`；`extensions/project-context/shared/{lock,files,migrate,gitignore,llm}.ts`
+6. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 每个发现必须标注
+
+**【修正已有机制】**（revision 7 已列出的机制写法/落点不成立）或 **【新增机制】**（要求 v7 没有的机制）。
+后者**必须**指出它对应 §1 的哪条现场事实（F1–F4）；指不出就写进 `residual-risk`，不算重要发现。
+不要因为"v5 里有、v7 里没有"就要回机制——取消重跑是 owner 的决定。
+
+## 必须做的七件事
+
+**A. 逐条判 R6 的四条是否真修好**（B-1 的 `renderKey`/空守卫/导出纯函数；IM-1 的 §2.0 顺序；IM-2 的拒绝态与 §2.4 表；IM-3 的 repro）——给 v7 章节 + 源码头文件行号 + 依据。**特别判 §2.0 顺序的每一层**：把种子移到判据之后是否在**无 journal** 的所有子情形下都安全（编辑在调用期落地、编辑在调用前落地、文件缺失、`unreadable` 抛出点位移）。
+
+**B. 我自己的一个薄弱假设，请实测证伪或证实**（§2.2 依赖它，但 v7 没有写出来）：
+   > 我的假设是：**journal 存在时 `loadMemory().text` 返回的是 journal 折叠结果（fold），不是更新的 `MEMORY.md` render**；
+   > 因此当 §2.2 判陈旧时，更新的字节**已经**由 ② 的采纳块进了 journal，§2.2 只需直接 return、**不需要**再 append
+   > （与 R3-B1 的教训不同，因为那里 journal 还没拿到新字节）。若假设为假（`loadMemory` 在 render 更新时返回 render），
+   > 那么 §2.2 会在**采纳块没触发**（mtime 回退等）的情况下也判陈旧并 return，而新字节**只在 `MEMORY.md`、没进 journal**
+   > ⇒ 这就是**R3-B1 的同类缺口**（检出却不落 journal），必须报 blocking。
+   用 `loadMemory`（`store.ts:87` 起）+ 真实 `recordMemoryDocument` 的 probe 给出实测结论：构造"journal 存在 + `MEMORY.md` 更新且 mtime 更新"与"…mtime 回退"两种，分别看 `loadMemory().text` 等于 fold 还是 render。
+
+**C. 攻 revision 7 的新改动**：
+   - §2.0 的 ①：把入口 `readOptional` 提到函数最前、并**复用**给采纳块（原 `store.ts:61-64`）——读取时点的位移是否影响采纳块的 `stat` 比较语义（`renderInfo.mtimeMs > journalInfo.mtimeMs`）？种子路径多一次读是否有副作用？
+   - §2.3 的 `nextRenderSupersedes(renderKey, nowKey, publishKey)`：三个入参的语义与取值口径；`renderKey` 在**种子路径**下是否可能是"过期"值；`publishKey` 排除项在"窗口内写入的恰好等于即将发布的回复"时是否真的只是少走一次拒发（不丢数据）。
+   - §2.4 的表：**逐个消费点核对完整性**——除表内行号外，还有没有消费者会被拒绝态误导（搜 `cappedMemory`/`cappedSections`/`neededChars`/`overflowPath`/`backup`/`storedPoisoned`/`memoryKept`/`keepReason` 的全部读取点，含命令侧 `/memory`、`/project-context max-memory` 的回复路径）。
+   - §2.4 的 `wroteMemory = snapshot.written`：核 `report.ts:275` 的 claim 释放在拒绝态下的后果（后续抛错是否会让**同一 outcome 被重放**；重放是否会再拒发/或意外发布）。
+   - §2.4 与 v5 的**有意分歧**（`contextShapeWarned` 拒绝态"留"而非"不消费"）：判哪个对，给理由（`report.ts:135-151` 的两个分支各描述什么事件）。
+   - §2.4 的 overflow 后置：与 `memoryCapWarned`/`memoryCapWarned` 的 once 语义、`saveOverflowReply` 失败路径、D2 fix note §4 的同步是否闭合。
+
+**D. 四时序回归（设计级推演，v7）**：编辑①早于读取 ②模型调用期间（核心）③发布窗口内（含清空、CRLF、清空再写、与 `rendered` 同键）④无编辑。每种给"第几步触发、最终 journal、最终 `MEMORY.md`、`errors.log`、`lastWrite`、命令回复"。必须确认：**无编辑时逐字节等于今天**；**②下编辑保住且回复未发布**；**③下清空不拦**。
+
+**E. 测试 T1–T6**：逐条判"能否构造、断言是否可判"；T6 对 `nextRenderSupersedes` 的六组边界值是否与 v7 的公式一致（**注意 CRLF/行尾空格一组**：`memoryComparisonKey` 若吸收这些差异，断言方向要随之——请实测 `memoryComparisonKey` 对 `"\n"` vs `"\r\n"`、行尾空格的实际行为再判定）。
+
+**F. 对抗性一轮**：假定 v7 仍藏 bug（数据丢失 / 编辑仍未保住 / 正常路径被误判陈旧 / 新项目自锁 / 日志说谎 / 破坏既有合法组合 / 死锁）去找它。找不到要说清搜过哪些面。
+
+**G. 文档准确性**：v7 引用的行号、常量、函数名、断言方向是否都对（前六轮共抓到 8 处行号偏移，其中 R6 抓到 v7 要修的那处）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节核对表与 B 节的实测结论，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条标注【修正已有机制】/【新增机制】+ F 编号、`file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出。
+- 只有以下情况给 `PASSED`：R6 的 1 blocking + 3 important 真解决、B 节假设经实测成立（或 v7 已按其否证结论修正）、
+  §2.4 表对拒绝态的消费点**完整**、四时序无倒置、T1–T6 可构造。
+- 若 v7 已可实施，把"实施时必须注意但不必再改设计"的点放进 `learning`/`residual-risk`，**不要为凑发现而降级判定**。

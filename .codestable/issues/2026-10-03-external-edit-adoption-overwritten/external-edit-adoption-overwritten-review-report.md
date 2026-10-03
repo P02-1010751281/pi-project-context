@@ -16,6 +16,7 @@
 | R4 | 设计 v4（沙箱 HEAD `06f0903`） | **CHANGES-REQUESTED** | **0 blocking** + 2 important（IM-1 发布侧副作用未以 `written:true` 为门；IM-2 §8 句表缺一格）+ 11 nit。R3 的 B-1/IMPORTANT-1/12 nit 除 N-2 判「部分解决」外全部「已解决」，且 B-1 用 probe 在 7 种编辑形态上验证闭合 |
 | R5 | 设计 v4.1（沙箱 HEAD `2ef637a`） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（class 1 谓词过宽；§9 漏 `:228-230`；T9 断言与设计自相矛盾）+ 12 nit。四时序探针 41 断言无数据丢失/活锁/倒置；no-edit 与今天逐 op/text 及字节一致；R4 的 11 nit 中 10 条真解决 |
 | R6 | revision 6（B 版，134 行，无重跑） | **CHANGES-REQUESTED** | 1 blocking（§2.3 `renderKey` 未定义 + 缺空守卫）+ 3 important（§2.2 落点三种读法、§2.4 拒绝态无法表达 + 跳过清单不全、repro 未传 `basisKey`）+ 6 nit + 1 suggestion。**无一条要求新机制** |
+| R7 | revision 7（B 版 + R6 四修） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（拒绝态 + 无 context 时命令回复谎称 context 已更新；§2.2 raw 比较在读取来源翻转时假陈旧；repro 的 exit 谓词不成立）+ 7 nit。**无一条要求新机制** |
 
 ### R1 发现（按评审分桶）
 
@@ -378,3 +379,66 @@ md5sum -c /tmp/rev33-live-md5.txt                                             �
 
 → 设计改 **revision 7**（折入 B-1 / IM-1 / IM-2 / IM-3 + 3 条 nit 相关的 §3/§4 增补）。均为落点与文本修正，
 代码增量仍约 60–70 行。按协议 revision 7 需再一轮（R7）。
+
+## R7 轮次详情（revision 7）
+
+- 被审：revision 7（B 版 + R6 的 B-1/IM-1/IM-2/IM-3 修正）；沙箱 `/tmp/pi-context-rev34`（HEAD `f4e9d7a`）
+- 裁决：**CHANGES-REQUESTED —— 0 blocking** / 3 important / 7 nit / 1 suggestion；transcript 20988 字节
+- 独立性：探针在 `/tmp/rev34-probes/`，含一份按 v7 顺序实现的**真实补丁副本**（`pc-patched-v7/memory/store.ts`）；
+  另跑了 `repro-write-ordering.mjs` 与 `memory-ops` / `consolidation` 两个测试文件
+
+### R7 对 R6 四条的复核
+
+| R6 项 | 判定 | 依据 |
+|---|---|---|
+| B-1（`renderKey` 未定义 + 缺空守卫） | ✅ **真解决** | probe：`memoryComparisonKey("")` 返回 `"# Project Memory\n"`；全新项目无编辑 ⇒ `written:true`（无自锁）；窗口内出现编辑 ⇒ 拒发并保住；清空/删文件不拦 |
+| IM-1（§2.2 落点） | ✅ **真解决** | 按 v7 顺序打补丁实测：核心时序 `journal=[A,B]`、`written:false kept=B`；T4 无 journal 编辑保住、journal 空；**无编辑四 fixture 与今天 op/text+render 逐字节相同**；R6 的三种坏落点均未复现 |
+| IM-2（拒绝态表达 + 清单） | ⚠️ 基本解决，剩 IM-A | 回调带回写结果可行（`withMemoryLock<T>` 泛型），`:176`/`:275` 语义闭合；表格覆盖全部行；**缺口 = 拒绝态 + `update===undefined` 时前缀谎称 context 已更新** |
+| IM-3（repro 未传 `basisKey`） | ⚠️ 调用点对、谓词表述不成立 | 传 `{basisKey:A}` 后两场景变 `adopted=true && bEffective=true`；但「`bEffective && adopted` 为 0」作为 JS 谓词有反读风险 |
+
+### R7 实测否证了设计自己交出去的一个假设（设计据此修正）
+
+设计 §2.2 隐含假设「journal 存在时 `loadMemory()` 返回 fold」⇒ **为假**。实测规则是：
+**journal 存在时，只有 render 非空 + key ≠ fold + render mtime 严格大于 journal mtime 才返回 render**，否则返回 fold。
+但**结论仍成立**（§2.2 不必再 append）：原因是 §2.0 的 ②（采纳）先于 ③（判据）且 ② 把 journal 变成最新，
+不是靠那个假设。真正「检出却不落 journal」的窗口只有 **① 入口读 / ② stat 之间**，实测自愈
+（下一次写路径 ② 先采纳再发布），且 R3-B1 的伤害依赖「重跑拿被丢弃回复当基线」——**已随重跑取消而消失** ⇒ 不报 blocking。
+
+### R7 三条 important（revision 8 已修）
+
+- **IM-A**：拒绝态 + `update === undefined`（回复没带可用 context 且既有 `CONTEXT.md` 非空）时 CONTEXT **没写**，
+  但 `report` 仍 `"updated"` ⇒ 命令回复输出「Project context updated; …」，与同一时刻 errors.log 的
+  「the previous CONTEXT.md is kept and stays stale」（`:141-151`）矛盾。**这是 v7 自己在消灭的说谎方向，只是从 memory 换到 context。**
+  修法：`lastWrite.contextWritten = Boolean(update)`，`consolidateReply` 的 stale 分支前缀由它决定。
+- **IM-B**：§2.2 的 raw/raw 比较在**读取来源翻转**时假陈旧——journal 存在时 `loadMemory` 返回 fold（带尾换行），
+  无 journal 时返回 `clipToLineBoundary(raw.trim())`（无尾换行），同一份 `MEMORY.md` 字节被读成两种形态
+  （`probe-sourceflip.mjs`：journal 在 pass 读之后被删 ⇒ 假陈旧 + 假日志，尽管文件字节未变）。数据安全但违反 T3。
+  修法：两侧都过 `memoryComparisonKey`（幂等）。
+- **IM-C**：§4 的 repro 退出谓词「`bEffective && adopted` 为 0」按字面不成立，有把回归线做成**假绿**的风险
+  （方向与 R6-IM-3 想消灭的假红相反）。修法：钉死 `fixed` 谓词 + `exit(fixed?0:1)` + 同步头部注释语义。
+
+### R7 的 7 条 nit（revision 8 已逐条处置）
+
+① §2.2 的「（mtime 回退等）」反了——mtime 回退时 `loadMemory` 返回 fold，§2.2 **判不出**陈旧、发布并覆盖（R-1）；
+真正「留在 `MEMORY.md`」的是 ①/② 竞态。② 行号：`:189-192`→`:188-190`、`:193-199`→`:191-199`、`:261-265`→`:260-270`、
+**`:211`→`:215`**（`lastWrite.removed`）。③ T6 的 CRLF/行尾空格方向要写实测值（`memoryComparisonKey` **保留**内部 `\r`
+与内部行尾空格 ⇒ 触发；只吸收文档级首尾空白/尾换行 ⇒ 不触发）。④ `keepReason` 三元在已发布路径会置 `"short"`
+（今天被 `memoryKept` 挡住，无可见谎言）。⑤ D2 fix note 要同步**两处**（`:72` 与 `:97`，非一处）；
+`saveOverflowReply` 后置后必须落在 `:179` 记账之前，否则 `:198`/`:254` 的 `overflowPath` 插值失去指针。
+⑥ T2 的「无 removal 行」需要夹具前置：`pass.ts:300-317` 的 `memory regression: …` 在 pass 层写出，report 层拦不住。
+⑦ §2.3 拒绝路径没有 errors.log 行 ⇒ 两个拒绝原因在日志里不可区分（已补中性行）。
+
+### R7 零写入证明
+
+```
+cd /tmp/pi-context-rev34
+git status --porcelain -uall | sort | diff - /tmp/rev34-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev34-baseline-files.txt → 无差异（347 文件基线）
+md5sum -c /tmp/rev34-live-md5.txt                                             → 活仓库 4/4 未变
+```
+
+### R7 处置
+
+→ 设计改 **revision 8**（折入 IM-A/IM-B/IM-C + 7 nit）。新增残留 R-11（①/② 竞态，自愈、不补 append）、
+R-12（`activeConsolidation` 模块级、跨项目 join）、R-13（overflow 副本后置的崩溃窗），并把 R-1 扩为「回退**或同刻**」。
