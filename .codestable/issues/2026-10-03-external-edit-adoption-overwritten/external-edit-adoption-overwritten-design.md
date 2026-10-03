@@ -20,9 +20,17 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 | R3 | v3 | CHANGES-REQUESTED | 1 blocking（第 8 步漏 append）+ 1 important（seam 注入点）+ 12 nit |
 | R4 | v4 | CHANGES-REQUESTED | **0 blocking** + 2 important（发布侧副作用未以 `written:true` 为门；§8 句表缺一格）+ 11 nit |
 
-**v4.1 = R4 之后的修订**（未评审，必须进 R5）：发布侧副作用改为**仅在 `written:true` 时执行**、§8 句表补
-"重跑产出但无可用内容"一格、退出形态由三种改四种，以及 11 条 nit（行号、`kept` 语义、T2 断言、
-命令回复文本、D2 fix note 两处同步、R-12b/R-17）。
+**v4.1 = R4 之后的修订**（含一处开 R5 前的自查修正，整体未评审，必须进 R5）：
+
+- 按 R4-IM-1 把发布侧副作用门在 `written:true`——但**自查发现该指令字面执行会造成回归**：`lastWrite`
+  与 CONTEXT.md 写入今天就与 `memoryChanged` 解耦（`report.ts:203-205` 的注释明确"context rewritten
+  while memory kept"是合法组合），故 §9 改为**两类副作用分开**，只把"描述刚发布了一次 memory"的那些
+  纳入门内；
+- 按 R4-IM-2 给 §8 句表补"重跑产出 outcome 但 `memoryChanged === false`"一格；退出形态由三种改四种；
+- 新增 `"superseded"` 必须早于 `report.ts:226` 的赋值与短路；
+- 11 条 nit：行号（`pass.ts:151`、`store.ts:87-160`、读侧 `:138-142`、清空守卫 `:106`、`journal.ts:92-93`）、
+  `kept` 是生效文本非文件字节、T2 断言改 `outcome2 === undefined`、命令回复文本要钉死、
+  D2 fix note 两处同步 + 其 residual-1 要在 `v0.2.1` 落实、R-12b、R-17。
 
 **v4 = R3 之后的修订**：第 8 步补 append（B-1）、钉死测试 seam 的调用点、逐条修 12 条 nit。
 owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → **不发布** → **用采纳后的内容重跑一轮**，
@@ -188,14 +196,20 @@ export type MemoryWriteResult =
 
 ## 9. 决策 5：副作用只在最终 attempt 执行
 
-**"只在最终 attempt 执行"的正确读法（R4-IM-1）**：发布侧副作用
-（`saveOverflowReply`、CONTEXT.md 写入、`lastWrite`、四个一次性警告集合
-（`contextShapeWarned`/`memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned`）与 notify）
-**仅在最终 `recordMemoryDocument` 返回 `written:true` 时执行**。任何 `written:false` 的 attempt——**包括作为
-"最终 attempt"的那一次**（§8 的 row 5 / row 6）——只允许：第 8 步的 append、写前备份、
-`memory-stale` 留档、中性日志，以及 keep-adoption 的那一次 warning toast。否则会写出
-"memory exceeded maxMemoryChars…middle dropped"或"no longer carries N entries"这类**关于一次并未发生的发布**的
-errors.log/notify，并把一次性集合烧掉、让真正的下一次事件不再告警。
+**两类副作用必须分开，不能一律门在 `written:true`（v4.1 自查修正）**：
+
+1. **只在 `written:true` 时执行**（它们描述的是"刚刚发布了一次 memory"）：`saveOverflowReply`、
+   `cappedMemory`/`cappedSections`/`neededChars` 的计算、cap / section-cap / 存过 poison 三类 `errors.log`
+   （`report.ts:185-197`）、memory-update 分支的 notify（`:232-259`）、`memoryRemovalWarned` 消费（`:264-265`）、
+   以及 `contextShapeWarned` 消费（`:138`/`:145`——它描述的是**回复**的 context 形状，回复被丢弃时不该烧掉）。
+   任何 `written:false` 的 attempt——**包括作为"最终 attempt"的那一次**（§8 的 row 5 / row 6）——只允许：
+   第 8 步的 append、写前备份、`memory-stale` 留档、中性日志，以及 keep-adoption 的那一次 warning toast。
+2. **与 memory 发布解耦、保持现行行为**：`update` 存在时写 CONTEXT.md（`:217-226`）与 `lastWrite`（`:204-216`）。
+   `report.ts:203-205` 的注释明确"context rewritten while memory kept"是**合法组合**，命令的回复措辞依赖
+   `lastWrite`——**不得**把这两者纳入 `written:true` 门（那会造成回归）。
+
+不这样做就会写出"memory exceeded maxMemoryChars…middle dropped"或"no longer carries N entries"这类
+**关于一次并未发生的发布**的 errors.log/notify，并把一次性集合烧掉、让真正的下一次事件不再告警。
 attempt 1 允许的副作用只有：采纳 append（INV-1）、写前备份 `backupMemoryBeforeWrite`
 （先于检测执行、无法避免，且是外部编辑的额外保底）、被丢弃回复的留档（§10）。
 
@@ -212,6 +226,9 @@ D2 尚未发版，无兼容问题；失去的只是"发布成功但与写副本�
 **保留采纳内容且重跑产出但未发布**（row 5 / row 6） / **失败**（既有失败路径不变）。
 
 - `ConsolidateReport` 新增 `"superseded"`，用于"检出陈旧但最终保留新内容"的两种退出。
+- **`"superseded"` 的赋值必须早于 `report.ts:226`** 的 `memoryChanged || update ? … : "unchanged"`，
+  并在 `:232` 的 notify 与 `:345` 的 `consolidateReply` 里短路：keep-adoption 时 `memoryChanged || update`
+  可能为真，否则命令会说 "updated" 或 "already up to date"，而事实是本轮回复被丢弃、你的编辑被保住。
 - **keep-adoption 退出必须 `lastWrite.delete(projectRoot)`**：今天无写入时是
   `lastWrite.set({memoryKept:true, …})`（`report.ts:204-216`）——那是"记忆内容没变"的语义，
   与"你的编辑被保住、本轮回复被丢弃"不同，且 `/memory update` 的回复由 `consolidateReply(report, …)`
@@ -335,6 +352,10 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
   - IM-2：§8 句表补"重跑产出 outcome 但 `memoryChanged === false`"一格；退出形态改四种；
   - nit：`pass.ts:151` / `store.ts:87-160` / 读侧 `:138-142` / 清空守卫 `:106` / T2 断言 `outcome2 === undefined` /
     `kept` 不是文件字节 / 命令回复文本要钉死 / D2 fix note 两处同步 / R-12b / R-17。
+- **自纠 2026-10-03（v4.1，未评审）**：R4-IM-1 的指令字面执行会破坏"CONTEXT 被重写而 memory 保留"这一
+  **既有合法组合**（`report.ts:203-205`）。§9 改为两类副作用分开：只把"描述刚发布了一次 memory"的副作用
+  门在 `written:true`；CONTEXT 写入（`:217-226`）与 `lastWrite`（`:204-216`）保持解耦。另补 `"superseded"`
+  的赋值必须早于 `:226` 并短路 `:232`/`:345`。
 
 ## 17. 定稿的开放项
 
