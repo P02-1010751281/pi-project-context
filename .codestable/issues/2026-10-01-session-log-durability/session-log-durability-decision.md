@@ -67,4 +67,12 @@ readOptional(logsDir/<id>/session.jsonl)
 
 ## 状态
 
-`deferred` —— 等同类项目调查结论后由 owner 再定。在此之前**不改**归档行为（保持本地原样）。
+`deferred` —— 等 owner 拍板。在此之前**不改**归档行为（保持本地原样）。
+
+**2026-10-03 更新**：owner 要求的三问调查已完成，结论见 `session-log-durability-survey.md`。其中一条会直接改变这个决定的题面：
+
+> 本项目**最老会话只有 17.9 天**，58 个会话总计 108.1 MB，约 6 MB/天增长。所以照搬 Claude Code 的 `cleanupPeriodDays = 30` **回收 0.0 MB** —— 增长是**量驱动**（会话数与单会话体积），不是时间驱动。有效策略必须**按个数或按体积**。
+
+另外两问的结论：Q2 无成熟形态可借（结构最小化会砍 autolearn 证据，decision 已记）；Q3 个人工作流里无成熟做法，与 decision 对方案 D 的排序一致。生态侧的成熟形态是**显式清理命令 + `--dry-run`**（Claude Code 的 `claude project purge --dry-run` 及第三方 `claude-clean`/`claude-cleaner`），它与本 decision 的约束不冲突。
+
+选项与代价表见 survey 末节；**本决定仍未拍**。
