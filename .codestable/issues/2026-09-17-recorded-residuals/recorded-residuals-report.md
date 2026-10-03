@@ -1,7 +1,7 @@
 ---
 doc_type: issue-report
 issue: 2026-09-17-recorded-residuals
-status: open
+status: confirmed
 path: quick
 created_at: 2026-09-17
 related: [recorded-residuals-analysis.md, recorded-residuals-fix-note.md]

@@ -11,7 +11,7 @@ tags: [residuals, gitignore, handoff, context, status]
 # 记录在案残余收口 修复记录
 
 触发：owner「不是还有个残余项没修复吗？」→ 盘出 4 条记录在案、此前「接受/可选」未修项 → owner「all」要求全部修掉，
-并查清 CONTEXT.md 停更原因。**本次改动含代码、测试与全部 artifact，尚未提交/推送**（等 owner 决定）。
+并查清 CONTEXT.md 停更原因。本次改动含代码、测试与全部 artifact，**已提交并推送**：`d4cdad3 fix(project-context): close four recorded residuals and surface stale contexts`（自 `v0.1.7` 起包含在 tag 内，`origin/master` 与镜像均已携带）。
 
 ## 1. 残余 1：gitignore header 大小写（`project-state.ts`）
 

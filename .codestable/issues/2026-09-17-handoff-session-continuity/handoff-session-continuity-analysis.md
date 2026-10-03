@@ -1,7 +1,7 @@
 ---
 doc_type: issue-analysis
 issue: 2026-09-17-handoff-session-continuity
-status: open
+status: confirmed
 path: quick
 created_at: 2026-09-17
 related: [handoff-session-continuity-report.md]

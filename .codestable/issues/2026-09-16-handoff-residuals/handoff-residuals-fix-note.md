@@ -91,7 +91,8 @@ tags: [handoff, tests, flakiness]
 
 注：新代码那一跑**不带 `-e`/`-ne`**，走 settings 已装包，因此这条同时也是「部署生效」的证明。RPC 路径不触发 TUI 自动阈值，故用 `/auto-handoff now`（force，同一条 `runHandoff`）；自动阈值路径已由早前的 pexpect 真 TUI 跑验证。
 
-### 未在本轮完成
+### 收口状态（2026-10-03 复核）
 
-- 运行中的 pi 进程（pid 3100210，启动于 09-16 16:36）仍跑 v0.1.4 代码：重启后才吃到 v0.1.5。
-- **m4** 已修（见 §6），但**尚未提交**：工作树内 `tests/autolearn-test.mjs` +34 行待 owner 决定是否提交/额外发布。
+- ~~运行中的 pi 进程（pid 3100210，启动于 09-16 16:36）仍跑 v0.1.4 代码~~ —— 该进程早已退出；后续每次发版都按流程要求重启。
+- ~~**m4** 已修（见 §6），但尚未提交~~ —— **已提交并推送**：`7976ebb test(autolearn): cover the archived gate with an empty-project probe`，即 §6 描述的那个 I 段（独立 tmp 项目 + 负探针 + 正向对照，+34 行）。自 `v0.1.6` 起包含在 tag 内。本行原先记的「待 owner 决定是否提交」已由该提交落地。
+- 本 issue 无剩余未完成项；analysis/report 的 `status` 本次由 `open` 更正为 `confirmed`，与 fix-note 的终态一致。

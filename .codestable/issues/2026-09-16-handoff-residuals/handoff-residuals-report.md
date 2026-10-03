@@ -1,7 +1,7 @@
 ---
 doc_type: issue-report
 issue: 2026-09-16-handoff-residuals
-status: open
+status: confirmed
 path: quick
 created_at: 2026-09-16
 related: [handoff-language-and-replay-fix-note.md, consolidated-memory-json-poison-fix-note.md]
