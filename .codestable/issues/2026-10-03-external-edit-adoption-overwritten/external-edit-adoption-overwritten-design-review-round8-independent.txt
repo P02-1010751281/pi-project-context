@@ -1,0 +1,94 @@
+# 独立设计评审（lane A，第 8 轮）—— 设计 revision 8（B 版）
+
+工作区 `/tmp/pi-context-rev35`（只读）。探针全部在 `/tmp/rev35-probes/r8/`：按 v8 §2.0–§2.3 实现的补丁树 `repo-v8/`（含 §2.3 的 probe-only 注入缝 `repo-v8-hook/`）、按 v8 §2.4 实现 report/pass 的全链路树 `repo-v8-full/`。跑了 `probe-v8`(41/41)、`probe-t1`(18/18)、`probe-full`(14/14)、`probe-overflow`(7/7)、`probe-adv`(10/10)、`probe-residual`(5/5)、改期望后的 repro（live 退出 1、v8 退出 0）、全链路 `run-all`（13/14，1 条既有测试红，见 important）、live `consolidation-test`（ALL OK 基线）。零写入证明：`md5sum -c /tmp/rev35-live-md5.txt` 4/4 成功；`git status --porcelain -uall` 前后 diff 为空（仅开轮前已存在的 4 个 `.agents/memory/*` 改动）。
+
+---
+
+## A. R7 的 3 important + 7 nit 逐条核对
+
+| R7 项 | v8 处置 | 判定 | 依据（章节 / 源码 / probe） |
+|---|---|---|---|
+| **IM-A** 拒绝态 + `update===undefined` 谎称 context 已更新 | §2.4 `contextWritten: Boolean(update)`；`consolidateReply` 的 `keepReason:"stale"` 分支前缀由它决定（`report.ts:134` 的 `update`、`:217` 的 `if (update)`、`:408-412`） | ✅ **真解决** | `report.ts:134`：无 context 且既有 CONTEXT 非空 ⇒ `update===undefined`；`:217` 为假且 `:217` 的写抛错会走 catch ⇒ `"failed"` 提前返回（`:405`），故 **update 为真 ⇔ CONTEXT 必写**。`probe-full` 两例子：无 context⇒回复 `"project memory kept the newer MEMORY.md you edited (…discarded)."` 且 `CONTEXT.md` 字节未变；带 context⇒前缀 `"Project context updated; "` 且 CONTEXT 更新。两子情形均无未发生的事实。 |
+| **IM-B** §2.2 raw/raw 在读取来源翻转时假陈旧 | §2.2 两侧过 `memoryComparisonKey` + `current.text.trim()` 守卫（`store.ts:139-142` 无尾换行 vs journal fold 带尾换行） | ✅ **真解决** | `probe-v8` §3（journal 在 pass 读后被删）与 §4（无 journal 时 journal 被建立）：均 `written:true`、**无** `memory changed` 假日志；同一份 `MEMORY.md` 字节两种形态 key 相等。反方向吞并检查：CRLF/内部行尾空格仍判不同（`probe-v8` §5）、命中语义相同（尾换行/首尾空白/JSON 重编码）才被吸收，`decodePoisonedMemory` 参与后 poison-明文与同内容 JSON blob key 相同 ⇒ 发布回复不丢语义；peer 先采纳并发布 Q 的场景仍被拒（`probe-adv` §2）。幂等实测成立。 |
+| **IM-C** repro 谓词/退出码语义 | §4 `fixed = fresh.bEffective && fresh.adopted && stale.bEffective && stale.adopted` + `exit(fixed?0:1)` + 头部注释同步；未实施应退出 1 | ✅ **真解决** | 按 §4 逐字改脚本：`repro-fixed-live.mjs`（live store）输出"未守住"**退出 1**；`repro-fixed-v8.mjs`（v8 树）输出"编辑已守住"**退出 0**。谓词、注释、退出方向三者自洽。 |
+| nit 1 `（mtime 回退等）` 反了 | §2.2 改为"**mtime 回退**的编辑：`loadMemory` 返回 fold ⇒ §2.2 看不见它 ⇒ 正常发布并覆盖（R-1）"，①/② 竞态另段说明 | ✅ | `store.ts:114` 的严格 `mtimeMs >`；`probe-residual` §2 复现"同刻/回退⇒发布覆盖"，与文案一致。 |
+| nit 2 行号 | `:215`、`:188-190`、`:191-199`、`:260-270` 已改对 | ⚠️ 大体解决 | 实测均对；残留 `:185-188`（实际 185-187）、`:399-415`（函数 399-428、分支 408-412）、`store.ts:139-142`（实际 138-143）三处范围近似 ⇒ 见 nit。 |
+| nit 3 T6 CRLF/行尾空格方向 | §4 T6 写死实测方向 | ✅ | `probe-v8` §5：内部 `\r`⇒true、内部行尾空格（非末行）⇒true、文档级首尾空白/末行尾空白⇒false。 |
+| nit 4 `keepReason` 只在拒绝/未发布写 | §2.4 三元 `memoryRefused?"stale":!memoryChanged?{...}:{}` | ✅ | 已发布路径 `{}`；与今天 `report.ts:214` 一致。 |
+| nit 5 D2 fix note 两处 + overflow 落点 | §6 点名 `:72` 与 `:97`；§2.4 表行写"锁回调返回之后、`:179` 之前，`:198`/`:254` 指针" | ✅ | 两处行号实测命中；`probe-overflow`：拒绝态无副本，发布态副本存在且 `:191-199` 的日志指向它。 |
+| nit 6 T2 夹具前置 | T2 增"夹具不得删除任何 Invariants/Pitfalls 条目（`pass.ts:300-317`）" | ⚠️ 部分 | removal 行已点名（`:315`）；但"恰两行"还会被同块 `:303-305`/`:309-311` 的 `guard skipped` 且 opaque/非四节夹具触发（`dbg-midcall` 实测第三条）。见 nit。 |
+| nit 7 §2.3 拒绝无日志 | §2.3 增中性行 `"an external edit landed while this pass's memory write was being prepared; the reply was not published"` | ✅ | `probe-v8` §7 hook 实测该行存在，且与 §2.2 行可区分。 |
+
+---
+
+## blocking
+
+无。v8 的机制核经真实原语实测闭合：核心时序编辑保住且回复从未进 journal；两种来源翻转不误报；新项目不自锁；拒绝态回复文本两种子情形都不说谎；无编辑六 fixture（普通 / preserveMarker / legacy 无 journal / 全新 / 省略 basisKey / 超 cap）与 live 逐 op/text 与 `MEMORY.md` 字节一致（`probe-t1` 18/18）。
+
+---
+
+## important
+
+### IM-1. 既有的 `consolidation-test.mjs` 有一条断言会被 v8 的跳过清单打红，但 §0/T1 没把它列入改动面
+【修正已有机制】对应 **F3**（日志/措辞归属；既有测试是本设计的回归线的一部分，与 F4 同族）——**不需要新机制**。
+
+- **file:line**：`tests/consolidation-test.mjs:542`（`check("a mid-call writer is backed up", … && raceLog.includes("replaced a stored JSON reply"))`）vs 设计 §2.4 表行 `report.ts:185-188 | replaced a stored JSON reply 的 errors.log | 跳`；触发场景 `tests/consolidation-test.mjs:519-539`（"A writer landing during the model call"）**正是** §2.0 的核心时序，必然走 §2.2 拒绝。
+- **实测**（按 v8 §2.0/§2.2/§2.3/§2.4 打补丁的 `repo-v8-full` + 未改动的既有测试）：`run-all` **13/14**，唯一红的是这一条。`dbg-midcall` 输出：backup 数量 1、内容 === mid-call 写入的 `arrived`（保底成立），但 errors.log 只有
+  `memory regression guard skipped: …`、`adopted an externally edited MEMORY.md …`、`the memory changed while this pass's reply was being built; the reply was not published`——**没有** `replaced a stored JSON reply`。对照：live 未打补丁时该文件 **ALL OK**（基线确认，且零写入）。
+- **影响**：设计说 v8 的改动面只有 `store.ts`/`pass.ts`/`report.ts`/新测试/repro（§0），T1 又要求"`tests/run-all.mjs` 14 文件全绿"；照字面实施会交付一条红测试，或迫使实施者擅自改测试。跳过该日志本身是正确的（拒绝态 `MEMORY.md` 仍是裸 JSON，"已替换成 Markdown"会是谎言），需要变的是测试与设计的改动面。
+- **修复边界**：把 `tests/consolidation-test.mjs` 写入 §0/T1 的改动面，并把该 check 拆成：保留"backup 数量与字节 === `arrived`"；`replaced a stored JSON reply` 断言移到一个**未发生拒绝**的 poison 修复用例（该日志会在下一次真正发布/修复的 pass 写出，`probe-overflow` 的发布态路径可作模板）；本用例改断言 `adopted …` + `reply was not published`。不动任何机制。
+
+---
+
+## nit
+
+1. **`:185-188` 仍多一行**：`report.ts:185-187` 才是 `replaced a stored JSON reply` 的 `if/logError/}`，188 已是 section-cap 的 `if`。（`probe-full` 的补丁按 185-187 gate。）
+2. **T1 的"14 文件"与 §0 新增 `tests/external-edit-test.mjs` 自相矛盾**：run-all 自动发现，加入 T1–T6 后是 15 个文件。建议写成"既有 14 文件保持全绿 + 新增文件通过"。
+3. **T2"errors.log 恰两行"的夹具前置不完整**：除了 `pass.ts:315` 的 removal 行，同块 `:303-305`（回复未产出 sections，opaque 夹具）与 `:309-311`（存量记忆不是四节文档）也会出现在 report 拦不住的 pass 层。T2 应点名这三行。
+4. **范围近似**：`report.ts:399-415` 的 `consolidateReply` 实际 399-428（相关分支 408-412）；`store.ts:139-142` 的 no-journal 返回实际 138-143。不影响实现，实施时按 `store.ts:138-143` 阅读。
+
+## suggestion
+
+- **§5 补一条既有残留（本次 probe 实测）**：`newestMemoryArchive` 优先于 `MEMORY.md` render（`store.ts:129-137`）⇒ "手删 journal 且有 rotation 归档"的项目里，模型调用期间的 `MEMORY.md` 编辑既不被 §2.2 看见（baseline 取归档）也不被 §2.3 看见（`renderKey == nowKey`），回复照发、编辑被覆盖（`probe-residual` §1 实测；报告层写前备份仍保住字节）。属既有读侧优先级，不是 v8 引入；T4 的"无 journal + 编辑"承诺应理解为"无 journal 且无归档"。
+- **§2.4 的 `contextWritten` 注释收窄**：现有 published 路径（`update===undefined` 且无拒绝）今天就会输出 `"Project memory and context updated."` 而 CONTEXT 未写（live `probe-prelying` 实测：`reply="Project memory and context updated."; contextUpdated=false`）。v8 只在 stale 分支消费 `contextWritten`，注释"没写时由 `contextWritten` 负责纠正前缀"容易被读成已覆盖该既有谎言。建议注明"仅拒绝态"或把它记进 §5。
+
+## learning
+
+- **§2.2 两侧过 key 后，来源翻转**（journal 建立/删除、fold 带尾换行 vs raw-clip 无尾换行）不再假陈旧；`memoryComparisonKey` 幂等，且内部 `\r`/内部行尾空格仍安全侧判不同（`probe-v8` §3-§5）。
+- **§2.3 的 `publishKey` 排除项是必要的**：窗口内写入恰为 `rendered` 时不触发（避免"内容已生效却说已丢弃"），清空/删文件不触发（R-3），其余非空新内容触发并 append `nowKey`、`MEMORY.md` 保留原始字节（hook `probe-v8` §7）。
+- **拒绝态的副作用门控完整**：`saveOverflowReply` 后置 + `!memoryRefused` 门使拒绝态不产副本、不产 cap 日志；发布态副本与 `:198`/`:254` 指针成立（`probe-overflow` 7/7）。
+- **claim 释放**（`report.ts:275`）：拒绝不抛错 ⇒ claim 保留，重放被 version 挡住；若其后抛错而释放，重放仍用旧 `basisKey`，在编辑未回退时再次拒发（`probe-v8` §6）；只有 owner 把盘面改回基线时才会发布——那时发布与基线语义一致，不属于"顶掉新编辑"。
+- **R-11 自愈链实测**：①/② 之间落地的编辑留在 `MEMORY.md`、journal 不落；下一次写路径先采纳再发布，journal 收敛为 `[A,B,C]`（`probe-adv` §3）。
+
+## praise
+
+- R7 的 3 important + 7 nit 全部折入且未夹带新机制：IM-A 的 `contextWritten`/stale 句、IM-B 的双侧 key、IM-C 的谓词/退出码/注释三同步，实测全部闭合；`keepReason` 三元、D2 两处、overflow 落点指针、中性日志都精确。
+- §2.0 的执行顺序与 §2.3 的纯函数边界经真实原语六种时序验证：核心时序 `journal=[A,B]`、`kept=B`、errors 恰两行；无编辑六 fixture 与 live 逐字节一致——v8 已具备可实施形态，剩下的是一条既有测试的账面同步。
+
+## residual-risk
+
+- **R-13**（overflow 后置的崩溃窗：发布成功但副本缺失）与 D2 fix note 的"写副本在前"反转，属 best-effort 接受项，实测方向一致。
+- **R-1**（mtime 回退/同刻）实测仍复现：`probe-residual` §2，`MEMORY.md` 被回复覆盖；措辞"回退或同刻"准确。
+- **R-12**（`activeConsolidation` 模块级、跨项目 join）行号 `pass.ts:61/135/338` 实测正确；两个全新项目 `basisKey=""` 仍可能串写，非本设计要修。
+- **归档遮蔽 render**（suggestion 第 1 条）：既有读侧优先级造成的"编辑不生效也不被拒"，§5 未列；建议记录，不需机制。
+- **published 路径的 context 措辞**（suggestion 第 2 条）：既有谎言，v8 未引入也未扩大，建议记录。
+- R-2…R-11 措辞与实测一致：recheck 接线确实只有纯函数单测（设计已明示由代码评审覆盖）；⑥ 中途被杀的编辑留在 `MEMORY.md`、因 journal mtime 更新不再被采纳（`MEMORY.md.memory-backup-*` 兜底）。
+
+---
+
+## Test And QA Focus
+
+| 用例 | 可构造性 | 断言可判性 / 备注 |
+|---|---|---|
+| **T1** | ✅ 既有 fixture + 直接 store 序列 | "与今天逐字节一致"应以显式期望序列/字节落库；`probe-t1` 六 fixture 已验证可行。**先修 important**：`tests/consolidation-test.mjs:542` 需同步，否则 run-all 不是 14/14。来源翻转变体（journal 建/删前后各读一次）已由 `probe-v8` §3/§4 预演。 |
+| **T2** | ✅ fake `complete` 内写 `MEMORY.md` | 已全链路验证（`probe-full`）：编辑保住、回复不进 journal、`errors.log` 恰两行（sectioned 且存量四节夹具时）、无 cap/section-cap/poison/shortened/removal 行、`lastWrite` 无 cap/removed、回复=丢弃句。两例子（带/不带 context）均已判可判。夹具须避开 `pass.ts:303-305`/`:309-311`。 |
+| **T3** | ✅ 先写 E（mtime 新）再取 `basisKey=loadMemory().text` | `probe-adv` §1：正常发布、journal `[A,B,C]`、无拒绝日志。 |
+| **T4** | ✅ 无 journal 目录 + `complete` 内写 E | `probe-v8` §2：拒绝、E 保住、journal 空；下一轮自愈 `[E,C]`。legacy 无编辑回归由 `probe-t1` 覆盖。 |
+| **T5** | ✅ `migrate.ts:127`/legacy 路径 | 不传 `basisKey` 六 fixture 与 live 逐字节一致（`probe-t1`）。 |
+| **T6** | ✅ 需 `export function nextRenderSupersedes`（§3 已写） | 六组与公式全对；CRLF⇒true、内部行尾空格⇒true、文档级空白⇒false 方向已钉死（`probe-v8` §5）；"拒绝后抛错→缓存 outcome 重放→仍拒发、不重复 append"由 `probe-v8` §6 预演。 |
+| R7 三条补充 | ✅ | 来源翻转（T1 变体）、reject+`update===undefined` 回复文本（`probe-full` 例 1）、回放幂等（T6 末句）均可构造且已预演。 |
+| repro | ✅ | 按 §4 改后：未实施退出 1、实施后退出 0（实测）。 |
+
+---
+
+VERDICT: CHANGES-REQUESTED

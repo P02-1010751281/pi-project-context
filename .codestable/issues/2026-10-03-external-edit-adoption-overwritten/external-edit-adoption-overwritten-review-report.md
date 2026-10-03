@@ -17,6 +17,7 @@
 | R5 | 设计 v4.1（沙箱 HEAD `2ef637a`） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（class 1 谓词过宽；§9 漏 `:228-230`；T9 断言与设计自相矛盾）+ 12 nit。四时序探针 41 断言无数据丢失/活锁/倒置；no-edit 与今天逐 op/text 及字节一致；R4 的 11 nit 中 10 条真解决 |
 | R6 | revision 6（B 版，134 行，无重跑） | **CHANGES-REQUESTED** | 1 blocking（§2.3 `renderKey` 未定义 + 缺空守卫）+ 3 important（§2.2 落点三种读法、§2.4 拒绝态无法表达 + 跳过清单不全、repro 未传 `basisKey`）+ 6 nit + 1 suggestion。**无一条要求新机制** |
 | R7 | revision 7（B 版 + R6 四修） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（拒绝态 + 无 context 时命令回复谎称 context 已更新；§2.2 raw 比较在读取来源翻转时假陈旧；repro 的 exit 谓词不成立）+ 7 nit。**无一条要求新机制** |
+| R8 | revision 8（R7 三修 + 7 nit） | **CHANGES-REQUESTED** | **0 blocking** + 1 important（既有测试 `consolidation-test.mjs:542` 的 mid-call-writer check 依赖"陈旧回复被发布"，修复后 run-all 13/14 ⇒ 改动面漏了它）+ 4 nit + 2 suggestion。**无一条要求新机制** |
 
 ### R1 发现（按评审分桶）
 
@@ -442,3 +443,64 @@ md5sum -c /tmp/rev34-live-md5.txt                                             �
 
 → 设计改 **revision 8**（折入 IM-A/IM-B/IM-C + 7 nit）。新增残留 R-11（①/② 竞态，自愈、不补 append）、
 R-12（`activeConsolidation` 模块级、跨项目 join）、R-13（overflow 副本后置的崩溃窗），并把 R-1 扩为「回退**或同刻**」。
+
+## R8 轮次详情（revision 8）
+
+- 被审：revision 8；沙箱 `/tmp/pi-context-rev35`（HEAD `f3aa5c3`）；裁决 **CHANGES-REQUESTED —— 0 blocking** / 1 important / 4 nit / 2 suggestion；transcript 14147 字节
+- 独立性：R8 打了两份真实补丁树——`repo-v8/`（§2.0–§2.3 + 注入缝）与 `repo-v8-full/`（含 §2.4 的 report/pass 全链路），
+  跑了 8 组探针（`probe-v8` 41/41、`probe-t1` 18/18、`probe-full` 14/14、`probe-overflow` 7/7、`probe-adv` 10/10、`probe-residual` 5/5 等），
+  并在打补丁的全链路树上跑 `run-all`（**13/14**）与按 §4 改过期望的 repro（live 退出 1、v8 退出 0）
+
+### R8-IM-1（important，revision 9 已修）：既有测试依赖"陈旧回复被发布"
+
+`tests/consolidation-test.mjs:542` 的 `check("a mid-call writer is backed up", …)` 要求
+`raceLog.includes("replaced a stored JSON reply")`，而 `:519-539` 的场景（模型调用期间写入裸 JSON 的 `arrived`）
+**正是 §2.0 的核心时序** ⇒ 修复后必然走 §2.2 拒绝、`storedPoisoned` 的日志被跳（**跳得对**：`MEMORY.md` 仍是裸 JSON，
+"已替换成 Markdown"是谎报）⇒ `run-all` 停在 13/14。设计 §0 与 T1 却仍写"14 文件全绿"。
+修法（不动机制）：把该 check 拆开——保留"备份数量 1 + 备份字节 === `arrived`"，把 poison 修复断言移到**未发生拒绝**的用例，
+本用例改断言 `adopted …` + `reply was not published`；并把 `tests/consolidation-test.mjs` 写进 §0 改动面。
+
+### R8 对 R7 的 3 important + 7 nit 复核
+
+| R7 项 | 判定 | 依据 |
+|---|---|---|
+| IM-A（`contextWritten`） | ✅ 真解决 | `:134` 的 `update===undefined` 与 `:217` 的 `if (update)` 等价；写抛错走 catch ⇒ `failed` 提前返回 ⇒ **update 为真 ⇔ CONTEXT 必写**；两例子回复都不含未发生的事实 |
+| IM-B（双侧 `memoryComparisonKey`） | ✅ 真解决 | journal 建/删两向都不再假陈旧、无假日志；反方向检查：CRLF/内部行尾空格仍判不同，`decodePoisonedMemory` 参与后 poison-明文与同内容 JSON 同 key，peer 先发布场景仍被拒；幂等成立 |
+| IM-C（repro 谓词/退出码） | ✅ 真解决 | 按 §4 逐字改：live 退出 **1**、v8 树退出 **0**，谓词/注释/方向三者自洽 |
+| nit 1（mtime 回退措辞） | ✅ | `probe-residual` 复现"同刻/回退 ⇒ 发布覆盖"，与文案一致 |
+| nit 2（行号） | ⚠️ 大体解决 | `:215`/`:188-190`/`:191-199`/`:260-270` 已对；残留三处**范围**近似（`report.ts:185-188` 应为 **185-187**、`consolidateReply` 实际 **399-429**、`store.ts:139-142` 应为 **138-143**）⇒ revision 9 已改 |
+| nit 3（T6 CRLF 方向） | ✅ | 内部 `\r` ⇒ true、内部行尾空格 ⇒ true、文档级空白 ⇒ false |
+| nit 4（`keepReason`） | ✅ | 已发布路径写 `{}`，与今天 `report.ts:214` 一致 |
+| nit 5（D2 两处 + overflow 落点） | ✅ | 两处行号命中；`probe-overflow`：拒绝态无副本、发布态有副本且 `:191-199` 的日志指向它 |
+| nit 6（T2 夹具前置） | ⚠️ 部分 | removal 行已点名；**同块还有 `pass.ts:303-305`/`:309-311` 两行**（opaque 夹具 / 存量非四节文档）也会出现 ⇒ revision 9 已点名三行 |
+| nit 7（§2.3 中性日志） | ✅ | hook 实测该行存在且与 §2.2 行可区分 |
+
+### R8 的两条 suggestion（revision 9 已记为残留）
+
+- **R-14**：手删 journal 且存在 rotation 归档时，`loadMemory` 优先取归档（`store.ts:129-137`）⇒ 调用期编辑既不被 §2.2 也不被 §2.3 看见，回复照发、编辑被覆盖（`probe-residual` §1）。既有读侧优先级 ⇒ T4 的承诺应读作"无 journal **且无归档**"。
+- **R-15**：published 路径的**既有**谎言——`update===undefined` 且未拒绝时命令回复仍说 "…and context updated." 而 CONTEXT 未写。本设计只在拒绝态消费 `contextWritten`，不引入也不扩大。
+
+### 收敛观察（R6→R8）
+
+| 轮 | 被审 | blocking | important | 性质 |
+|---|---|---|---|---|
+| R6 | B 版（134 行） | 1 | 3 | 机制落点未定义（`renderKey`、§2.2 落点、拒绝态接口、repro） |
+| R7 | revision 7 | **0** | 3 | 拒绝态与既有控制流的边界（context 前缀谎言、来源翻转假陈旧、repro 谓词） |
+| R8 | revision 8 | **0** | 1 | **账面同步**：既有测试依赖旧行为；另 3 处行号范围 + 2 条既有残留 |
+
+**三轮的发现全部是【修正已有机制】，无一条要求新机制**——审计判据（机制必须由现场证据触发）在三轮里没有被违反，
+也没有出现 R1–R5 那种"新机制带来新面"的膨胀。
+
+### R8 零写入证明
+
+```
+cd /tmp/pi-context-rev35
+git status --porcelain -uall | sort | diff - /tmp/rev35-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev35-baseline-files.txt → 无差异（349 文件基线）
+md5sum -c /tmp/rev35-live-md5.txt                                             → 活仓库 4/4 未变
+```
+
+### R8 处置
+
+→ 设计改 **revision 9**（折入 IM-1 + 4 nit + 2 suggestion，新增残留 R-14/R-15）。

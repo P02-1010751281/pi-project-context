@@ -1,0 +1,62 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 8 轮）**。被审工件 = **设计 revision 8**（尚未实施，无代码 diff）。工作区 `/tmp/pi-context-rev35`（**先 cd 进去**）。
+
+**背景（同行意见，不是事实）**：同一 issue 的"完整版"v1–v5（415 行，含"判陈旧后重跑一轮"）经 5 轮评审后被 owner 判定过度复杂 ⇒ 重写为 B 版（**取消重跑**）。R6 审 B 版：1 blocking + 3 important（`renderKey` 未定义且缺空守卫 ⇒ `memoryComparisonKey("")` 返回 `"# Project Memory\n"`，全新项目拒发自锁；§2.2 落点三种读法；§2.4 拒绝态在 §3 接口里表达不出；repro 未传 `basisKey`）。R7 审 revision 7：**0 blocking** + 3 important（最终回复在 `update===undefined` 时谎称 context 已更新；§2.2 的 raw/raw 比较在读取来源翻转时假陈旧；repro 的 exit 谓词按字面不成立）+ 7 nit。**revision 8 已折入 R7 的 3 important + 7 nit，且新增 R-11/R-12/R-13 三条残留。** v5 存档于 `...-design-full-v5-archive.md`（**不要照它实施**）。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev35`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`），例如按 §2.0 顺序打一份补丁副本验证新判据；也允许跑 `repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev35-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（revision 8）
+3. 对照件：同目录 `...-design-review-round{6,7}-independent.txt`（**R7 最重要**）、`...-design-full-v5-archive.md`、`...-report.md`、`...-review-report.md`、`repro-write-ordering.mjs`
+4. 审计纪律：`.codestable/audits/2026-10-03-design-complexity-audit.md`
+5. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document,input}.ts`；`extensions/project-context/shared/{lock,files,migrate,gitignore}.ts`
+6. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 每个发现必须标注
+
+**【修正已有机制】**（revision 8 已列出的机制写法/落点不成立）或 **【新增机制】**（要求 v8 没有的机制）。
+后者**必须**指出它对应 §1 的哪条现场事实（F1–F4）；指不出就写进 `residual-risk`，不算重要发现。
+**不要因为"v5 里有、v8 里没有"就要回机制**——取消重跑是 owner 的决定。
+
+## 必须做的六件事
+
+**A. 逐条判 R7 的 3 important + 7 nit 是否真修好**（给 v8 章节 + 源码头文件行号 + 依据）：
+   - IM-A：`lastWrite.contextWritten = Boolean(update)`（`report.ts:134` 的 `update`、`:217` 的 `if (update)`、`:399-415` 的 `consolidateReply`）——**`update` 为真是否真的 ⇒ CONTEXT 写成功**（`renderContextDocument`/`writeAtomic` 抛错会走 catch ⇒ `failed`，是否覆盖了全部子情形）？两种子情形（context 写/不写）的回复文本是否都不含未发生的事实？
+   - IM-B：§2.2 两侧过 `memoryComparisonKey` —— 实测 `probe-sourceflip` 场景（journal 在 pass 读之后被建立/删除）是否还会假陈旧；**并检查这个改动是否反过来吞掉了本该拒绝的情形**（幂等性、`decodePoisonedMemory` 参与后的方向）。
+   - IM-C：repro 的谓词与退出码语义是否自洽、头注释是否同步、**未实施本设计时应退出 1**。
+   - 7 nit：行号（尤其 `:215`）、T6 的 CRLF/行尾空格方向、`keepReason` 只在拒绝或未发布时写、D2 fix note 两处同步、`saveOverflowReply` 落点与 `overflowPath` 指针、T2 夹具前置、§2.3 的中性日志行。
+
+**B. 攻 revision 8 的新改动**：
+   - §2.4 的 overflow 后置：移到"锁回调之后、`:179` 记账之前"是否成立；与 `memoryCapWarned` once 语义、`saveOverflowReply` 失败路径、以及 R-13（发布成功但副本缺失）的交互。
+   - §2.4 的 `wroteMemory = snapshot.written`：核 `report.ts:275` 的 claim 释放在拒绝态下的后果（后续抛错是否让同一 outcome 被重放；重放是否再拒发或意外发布）。
+   - `consolidateReply` 的新 stale 句子与 `guard`（`:401-403`）、`clippedNote` 的组合是否自洽（拒绝态下 `report` 仍可能是 `"clipped"`）。
+   - §5 新增的 R-11/R-12/R-13 措辞是否与实测一致、有无夸大或漏项。
+
+**C. 四时序回归（设计级推演，v8）**：编辑①早于读取 ②模型调用期间（核心）③发布窗口内（含清空、CRLF、清空再写、与 `rendered` 同键、①/② 竞态）④无编辑。每种给"第几步触发、最终 journal、最终 `MEMORY.md`、`errors.log`、`lastWrite`、命令回复"。必须确认：**无编辑时逐字节等于今天**；**②下编辑保住且回复未发布**。
+
+**D. 测试 T1–T6**：逐条判"能否构造、断言是否可判"（含 R7 建议的三条补充用例：来源翻转、reject+`update===undefined` 的回复文本、拒绝后回放幂等）。
+
+**E. 对抗性一轮**：假定 v8 仍藏 bug（数据丢失 / 编辑仍未保住 / 正常路径被误判陈旧 / 新项目自锁 / 日志或命令回复说谎 / 破坏既有合法组合 / 死锁）去找它。找不到要说清搜过哪些面。
+
+**F. 文档准确性**：v8 引用的行号、常量、函数名、断言方向是否都对（前七轮共抓到 9 处行号偏移）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节核对表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条标注【修正已有机制】/【新增机制】+ F 编号、`file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出。
+- 只有以下情况给 `PASSED`：R7 的 3 important + 7 nit 真解决、§2.4 的拒绝态消费点完整、四时序无倒置、T1–T6 可构造。
+- **若 v8 已可实施，就判 `PASSED`**，把"实施时必须注意但不必再改设计"的点放进 `learning`/`residual-risk`；**不要为凑发现而降级判定，也不要提出机制类新要求**。
