@@ -73,6 +73,47 @@ console.log("=== strict-ready schemas ===");
 	check("record_skill asks for strict: prefer", autolearnSchema.RECORD_SKILL_TOOL.constrainedSampling?.strict === "prefer");
 }
 
+// `assertStrictReady` above only inspects the SCHEMA. The gate that actually decides strict-vs-
+// downgrade at request time is `resolveJsonSchemaStrictSampling`, which nothing exercised until now.
+// Driving it with the real tool objects is as far as the strict path can be pinned on this machine:
+// every route it can reach is OpenAI-compatible (`compat.supportsStrictMode` defaults false), so a
+// live provider-side strict request is not obtainable here — this proves the schema WOULD be sent
+// strict when a strict-capable provider is present, which is the part that was unverified.
+console.log("\n=== strict resolver (pi-ai's real gate) ===");
+{
+	const { resolveJsonSchemaStrictSampling } = await import(`${dist}/api/constrained-sampling.js`);
+	for (const [label, tool] of [
+		["record_memory", sections.RECORD_MEMORY_TOOL],
+		["record_skill", autolearnSchema.RECORD_SKILL_TOOL],
+	]) {
+		let capable;
+		try {
+			capable = resolveJsonSchemaStrictSampling(tool, true);
+		} catch (error) {
+			capable = `threw: ${error.message}`;
+		}
+		check(`${label} resolves to strict on a strict-capable provider`, capable === true);
+		// OpenAI-compatible / Bedrock / Anthropic routes: downgrade to undefined, and "prefer" must not throw.
+		check(`${label} downgrades silently where strict is unsupported`, resolveJsonSchemaStrictSampling(tool, false) === undefined);
+	}
+	// Non-vacuous control: a base-table-forbidden keyword must NOT resolve to strict, or the two
+	// assertions above would pass for any schema at all. `$ref` is in pi-ai's base table, unlike
+	// `maxItems` (Anthropic-only), which the base-table check lets through.
+	const notReady = {
+		...sections.RECORD_MEMORY_TOOL,
+		parameters: { type: "object", additionalProperties: false, required: ["a"], properties: { a: { $ref: "#/defs/x" } } },
+	};
+	check("a $ref schema does not resolve to strict (the control)", resolveJsonSchemaStrictSampling(notReady, true) === undefined);
+	// "require" is the trap this project stays out of: on the routes it actually runs on it throws.
+	let requireThrew = false;
+	try {
+		resolveJsonSchemaStrictSampling({ ...sections.RECORD_MEMORY_TOOL, constrainedSampling: { type: "json_schema", strict: "require" } }, false);
+	} catch {
+		requireThrew = true;
+	}
+	check("strict: require on an unsupported route throws (why both tools use prefer)", requireThrew);
+}
+
 console.log("\n=== entry hygiene ===");
 {
 	check("a bullet prefix and embedded newline are removed", sections.normalizeMemoryEntry("-  foo\n bar  ") === "foo bar");
