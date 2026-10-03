@@ -60,10 +60,15 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 
 两轮**独立地**给出同两条 important，均已修：
 
-1. **`consolidation shortened` 日志漏了拒绝门**（`report.ts:247`）：拒绝态 + `outcome.clipped` 时，日志会声称"存量被缩短"——而那次发布从未发生。两轮各用 probe 复现（R9 的 P5、代码评审的 clipped 夹具）。修复后由 **T2c** 钉死，并带**对照跑**（同一夹具不撞车时该日志必须出现），使断言不可能空转。
+1. **`consolidation shortened` 日志漏了拒绝门**（条件行 `report.ts:246`）：拒绝态 + `outcome.clipped` 时，日志会声称"存量被缩短"——而那次发布从未发生。两轮各用 probe 复现（R9 的 P5、代码评审的 clipped 夹具）。修复后由 **T2c** 钉死，并带**对照跑**（同一夹具不撞车时该日志必须出现），使断言不可能空转。
 2. **设计 §4 承诺的三条回归线未落地**（来源翻转 / CRLF 与行尾空格方向 / 拒绝后重放）：行为经两轮 probe 实测正确，但当时回退 §2.2 为 raw 比较**没有任何断言变红**。已补进测试，并用**变异矩阵**证明：撤 `!memoryRefused` ⇒ T2c 红；§2.2 退回 raw 比较（带 trim 2 条 / 不带 trim 4 条）⇒ T1b 红；去掉 `nextRenderSupersedes` 的 `publishKey` 排除 ⇒ T6 红。
 
-R9 另有 5 nit + 2 suggestion（行号漂移、H1 版本号、T2"恰两行"自相矛盾、§0 约数、T1 多一条断言、§2.2 清空口径、repro 谓词），**已全部同步到设计文档**；设计未因此新增机制，也**没有为它再开设计轮**（纯行号/措辞回写，代码评审轮 2 会把它和修复一起审）。
+R9 另有 5 nit + 2 suggestion（行号漂移、H1 版本号、T2"恰两行"自相矛盾、§0 约数、T1 多一条断言、§2.2 清空口径、repro 谓词），**已全部同步到设计文档**；设计未因此新增机制，也**没有为它再开设计轮**。
+
+**轮 2 的复核结论（`CHANGES-REQUESTED`，但无 blocking / 无 important）**：两条 important 的修复与三条回归线**均真实、非空转、有变异矩阵背书**，
+无新谎报、无过跳、无活仓库写入；轮 2 只保留了 3 条 nit：① 行号回写仍错约 18 处（已按 `dd2adcc` 实测重写，见上）；
+② fix-note/review-report 里"全量回写""S-2 已同步"两处声称不实（**已更正**，S-2 的 repro 谓词也已补进设计）；
+③ `store.ts` JSDoc 里 "bytes" 宜作 "normalized keys"（措辞级，**未改**，以保持代码与轮 2 审过的字节完全一致）。
 
 ## 4. 既有测试的账面同步（R8-IM-1）
 

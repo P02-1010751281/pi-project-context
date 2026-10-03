@@ -1,0 +1,55 @@
+你是 pi-project-context 仓库的**独立代码评审（lane A，第 2 轮）**。被审工件 = **提交 `dd2adcc` 的改动**（`git show dd2adcc`），即第 1 轮代码评审与设计评审 R9 的**修复批次**；其父提交 `00bf797` 是第 1 轮审过的实现。工作区 `/tmp/pi-context-rev39`（**先 cd 进去**）；`HEAD` = `dd2adcc`。本轮由 `deepseek/deepseek-v4-pro` 服务。
+
+**背景（同行意见，不是事实）**：第 1 轮代码评审（审 `00bf797`）判 `CHANGES-REQUESTED`：0 blocking + 2 important + 4 nit；R9（审设计 revision 9）判 0 blocking + 2 important + 5 nit + 2 suggestion。**两条 important 是两轮独立同判**：
+
+1. `report.ts` 的 `consolidation shortened` errors.log 漏了 `!memoryRefused` 门（设计 §2.4 表把它列为"跳"）：拒绝态 + `outcome.clipped` 时日志会声称存量被缩短，而那次发布从未发生 —— 正是本设计要消灭的谎报类别。
+2. 设计 §4 点名的三条回归线未落进 `tests/external-edit-test.mjs`（来源翻转 / CRLF 与行尾空格方向 / 拒绝后抛错重放）；当时把 §2.2 退回 raw 比较**没有任何断言变红**。
+
+修复批次声称：补了门（`report.ts:247`）、补了三组回归线 + 一个 clipped+拒绝夹具（**带对照跑**）+ 拒绝重放，断言 47 → **69**、测试文件 298 行；并跑了变异矩阵（撤门 ⇒ T2c 红；§2.2 退回 raw（带 trim 2 条 / 不带 trim 4 条）⇒ T1b 红；去掉 `publishKey` 排除项 ⇒ T6 红）；另按 R9 的映射回写了设计里约 20 处行号 + 6 处措辞。**这些声称都要你独立复核，不要继承。**
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev39`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`，用完删掉自己的临时目录（`/tmp` 是 16 GB tmpfs，这套评审的沙箱每个约 130 MB）。
+- **鼓励**写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`/`loadDefault`/`makeCtx`/`makePi`），也**应当**直接跑 `node tests/run-all.mjs` 与 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev39-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审 diff**：`git show --stat dd2adcc`、`git show dd2adcc`（提交信息含意图）
+3. 对照：同 issue 目录下 `…-code-review-round1-independent.txt`（第 1 轮全文）、`…-design-review-round9-independent.txt`（R9 全文）、`…-review-report.md`（两轮的表与处置）、`…-fix-note.md`（§3.1 修复说明）
+4. 设计（行号已回写）：`…-design.md` 的 §2.0/§2.2/§2.3/§2.4/§4/§5
+5. 代码：`extensions/project-context/memory/{store,pass,report}.ts`、`tests/external-edit-test.mjs`、`tests/consolidation-test.mjs`
+6. 依赖：`memory/{journal,document,poison,input}.ts`、`shared/{project-state,lock,files,error-log}.ts`
+
+## 必须做的七件事
+
+**A. 复核重要 1 的修复**：`report.ts` 的门是否覆盖全部拒绝态路径（对照 §2.4 表逐行）；**自己写 probe** 复现"大记忆 + 小模型上下文 + 调用期编辑 ⇒ 拒绝"，断言日志含"未发布"且**不含** `consolidation shortened`；**并造一个对照**（同夹具不撞车）证明夹具真会裁剪 —— 若对照跑不出该日志，那条断言就是**空转**，必须报出来。
+
+**B. 复核重要 2 的修复**：逐条确认三条回归线真的落地且**非空转**（来源翻转那条应断言两种读取形态**在 `trim` 后仍不同**且键相等；CRLF/行尾空格方向；拒绝后重放要断言"仍拒发 + 采纳只记一次"）。**自己跑变异矩阵**（至少四种：撤 `!memoryRefused`；§2.2 退回 raw 带 trim；§2.2 退回 raw 不带 trim；去掉 `nextRenderSupersedes` 的 `publishKey` 排除项），确认每次**只有相关的那几条**断言变红。
+
+**C. 复核设计回写**：用 `grep -n` 实测抽查 §2.4 表的 13 行行号与 §2.1/§2.2/§2.3/§3/§5 的引用是否与实现**当前**文件一致（**不要**凭 R9 的映射相信回写正确），并把**仍然错的**逐条列出。
+
+**D. 攻修复本身**：新增的 `!memoryRefused` 门有没有**过跳**（该写的日志被吞掉、或某条诊断从此永久消失）？新增测试有没有改坏既有断言、有没有引入对活仓库的写入、有没有让 `run-all` 慢到不可接受？`store.ts` 的注释改动与谓词语义是否一致？
+
+**E. 回归确认**：实际运行 `node tests/run-all.mjs`（应 15/15）与 `repro-write-ordering.mjs`（应退出 0），并核对断言总数（声称 69）与测试文件行数（声称 298）。
+
+**F. 对抗性一轮**：假定修复仍藏 bug（把谎报从一条挪到另一条、测试永真、夹具依赖时序而脆弱、行号回写引入新错）去找它；找不到要说清搜过哪些面。
+
+**G. 文档准确性**：`git show dd2adcc` 的提交信息与改动是否相符；fix-note §3.1 与 review-report 的处置表是否如实（尤其"变异矩阵"与"断言 69"两处声称）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给**复核表**（第 1 轮/R9 的发现 → 修复声称 → 你的独立结论），再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条给 `file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出；**必须自己运行测试与脚本**。
+- 只有以下情况给 `PASSED`：重要 1 的修复真覆盖全部拒绝态路径且**对照跑证明断言非空转**；重要 2 的三条回归线真落地且变异矩阵能证明它们会变红；设计行号抽查无错；15/15 与 repro 退出 0 实测通过；修复未引入新的谎报或过跳。
+- 若修复已可交付，把"后续注意但不必现在改"的点放进 `learning`/`residual-risk`；**不要为凑发现而降级判定，也不要提机制类新要求**。

@@ -1,0 +1,76 @@
+All verification complete. Let me compile the final review report.
+
+---
+
+# 独立代码评审（lane A，第 2 轮）—— 提交 `dd2adcc`（对第 1 轮 + R9 修复批次的复核）
+
+**实测基线（全部本沙箱亲跑）**：`node tests/run-all.mjs` → **All 15 tests passed**（21s）；`repro-write-ordering.mjs` → **退出 0**；`external-edit-test.mjs` 单跑 8s、69 条 OK / 0 FAIL；父提交 `00bf797`（`git archive` 解出）同文件 47 条 OK / 0 FAIL；活仓库 6 个待审文件 md5 与 `/tmp/rev39-live-md5.txt` 逐条一致，测试前后 `git status` 无新增写入；评审临时产物已删。
+
+## 复核表
+
+| 第 1 轮 / R9 发现 | 修复声称 | 我的独立结论 |
+|---|---|---|
+| **重要 1**：`consolidation shortened` 日志漏 `!memoryRefused` 门（`report.ts`，两轮独立同判） | 补门（`report.ts:247`），T2c 钉死 + 同夹具对照跑证明夹具真裁剪 | ✅ **真修复**。门在 `report.ts:246-249`（`if (outcome.clipped && !memoryRefused && (memoryChanged \|\| update))`，条件行实际在 246，非 247）。覆盖全部拒绝态路径：`store.ts:100`（§2.2）与 `store.ts:118`（§2.3）是 `written:false` 仅有的两个出口，`memoryRefused = !snapshot.written` 因此必真；无第三条路径。**我自写 probe**（CJK 不透明种子 20K 字符 + `maxTokens:512` + 调用期编辑，构造独立于 T2c）：对照跑 = 回复发布 + `shortened` 行在；拒绝跑 = `the reply was not published` 在、`consolidation shortened` **不在**、无 `exceeded`、编辑仍生效 → 对照证明断言非空转 ✅。**变异 1**（撤门）→ 全套 15 文件中仅 T2c 的 `and it claims no shortening` 变红（1 条），其余 68 条绿 ✅ |
+| **重要 2**：设计 §4 三条回归线未落地（来源翻转 / CRLF 与行尾空格方向 / 拒绝后重放） | T1b + 归一化方向 5 断言 + 拒绝重放块；变异矩阵证明会红 | ✅ **真落地且非空转**。① 来源翻转（`external-edit-test.mjs:111-134`）：断言 `rawForm !== foldForm` **且 trim 后仍不同** **且键相等**，双向（journal 建立/删除）都发布；② CRLF/行尾空格方向（`:69-73`）：内部 `\r`/内部行尾空格 ⇒ 键不同，尾空行/首尾空白/末行尾空格 ⇒ 键相同，与设计钉死方向一致；③ 拒绝重放（`:236-251`）：首拒 + 重放仍拒 + 采纳恰 1 次 + 回复不进 journal + 编辑生效。**变异矩阵全部实测**：撤门 → T2c 红 1 条；§2.2 退回 raw **带 trim** → 恰 2 条红（appearing 对）；**不带 trim** → 恰 4 条红（两对）；去 `publishKey` 排除项 → 恰 1 条红（T6）。每次只有相关断言红 ✅ |
+| 断言 47 → 69 / 文件 298 行 | 声称 | ✅ 实测：父 47 OK / 当前 69 OK；`wc -l` = 298；新增 = 7（T1b）+ 5（归一化）+ 5（重放）+ 5（T2c）= 22 ✅ |
+| 第 1 轮 nit-1（重复注释）/ nit-4（`publishKey` JSDoc） | 已改 | ✅ `report.ts` 删 2 行、剩 1 份；`store.ts:36-40` JSDoc 补上 `publishKey` 排除项 |
+| R9 N-2（H1 revision 8）/ N-3（T2"恰两行"）/ N-4（§0 约数）/ N-5（T1 多一条断言）/ S-1（§2.2 清空口径） | 已同步 | ✅ H1 → revision 9；T2 改"不断言恰两行"；§0 改 +4 / +57−14 / +74−43 / +11−1 / +17−10；T1 加 `MEMORY.md === arrived` 说明；§2.2 加"零字节/纯空白不拦、只剩 header 会拦" |
+| R9 N-1（约 20 处行号漂移）按 R9 映射**全量回写** | 声称 | ❌ **未全量回写，且回写结果仍错**（详见 nit-1：~18 处仍错/自相矛盾；§4 的 4 个 `pass.ts` 引用根本没动） |
+| R9 S-2（repro 谓词比 §4 引文更严，同步设计 §4） | 声称已同步 | ❌ **未同步**：实际脚本谓词（`repro-write-ordering.mjs:83`）含 `logSaysRefused` 两项，设计 §4（`design.md:242-244`）仍引用旧谓词 |
+| 15/15 与 repro 退出 0 | 声称 | ✅ 实测通过；repro 两场景 journal `A → B`、生效 = B、日志明说未发布 |
+
+## blocking
+
+无。
+
+## important
+
+无 —— 两条 important 的修复均经独立 probe、对照跑与变异矩阵验证为真且非空转；也未发现新的谎报/过跳（见 D 项对抗）。
+
+## nit
+
+1. **设计行号回写未达声称标准，且当前仍错 ~18 处**（`design.md` §2.4 表/代码块/§2.2/§4/§5，banner 声称"以 00bf797 之后为实现依据"、表头又写"按实现 `00bf797` 回写"，两处约定自相矛盾，且行号与**当前 `dd2adcc` 文件**逐条不符——我用 `grep -n`/`awk` 实测，仍错的逐条列出）：
+   - §2.4 表：`:189-193` → 实为 189-**194**（`neededChars` 赋值在 194）；`:199-201` → 实为 **198**-201；`:202-210` → 实为 **201**-210；`:247-249` → 实为 **246**-249（被修的条件行在 246）；`:250-272` → 实为 250-**282**（通知块终点差 10 行）；`:283-293` → 实为 283-**292**（293 是 `return report`）；`:135-151` → 实为 **138-153**；`:237-246` → 实为 **235**-**245**（这是 00bf797 的旧号）；`:258-261` → 实为 **256**-**259**（同上，与 `:233` 行形成"一个表两种约定"）。
+   - §2.4 代码块/行文：`lastWrite（:215-236）` → 实为 215-**234**；`consolidateReply（:429-462）` → 实为 **427**-**458**；`memoryKept 分支 :437-443` → 实为 **436**-**441**；`report 变量（:247）` → 实为 **245**；overflowPath 插值 `:208`/`:278` → 实为 208/**276**；`contextWritten 注释里的 :217-226` → 实为 235-245（且与同表 `:237-246` 行内部矛盾）。
+   - §2.2：`store.ts:183-185` → 实为 **184**-**186**（raw clip 返回在 186；本提交给 store.ts +1 行后旧号失效）。
+   - §4 T2：`pass.ts:300-317` → 实为 300-**320**（`memory regression:` 日志在 318，被区间排除）；`:303-305` → 日志在 **307**；`:309-311` → 日志在 **313**；`:315` → 日志在 **318**——R9 的映射（303-320/306-308/312-314/318）**这四个根本没应用**。
+   - §5 R-14：`store.ts:175-181` → 实为 **176**-181。
+   
+   影响：设计自称"行号已按实现回写"，读者按行号导航会落在错误语句上（最差的是 `:315` 落在 `} else {`、通知块 `:250-272` 只到 cappedMemory 通知中段）。修复边界：按 `dd2adcc` 的 `grep -n` 实测值整体重写一遍 §2.4 表 + 上述引用，并统一 banner/表头约定（这是 R9 N-1 的同类修复，本轮又漂了，因为回写基准用了父提交 `00bf797`，而本提交自己又动了 `report.ts`(−2 行)/`store.ts`(+1 行)）。
+2. **fix-note §3.1 与 review-report 的处置声称不实**（`fix-note.md:61-69`、`review-report.md:541-547`）："N-1 按 R9 映射**全量回写**"（§4 四个 `pass.ts` 引用没动，§2.4 表多处错）、"S-2（repro 谓词）**已同步**"（设计 §4 仍是旧谓词）、"已修（`report.ts:247`）"（实际条件行在 246，247 是注释行）。文档级纸伤，不影响代码，但两处"已做"是假的。
+3. `store.ts:37-38` JSDoc："Bytes that already equal the reply about to be published (`publishKey`)" —— 谓词比较的是**归一化键**不是字节，措辞可再精确一点（无实质误导，改否随意）。
+
+## suggestion
+
+无（不要求新机制；§2.5 非目标全部遵守）。
+
+## learning
+
+- **probe 夹具纪律的实证**：我第一版 probe 用了 <40 字符的短回复（opaque 路径 `memoryChanged=false`），拒绝跑**没有发生任何写路径**，我的"拒绝态无谎报"断言当场变红——证明 T2c 式断言对"夹具没真撞车"是敏感的，不是空转。修成 ≥40 字符回复后全绿。T2c 的对照跑同理成立的前提是 pass 确定性（编辑只在模型调用期落地，`outcome.clipped` 两次运行相同），该假设在此夹具中成立。
+- 重放回归线钉的是 **store 层**（`recordMemoryDocument` 二次进入），不是 report 层"抛错释放 claim → 缓存 outcome 重放"的接线（`report.ts:297`）；接线若坏仍无测试能抓（R-2 式接受，第 1 轮 probe 已人工覆盖过一次）。
+- 设计行号回写必须对**最终提交**做 `grep -n`，而不是对父提交做映射——本轮修复提交自己又改了 `report.ts`/`store.ts`，导致"回写"落笔即漂。
+
+## praise
+
+- 门就是两轮点名的**那一行**，没有顺手扩大或缩小；`(memoryChanged || update)` 冗余但不引入新谎报，CONTEXT 的裁剪有自己独立的未门控日志（`report.ts:239-244` `CONTEXT.md was clipped…`），所以拒绝态压掉 `shortened` 行不丢任何真信号——过跳检查通过。
+- T1b 的构造（fenced 种子让两种读取形态在 trim 后仍不同 + 断言键相等）正好卡死"raw 比较（trim 或否）都会误拒"这一类回退：变异矩阵 2/4 条分档变红，证明每条断言都有独有靶点。
+- T2c 的对照跑（同夹具不撞车 ⇒ `shortened` 必在）是本次批次里最值钱的断言设计；我的独立 probe 按同样纪律复验通过。
+- 账面诚实：47→69、298 行、15/15、退出 0、6 文件 md5 全部实测吻合；测试无活仓库写入、8s/21s 无性能劣化。
+
+## residual-risk
+
+- 重放回归线的 report 层接线（claim 释放）仍无自动化测试（learning 第 2 条）。
+- 测试依赖 `sleep(25)` + mtime 严格大于（采纳块需要 `renderInfo.mtimeMs > journalInfo.mtimeMs`），1 秒粒度 mtime 的文件系统上会 flake——但这是父提交 T2/T3/T4 既有的同款模式，本批次未扩大风险。
+- R-15 既有谎言、R-14 归档遮蔽等按设计继续不动。
+
+## Test And QA Focus
+
+1. 文档回写后：按本报告 nit-1 清单逐条 `grep -n` 复核（重点 `report.ts:246` 门、`pass.ts:318` memory-regression、`store.ts:186` raw clip、通知块 `250-282`）。
+2. 变异矩阵已实测四枚（撤门 / raw+trim / raw−trim / 去 publishKey），建议作为设计文档里"回归线会红"的永久证据引用，不必再跑。
+3. 常规线：`run-all` 15/15、repro 退出 0、`external-edit-test.mjs` 69 OK——本沙箱全部实测通过。
+
+**结论**：两条 important 的代码修复与三条回归线均真实、非空转、有变异矩阵背书，无新谎报、无过跳、无活仓库写入；唯一未达标的是判定纪律里的**"设计行号抽查无错"**——回写仍错 ~18 处且 fix-note/review-report 对"全量回写 / S-2 已同步"的声称不实。请求的改动是纯文档层（行号重写 + 两处声称修正），代码无需再动。
+
+```
+VERDICT: CHANGES-REQUESTED
+```

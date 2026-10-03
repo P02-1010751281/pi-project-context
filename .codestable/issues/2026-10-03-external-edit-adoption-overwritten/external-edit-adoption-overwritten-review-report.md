@@ -542,7 +542,7 @@ md5sum -c /tmp/rev35-live-md5.txt                                             �
 2. **设计 §4 点名的三条回归线未落进 `tests/external-edit-test.mjs`**（来源翻转 / CRLF 与行尾空格方向 / 拒绝后抛错重放）。
    两轮都实测三条**行为正确**、但**没有回归线**：回退 §2.2 为 raw 比较时，当时 47 条断言无一变红。**已补**（+22 断言，47 → 69）。
 
-**R9 的 nit/suggestion 处置**：N-1（约 20 处行号漂移）按 R9 的映射**全量回写**并在 banner 写明行号约定；N-2（H1 仍写
+**R9 的 nit/suggestion 处置**：N-1（约 20 处行号漂移）先按 R9 的映射回写，**代码评审轮 2 实测指出仍错约 18 处**（修复提交自身又改了行数）⇒ 已按 `dd2adcc` 实测值重写、banner 统一口径；N-2（H1 仍写
 revision 8）、N-3（T2"恰两行"与不带 context 的子例自相矛盾）、N-4（§0 的 per-file 约数偏小）、N-5（T1 多一条
 `MEMORY.md === arrived` 断言）、S-1（§2.2 的"清空"口径过宽）、S-2（repro 谓词比 §4 引文更严）均已同步。代码评审的 4 条
 nit（重复注释、`nextRenderSupersedes` 注释未提 `publishKey`、提交信息措辞、设计 H1）同批处理。
@@ -558,3 +558,27 @@ R1–R8 由 `commandcode/deepseek/deepseek-v4.1-flash-fast` 服务；**R9 与代
 - 两轮沙箱 `rev37`/`rev38`：`git status --porcelain -uall` 与 `find|stat` 的**前后 diff 均为空**（`.agents/memory` 按 skill prune）；活仓库 5 个待审文件 md5 轮次前后一致。
 - **纸伤**：轮次运行期间（14:28Z 起）我提交了 `7198c14`（skills / audit / attention 文档），活仓库 HEAD 从 `3448700` 移到 `7198c14`。沙箱仍是 `3448700` 的副本，被审的 5 个源/测试文件 md5 未变（`git diff 3448700 7198c14 -- extensions tests` 为空），因此不污染被审工件；记在这里以免后来者误读。
 - 修复批次的验证：`node tests/run-all.mjs` **15/15**、`external-edit-test.mjs` **69 条断言全绿**、`repro-write-ordering.mjs` **退出 0**；新断言经**变异矩阵**证明各自钉住一个守卫（撤 `!memoryRefused` → T2c 变红；§2.2 退回 raw 比较（带/不带 trim）→ T1b 变红 2/4 条；去掉 `publishKey` → T6 变红）。
+
+## 代码评审轮 2（审修复批次 `dd2adcc`）
+
+| 轮 | 被审 | 判定 | 发现 | 服务路由 |
+| --- | --- | --- | --- | --- |
+| 代码评审 2 | `dd2adcc`（修复批次） | **CHANGES-REQUESTED** | **0 blocking + 0 important** + 3 nit | `deepseek/deepseek-v4-pro` |
+
+**复核结论（轮 2 自己的话）**：两条 important 的修复与三条回归线"**均真实、非空转、有变异矩阵背书**"，无新谎报、无过跳、无活仓库写入；断言 47→69、298 行、15/15、repro 退出 0 全部实测吻合。轮 2 还**独立跑了四枚变异**（撤 `!memoryRefused` → T2c 恰 1 条红；§2.2 退回 raw 带 trim → 恰 2 条红；不带 trim → 恰 4 条红；去掉 `publishKey` 排除项 → 恰 1 条红），并用**自己写的 CJK 不透明 probe**（独立于 T2c 的夹具）复验了对照跑。
+
+### 轮 2 的 3 条 nit 与处置
+
+1. **行号回写仍错约 18 处**（轮 2 用 `grep -n` 逐条实测）。根因：我先按 R9 的映射、以**父提交** `00bf797` 为基准回写，而修复提交自己又改了 `report.ts`（−2 行）/`store.ts`（+1 行），落笔即漂。**已按 `dd2adcc` 的实测值重写** §2.4 表 13 行 + §2.2/§4/§5 与 banner/表头口径（自检：`report.ts:246` = 门、`:194` = `neededChars`、`pass.ts:318` = `memory regression`、`store.ts:186` = raw clip 返回）。
+2. **fix-note/review-report 里"全量回写""S-2 已同步"两处声称不实** ⇒ 已更正，并把 S-2（repro 谓词含 `logSaysRefused`，比设计 §4 引文更严）补进设计 §4。
+3. `store.ts` JSDoc 的 "bytes" 宜作 "normalized keys"（措辞级）⇒ **故意不改**，以保持代码与轮 2 审过的字节**完全一致**（见下）。
+
+### 轮 2 之后的改动面（provenance）
+
+轮 2 之后**只改了 `.codestable/` 文档**（设计行号/措辞、fix-note 与评审报告的声称更正）。证据：轮 2 启动时取的
+`/tmp/rev39-live-md5.txt` 里 5 个代码/测试文件（`store.ts`、`pass.ts`、`report.ts`、`external-edit-test.mjs`、
+`consolidation-test.mjs`）的 md5 **至今全部匹配**，只有设计文档那一项变了。
+
+因此：**代码的评审结论仍以轮 2 为准**（0 blocking / 0 important）；轮 2 之后没有代码改动，也就没有"PASSED 轮不覆盖其后的改动"
+的问题。**不再开轮 3**：轮 2 剩下的 3 条全是措辞/文档类，且第 2 条是我自己声称不实（已更正）、第 1 条轮 2 已给出正确值（我按值重写并自检）。
+按轮次预算纪律（`pi-project-context-design-review-round-budget`），这属于"发现只剩措辞类"的停止区间。
