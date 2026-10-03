@@ -49,6 +49,9 @@ export type ConsolidateOutcome = {
 	itemTruncated: number;
 	/** Invariants/Pitfalls entries the previous memory had and this one does not. */
 	removed?: RemovedEntries;
+	/** The memory this pass's prompt was built from, byte for byte. The write path refuses a reply
+	 * whose baseline no longer matches what is stored: publishing it would overwrite a newer edit. */
+	basisKey: string;
 };
 
 type PassState = { session: string; turns: number; at: number };
@@ -323,6 +326,7 @@ export async function consolidateProjectState(
 		const outcome: ConsolidateOutcome = {
 			result: { ...resolved.result, memory: memoryTextFor(resolved, render) },
 			version,
+			basisKey: existing.text,
 			clipped: usedInput.clipped,
 			kind: resolved.kind,
 			semanticEmpty,

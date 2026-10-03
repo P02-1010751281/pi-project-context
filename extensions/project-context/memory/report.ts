@@ -25,8 +25,11 @@ type LastWriteInfo = {
 	capNote?: string;
 	/** The reply was not written for this reason, so the stored memory was kept. */
 	memoryKept?: boolean;
-	/** Which reason that was: the reply carried nothing, or it was too short to be a change. */
-	keepReason?: "empty" | "short";
+	/** Which reason that was: nothing to store, too short to be a change, or a newer memory on disk. */
+	keepReason?: "empty" | "short" | "stale";
+	/** Whether CONTEXT.md was written this pass. Only the stale refusal reads it: a kept memory must
+	 * not claim a context update it did not make. */
+	contextWritten?: boolean;
 	/** Invariants/Pitfalls entries the previous memory had and this one does not. */
 	removed?: RemovedEntries;
 };
@@ -153,66 +156,83 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let storedPoisoned = false;
 			let cappedMemory = false;
 			let cappedSections = false;
+			// The reply was built from a memory that has since changed, so it was not published: nothing
+			// below may describe a write that did not happen.
+			let memoryRefused = false;
 			// Declared at this scope: the non-silent toast below needs it, and the write is conditional.
 			let neededChars = 0;
 			let overflowPath: string | undefined;
 			if (memoryChanged) {
-				// Before anything is clipped: on the opaque entry the cap keeps both ends and drops the
-				// middle, and those bytes are otherwise unrecoverable. The other two entries drop whole
-				// entries through the renderer, which reports them, so only this one needs the copy.
-				if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
-					overflowPath = await saveOverflowReply(projectRoot, memoryText);
-				}
 				// Always keep the bytes that are on disk right now, whatever this pass believed
 				// earlier; the lock keeps another process from replacing them mid-write. The journal
 				// is the source of truth: this pass appends its document, then MEMORY.md is rendered.
 				const snapshot = await withMemoryLock(memoryFile(projectRoot), async () => {
 					const kept = await backupMemoryBeforeWrite(memoryFile(projectRoot));
-					await recordMemoryDocument(projectRoot, memoryText, maxMemoryChars);
-					return kept;
+					const result = await recordMemoryDocument(projectRoot, memoryText, maxMemoryChars, { basisKey: outcome.basisKey });
+					return { ...kept, written: result.written };
 				});
 				backup = snapshot.path;
 				storedPoisoned = snapshot.poisoned;
-				wroteMemory = true;
-				// The section counts are the durable trace of what the budgets gave up: the renderer writes no
-				// marker (the write path would strip it), so these counts are all there is.
-				cappedSections = outcome.sectionDropped > 0 || outcome.itemTruncated > 0;
-				cappedMemory = !sectioned && exceedsMemoryCap(memoryText, maxMemoryChars);
-				// Only the opaque entry still needs a number: under section shares the smallest workable cap is
-				// not an integer (4009.33 for one probe), and `/project-context max-memory` only rounds, so a
-				// suggested value would simply be clipped again.
-				if (cappedMemory) neededChars = Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT));
-				if (storedPoisoned) {
-					await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
-				}
-				if (cappedSections && !memorySectionCapWarned.has(projectRoot)) {
-					memorySectionCapWarned.add(projectRoot);
-					await logError(projectRoot, "memory", `memory exceeded a section budget: ${sectionCapSentence(outcome)}`);
-				} else if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
-					// A marker nobody reads is still a silent loss: say it once per project per process,
-					// and point at the knob that lifts the cap.
-					memoryCapWarned.add(projectRoot);
-					await logError(
-						projectRoot,
-						"memory",
-						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)${overflowPath ? `; the unclipped reply is kept at ${overflowPath}` : ""}`,
-					);
+				// The claim is released only when this pass did not land a new MEMORY.md.
+				wroteMemory = snapshot.written;
+				memoryRefused = !snapshot.written;
+				if (!memoryRefused) {
+					// Before anything is clipped: on the opaque entry the cap keeps both ends and drops the
+					// middle, and those bytes are otherwise unrecoverable. The other two entries drop whole
+					// entries through the renderer, which reports them, so only this one needs the copy — and
+					// only once the document it belongs to actually landed.
+					if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
+						overflowPath = await saveOverflowReply(projectRoot, memoryText);
+					}
+					// The section counts are the durable trace of what the budgets gave up: the renderer writes no
+					// marker (the write path would strip it), so these counts are all there is.
+					cappedSections = outcome.sectionDropped > 0 || outcome.itemTruncated > 0;
+					cappedMemory = !sectioned && exceedsMemoryCap(memoryText, maxMemoryChars);
+					// Only the opaque entry still needs a number: under section shares the smallest workable cap is
+					// not an integer (4009.33 for one probe), and `/project-context max-memory` only rounds, so a
+					// suggested value would simply be clipped again.
+					if (cappedMemory) neededChars = Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT));
+					if (storedPoisoned) {
+						await logError(projectRoot, "memory", `replaced a stored JSON reply with markdown; original kept at ${backup ?? "(none)"}`);
+					}
+					if (cappedSections && !memorySectionCapWarned.has(projectRoot)) {
+						memorySectionCapWarned.add(projectRoot);
+						await logError(projectRoot, "memory", `memory exceeded a section budget: ${sectionCapSentence(outcome)}`);
+					} else if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
+						// A marker nobody reads is still a silent loss: say it once per project per process,
+						// and point at the knob that lifts the cap.
+						memoryCapWarned.add(projectRoot);
+						await logError(
+							projectRoot,
+							"memory",
+							`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)${overflowPath ? `; the unclipped reply is kept at ${overflowPath}` : ""}`,
+						);
+					}
 				}
 			}
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
 			// must not read as "nothing happened" when the context was rewritten.
+			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
+			// must not read as "nothing happened" when the context was rewritten.
 			lastWrite.set(projectRoot, {
 				backup,
-				repaired: storedPoisoned,
+				repaired: !memoryRefused && storedPoisoned,
 				capped: cappedMemory,
 				sectionsCapped: cappedSections,
 				...(cappedSections ? { capNote: sectionCapSentence(outcome) } : {}),
-				// The reply was not written for whatever reason — kept because it was empty, or because it was
-				// too short to be a change. Either way the reply must not claim a write, and it must not claim
-				// the wrong reason either: a short reply did carry text.
-				memoryKept: !memoryChanged,
-				...(!memoryChanged ? { keepReason: outcome.semanticEmpty ? "empty" : "short" } : {}),
-				...(outcome.removed ? { removed: outcome.removed } : {}),
+				contextWritten: Boolean(update),
+				// The reply was not written for whatever reason — kept because it was empty, because it was
+				// too short to be a change, or because the memory moved on while it was being built. Either
+				// way the reply must not claim a write, and it must not claim the wrong reason either: a
+				// short reply did carry text, and a refused one carried a stale document.
+				memoryKept: !memoryChanged || memoryRefused,
+				...(memoryRefused
+					? { keepReason: "stale" as const }
+					: !memoryChanged
+						? { keepReason: outcome.semanticEmpty ? ("empty" as const) : ("short" as const) }
+						: {}),
+				// Entries only disappeared if the document that dropped them was published.
+				...(memoryRefused ? {} : outcome.removed ? { removed: outcome.removed } : {}),
 			});
 			if (update) {
 				const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
@@ -231,7 +251,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			}
 			if (!silent && (memoryChanged || update)) {
 				const clippedNote = report === "clipped" ? " The rewrite also shortened the content to fit the model output budget." : "";
-				if (!memoryChanged) {
+				if (memoryRefused) {
+					// Nothing was published, so nothing here may claim it was. The command reply carries the
+					// same sentence, so the two can never drift.
+					notify(ctx, staleKeepSentence(Boolean(update)), "warning");
+				} else if (!memoryChanged) {
 					// The memory was not written, so nothing here may claim it was — not even the clipped notice,
 					// which describes a rewrite that did not happen. This is decision 6's wording rule.
 					notify(ctx, `Project context updated; project memory was kept unchanged.${clippedNote}`);
@@ -258,7 +282,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					notify(ctx, backup ? `${CLIPPED_NOTICE} Previous file: ${backup}.` : CLIPPED_NOTICE_NO_WRITE, "warning");
 				} else notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
 			}
-			if (!silent && outcome.removed && outcome.removed.count > 0 && !memoryRemovalWarned.has(projectRoot)) {
+			if (!silent && !memoryRefused && outcome.removed && outcome.removed.count > 0 && !memoryRemovalWarned.has(projectRoot)) {
 				// The guard cannot tell a deliberate rewrite from a silent loss, so it reports and never blocks;
 				// once per project per process, with the durable list in errors.log.
 				memoryRemovalWarned.add(projectRoot);
@@ -395,6 +419,12 @@ function memoryFailureNotice(headline: string): string {
 	}
 }
 
+/** The one sentence for a refused publish: the toast and the command reply both use it, so the two
+ * cannot drift. `contextWritten` says whether CONTEXT.md was written anyway. */
+function staleKeepSentence(contextWritten: boolean): string {
+	return `${contextWritten ? "Project context updated; " : ""}project memory kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).`;
+}
+
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
 export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo): string {
 	// A command-triggered pass is silent, so the guard's own toast never fires there: the reply has to
@@ -406,6 +436,7 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	// Decision 6's wording rule, and it outranks the clipped notice: the memory was not written, so
 	// nothing may say it was — including "the rewrite shortened it".
 	if (info?.memoryKept && report !== "unchanged") {
+		if (info.keepReason === "stale") return `${staleKeepSentence(Boolean(info.contextWritten))}${guard}`;
 		const clippedNote = report === "clipped" ? " The prompt also had to be shortened to fit the model output budget." : "";
 		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply carried no entries";
 		return `Project context updated; project memory was kept unchanged (${why}).${clippedNote}${guard}`;

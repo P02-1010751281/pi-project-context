@@ -539,7 +539,17 @@ try {
 			await pi3.commands.get("memory").handler("update", ctx3);
 			const raceBackups = (await readdir(path.dirname(healMemory))).filter((n) => n.includes(".memory-backup-"));
 			const raceLog = await readFile(path.join(healTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
-			check("a mid-call writer is backed up", raceBackups.length === 1 && (await readFile(path.join(path.dirname(healMemory), raceBackups[0]), "utf8")) === arrived && raceLog.includes("replaced a stored JSON reply"));
+			// The reply was built from the pre-race memory, so it is not published: the writer's bytes
+			// stay effective and the pass says so. (The poison repair itself is asserted above, where no
+			// edit races the pass.)
+			check(
+				"a mid-call writer keeps its bytes and is backed up",
+				raceBackups.length === 1
+					&& (await readFile(path.join(path.dirname(healMemory), raceBackups[0]), "utf8")) === arrived
+					&& (await readFile(healMemory, "utf8")) === arrived
+					&& raceLog.includes("adopted an externally edited MEMORY.md")
+					&& raceLog.includes("the reply was not published"),
+			);
 
 			// The backup helper fails closed when the target exists but cannot be read.
 			const unreadable = path.join(healTmp, ".agents/memory/UNREADABLE.md");

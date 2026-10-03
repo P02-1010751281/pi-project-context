@@ -1,17 +1,20 @@
 /**
- * 复现：外部编辑被「采纳」后，被同一次写入里的 pass 回复顶掉。
+ * 回归线：外部编辑被「采纳」后，不再被同一次写入里的 pass 回复顶掉。
  *
- * 结论先行（脚本会实测并打印）：`memory/store.ts` 的 `recordMemoryDocument` 是**一次调用两次 append**——
+ * 历史（复现期）：`memory/store.ts` 的 `recordMemoryDocument` 是**一次调用两次 append**——
  *   :68  append(adopted external bytes)      ← 外部编辑进入 journal
  *   :70  logError("adopted an externally edited MEMORY.md into the memory journal")
  *   :77  append(this pass's own render)      ← 本次 pass 的回复
  *   :80  writeAtomic(MEMORY.md, this pass's render)
- * 所以「采纳」只意味着**进入历史**，不意味着**生效**：同一次调用里 pass 的回复立刻占据生效位置。
+ * 于是「采纳」只意味着**进入历史**，不意味着**生效**：同一次调用里 pass 的回复立刻占据生效位置。
  * 兄弟仓库 journal 里那对「一次采纳紧接一次另一版写入、间隔 70–450 ms」就是这两次 append，
  * 不需要第二个进程、也不需要第二次模型调用。
  *
+ * 现在：第二次调用带上 `basisKey`（pass 当时读到的记忆）。判据发现记忆已经变了 ⇒ 不发布回复、
+ * 保留编辑。两条场景都必须「已采纳且仍生效」。
+ *
  * 运行：node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs
- * 退出码 0 = 复现成功（外部编辑被顶掉）；1 = 未复现（说明该行为已被修掉或代码已变）。
+ * 退出码 0 = 编辑守住（回归线通过）；1 = 编辑仍被顶掉（修复失效或未升级）。
  */
 
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -37,11 +40,13 @@ async function scenario(name, passReply) {
 
 	// 1. 正常一轮：journal 从 A 起家。
 	await recordMemoryDocument(root, A);
+	// 1b. 本次 pass 读到的记忆（就在编辑落地之前）——第二次调用要拿它当基线。
+	const basisKey = (await loadMemory(root)).text;
 	// 2. 模拟外部编辑：MEMORY.md 直接变成 B（`git checkout HEAD --` 的同义动作），mtime 天然更新。
 	await new Promise((resolve) => setTimeout(resolve, 25));
 	await writeFile(renderFile, B);
-	// 3. 下一次 pass：采纳检测应当认领 B，然后写入它自己的回复。
-	await recordMemoryDocument(root, passReply);
+	// 3. 下一次 pass：带上基线 ⇒ 采纳检测认领 B，而判据发现记忆已变 ⇒ 不发布回复。
+	await recordMemoryDocument(root, passReply, undefined, { basisKey });
 
 	const raw = (await readFile(journalFile, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 	const render = await readFile(renderFile, "utf8");
@@ -62,17 +67,19 @@ async function scenario(name, passReply) {
 	const adopted = raw.some((entry) => entry.text.includes("B:"));
 	const bEffective = render.includes("B:");
 	const logClaimsAdoption = log.includes("adopted an externally edited");
+	const logSaysRefused = log.includes("the reply was not published");
 	console.log(`采纳记录进入 journal： ${adopted}`);
 	console.log(`外部编辑仍然生效：   ${bEffective}`);
 	console.log(`errors.log 声称已采纳： ${logClaimsAdoption}`);
+	console.log(`errors.log 明说未发布： ${logSaysRefused}`);
 
 	await rmTemp(root);
-	return { adopted, bEffective, logClaimsAdoption };
+	return { adopted, bEffective, logClaimsAdoption, logSaysRefused };
 }
 
 const fresh = await scenario("S1：pass 产出新回复（C）", C);
 const stale = await scenario("S2：pass 产出编辑前的旧内容（A）——兄弟仓库的实际形态", A);
 
-const reproduced = fresh.adopted && !fresh.bEffective && stale.adopted && !stale.bEffective;
-console.log(`\n判定：${reproduced ? "已复现——外部编辑被采纳进历史，但在同一次调用里被顶掉，没有生效" : "未复现（行为已变，需重新阅读代码）"}`);
-process.exit(reproduced ? 0 : 1);
+const fixed = fresh.adopted && fresh.bEffective && fresh.logSaysRefused && stale.adopted && stale.bEffective && stale.logSaysRefused;
+console.log(`\n判定：${fixed ? "编辑守住了（已采纳且仍生效，日志如实说明未发布）——回归线通过" : "未守住——编辑仍被顶掉"}`);
+process.exit(fixed ? 0 : 1);
