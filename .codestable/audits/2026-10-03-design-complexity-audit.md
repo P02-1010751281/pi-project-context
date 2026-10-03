@@ -93,6 +93,7 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
 | **N**（任意块粒度丢弃） | 未立项 | **不做** | 无现场证据；它唯一服务的路径（opaque 超 cap）在本仓只出现过 1 次 |
 | **M**（重试改带节目标） | 未做 | **可选小改动**（~10 行） | 有据（`pass.ts:246` 的重试明确要求 opaque 形状），但不阻塞任何事 |
 | strict 清单与 `…-structured-tool-output-strict-mode` skill | 已交付 | **冻结**，不再扩写（**范围**决定，非不可达） | 更正后依据：`commandcode`/`scnet` 确实没声明 compat，但核心 provider `deepseek` 的两个模型都声明 `supportsStrictMode: true` 且本机可达 ⇒ 解除冻结的路径明确：用 `deepseek/deepseek-flash` 跑一次端到端 strict 验证 |
+| 锁病理矩阵 | 已硬化 | **冻结**，不再加 | 无事故记录；本次审计还抽掉了它的并发动因 |
 
 ## 评估更正（2026-10-03 实测，写在这里以免旧结论被继承）
 
@@ -109,4 +110,17 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
 6. **五条防复发规则的去向**：规则 1/2/4（现场事实编号、新增机制先问依据、一个 issue 一个主题）已写入
    `.codestable/attention.md`；规则 3（设计 > 代码 ×3 先写最小修复面）与规则 5（轮次预算）
    已在刷新后的 `.agents/skills/pi-project-context-design-review-round-budget/SKILL.md` 里，不重复落盘。
-| 锁病理矩阵 | 已硬化 | **冻结**，不再加 | 无事故记录；本次审计还抽掉了它的并发动因 |
+
+## owner 确认（2026-10-03）
+
+owner 于 2026-10-03 复核了本审计的评估裁决与这些规则的落盘去向（提交 `7198c14`），**确认无异议**：
+
+- D1 维持 `wontfix`，采用更正后的依据（「没有『整条』可丢」而非「前提自相矛盾」）；
+- strict 清单维持冻结，定性更正为**范围决定**而非「机制不可达」（`deepseek/*` 声明 `supportsStrictMode: true` 且本机可达）；
+- N 维持不做、M 维持可选小改动、锁病理矩阵维持冻结；
+- 五条防复发规则确认留在 `.codestable/attention.md`（规则 1/2/4）与
+  `.agents/skills/pi-project-context-design-review-round-budget/SKILL.md`（规则 3/5），不重复落盘。
+
+同日 v0.2.1 发版证据见 `.codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/release-v0.2.1-evidence.md`；
+外部编辑修复的代码评审轮 2 判定为 0 blocking / 0 important，其后仅改文档（5 个源码/测试文件 md5 未变）。
+本审计「未查完」一节（`handoff/run.ts`、`shared/config.ts`、`handoff/prompt.ts`）仍是可选后续，不在本次确认范围内。
