@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp } from "./harness.mjs";
@@ -23,7 +23,7 @@ const journalPath = (root) => path.join(root, ".agents/memory/memory.jsonl");
 const logPath = (root) => path.join(root, ".agents/memory/errors.log");
 
 const { loadMemory, nextRenderSupersedes, recordMemoryDocument } = await loadNamespace(`${PC}/memory/store.ts`);
-const { readMemoryJournal } = await loadNamespace(`${PC}/memory/journal.ts`);
+const { readMemoryJournal, foldMemoryJournal } = await loadNamespace(`${PC}/memory/journal.ts`);
 const { memoryComparisonKey } = await loadNamespace(`${PC}/memory/poison.ts`);
 
 const CAP = 32_000;
@@ -62,6 +62,15 @@ try {
 		check("a document that appeared after the read supersedes", nextRenderSupersedes("", "E", publish) === true);
 		check("different content supersedes", nextRenderSupersedes("A", "E", publish) === true);
 		check("content equal to the publish supersedes nothing", nextRenderSupersedes("A", publish, publish) === false);
+
+		// The normalisation's direction, pinned against the implementation: an internal CR or an
+		// internal trailing space is a real change, document-level whitespace is not. Without these
+		// the comparison could normalise anything away and the suite would not notice.
+		check("an internal CR is a real change", key("a\r\nb\n") !== key("a\nb\n"));
+		check("an internal trailing space is a real change", key("a \nb\n") !== key("a\nb\n"));
+		check("a trailing blank line is not a change", key("a\nb\n\n") === key("a\nb\n"));
+		check("surrounding whitespace is not a change", key("  a\nb\n  ") === key("a\nb\n"));
+		check("a last-line trailing space is not a change", key("a\nb \n") === key("a\nb\n"));
 	}
 
 	console.log("=== T1/T5: no external edit, four project shapes, identical to the option-less path ===");
@@ -94,6 +103,34 @@ try {
 		await recordMemoryDocument(golden, REPLY, CAP);
 		const seeded = await readMemoryJournal(journalPath(golden));
 		check("legacy fixture: one seed record then one replacement", seeded.entries.length === 2 && seeded.entries[0].op === "replace" && key(seeded.entries[1].text) === key(REPLY));
+	}
+
+	console.log("=== T1b: a journal appearing or vanishing mid-pass is not a false stale ===");
+	{
+		// The read that builds the prompt and the read inside the write can disagree about their source
+		// (a fold when a journal exists, the raw clip when it does not), and the two shapes can differ
+		// beyond whitespace: the journal's normalisation strips a fence or a poisoned wrapper. Both sides
+		// are compared as keys for exactly that reason, so both directions must publish — a raw string
+		// comparison (trimmed or not) would refuse here, and this is the regression line for it.
+		const fenced = `\`\`\`markdown\n${FOUR}\n\`\`\`\n`;
+		const appearing = await makeProject(fenced);
+		const rawForm = (await loadMemory(appearing, CAP)).text;
+		await recordMemoryDocument(appearing, rawForm, CAP);
+		const foldForm = foldMemoryJournal((await readMemoryJournal(journalPath(appearing))).entries, CAP);
+		check("the two read forms differ textually", rawForm !== foldForm);
+		check("and they still differ after trim", rawForm.trim() !== foldForm.trim());
+		check("but they normalise to one key", key(rawForm) === key(foldForm));
+		const published = await recordMemoryDocument(appearing, REPLY, CAP, { basisKey: rawForm });
+		check("a journal created after the read does not refuse the reply", published.written === true);
+		check("and the reply is the effective memory", key((await shape(appearing)).render) === key(REPLY));
+
+		const vanishing = await makeProject(FOUR);
+		await recordMemoryDocument(vanishing, FOUR, CAP);
+		const folded = (await loadMemory(vanishing, CAP)).text;
+		await rm(journalPath(vanishing));
+		const unjournaled = await recordMemoryDocument(vanishing, REPLY, CAP, { basisKey: folded });
+		check("a journal deleted after the read does not refuse the reply", unjournaled.written === true);
+		check("and the reply is the effective memory", key((await shape(vanishing)).render) === key(REPLY));
 	}
 
 	console.log("=== T3: an edit the pass already read is published normally ===");
@@ -190,6 +227,68 @@ try {
 		if (!sub.claimsContext) {
 			check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);
 		}
+	}
+
+	console.log("=== a refused reply stays refused on replay, and the adoption stays singular ===");
+	{
+		// A thrown write releases the version claim, so a retry of the same pass can re-enter with the
+		// same stale baseline. It must refuse again, and it must not append the edit a second time: the
+		// journal is the durable trace, so a replay has to be idempotent.
+		const root = await makeProject(FOUR);
+		await recordMemoryDocument(root, FOUR, CAP);
+		const basisKey = (await loadMemory(root, CAP)).text;
+		await sleep(25);
+		await writeFile(memoryPath(root), HAND);
+		const first = await recordMemoryDocument(root, REPLY, CAP, { basisKey });
+		const afterFirst = await readMemoryJournal(journalPath(root));
+		const replay = await recordMemoryDocument(root, REPLY, CAP, { basisKey });
+		const afterReplay = await readMemoryJournal(journalPath(root));
+		const adoptions = (entries) => entries.filter((entry) => key(entry.text) === key(HAND)).length;
+		check("the first call refuses", first.written === false);
+		check("the replay refuses too", replay.written === false);
+		check("the edit is journalled exactly once", adoptions(afterFirst.entries) === 1 && adoptions(afterReplay.entries) === 1);
+		check("the reply never entered the journal", afterReplay.entries.every((entry) => key(entry.text) !== key(REPLY)));
+		check("the edit is still the effective memory", (await readFile(memoryPath(root), "utf8")) === HAND);
+	}
+
+	console.log("=== T2c: a refusal may not claim a shortening that never happened ===");
+	{
+		// The refusal gate has to cover the clipped line too: the pass clips a large memory to fit the
+		// output budget, an external edit then wins the race, and nothing is published — so a line
+		// saying "consolidation shortened the existing memory or context" would describe a write that
+		// never happened. The control run (same fixture, no edit) proves the fixture really does clip,
+		// so the refusal assertion cannot pass by accident.
+		const big = `${FOUR}${Array.from({ length: 400 }, (_, index) => `- durable line ${index} ${"y".repeat(24)}\n`).join("")}`;
+		const runPass = async (withEdit) => {
+			const root = await makeProject(FOUR);
+			await recordMemoryDocument(root, big, CAP);
+			await sleep(25);
+			const factory = await loadDefault(`${PC}/index.ts`);
+			const pi = makePi({ cwd: root });
+			await factory(pi);
+			const ctx = makeCtx(root, {
+				// A tiny model context is what makes `fitMemoryInput` clip: the adaptive cap is bounded
+				// by the model's own limit, not by the configured one.
+				model: { provider: "test", id: "clipped", maxTokens: 512 },
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "remember this", "2026-09-12T10:00:00.000Z")], "clipped-refusal"),
+			});
+			ctx.modelRegistry.complete = async () => {
+				if (withEdit) {
+					await sleep(25);
+					await writeFile(memoryPath(root), HAND);
+				}
+				return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: REPLY }) }] };
+			};
+			await pi.commands.get("memory").handler("update", ctx);
+			return { root, log: await readFile(logPath(root), "utf8").catch(() => "") };
+		};
+		const control = await runPass(false);
+		check("the fixture clips the input (control run logs the shortening)", control.log.includes("consolidation shortened"));
+		const refused = await runPass(true);
+		check("the refusal is logged", refused.log.includes("the reply was not published"));
+		check("and it claims no shortening", !refused.log.includes("consolidation shortened"));
+		check("and it claims no cap", !refused.log.includes("exceeded"));
+		check("the edit is still the effective memory", (await readFile(memoryPath(refused.root), "utf8")) === HAND);
 	}
 } finally {
 	for (const root of tmpDirs) await rmTemp(root);

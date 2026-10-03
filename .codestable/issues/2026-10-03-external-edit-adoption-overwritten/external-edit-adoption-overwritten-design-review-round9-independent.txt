@@ -1,0 +1,149 @@
+# 独立设计评审 R9（lane A）—— revision 9 对实现 `00bf797` 的逐条对账
+
+**实测基线**（本沙箱跑过，非推演）：`node tests/run-all.mjs` → **All 15 tests passed**；`repro-write-ordering.mjs` → **退出码 0**（两场景 journal 均 `A → B`、生效 = B、日志含 `the reply was not published`）；`/tmp/rev38-live-md5.txt` 四个活文件 md5 全部一致（设计文件未被本轮改动）；6 个独立 probe（P1A/P1B 来源翻转、P2 R-3 键形、P3 归一化边界、P4 拒绝后重放、P5 clipped+拒绝全链路、P6 R-14 归档遮蔽）在 `/tmp/rev9-probes/` 跑完并已删除。
+
+## A. 设计 vs 实现对账
+
+### §2.0 六步顺序（判据：`store.ts` 的 `recordMemoryDocument`）
+
+| 设计说 | 代码 | 判定 |
+|---|---|---|
+| ① 入口读一次 MEMORY.md → renderRaw/renderKey（与采纳块同源、空文档归零） | `store.ts:73-74`（`renderKeyOf` 辅助函数 = 设计的 trim 三元） | 一致（等价改写） |
+| ② `base.entries.length > 0` ⇒ 采纳块（原 `store.ts:56-72`） | `store.ts:75-91`，用 ① 的 `renderKey` 判 `!== foldedView` + mtime | 一致 |
+| ③ §2.2 判据，不通过即 return（不写、不种子） | `store.ts:95-100`，日志文本与设计 §2.2 逐字相同 | 一致 |
+| ④ `base.entries.length === 0` ⇒ 种子（在 ③ 之后） | `store.ts:101-107` | 一致（种子体与父提交逐字节相同，仅位置后置） |
+| ⑤ 发布前 recheck（`appendMemoryOp(rendered)` 之前，返回前先 append `nowKey`） | `store.ts:113-118` | 一致 |
+| ⑥ append → rotate → ensureMemoryGitignore → writeAtomic | `store.ts:119-122` | 一致 |
+
+### §2.1 pass 基线
+
+- 设计说 `basisKey` = 构造 prompt 前 `loadMemory().text` 原值、不用 `fitted.text`、构造点仅一处 → 代码：`pass.ts:164`（`existing`）、`pass.ts:329`（`basisKey: existing.text`，全文件唯一赋值点）。**一致**。
+- 偏离：设计引 `pass.ts:161`/`:323` → 实现为 `:164`/`:329`（+3/+6 漂移，见 N-1）。
+
+### §2.2 判据与两侧空守卫
+
+- 两侧都过 `memoryComparisonKey` + `current.text.trim()` 守卫：`store.ts:96-99` 与设计代码块**逐字一致**。
+- "`loadMemory` 渲染选择规则（render 非空 + key ≠ fold + render mtime 严格大于 journal mtime）"：`store.ts:146-159` 一致。
+- "拒绝时不需再 append（② 已把新字节 append）"：代码确实无 append，一致；R3-B1 的差异注释成立。
+- `basisKey === undefined` ⇒ 永不判陈旧：两判据都以 `options.basisKey !== undefined` 为门（`store.ts:96`/`:114`）；`migrate.ts:127` 不传 basisKey ⇒ 行为不变。一致。
+- mtime 回退 ⇒ fold ⇒ 判不出 ⇒ 发布覆盖（R-1）：代码路径成立。一致。
+- ①/② 竞态（R-11）：代码实测——旧 `renderKey === foldedView` 时不采纳、③ 以 external 形态读到编辑并拒发；下一次写路径 ② 先采纳。一致。
+- 偏离：设计引 `store.ts:138-143`（无 journal 的 `clipToLineBoundary(raw.trim())`）→ 实现为 `store.ts:183-185`（内容对、行号漂移）。
+
+### §2.3 recheck
+
+- `nextRenderSupersedes` 签名/JSDoc：`store.ts:41-43` 与设计**逐字一致**；导出 ✓。
+- ⑤ 的接线（`renderKeyOf(nowRaw)` + 三元 + 返回前 `appendMemoryOp(file,"replace",nowKey)` + 可区分日志）：`store.ts:113-118` 一致；`kept` 取 `loadMemory().text`、append 的是 `nowKey`（非原始字节）一致。
+- `memoryComparisonKey` 归一化边界（设计 T6 钉死方向）：**probe P3 实测全部成立**——内部 `\r` ⇒ 键不同、内部行行尾空格 ⇒ 键不同、文档级首尾空白/尾换行 ⇒ 键相同、末行尾空白 ⇒ 键相同（首版 probe 误把末行当内部行，修正后方向对）。
+- 引用 `poison.ts:156` ✓（仍对）、`store.ts:11` ✓（仍对）。
+
+### §2.4 应跳/不应跳表（对实现后 `report.ts`）
+
+| 设计行号→实现行号 | 副作用 | 判定 |
+|---|---|---|
+| `:163-165`→`:184-186` | `saveOverflowReply` 后置到锁回调之后、记账之前 | 内容一致；`:198/:254` 的 `overflowPath` 插值仍在其后 ✓ |
+| `:169-171`→`:169-173` | `backupMemoryBeforeWrite` 不跳 | 一致（设计自引的 `:169-173` 恰好与实现重合） |
+| `:179-184`→`:189-194` | cap 记账跳、保持初值 false/false/0 | 一致（`157/158/163` 初值 ✓） |
+| `:185-187`→`:195-197` | poison 日志跳 | 一致（`repaired: !memoryRefused && storedPoisoned` 一并门控，设计表未单列但属同一意图） |
+| `:188-190`→`:198-200` / `:191-199`→`:201-209` | section-cap / cap 日志跳 | 一致 |
+| `:215`→`:235` | `lastWrite.removed` 跳 | 一致 |
+| **`:228-230`→`:248-251`** | **`consolidation shortened` errors.log 跳** | **偏离（更松）：未加 `!memoryRefused` 门，见 I-1** |
+| `:232-259`→`:262-284` | 五个"发布成功"notify 跳，改一条诚实 toast | 一致（`staleKeepSentence` 供 toast 与命令回复共用，`report.ts:424-425`/`:254-257`） |
+| `:260-270`→`:285-293` | removal toast 跳 | 一致（条件加 `!memoryRefused`，判定确实提到旗标之后） |
+| `:135-151`→`:135-152` | `contextShapeWarned` 不跳 | 一致（无门控，CONTEXT 语义照写/照留都成立） |
+| `:217-226`→`:237-246` | CONTEXT 写入不跳 | 一致（拒绝态照写 CONTEXT） |
+| `:234-237`→`:258-261` | `!memoryChanged` keep notify 不跳 | 一致（未被拖进拒绝门） |
+
+- `lastWrite`（设计 `:204-216`→实现 `:217-236`）：`memoryKept`/`contextWritten`/`keepReason` 三元/`removed` 条件组**逐字段一致**；`contextWritten: Boolean(update)` 仅拒绝态消费 ✓（`consolidateReply` 发布路径不引用它，R-15 的"不扩大"成立）。
+- `consolidateReply`（设计 `:399-429`/`:408-412`→实现 `:429-462`/`:438-443`）：stale 句 = `staleKeepSentence(Boolean(info.contextWritten)) + guard`，empty/short 保持既有文本逐字不变。一致。
+- `wroteMemory = snapshot.written` 的 claim 释放语义：实现 `:177`/`:299`（设计写 `:176`/`:275`，-1/-24 漂移）。
+- `const memoryRefused = memoryChanged && !snapshot.written` → 实现 `memoryRefused = !snapshot.written`（在 `if (memoryChanged)` 内）：**等价改写**。
+
+### §3 接口
+
+- `ConsolidateOutcome.basisKey: string` ✓；`recordMemoryDocument(projectRoot, text, limit?, options?)` 返回 `{written:true}|{written:false;kept}` ✓（实现以 `MemoryWriteResult` 命名别名，等价）；`nextRenderSupersedes` 导出 ✓；`keepReason?: "empty"|"short"|"stale"`（`report.ts:29`）与 `contextWritten?: boolean`（`report.ts:32`）✓（设计写 `:24-29`，实现 `:29/32`，轻微漂移）。
+
+### §4 测试清单
+
+| # | 设计要求 | 代码 | 判定 |
+|---|---|---|---|
+| T1 | 四 fixture + 逐字节一致 + golden + consolidation-test:542 拆分 + **来源翻转变体** | `external-edit-test.mjs:67-97` 四 fixture + golden ✓；拆分在 `consolidation-test.mjs:542-552`（保留备份数 1 + 字节 === arrived，poison 断言移到了未拒绝的 `:493`/`:517` ✓，本用例加 `adopted` + `not published`）；**来源翻转变体缺失** | 部分（I-2a） |
+| T2 | 编辑保住/进 journal、回复不进 render、日志恰两行、命令回复 = 丢弃句、两子例前缀 | `external-edit-test.mjs:148-191`：两子例 19 断言全绿，语义全部覆盖；但断言是"两行都在 + 无 claim 类行"，不是"恰两行" | 一致（"恰两行"设计文本自身与 IM-A 无-context 子例矛盾，见 N-3） |
+| T3 | 编辑早于读取 ⇒ 正常发布不误报 | `:99-112` ✓ | 一致 |
+| T4 | 无 journal + 编辑保住（种子后置）、另加无编辑 legacy 回归 | `:114-125` ✓；legacy 回归由 T1/T5 的 legacy-no-journal fixture 承担 ✓ | 一致 |
+| T5 | 不传 basisKey 逐字节同今天 | `:67-97`（option-less 调用即"今天"路径，4 fixture × 2 断言 + golden）✓ | 一致 |
+| T6 | 六谓词 + **CRLF/行尾空格钉死** + **拒绝后抛错→重放** | `:56-64` 六谓词 ✓；**后两项缺失** | 部分（I-2b/I-2c） |
+| repro | 显式传 basisKey、谓词与退出码语义翻转、头注释同步 | 实现：`basisKey = (await loadMemory(root)).text` 传参 ✓；谓词 = 设计引文 **+ `logSaysRefused` 两项**（更严，方向正确）；`exit(fixed ? 0 : 1)` ✓；头注释"0 = 编辑守住（回归线通过）；1 = 编辑仍被顶掉" ✓；未实施时旧代码忽略 basisKey ⇒ exit 1 ✓（按构造成立） | 一致（谓词更严属有益增强，见 S-2） |
+
+### §5 残留 R-1…R-15 措辞逐条核（全部真）
+
+- **R-3（本轮特核）**：设计改写后措辞"零字节/纯空白 ⇒ 回复胜出；只剩 `# Project Memory` 头 ⇒ 拒发、保留"与测试两条断言一致——`external-edit-test.mjs:127-145` 的 `cleared memory` 块：`"a blanked file does not refuse the reply"`（written===true）与 `"a header-only rewrite refuses the reply"`（written===false + 字节 `=== "# Project Memory\n"`）。P2 实测 `memoryComparisonKey("# Project Memory\n")` 返回非空键 `"# Project Memory\n"` ✓。措辞非逐字引用测试标签，但行为描述与断言完全一致。
+- R-1（mtime 回退/同刻 ⇒ 发布覆盖）✓ 代码路径成立；R-2（⑤ 接线无集成测试、代码评审覆盖）✓ 属实（无 seam）；R-4 ✓；R-5（未升级 peer）✓ 陈述级；R-6（recheck→rename 窗口）✓；R-7（拒绝分支跳 rotate/gitignore）✓（两个 return 都在 ⑥ 之前）；R-8 ✓；R-9（`journal.ts:111` 默认 32000 折叠）✓ 行号仍对；R-10 ✓；R-11 ✓（code trace + P4）；R-12 ✓（`activeConsolidation` 模块级；引 `pass.ts:61/135/338` 为父提交行号，实现为 `:64/138/342`）；R-13 ✓（`saveOverflowReply` 在 `:185`，位于 `writeAtomic` 成功之后）；**R-14** ✓（P6 实测：19 次 30k 写入触发 rotation → 删 journal → 调用期编辑既不被 §2.2 也不被 §2.3 看见 → `written:true`、编辑被覆盖、写前备份保住编辑字节；设计引 `store.ts:129-137` → 实现为 `:175-181`，漂移）；**R-15** ✓（`report.ts:247` 的 `report` 变量与 `consolidateReply` 末行 "Project memory and context updated." 未动，谎言仍在、未扩大）。
+
+### B. R8 的 1 important + 4 nit + 2 suggestion 折入复核
+
+- **R8-IM-1**（consolidation-test:542 拆分）：✓ 真折入，边界一致（备份两断言保留、poison 断言移至未拒绝用例 `:493`/`:517`、本用例改断言 `adopted` + `not published`），并**多**加了一条 `MEMORY.md === arrived`（良性扩展，fix-note §4 已如实记录；设计 T1 措辞未含这条，见 N-5）。
+- **4 nit**：nit-1（mtime 措辞）✓；nit-2（三处行号范围 `:185-187`/`:399-429`/`store.ts:138-143`）✓ 折入 revision 9 文本，但实现落盘后这批行号整体失效（N-1）；nit-3（T6 CRLF 方向）✓ 折入设计文本、但**未落地为测试**（I-2b）；nit-4（keepReason 三元）✓ 文本与代码双落实；nit-5（D2 两处 + overflow 落点）✓ 设计 §6 写明、D2 fix-note `:84`/`:105` 已改写且引 R-13；nit-6（T2 三行 pass 层前置）✓ 折入设计 T2（引 `:303-305`/`:309-311`/`:315` = 父提交行号）；nit-7（§2.3 中性日志）✓ `store.ts:116` 与 §2.2 行可区分。
+- **2 suggestion** → R-14/R-15 ✓ 正确记入 §5，内容与实测一致（P6/代码阅读）。
+
+### C/D/E/F 综合
+
+- §0 最小修复面 vs `git show --numstat`：合计 6 文件 `+362/−68` 与 fix-note 一致 ✓；但 per-file 列数字偏小：pass.ts "~3 行"实为 +4、store.ts "~32 行"实为 +57/−14（净 +43）、report.ts "~28 行"实为 +74/−43（净 +31）、consolidation-test "~6 行"实为 +11/−1（净 +10）、repro "~6 行"实为 +17/−10（净 +7）（N-4）。
+- 账面诚实：**无偷偷多做**——grep 证实无 `memory-stale-*`、无 seam、无 `resolveMemory`、锁/读侧/`input.ts`/`journal.ts`/`poison.ts`/`document.ts`/`backup.ts` 零改动（`git show --stat` 仅 6 文件），`loadMemory` 本体未被触碰，R-15 既有谎言未改进也未扩大。**少做**只有两处：I-1（§2.4 一行未按表实现）+ I-2（§4 三个承诺的测试未落地）。
+- 对抗面：搜过 §2.4 全表 13 行、lastWrite 7 字段、consolidateReply 全分支、store 六步、T1–T6 与 repro、全文档行号引用、§5 全 15 条残留；probe 覆盖来源翻转双向、键归一化、重放、clipped+拒绝、归档遮蔽。未发现遗漏的消费点或把"更松"说成"等价"之处（I-1 正是"更松"，已单列）。
+- 文档准确性：常量/函数名/断言方向全部正确；漂移集中在行号（N-1）、标题版本号（N-2）、两处规模数字（N-4）。
+
+## 发现
+
+### important
+
+**I-1【修正已有机制】§2.4 表 `:228-230` 的 `consolidation shortened` errors.log 应跳未跳（方向：更松）**
+- `report.ts:248-251`：条件仍是 `outcome.clipped && (memoryChanged || update)`，没有 `!memoryRefused` 门；`git show 00bf797` 证明该块从未被 patch 触碰（只被上方插入行推走）。设计 `:157` 明确该行在拒绝态**跳**，且设计 T2 断言"**无** …`shortened`… 行"。
+- 影响：拒绝态 + `outcome.clipped`（大记忆被裁剪输入）时，`errors.log` 会出现 `consolidation shortened the existing memory or context …`，声称存量被缩短——而拒绝态什么都没发布。**probe P5 全链路实测**：`maxTokens: 2000` + 32k 记忆 + 调用期编辑 ⇒ 日志含 `was not published`（拒绝发生）**且**含 `consolidation shortened`（谎报行出现）；命令回复仍诚实（`was discarded`、无 clip 声明）。现有 T2 fixture 小 ⇒ `clipped=false` ⇒ 套件永远测不到这条线。
+- 修复边界：`report.ts:248` 条件加 `&& !memoryRefused`（一行），或在设计里显式改判该行"不跳"并同步 T2 措辞（但设计的 T2 断言与 §2.4 表已一致地选了跳，首选改代码）。
+
+**I-2【修正已有机制】设计 §4 承诺的三个测试未落地（行为经 probe 验证正确，属测试计划欠账）**
+- (a) T1 的"来源翻转"变体（IM-B 回归线，`design:222`）：`tests/external-edit-test.mjs` 无任何 journal 建立/删除的用例。P1A/P1B 实测双向翻转均 `written:true`、无假 `memory changed` 日志——**行为正确，但没有回归线**：若有人回退成 raw 比较，现有 47 断言无一变红。
+- (b) T6 的 CRLF/行尾空格方向钉死（`design:227`）：T6 只有六个谓词断言（`:56-64`），无 `\r`/行尾空格用例。P3 实测设计写死的三个方向全部为真。
+- (c) T6 的"拒绝后抛错 → 缓存 outcome 重放 → 仍拒发、不重复 append"：无此用例。P4 实测重放后 `written:false` 两次、journal 条目数不变（采纳不重复 append）。
+- 影响：fix-note 的"47 条断言全绿"账面成立，但设计 §4 的清单按字面只完成 6/9 格；IM-B 与"不重复 append"两个属性完全失去自动化守护。
+- 修复边界：`tests/external-edit-test.mjs` 补三个 store 层小块（约 15–20 行，全部是纯函数/`recordMemoryDocument` 调用，**不需要 seam**——与本设计"不加 seam"的决定不冲突）；或由 owner 明示从设计 §4 删除这三格并记入残留。
+
+### nit
+
+- **N-1**：全文档行号系统性漂移——revision 9（实现后定稿于 `3448700`）沿用了 revision 8 的父提交行号，未按实现文件回写。清单：§0/§2.1 `pass.ts:323→329`、`pass.ts:161→164`；§2.2 `store.ts:138-143→183-185`；§2.4 表 13 行中 11 行漂移（`:163-165→184-186`、`:179-184→189-194`、`:185-187→195-197`、`:188-190→198-200`、`:191-199→201-209`、`:215→235`、`:228-230→248-251`、`:232-259→262-284`、`:260-270→285-293`、`:217-226→237-246`、`:234-237→258-261`；仍准的只有 `:135-151`、`:169-171`）；代码块 `:176→177`、`:275→299`；`:204-216→217-236`、`:399-429→429-462`、`:408-412→438-443`、`:227→247`、`:141-151→148-152`；§3 `report.ts:24-29→29-32`；§4 `pass.ts:300-317→303-320`、`:303-305→306-308`、`:309-311→312-314`、`:315→318`、`consolidation-test.mjs:542→546`；§5 R-12 `pass.ts:61/135/338→64/138/342`、R-14 `store.ts:129-137→175-181`。仍准确的：`store.ts:11`、`poison.ts:156`、`journal.ts:111`；§1 F1/F3 是"修复前文件"的历史引用，可接受。修复边界：纯文档回写（或表头注明"行号为变更前文件"）。
+- **N-2**：`design:11` H1 仍写"（B 版，revision 8）"，frontmatter 是 `revision: 9`；§6"R9 → 实现 → 代码评审"的顺序与头注"已实现于 00bf797"矛盾。
+- **N-3**：`design:223` T2 的"errors.log 恰两行"与它自己要求的 IM-A 无-context 子例矛盾（该子例会多一行 `contextShapeWarned` 日志）；实现改断言"两行存在 + 无 claim 类行"是正确的弱化，但设计文本未同步。
+- **N-4**：§0 per-file 规模列与 `--numstat` 不符（见 C 节数字）；fix-note 的"合计 +362/−68"与 `±71/±117` 口径是对的，只有设计 §0 的约数偏小。
+- **N-5**：`consolidation-test.mjs:542-552` 的拆分比 R8-IM-1 边界多一条 `MEMORY.md === arrived` 断言（设计 T1 只写"改断言 `adopted…` + `not published`"）。良性、方向正确，fix-note §4 已如实记录，建议设计 T1 同步一句。
+
+### suggestion
+
+- **S-1**：§2.2 的"`current.text.trim()` 守卫：owner 清空 `MEMORY.md` 时不拦"在 R-3 校准后过宽（只剩头的文件也算"清空"但会拦）；建议该 bullet 直接写"零字节/纯空白不拦（§5 R-3 校准口径）"。
+- **S-2**：repro 的 `fixed` 谓词比设计 §4 引文多了 `logSaysRefused` 两项（更严、更好）；设计 §4 的代码引用应同步，避免未来读者以为实现漏写。
+
+### learning
+
+- 行号引用是本文档八轮以来最大的系统性债（前八轮 9 处 + 本轮约 20 处）："已实现"的 revision 必须用实现文件实测行号做一次全量回写，否则代码评审轮会被误导。
+- 设计 §4 里"钉死方向"类断言（来源翻转/CRLF/重放）若只写进设计不落进测试文件，行为正确也只靠评审 probe 一次性守护——设计与测试文件应双向核对。
+- 角落语义：全新项目 `basisKey=""` 时 `key("") === "# Project Memory\n"`，与"只剩头"的文件同键 ⇒ 该角落 R-3 的"头文件不算空白"不成立（回复胜出）；无现场事实，不要求改，仅记录。
+
+### praise
+
+- §2.0–§2.3 的实现与设计逐行一致，且两处等价改写（`renderKeyOf`、`MemoryWriteResult`）无损语义；采纳块与种子体对父提交逐字节未动（只重排）。
+- 拒绝态账本基本诚实：§2.4 表 13 行中 12 行在 `report.ts` 有对应门控，`wroteMemory`/claim 释放（`:177`/`:299`）语义闭合；`contextWritten` 严格只在拒绝态消费，R-15 的"不引入不扩大"兑现。
+- §5 残留全部 15 条经代码阅读 + 6 个 probe + 两个实测脚本验证为真；fix-note 的"15/15、47 条断言、退出 0、6 文件 +362/−68"数字全部复核无误。
+- "不做"清单零越界：无重跑、无 `memory-stale-*`、无 seam、无 `resolveMemory`、锁/读侧零改动——与"不重跑是 owner 决定"的纪律完全一致。
+
+### residual-risk
+
+- I-1 修复后，拒绝态的唯一谎报来源消除；R-15 的既有谎言仍在（owner 决定不改）；R-14 的归档遮蔽仍是既有读侧优先级；⑤ 接线永远只能谓词级测试（R-2 已明示接受）。
+
+## Test And QA Focus
+
+- 修 I-1 后：复跑 P5 场景（大记忆 + 小 maxTokens + 调用期编辑），断言 `errors.log` 含 `was not published` 且**不含** `consolidation shortened`；并把该组合做成 T2 的第三个 fixture（clipped 变体），否则回归无人守。
+- 补 I-2 三块后：`node tests/run-all.mjs` 必须仍 15/15，且新断言在"回退 §2.2 为 raw 比较"的变异树上能变红（验证它们是真回归线而非摆设）。
+- 行号回写后：`grep -n` 抽查 §2.4 表三行与 `pass.ts:164/329`、`store.ts:183-185`、`report.ts:248-251` 五处即可。
+- 回归线：`repro-write-ordering.mjs` 退出 0、`consolidation-test.mjs` 拆分后的 check 保持"备份 1 + 字节 === arrived + MEMORY.md === arrived + adopted + not published"。
+
+VERDICT: CHANGES-REQUESTED

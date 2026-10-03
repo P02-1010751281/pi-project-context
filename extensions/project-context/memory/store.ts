@@ -35,8 +35,9 @@ function legacyMemory(text: string, source: string, limit: number): LoadedMemory
 
 /**
  * True when what is on disk now is a different, non-empty document than the one this pass read, so
- * publishing the reply would overwrite a newer edit. Exported because the pre-publish check is
- * otherwise only reachable through a race.
+ * publishing the reply would overwrite a newer edit. Bytes that already equal the reply about to be
+ * published (`publishKey`) are that reply's own document, not a competing edit, so they supersede
+ * nothing. Exported because the pre-publish check is otherwise only reachable through a race.
  */
 export function nextRenderSupersedes(renderKey: string, nowKey: string, publishKey: string): boolean {
 	return nowKey !== "" && nowKey !== renderKey && nowKey !== publishKey;

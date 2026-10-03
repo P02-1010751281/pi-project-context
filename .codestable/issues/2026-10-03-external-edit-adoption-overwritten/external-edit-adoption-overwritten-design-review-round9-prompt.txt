@@ -1,0 +1,54 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 9 轮）**。被审工件 = **设计 revision 9**，它**已经实现于提交 `00bf797`**（与 R1–R8 不同：本轮可以拿代码和测试当"地面真值"来验证设计里的每条声明，而不用只做推演）。工作区 `/tmp/pi-context-rev38`（**先 cd 进去**）。本轮的模型路由是 `deepseek/deepseek-v4-pro`（原来的 `commandcode/…flash-fast` 因 429 周限停用至 2026-10-08）。注意仓库 `HEAD` 已是 `3448700`，它只在 `00bf797` 之后追加文档。
+
+**背景（同行意见，不是事实）**：同一 issue 的 v1–v5（415 行，含"判陈旧后重跑一轮"）被 owner 判过度复杂 ⇒ 重写为 B 版（**取消重跑**）。R6 审 B 版：1 blocking + 3 important。R7 审 revision 7：**0 blocking** + 3 important + 7 nit。R8 审 revision 8：**0 blocking + 1 important**（既有 `tests/consolidation-test.mjs` 的 mid-call-writer check 依赖"陈旧回复被发布"，修复后 run-all 会停在 13/14）+ 4 nit + 2 suggestion。**revision 9 已折入 R8 的全部发现**并新增残留 R-14/R-15；实现时又发现一处措辞不准（§5 R-3：零字节/纯空白 ⇒ 回复胜出，只剩 `# Project Memory` 头 ⇒ 拒发），已按实测改写。v5 存档于 `...-design-full-v5-archive.md`（**不要照它实施**）。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev38`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`，用完删掉自己的临时目录（`/tmp` 是 16 GB tmpfs，这套评审的沙箱每个约 130 MB，曾经把它写满）。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`/`loadDefault`/`makeCtx`），也**应当**直接跑 `node tests/run-all.mjs` 与 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs` 来验证设计的声明。
+- 活仓库待审文件 md5 在 `/tmp/rev38-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（revision 9；判据 = §0 最小修复面 / §2.0 六步顺序 / §2.2 / §2.3 / §2.4 应跳不应跳表 / §4 测试 T1–T6 / §5 残留 R-1…R-15）
+3. **实现（地面真值）**：`git show --stat 00bf797`、`git show 00bf797`；`extensions/project-context/memory/{store,pass,report}.ts`；`tests/external-edit-test.mjs`；`tests/consolidation-test.mjs` 被改的那条 check
+4. 落档：同目录 `...-fix-note.md`、`...-review-report.md`（轮次表 + R6/R7/R8 详情）、`...-design-review-round{6,7,8}-independent.txt`、`repro-write-ordering.mjs`
+5. 审计纪律：`.codestable/audits/2026-10-03-design-complexity-audit.md`
+6. 依赖源码：`memory/{journal,document,poison,input}.ts`、`shared/{project-state,lock,files,error-log}.ts`
+
+## 每个发现必须标注
+
+**【修正已有机制】**（revision 9 已有的机制/措辞不成立）或 **【新增机制】**（要求设计没有的机制）。
+后者**必须**指出它对应 §1 的哪条现场事实（F1–F4）；指不出就写进 `residual-risk`，不算重要发现。
+**不要因为"v5 里有、rev 9 里没有"就要回机制**——取消重跑、不做 `memory-stale-*` 留档、不加测试 seam，都是 owner 的决定。
+
+## 必须做的六件事
+
+**A. 设计 vs 实现逐条对账（本轮的主要新增面）**：§2.0 六步顺序、§2.2 判据与两侧空守卫、§2.3 的 `nextRenderSupersedes` 与"返回前先 append"、§2.4 的应跳/不应跳表、§3 的接口签名、§4 的测试清单、§5 每条残留的措辞 —— 逐条给"设计说 X / 代码是 Y / 一致或偏离 + `file:line` + 影响"。**偏离必须判方向**：更严、更松、还是等价改写（例如设计说"发布前 recheck"，实现里的判据是不是同一件事）。**特别核 §5 R-3 改写后的措辞与 `tests/external-edit-test.mjs` 的 `cleared memory` 两条断言是否逐字一致**。
+
+**B. 判 R8 的 1 important + 4 nit + 2 suggestion 是否真折入**：cited 的行号/函数名是否还对、R8 的三条既有残留是否被正确记入 R-14/R-15、`tests/consolidation-test.mjs` 的 check 拆分是否与 R8 定的边界一致。
+
+**C. 攻 revision 9 的新增文本**：R-14（rotation 归档遮蔽 render）、R-15（既有 context 谎言）、§0 的最小修复面数字是否与 `git show --stat 00bf797` 相符、全文档行号是否还有偏移（前八轮共抓到 9 处）。
+
+**D. 判"未修之事"的账面是否诚实**：设计声称"不重跑、不留档、不加 seam、不改进既有谎言"，实现里有没有**偷偷多做**（超出 §0 面的改动）；有没有**少做**（§2.4 表里每一项都能在 `report.ts` 里找到对应）。
+
+**E. 对抗性一轮**：假定 rev 9 的"已实现"状态仍藏设计错误（表漏了某个消费点、某条残留写得过宽或过窄、把"未修"说成"修了"、把"更松"说成"等价"）去找它。找不到要说清搜过哪些面。
+
+**F. 文档准确性**：行号、常量、函数名、断言方向、`repro-write-ordering.mjs` 的退出码语义与头注释。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节对账表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条标注【修正已有机制】/【新增机制】+ F 编号、`file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出；**必须自己运行测试与脚本**。
+- 只有以下情况给 `PASSED`：§2.0/§2.2/§2.3/§2.4/§3/§4/§5 与实现逐条一致（或偏离已判明且可接受）、R8 的发现真折入、残留措辞与实测一致、`node tests/run-all.mjs` 15/15 与 repro 退出 0 实测通过。
+- 若 rev 9 已可交付，把"后续注意但不必现在改"的点放进 `learning`/`residual-risk`；**不要为凑发现而降级判定，也不要提机制类新要求**。

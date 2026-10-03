@@ -21,8 +21,8 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 | --- | --- |
 | `memory/pass.ts` | `ConsolidateOutcome.basisKey` 字段（`+4` 行）+ 构造点 1 处：把**构造 prompt 前读到的** `loadMemory().text` 原值带进写路径 |
 | `memory/store.ts` | 入口读 `renderRaw`/`renderKey`、§2.2 基线判据、无 journal 的种子后置、§2.3 发布前 recheck、导出 `nextRenderSupersedes`、返回 `MemoryWriteResult`（`±71` 行） |
-| `memory/report.ts` | 拒绝旗标 `memoryRefused`、拒绝态跳过发布侧副作用、`keepReason:"stale"` + `contextWritten`、`wroteMemory = snapshot.written`、overflow 副本后置、`consolidateReply` 的 stale 句子（`±117` 行） |
-| `tests/external-edit-test.mjs` | 新增 T1–T6，**47 条断言**（199 行） |
+| `memory/report.ts` | **`consolidation shortened` 日志补 `!memoryRefused` 门**（评审轮 1 与 R9 同判的漏洞）、拒绝旗标 `memoryRefused`、拒绝态跳过发布侧副作用、`keepReason:"stale"` + `contextWritten`、`wroteMemory = snapshot.written`、overflow 副本后置、`consolidateReply` 的 stale 句子（`±117` 行） |
+| `tests/external-edit-test.mjs` | 新增 T1–T6 + T1b（来源翻转）+ T2c（clipped+拒绝，带对照）+ 拒绝重放 + 归一化方向，**69 条断言**（298 行） |
 | `tests/consolidation-test.mjs` | mid-call-writer 那条 check 拆开（见 §4） |
 | `.codestable/…/repro-write-ordering.mjs` | 从"复现"翻成"回归线"：第二次调用带 `basisKey`，退出码语义倒转 |
 
@@ -55,6 +55,15 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
   `CONTEXT.md` 字节不变。
 - T1/T5：四个 fixture（普通 journal / `preserveMarker` / legacy 无 journal / 全新项目）下，
   带 `basisKey` 与不带 `basisKey` 的两次写入在 **journal 记录与 `MEMORY.md` 字节上完全相同**。
+
+## 3.1 独立评审（代码评审轮 1 + R9，2026-10-03）
+
+两轮**独立地**给出同两条 important，均已修：
+
+1. **`consolidation shortened` 日志漏了拒绝门**（`report.ts:247`）：拒绝态 + `outcome.clipped` 时，日志会声称"存量被缩短"——而那次发布从未发生。两轮各用 probe 复现（R9 的 P5、代码评审的 clipped 夹具）。修复后由 **T2c** 钉死，并带**对照跑**（同一夹具不撞车时该日志必须出现），使断言不可能空转。
+2. **设计 §4 承诺的三条回归线未落地**（来源翻转 / CRLF 与行尾空格方向 / 拒绝后重放）：行为经两轮 probe 实测正确，但当时回退 §2.2 为 raw 比较**没有任何断言变红**。已补进测试，并用**变异矩阵**证明：撤 `!memoryRefused` ⇒ T2c 红；§2.2 退回 raw 比较（带 trim 2 条 / 不带 trim 4 条）⇒ T1b 红；去掉 `nextRenderSupersedes` 的 `publishKey` 排除 ⇒ T6 红。
+
+R9 另有 5 nit + 2 suggestion（行号漂移、H1 版本号、T2"恰两行"自相矛盾、§0 约数、T1 多一条断言、§2.2 清空口径、repro 谓词），**已全部同步到设计文档**；设计未因此新增机制，也**没有为它再开设计轮**（纯行号/措辞回写，代码评审轮 2 会把它和修复一起审）。
 
 ## 4. 既有测试的账面同步（R8-IM-1）
 
@@ -99,13 +108,11 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
   （§4 的"写副本在前"与 §3 的"任何裁剪发生之前"）。
 - 发版报告须写明 `pi update --extensions` 后**需要重启**。
 
-## 7. 评审状态：独立代码评审轮**未跑**（被 provider 周限阻塞）
+## 7. 评审状态
 
-- 设计侧 8 轮已完成（R6 1 blocking / R7 0 / R8 0，三轮发现全是【修正已有机制】）。
-- **代码评审轮**已就位：prompt 存为 `external-edit-adoption-overwritten-code-review-round1-prompt.txt`，
-  沙箱配方与零写入证明照 `.agents/skills/pi-project-context-sandboxed-independent-review/SKILL.md`
-  （沙箱 `/tmp/pi-context-rev36`、353 文件基线、`status`/`files` diff 均为空）。
-- 2026-10-03T14:12Z 两次启动都在 **`429 You've reached your weekly usage limit`** 上失败
-  （transcript 0 字节 = provider 失败，按协议**不算一轮**；复位时间 **2026-10-08T08:37:39Z**）。
-  该路由是这台机器上唯一可用的评审路由，因此本轮在复位前无法完成。
-- 在评审通过前，本修复应当视为**已实现、已验证、未独立评审**：发版（`v0.2.1`）建议等这一轮。
+- **设计侧 9 轮**：R1–R8（v1–v5 → B 版 → revision 7/8/9）+ **R9（审已实现的 revision 9）**。R6–R9 无一条要求新机制。
+- **代码评审轮 1**（审 `00bf797`）：0 blocking + 2 important + 4 nit，结论见 `…-review-report.md`；
+  prompt/transcript 归档为 `…-code-review-round1-{prompt,independent}.txt`，零写入证明见评审报告。
+- **两轮的 2 条 important 已修**，测试 47 → **69 条断言**，`run-all` 15/15、repro 退出 0。
+- **修复本身还差一轮**：按协议"PASSED 轮不覆盖其后的改动"，修复批次需要**代码评审轮 2** 才算闭合。
+- 路由：R1–R8 用 `commandcode/…flash-fast`；R9 与代码评审轮 1 用 `deepseek/deepseek-v4-pro`（前者 429 周限）。

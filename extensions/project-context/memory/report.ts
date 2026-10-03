@@ -212,8 +212,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			}
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
 			// must not read as "nothing happened" when the context was rewritten.
-			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
-			// must not read as "nothing happened" when the context was rewritten.
 			lastWrite.set(projectRoot, {
 				backup,
 				repaired: !memoryRefused && storedPoisoned,
@@ -245,7 +243,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				}
 			}
 			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
-			if (outcome.clipped && (memoryChanged || update)) {
+			if (outcome.clipped && !memoryRefused && (memoryChanged || update)) {
 				// Always leave a trace: the UI warning below is a no-op headless, and commands report separately.
 				await logError(projectRoot, "memory", "consolidation shortened the existing memory or context to fit the model output budget");
 			}

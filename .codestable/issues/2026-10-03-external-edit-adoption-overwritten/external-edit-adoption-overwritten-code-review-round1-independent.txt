@@ -1,0 +1,86 @@
+# 独立代码评审（lane A）：提交 `00bf797`（设计 revision 9 的实现）
+
+实测基线：`node tests/run-all.mjs` → **All 15 tests passed**；`repro-write-ordering.mjs` → **退出 0**（两条场景：journal `A → B`、生效 = B、日志明说未发布）；另写了 12 个 probe 用真实原语验证（来源翻转、CRLF/行尾空格、拒绝后抛错重放、§2.3 竞态接线、R-1 mtime 同刻、拒绝+clipped 组合），全部已删除，工作区无新增写入。
+
+## A. 实现 vs 设计逐条对账
+
+| 设计条目 | 实现位置 | 判定 |
+|---|---|---|
+| §2.0 ① 入口读 `renderRaw`/`renderKey`（与采纳块同源，空归零） | `store.ts:69-70`（`renderKeyOf` 见 `store.ts:45-48`） | 一致 |
+| §2.0 ② 采纳块（`entries.length > 0` 时，条件/键/日志与旧实现逐字同） | `store.ts:72-90` | 一致 |
+| §2.0 ③ §2.2 判据（拒绝即 return，不写、不种子） | `store.ts:95-101` | 一致 |
+| §2.0 ④ 种子后置（`entries.length === 0`） | `store.ts:102-107` | 一致 |
+| §2.0 ⑤ §2.3 发布前 recheck（返回前 append `nowKey`） | `store.ts:109-117` | 一致（probe 实测接线正确，见下） |
+| §2.0 ⑥ append → rotate → gitignore → writeAtomic | `store.ts:118-122` | 一致 |
+| §2.1 `basisKey` = 构造 prompt 前的 `existing.text` 原值（非 `fitted.text`） | `pass.ts:161` 读取、`pass.ts:329` 构造 | 一致 |
+| §2.2 双侧 `memoryComparisonKey` | `store.ts:96-97` | 一致（probe：幂等成立；clip/fold 两形态同键 ⇒ 来源翻转不假陈旧、无假日志） |
+| §2.2 `current.text.trim()` 空守卫 | `store.ts:96` | 一致（清空 ⇒ 回复胜出，R-3） |
+| §2.3 `nextRenderSupersedes(renderKey, nowKey, publishKey)` 导出纯函数 | `store.ts:42-44` | 一致 |
+| §2.3 三个入参均为 `memoryComparisonKey` 键；append 的是 `nowKey`；`kept` 取 `loadMemory().text` | `store.ts:109-117` | 一致 |
+| §2.4 拒绝态 = `memoryRefused === true`，`wroteMemory = snapshot.written`（:176 语义 + :275 释放） | `report.ts:161,177-178,299` | 一致（probe：拒绝后抛错 → 缓存 outcome 重放 → 仍拒发、不重复 append、编辑保持生效） |
+| §2.4 `:163-165` overflow 副本后置到锁回调之后、记账之前，拒绝态跳 | `report.ts:185`（插值点在 `:208`/`:278`，均在其后） | 一致 |
+| §2.4 `:179-184`/`:185-187`/`:188-190`/`:191-199` 记账与三类日志拒绝态跳 | `report.ts:179-216` | 一致 |
+| §2.4 `:215` `lastWrite.removed` 拒绝态跳 | `report.ts:235` | 一致 |
+| §2.4 **`:228-230` "consolidation shortened…" errors.log 拒绝态跳** | `report.ts:250`（无条件 `outcome.clipped && (memoryChanged \|\| update)`） | **不一致**（见 important-1） |
+| §2.4 `:232-259` 五类通知跳、改一条诚实 toast | `report.ts:254-257` | 一致 |
+| §2.4 `:260-270` removal toast 跳 | `report.ts:285` | 一致 |
+| §2.4 `:169-171` 备份不跳（先于判据） | `report.ts:170-173` | 一致 |
+| §2.4 `:135-151` contextShapeWarned / `:217-226` CONTEXT 写入不跳 | `report.ts:135-151,238-249` | 一致 |
+| §2.4 `:234-237` keep 类 notify 不被拖入 | `report.ts:254-270` 分支顺序 | 一致（R5-IM-1 保护的组合未回归） |
+| §2.4 措辞：`keepReason:"stale"` + `contextWritten` + 前缀由实际写入决定 + `repaired: !memoryRefused && storedPoisoned` | `report.ts:217-235,424-425,439` | 一致 |
+| §3 接口签名（`ConsolidateOutcome.basisKey`、`recordMemoryDocument` options/返回、`nextRenderSupersedes` 导出、`keepReason`/`contextWritten` 类型） | `pass.ts:52`、`store.ts:51-59`、`report.ts:29-32` | 一致 |
+| §4 测试 T1–T6 | `tests/external-edit-test.mjs` | **部分**（见 important-2） |
+| §5 R-1…R-15 | — | 全部成立、未新增（R-1 probe 实测：mtime 同刻编辑被发布覆盖，与文案一致） |
+
+## blocking
+
+无。
+
+## important
+
+**1.【修正已有机制】§2.4 表 `:228-230` 一行未实现：拒绝态仍写 "consolidation shortened …" 日志（`report.ts:250`）。**
+`if (outcome.clipped && (memoryChanged || update))` 没有 `!memoryRefused` 门。设计把它列为拒绝态**跳**（R5-IM-2 原话："写出关于一次并未发生的发布的 errors.log"），fix-note §2 机制 4 也自称跳过了"shortened 四类日志"——两者都被违反。**probe 实测**（近纯 CJK 32K 字符种子 + 调用期编辑 ⇒ `outcome.clipped=true` + 拒绝）：errors.log 出现三行——guard skipped、拒绝行、**`consolidation shortened the existing memory or context to fit the model output budget`**。实现自己的 T2 断言 `!log.includes("shortened")` 只因夹具未覆盖 clipped 组合而绿。影响：拒绝态下一条读作"存量内容被缩短"的日志（发布从未发生），正是本设计消灭的谎报类别。修复边界：该行加 `&& !memoryRefused`。
+
+**2.【修正已有机制】设计 §4 明文规定的三条测试回归线未落入 `tests/external-edit-test.mjs`：**
+- T1 的"来源翻转"变体（journal 建立/删除前后各读一次 `loadMemory`，断言回复不丢、日志不撒谎——IM-B 的回归线）：**缺**；
+- T6 的"CRLF/行尾空格按 R7 实测方向钉死"（内部 `\r` ⇒ true、内部行尾空格 ⇒ true、末行尾空白/首尾空行/首尾空格 ⇒ false）：**缺**（现 T6 只有 6 个谓词格）；
+- T6 的"拒绝后抛错 → 缓存 outcome 重放 → 仍拒发、不重复 append"：**缺**。
+三条行为我全部用 probe 实测**当前正确**（来源翻转：clip/fold 同键、发布照常、无假日志；CRLF/行尾空格键不同、文档级空白键相同；EISDIR 抛错后 `/memory update` 重放：仍拒发、编辑在 journal 中恰 1 次、无回复记录、MEMORY.md 仍为编辑字节）。机制无病，但设计点名的回归线没钉住，未来改动可静默打破 IM-B。修复边界：按 §4 逐字补进 T1/T6（构造法我已验证可行）。
+
+## nit
+
+1. `report.ts:213-214`："Set even when the memory was kept…" 注释逐字重复两遍（应删一行）。
+2. 设计文档 H1 仍写"（B 版，revision 8）"，frontmatter 已是 `revision: 9`（属 HEAD 的文档，非被审 diff，仅记一笔）。
+3. 提交信息 "both refusal paths journal the newer bytes" 对 §2.2 不精确：①/② 之间落地的编辑（R-11）字节只留在 `MEMORY.md`，由下一次写路径采纳；§2.2 本身不 append（设计 §2.2 的说明正是此意）。
+4. `store.ts:37-41` `nextRenderSupersedes` 的注释未提 `publishKey` 排除项，谓词语义表述不完整。
+
+## suggestion
+
+无（不要求新机制；§2.5 非目标均已遵守）。
+
+## learning
+
+- **§2.3 接线经竞态 probe 实测**：用 utimes-writer（每 1ms 写编辑并把 mtime 压回 ≤ journal mtime）跑 40 轮，2 轮命中 §2.3 专属日志 `an external edit landed while this pass's memory write was being prepared`，且编辑进 journal、回复不进 journal、编辑生效——R3-B1 的"检出必须落 journal"确实落实。R-2 说接线无集成测试、由代码评审覆盖：本轮覆盖了。
+- 拒绝分支跳过 `ensureMemoryGitignore` 的后果被中和：`logError`（`error-log.ts:156`）自身调用 `ensureMemoryGitignore`，两个拒绝路径都先写日志 ⇒ 首个写入即拒绝的新项目也不会缺 `.gitignore`；R-7 只列了 journal 超限，实际情况比文案更安全。
+- `wroteMemory`/claim 语义闭环实测：拒绝态 `wroteMemory=false` ⇒ 抛错释放 claim ⇒ 重放再拒发；发布态保留 claim ⇒ 重放 deduped。与设计 `:275` 释放语义一致。
+
+## praise
+
+- §2.0 六步顺序逐字实现，R6 测出的三种坏落点（T4 红 / T2 红 / 种子归一化假陈旧）全部避开：T1 四 fixture + 15/15 实测。
+- 拒绝态诚实性做得好：`repaired`/`removed`/`capped`/`sectionsCapped` 全部归零或缺省；`staleKeepSentence` 单一来源，toast 与命令回复不可能漂移；probe 验证 CONTEXT 写失败时谎句不出现于任何回复。
+- R8-IM-1 的 check 拆分边界完全按设计：备份 2 断言保留（`consolidation-test.mjs:550-559`），poison 修复日志移交给无撞车用例（`:497-500`、`:533` 并发 check 仍断言 `replaced a stored JSON reply` 恰 1 次）——被改 check 仍保护写前备份 + 修复日志两个原目标。
+- overflow 副本后置正确：`overflowPath` 赋值（`report.ts:185`）先于两处插值（`:208`/`:278`）；D2 fix note 两处时机表述（§3 落盘时机 + best-effort）已同步，`saveOverflowReply` 抛错路径（catch → 记日志 → 返回 undefined → 不阻断）与 D2 best-effort 语义一致。
+
+## residual-risk（不再加机制）
+
+- R-1/R-2/R-6/R-7/R-11/R-12/R-14/R-15 全部如设计所述成立，本提交未引入新残留。
+- 边界格（新推导）：全新项目 `basisKey=""` + 调用期出现仅含 `# Project Memory` 头的文件时，`memoryComparisonKey("") === memoryComparisonKey("# Project Memory\n")`（都归一到头文件形态）⇒ 判"无变化"、回复胜出——R-3"header-only = 真实编辑"的校准在此格不成立，但该文件不携带任何可保留信息，接受。
+- R-12（`activeConsolidation` 模块级）、R-14（归档遮蔽 render）、R-15（published 路径的 context 措辞）均未被本提交引入或扩大：`basisKey` 判据反而缩小了 R-12 的爆炸半径。
+
+## Test And QA Focus
+
+1. **复测拒绝态 + `outcome.clipped` 组合**（当前唯一未按 §2.4 表实现的格）：修复后应以 probe-clipped-refusal3 类夹具断言 errors.log 无 `consolidation shortened`（用近纯 CJK ≤32K 字符种子 + 调用期编辑构造）。
+2. **补三条 §4 回归线**：来源翻转（clip/fold 同键、发布不拒）、CRLF/内部行尾空格 ⇒ true、文档级空白 ⇒ false、拒绝后抛错 → 重放 → 仍拒发且 journal 不重复 append（构造法均已 probe 验证）。
+3. 常规线已实测：`node tests/run-all.mjs` 15/15；`repro-write-ordering.mjs` 退出 0。
+
+VERDICT: CHANGES-REQUESTED

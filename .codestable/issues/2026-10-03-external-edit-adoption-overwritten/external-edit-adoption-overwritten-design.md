@@ -8,15 +8,22 @@ related: [external-edit-adoption-overwritten-design-full-v5-archive.md, external
 tags: [memory, memory-journal, external-edit-adoption, lost-update, write-ordering, minimal-design]
 ---
 
-# 外部编辑采纳后被旧内容覆盖 修复设计（B 版，revision 8）
+# 外部编辑采纳后被旧内容覆盖 修复设计（B 版，revision 9）
 
 > **版本**：v1–v5 是"完整版"（415 行，含"判陈旧后重跑一轮"），5 轮评审后 owner 判定与 30–40 行的修复
 > 不成比例 ⇒ 重写为 B 版（**取消重跑**）。R6（B 版）判 `CHANGES-REQUESTED`：1 blocking + 3 important；
 > R7（revision 7）判 `CHANGES-REQUESTED`：**0 blocking** + 3 important + 7 nit；
 > R8（revision 8）判 `CHANGES-REQUESTED`：**0 blocking** + 1 important + 4 nit + 2 suggestion。
 > **三轮的发现全部是【修正已有机制】，无一条要求新机制。** R8 的唯一 important 是**账面同步**：既有测试
-> `tests/consolidation-test.mjs:542` 的 mid-call-writer check 依赖"陈旧回复被发布"，修复后该 check 必须拆开。
+> `tests/consolidation-test.mjs:546` 的 mid-call-writer check 依赖"陈旧回复被发布"，修复后该 check 必须拆开。
 > 本 revision 9 折入 R8 的 1 important + 4 nit + 2 suggestion。
+>
+> **R9（审 revision 9，实现后）判 `CHANGES-REQUESTED`：0 blocking + 2 important + 5 nit + 2 suggestion。** 两条
+> important 与代码评审轮第 1 轮**独立地**同判：`report.ts` 的 `consolidation shortened` 日志漏了拒绝门（本 revision
+> 的 §2.4 表把它列为“跳”），以及 §4 点名的三条回归线未落进 `external-edit-test.mjs`。两者均已修（提交见 fix note）。
+>
+> **行号约定**：本文的 `file:line` 引用以 **`00bf797` 之后**的实现文件为准，§2.4 表与 §2.1/§2.2/§2.3/§3/§5 的例子已按
+> 实现回写（R9 的 N-1 抓到约 20 处漂移）。§1 的“修复前”引用（F1/F3）与 R9 之前的轮次记录保留历史行号。
 >
 > **2026-10-03：本设计已实现于 `00bf797`**（`tests/run-all.mjs` 15/15，回归线 `repro-write-ordering.mjs` 退出 0）。
 > 实施记录见 `external-edit-adoption-overwritten-fix-note.md`；独立**代码**评审轮已就位但因 provider 周限
@@ -28,12 +35,12 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 
 | 层 | 改动 | 规模 |
 | --- | --- | --- |
-| `memory/pass.ts` | `ConsolidateOutcome.basisKey` 字段 + 构造点（`pass.ts:323`） | ~3 行 |
-| `memory/store.ts` | 入口 `renderKey`、§2.2 判据、种子后置、§2.3 recheck、`nextRenderSupersedes`、返回值 | ~32 行 |
-| `memory/report.ts` | 拒绝旗标、跳过发布侧、`keepReason:"stale"` + `contextWritten`、`wroteMemory`、`consolidateReply` 分支、overflow 后置 | ~28 行 |
+| `memory/pass.ts` | `ConsolidateOutcome.basisKey` 字段 + 构造点（`pass.ts:329`） | +4 行 |
+| `memory/store.ts` | 入口 `renderKey`、§2.2 判据、种子后置、§2.3 recheck、`nextRenderSupersedes`、返回值 | +57/−14 行（净 +43）|
+| `memory/report.ts` | 拒绝旗标、跳过发布侧、`keepReason:"stale"` + `contextWritten`、`wroteMemory`、`consolidateReply` 分支、overflow 后置 | +74/−43 行（净 +31）|
 | `tests/external-edit-test.mjs` | T1–T6 | 新文件 |
-| `tests/consolidation-test.mjs` | `:542` 的 mid-call-writer check 拆开（R8-IM-1；见 §4 T1） | ~6 行 |
-| `repro-write-ordering.mjs` | 传 `basisKey` + 谓词与退出码语义翻转 | ~6 行 |
+| `tests/consolidation-test.mjs` | `:546` 的 mid-call-writer check 拆开（R8-IM-1；见 §4 T1） | +11/−1 行 |
+| `repro-write-ordering.mjs` | 传 `basisKey` + 谓词与退出码语义翻转 | +17/−10 行 |
 
 **不做**：重跑、`memory-stale-*` 留档、`resolveMemory()` 抽取、测试 seam、锁改动、读侧改动。
 
@@ -41,9 +48,9 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 
 | # | 事实 | 来源 |
 | --- | --- | --- |
-| F1 | 一次 `recordMemoryDocument` 调用里两次 append（先采纳、再写本次 pass 的 render），后者决定生效内容 | `store.ts:68`/`:77`/`:80` |
+| F1 | 一次 `recordMemoryDocument` 调用里两次 append（先采纳、再写本次 pass 的 render），后者决定生效内容 | `store.ts:68`/`:77`/`:80`（实现后 `:83`/`:90`/`:93`；F1 是修复前现场，此行号保留历史口径） |
 | F2 | 顶掉采纳的那条记录与**更早一条逐字节相同** ⇒ 覆盖它的是"由**编辑前快照**生成的回复" | QM `[1]≡[3]≡[5]`、UF `[3]≡[5]` |
-| F3 | 采纳日志在覆盖**之前**写出、措辞是完成态；现场 142 / 35 条，命令回复同族 | `store.ts:70`、`report.ts:408` |
+| F3 | 采纳日志在覆盖**之前**写出、措辞是完成态；现场 142 / 35 条，命令回复同族 | `store.ts:70`、`report.ts:408`（实现后 `:85`、`:437`；同上，历史口径） |
 | F4 | 已确定性复现，`A → B → A` 即兄弟仓库形态 | `repro-write-ordering.mjs` |
 
 **结论**：唯一需要修的是"**用更旧基线算出的回复覆盖了更新的内容**"。
@@ -68,7 +75,7 @@ R6 用 probe 实测三种自然落点：字面"采纳块之后" ⇒ T4 红；字
 ### 2.1 pass：把基线带出来
 
 `ConsolidateOutcome` 增 `basisKey: string` = 构造 prompt 前 `loadMemory()` 返回的 **`.text` 原值**
-（`pass.ts:161` 的 `existing.text`；**不用** `fitted.text`——用裁剪结果当基线会永久自锁）。构造点只有 `pass.ts:323` 一处。
+（`pass.ts:164` 的 `existing.text`；**不用** `fitted.text`——用裁剪结果当基线会永久自锁）。构造点只有 `pass.ts:329` 一处。
 
 ### 2.2 store：基线不一致就不发布
 
@@ -89,7 +96,7 @@ if (options.basisKey !== undefined && current.text.trim()
 
 - **为什么两侧要过 key（R7-IM-B）**：`loadMemory` 的返回形态随**读取来源**变化——journal 存在时返回 fold
   （`normalizeMemoryDocument` 形态、带尾换行），无 journal 时返回 `clipToLineBoundary(raw.trim())`
-  （`store.ts:138-143`，**无**尾换行）。若 pass 读与 store 读之间 journal 被建立/删除（并发进程的首个 pass、
+  （`store.ts:183-185`，**无**尾换行）。若 pass 读与 store 读之间 journal 被建立/删除（并发进程的首个 pass、
   手删 journal 后恢复），**同一份 `MEMORY.md` 字节**会被读成两种形态 ⇒ **假陈旧** + 一条断言"memory changed"
   的假日志（R7 `probe-sourceflip.mjs`）。两侧过 `memoryComparisonKey`（幂等，实测四 fixture 方向不变）后不再成立。
 - **`loadMemory` 的渲染选择规则（R7 实测）**：journal 存在时，只有 **render 非空 + key ≠ fold +
@@ -101,7 +108,7 @@ if (options.basisKey !== undefined && current.text.trim()
   下面那条不是同一情形。
 - **① / ② 之间**落地的编辑：② 用旧 `renderRaw` 判定不采纳，③ 却读到它并判陈旧 ⇒ 拒绝、字节只在 `MEMORY.md`
   且**保持生效**，下一次写路径的 ② 先采纳、再基于它发布（R7 probe 实证）。**不为此加机制**（§5 R-11）。
-- `current.text.trim()` 守卫：owner 清空 `MEMORY.md` 时**不拦**（回复胜出），保持既有语义（§5 R-3）。
+- `current.text.trim()` 守卫：owner 把 `MEMORY.md` 清成**零字节/纯空白**时**不拦**（回复胜出），保持既有语义（§5 R-3 的校准口径；只剩 header 的文件会拦）。
 - `basisKey === undefined` ⇒ 永不判陈旧 ⇒ `migrate.ts` 与既有测试行为逐字节不变。
 
 ### 2.3 store：发布前 recheck（R6-B-1：判据必须导出成有名字的纯函数）
@@ -134,56 +141,56 @@ if (options.basisKey !== undefined && nextRenderSupersedes(renderKey, nowKey, me
 ### 2.4 report：拒绝态（R6-IM-2 + R7-IM-A）
 
 ```ts
-// :169-173 锁回调改为带回写结果
+// :169-173（实现后 :169-173）锁回调改为带回写结果
 const snapshot = await withMemoryLock(memoryFile(projectRoot), async () => {
     const kept = await backupMemoryBeforeWrite(memoryFile(projectRoot));
     const result = await recordMemoryDocument(projectRoot, memoryText, maxMemoryChars, { basisKey: outcome.basisKey });
     return { ...kept, written: result.written };
 });
 const memoryRefused = memoryChanged && !snapshot.written;
-wroteMemory = snapshot.written;   // :176 —— 语义 = "本次 pass 是否落地了新的 MEMORY.md"，:275 的 claim 释放靠它
+wroteMemory = snapshot.written;   // :177 —— 语义 = "本次 pass 是否落地了新的 MEMORY.md"，:297 的 claim 释放靠它
 ```
 
-**应跳 / 不应跳（照 `report.ts` 行号；拒绝态 = `memoryRefused === true`）**
+**应跳 / 不应跳（行号已按实现 `00bf797` 回写；拒绝态 = `memoryRefused === true`）**
 
 | 行 | 副作用 | 拒绝态 |
 | --- | --- | --- |
-| `:163-165` | `saveOverflowReply` | **跳**；并把调用移到**锁回调返回之后、`:179` 记账之前**（`:198`/`:254` 两处 `overflowPath` 插值都在其后，不能失去指针） |
-| `:179-184` | `cappedSections` / `cappedMemory` / `neededChars` 赋值 | **跳**（保持初值 `false/false/0`），否则 `lastWrite` 带假 cap |
-| `:185-187` | `replaced a stored JSON reply` 的 errors.log | **跳**（拒绝态 `MEMORY.md` 仍是裸 JSON，"已替换成 Markdown"会是谎报） |
-| `:188-190` | section-budget errors.log + `memorySectionCapWarned` | **跳** |
-| `:191-199` | cap errors.log + `memoryCapWarned` | **跳** |
-| `:215` | `lastWrite` 的 `removed` 字段 | **跳**（拒绝态条目并未消失；`consolidateReply` 的 guard 会据此说谎） |
-| `:228-230` | `consolidation shortened …` errors.log | **跳** |
-| `:232-259` | 五个"发布成功"类 notify | **跳**；改为一条诚实 toast（非 silent 时，措辞与命令回复同规则） |
-| `:260-270` | removal toast | **跳**（判定需提到拒绝旗标之后） |
+| `:184-186`（原 `:163-165`）| `saveOverflowReply` | **跳**；并把调用移到**锁回调返回之后、`:188` 记账之前**（`:208`/`:278` 两处 `overflowPath` 插值都在其后，不能失去指针） |
+| `:189-193`（原 `:179-184`）| `cappedSections` / `cappedMemory` / `neededChars` 赋值 | **跳**（保持初值 `false/false/0`），否则 `lastWrite` 带假 cap |
+| `:195-197`（原 `:185-187`）| `replaced a stored JSON reply` 的 errors.log | **跳**（拒绝态 `MEMORY.md` 仍是裸 JSON，"已替换成 Markdown"会是谎报） |
+| `:199-201`（原 `:188-190`）| section-budget errors.log + `memorySectionCapWarned` | **跳** |
+| `:202-210`（原 `:191-199`）| cap errors.log + `memoryCapWarned` | **跳** |
+| `:233`（原 `:215`）| `lastWrite` 的 `removed` 字段 | **跳**（拒绝态条目并未消失；`consolidateReply` 的 guard 会据此说谎） |
+| `:247-249`（原 `:228-230`，**R9-重要 1 / 代码评审-重要 1**：原实现漏了 `!memoryRefused` 门，已修）| `consolidation shortened …` errors.log | **跳** |
+| `:250-272`（原 `:232-259`）| 五个"发布成功"类 notify | **跳**；改为一条诚实 toast（非 silent 时，措辞与命令回复同规则） |
+| `:283-293`（原 `:260-270`）| removal toast | **跳**（判定需提到拒绝旗标之后） |
 | `:169-171` | `backupMemoryBeforeWrite` | **不跳**（写前备份 = 编辑的额外保底，且发生在判据之前） |
 | `:135-151` | `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状，而 CONTEXT 照写 ⇒ 仍成立）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
-| `:217-226` | CONTEXT.md 写入 + `contextCapWarned` | **不跳**（既有解耦语义：keep-adoption 也照写） |
-| `:234-237` | `!memoryChanged` 的 keep 类 notify | **不跳**（今天就不在这扇门内，**绝不能被拖进来**，否则回归 R5-IM-1 保护的既有组合） |
+| `:237-246`（原 `:217-226`）| CONTEXT.md 写入 + `contextCapWarned` | **不跳**（既有解耦语义：keep-adoption 也照写） |
+| `:258-261`（原 `:234-237`）| `!memoryChanged` 的 keep 类 notify | **不跳**（今天就不在这扇门内，**绝不能被拖进来**，否则回归 R5-IM-1 保护的既有组合） |
 
 **拒绝态的措辞（R7-IM-A：前缀必须由"context 是否真的写了"决定）**
 
 `update === undefined`（回复没带可用 context，且既有 `CONTEXT.md` 非空）时 CONTEXT **没有写**，
 但 `report` 仍是 `"updated"`；照 v7 的写法命令回复会输出 "Project context updated; …"，
-与同一时刻 errors.log 的 "the previous CONTEXT.md is kept and stays stale"（`:141-151`）直接矛盾。
+与同一时刻 errors.log 的 "the previous CONTEXT.md is kept and stays stale"（`:148-152`）直接矛盾。
 
 ```ts
-// lastWrite（:204-216）：note R7-nit-4 —— 只在拒绝或未发布时写 keepReason
+// lastWrite（:215-236）：note R7-nit-4 —— 只在拒绝或未发布时写 keepReason
 memoryKept: !memoryChanged || memoryRefused,
 contextWritten: Boolean(update),   // update 为真 ⇒ :217-226 必然写；**仅拒绝态消费**（见 §5 R-15）
 ...(memoryRefused ? { keepReason: "stale" } : !memoryChanged ? { keepReason: outcome.semanticEmpty ? "empty" : "short" } : {}),
 ...(memoryRefused ? {} : outcome.removed ? { removed: outcome.removed } : {}),
 ```
 
-`consolidateReply`（`:399-429`，`memoryKept` 分支 `:408-412`）的文本规则：
+`consolidateReply`（`:429-462`，`memoryKept` 分支 `:437-443`）的文本规则：
 
 | `keepReason` | 文本 |
 | --- | --- |
 | `"stale"` | `${info.contextWritten ? "Project context updated; " : ""}project memory kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).${guard}` |
 | `"empty"` / `"short"` | **保持今天逐字不变**（`Project context updated; project memory was kept unchanged (${why}).${clippedNote}${guard}`） |
 
-`report` 变量（`:227`）不动（CONTEXT 真的写了时 `updated`/`clipped` 仍成立；没写时由 `contextWritten` 负责纠正前缀）。
+`report` 变量（`:247`）不动（CONTEXT 真的写了时 `updated`/`clipped` 仍成立；没写时由 `contextWritten` 负责纠正前缀）。
 
 ### 2.5 明确不做
 
@@ -210,7 +217,7 @@ export async function recordMemoryDocument(
 // memory/store.ts（导出以支持 T6 单测）
 export function nextRenderSupersedes(renderKey: string, nowKey: string, publishKey: string): boolean;
 
-// memory/report.ts:24-29
+// memory/report.ts:29-32
 keepReason?: "empty" | "short" | "stale";
 contextWritten?: boolean;
 ```
@@ -219,8 +226,8 @@ contextWritten?: boolean;
 
 | # | 场景 | 判据 |
 | --- | --- | --- |
-| T1 | 无外部编辑（四个 fixture：普通 journal / `preserveMarker` / legacy 无 journal / 全新项目） | 与今天 op/text 序列 + `MEMORY.md` 字节**逐字节一致**（实现后"今天"不可再取 ⇒ 落成显式期望序列/字节）；**既有 14 个测试文件保持全绿 + 新增 `external-edit-test.mjs`**（`run-all` 自动发现 ⇒ 15 个）。其中 **`tests/consolidation-test.mjs:542` 的 mid-call-writer check 必须按 R8-IM-1 拆开**：它今天要求日志含 `replaced a stored JSON reply`，而该场景正是 §2.2 的拒绝路径（`MEMORY.md` 是裸 JSON、回复未发布 ⇒ "已替换"是谎报）⇒ 保留"备份数量 1 + 备份字节 === `arrived`"，把 poison 修复断言移到**未发生拒绝**的用例，本用例改断言 `adopted …` + `reply was not published`。**加入 R7 的"来源翻转"变体**：journal 建立/删除前后各读一次 `loadMemory`，断言回复不丢、日志不撒谎（IM-B 的回归线） |
-| T2 | **模型调用期间编辑**（核心） | 编辑保住且进 journal；回复**未成为** render；`errors.log` 恰两行 memory 记录（`adopted …`、未发布），**无** cap/section-cap/poison/`shortened`/removal 行——**夹具不得删除任何 Invariants/Pitfalls 条目**（`pass.ts:300-317` 的 `memory regression: …` 在 pass 层写出，report 层拦不住）；`lastWrite` 无 `capped/sectionsCapped/removed`；命令回复 = 丢弃句。**夹具须是四节 document + sectioned 回复 + 不删条目**——`pass.ts:303-305`（回复未产出 sections）、`:309-311`（存量不是四节文档）、`:315`（`memory regression: …`）三行都在 **pass 层**写出，report 层拦不住。**加两例锁 IM-A**：回复带 context / 不带 context 且既有 `CONTEXT.md` 非空，分别断言前缀 |
+| T1 | 无外部编辑（四个 fixture：普通 journal / `preserveMarker` / legacy 无 journal / 全新项目） | 与今天 op/text 序列 + `MEMORY.md` 字节**逐字节一致**（实现后"今天"不可再取 ⇒ 落成显式期望序列/字节）；**既有 14 个测试文件保持全绿 + 新增 `external-edit-test.mjs`**（`run-all` 自动发现 ⇒ 15 个）。其中 **`tests/consolidation-test.mjs:546` 的 mid-call-writer check 必须按 R8-IM-1 拆开**：它今天要求日志含 `replaced a stored JSON reply`，而该场景正是 §2.2 的拒绝路径（`MEMORY.md` 是裸 JSON、回复未发布 ⇒ "已替换"是谎报）⇒ 保留"备份数量 1 + 备份字节 === `arrived`"，实现时**另加**一条 `MEMORY.md === arrived`（R9-N-5：比 R8 定的边界多一条良性断言），把 poison 修复断言移到**未发生拒绝**的用例，本用例改断言 `adopted …` + `reply was not published`。**加入 R7 的"来源翻转"变体**：journal 建立/删除前后各读一次 `loadMemory`，断言回复不丢、日志不撒谎（IM-B 的回归线） |
+| T2 | **模型调用期间编辑**（核心） | 编辑保住且进 journal；回复**未成为** render；`errors.log` 含 `adopted …` 与未发布两条 memory 记录、**无** cap/section-cap/poison/`shortened`/removal/claim 类行（不断言“恰两行”：不带 context 的子例还会写一条 `contextShapeWarned` 行，那是既有机制，不是本次发布）——**夹具不得删除任何 Invariants/Pitfalls 条目**（`pass.ts:300-317` 的 `memory regression: …` 在 pass 层写出，report 层拦不住）；`lastWrite` 无 `capped/sectionsCapped/removed`；命令回复 = 丢弃句。**夹具须是四节 document + sectioned 回复 + 不删条目**——`pass.ts:303-305`（回复未产出 sections）、`:309-311`（存量不是四节文档）、`:315`（`memory regression: …`）三行都在 **pass 层**写出，report 层拦不住。**加两例锁 IM-A**：回复带 context / 不带 context 且既有 `CONTEXT.md` 非空，分别断言前缀 |
 | T3 | 编辑早于 pass 读取（`basisKey === current`） | 正常发布，不误报 |
 | T4 | 无 journal + 调用期编辑 | 编辑保住（**按 §2.0 顺序：判据在种子之前**，journal 可为空）；另加"无 journal + 无编辑"legacy 回归 = 与今天一致 |
 | T5 | 不传 `basisKey`（`migrate.ts` / legacy） | 逐字节同今天 |
@@ -254,16 +261,16 @@ process.exit(fixed ? 0 : 1);   // 0 = 回归线通过（修复生效）
 | R-9 | cap > 32000 时 rotation 用默认 32000 折叠（`journal.ts:111`），下一次写路径可能把自己的 render 当"外部编辑"采纳并打 `adopted …`（既有） |
 | R-10 | 第 ⑥ 步中途进程被杀时窗口编辑只在 `MEMORY.md` 且因 journal mtime 更新而不再被采纳（v5 R-18） |
 | R-11 | **① / ② 之间**落地的编辑：② 不采纳它、§2.2 检出后拒绝、字节只在 `MEMORY.md`（保持生效，下一次写路径采纳）。自愈，不补 append |
-| R-12 | `activeConsolidation` 是**模块级**、不按 `projectRoot`（`pass.ts:61/135/338`）：跨项目 join 会让 B 拿到 A 的 outcome。`basisKey` 判据缩小了爆炸半径（内容不同即拒发），但**内容恰好相同的两个项目**（如两个全新项目 `basisKey=""`）仍会串写。非本设计要修 |
+| R-12 | `activeConsolidation` 是**模块级**、不按 `projectRoot`（`pass.ts:64/138/342`）：跨项目 join 会让 B 拿到 A 的 outcome。`basisKey` 判据缩小了爆炸半径（内容不同即拒发），但**内容恰好相同的两个项目**（如两个全新项目 `basisKey=""`）仍会串写。非本设计要修 |
 | R-13 | overflow 副本后置后的崩溃窗：`writeAtomic` 成功 → `saveOverflowReply` 之前进程被杀 ⇒ 发布成功但副本缺失（D2 原文"孤儿副本"方向反转；best-effort 语义下接受） |
-| R-14 | **手删 journal 且存在 rotation 归档**时，`loadMemory` 优先取归档（`store.ts:129-137`）⇒ 模型调用期间的 `MEMORY.md` 编辑**既不被 §2.2 看见**（基线取归档）**也不被 §2.3 看见**（`renderKey == nowKey`），回复照发、编辑被覆盖（R8 `probe-residual` §1 实测；report 层写前备份仍保住字节）。属既有读侧优先级，非本设计引入 ⇒ **T4 的"无 journal + 编辑"承诺应读作"无 journal**且无归档**"** |
+| R-14 | **手删 journal 且存在 rotation 归档**时，`loadMemory` 优先取归档（`store.ts:175-181`）⇒ 模型调用期间的 `MEMORY.md` 编辑**既不被 §2.2 看见**（基线取归档）**也不被 §2.3 看见**（`renderKey == nowKey`），回复照发、编辑被覆盖（R8 `probe-residual` §1 实测；report 层写前备份仍保住字节）。属既有读侧优先级，非本设计引入 ⇒ **T4 的"无 journal + 编辑"承诺应读作"无 journal**且无归档**"** |
 | R-15 | **published 路径的既有谎言**：`update === undefined` 且未拒绝时，`report` 仍 `"updated"`、命令回复输出 "Project memory and context updated." 而 `CONTEXT.md` 并未写（R8 live 实测）。本设计只在**拒绝态**消费 `contextWritten`，不引入也不扩大该既有行为 |
 
 ## 6. 评审与发版
 
 一轮**设计**评审（针对本 revision 9，R9）→ 实现 → 一轮**代码**评审 → 与 D2 一起切 `v0.2.1`。
 
-- 实施时的改动面**包含** `tests/consolidation-test.mjs:542` 的 check 拆分（§0/§4 T1），否则 `run-all` 会停在 13/14。
+- 实施时的改动面**包含** `tests/consolidation-test.mjs:546` 的 check 拆分（§0/§4 T1），否则 `run-all` 会停在 13/14。
 
 - **D2 的 fix note 要同步两处**（R7-nit-5）：`over-cap-reply-persistence-fix-note.md:72`（"落盘时机在任何裁剪发生之前"）
   与 `:97`（"写副本在前、写受限文档在后"）——后置到"发布成功之后"后两条都失效，需改写并在 §5 记入"崩溃窗"。

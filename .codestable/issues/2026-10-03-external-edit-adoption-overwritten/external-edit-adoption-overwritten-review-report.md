@@ -525,3 +525,36 @@ md5sum -c /tmp/rev35-live-md5.txt                                             �
 `commandcode/deepseek/deepseek-v4.1-flash-fast` 是这台机器上唯一可用的评审路由，故本轮在复位前无法完成。
 
 **结论**：本修复目前是"**已实现、已自测验证、未独立评审**"。`v0.2.1` 建议等这一轮通过再切。
+
+
+## R9（设计，实现后）与代码评审轮 1
+
+| 轮 | 被审 | 判定 | 发现 | 服务路由 |
+| --- | --- | --- | --- | --- |
+| R9 | 设计 revision 9（已实现于 `00bf797`） | **CHANGES-REQUESTED** | **0 blocking** + 2 important + 5 nit + 2 suggestion | `deepseek/deepseek-v4-pro` |
+| 代码评审 1 | 提交 `00bf797` | **CHANGES-REQUESTED** | **0 blocking** + 2 important + 4 nit | `deepseek/deepseek-v4-pro` |
+
+**两条 important 由两轮独立同判**（这是本轮最强的信号）：
+
+1. **`report.ts` 的 `consolidation shortened` errors.log 漏了 `!memoryRefused` 门**（设计 §2.4 表把它列为"跳"）。
+   影响：拒绝态 + `outcome.clipped` 时日志会声称存量被缩短，而那次发布从未发生 —— 正是本设计要消灭的谎报类别。
+   两轮都用 probe 独立复现（R9 的 P5 全链路；代码评审的 `probe-clipped-refusal`）。**已修**（`report.ts:247`）。
+2. **设计 §4 点名的三条回归线未落进 `tests/external-edit-test.mjs`**（来源翻转 / CRLF 与行尾空格方向 / 拒绝后抛错重放）。
+   两轮都实测三条**行为正确**、但**没有回归线**：回退 §2.2 为 raw 比较时，当时 47 条断言无一变红。**已补**（+22 断言，47 → 69）。
+
+**R9 的 nit/suggestion 处置**：N-1（约 20 处行号漂移）按 R9 的映射**全量回写**并在 banner 写明行号约定；N-2（H1 仍写
+revision 8）、N-3（T2"恰两行"与不带 context 的子例自相矛盾）、N-4（§0 的 per-file 约数偏小）、N-5（T1 多一条
+`MEMORY.md === arrived` 断言）、S-1（§2.2 的"清空"口径过宽）、S-2（repro 谓词比 §4 引文更严）均已同步。代码评审的 4 条
+nit（重复注释、`nextRenderSupersedes` 注释未提 `publishKey`、提交信息措辞、设计 H1）同批处理。
+
+### 路由变更（provenance）
+
+R1–R8 由 `commandcode/deepseek/deepseek-v4.1-flash-fast` 服务；**R9 与代码评审轮 1 由 `deepseek/deepseek-v4-pro` 服务**
+（前者 429 周限至 2026-10-08）。两轮的 prompt 里都写明了本轮路由。原结论"本机唯一可用评审路由是 commandcode"**已被实测
+推翻**：另有 `deepseek/deepseek-flash`、`deepseek/deepseek-v4-pro` 可用（`scnet/*` 被 plan 门挡住、`openai-codex` 凭据失效）。
+
+### 零写入证明与一处 provenance 纸伤
+
+- 两轮沙箱 `rev37`/`rev38`：`git status --porcelain -uall` 与 `find|stat` 的**前后 diff 均为空**（`.agents/memory` 按 skill prune）；活仓库 5 个待审文件 md5 轮次前后一致。
+- **纸伤**：轮次运行期间（14:28Z 起）我提交了 `7198c14`（skills / audit / attention 文档），活仓库 HEAD 从 `3448700` 移到 `7198c14`。沙箱仍是 `3448700` 的副本，被审的 5 个源/测试文件 md5 未变（`git diff 3448700 7198c14 -- extensions tests` 为空），因此不污染被审工件；记在这里以免后来者误读。
+- 修复批次的验证：`node tests/run-all.mjs` **15/15**、`external-edit-test.mjs` **69 条断言全绿**、`repro-write-ordering.mjs` **退出 0**；新断言经**变异矩阵**证明各自钉住一个守卫（撤 `!memoryRefused` → T2c 变红；§2.2 退回 raw 比较（带/不带 trim）→ T1b 变红 2/4 条；去掉 `publishKey` → T6 变红）。
