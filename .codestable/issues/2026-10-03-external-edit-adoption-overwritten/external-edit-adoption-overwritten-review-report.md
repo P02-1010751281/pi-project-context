@@ -13,6 +13,7 @@
 | R1 | 设计 v1（活仓库 md5 `60ae6b48870b`） | **CHANGES-REQUESTED** | 2 blocking + 8 important + 3 nit + 1 suggestion；见下 |
 | R2 | 设计 v2.1（v2 + 开轮前自纠；沙箱 HEAD `0118cab`） | **CHANGES-REQUESTED** | **0 blocking** + 5 important（IM-1…IM-5）+ 10 nit + 4 suggestion + 3 learning；R1 的 B1/B2/I1/I3/I7/I8 判「已解决」，I2/I4/I5/I6 判「部分解决」 |
 | R3 | 设计 v3（沙箱 HEAD `8907b3a`） | **CHANGES-REQUESTED** | **1 blocking**（B-1）+ 1 important + 12 nit。R2 的 IM-1…IM-5 判「已解决」（契约/类型层面）；B-1 是 v2→v3 重排时**丢掉了 R1 修复边界里明写的那个动作** |
+| R4 | 设计 v4（沙箱 HEAD `06f0903`） | **CHANGES-REQUESTED** | **0 blocking** + 2 important（IM-1 发布侧副作用未以 `written:true` 为门；IM-2 §8 句表缺一格）+ 11 nit。R3 的 B-1/IMPORTANT-1/12 nit 除 N-2 判「部分解决」外全部「已解决」，且 B-1 用 probe 在 7 种编辑形态上验证闭合 |
 
 ### R1 发现（按评审分桶）
 
@@ -182,3 +183,63 @@ md5sum -c /tmp/rev30-live-md5.txt                                              �
 ### R3 处置
 
 → 设计改 **v4**：第 8 步补 append（B-1）、钉死 seam 调用点（IMPORTANT-1）、逐条修 12 条 nit，然后开 R4。
+
+## R4 轮次详情
+
+| 项 | 值 |
+|---|---|
+| 被审候选 | 设计 v4（沙箱 HEAD `06f0903`） |
+| 裁决 | **CHANGES-REQUESTED**（**0 blocking** + 2 important + 11 nit） |
+| transcript | `external-edit-adoption-overwritten-design-review-round4-independent.txt`（15396 字节） |
+| 沙箱 | `/tmp/pi-context-rev31`（340 文件基线） |
+| provider 失败 | 无 |
+
+### R4 对 R3 的复核
+
+- **B-1 已解决**：probe 复现 combo 3b（编辑落在第 3 步之后、第 6 步之前）→ `journal=A→A→C→E`、
+  `attempt2 basisKey=E`、最终 `MEMORY.md=D`，无倒置；`probe-keyforms` 对 7 种编辑形态
+  （无尾换行 / CRLF / 行尾空格 / 前后空行 / 超 cap / poison）全部满足 `fold==nowKey`、
+  `loadMemory==fold`、`attempt2 basisKey==fold` ⇒ **append `nowKey` 而非 `nowRaw` 在 `fold` 的 `trim()` 下自洽**。
+- **IMPORTANT-1 已解决**：seam 位置可同时覆盖"非空触发→进 journal"与"清空按 R-15 发布"两种接线。
+- **R3 的 12 条 nit**：N-1/N-3/N-4/N-5/N-6/N-7/N-8/N-9/N-10/N-11/N-12 判「已解决」；
+  **N-2 判「部分解决」**（`loadMemory` 实际闭合在 `store.ts:160`，且读侧的 clip 在 `:138-142`，
+  v4 引的 `:119-127` 是 raw 读取）⇒ v4.1 已修。
+
+### R4 的 2 条 important（v4.1 已修）
+
+| # | 内容 | 修法 |
+|---|---|---|
+| IM-1 | §9 的"最终 attempt 执行发布侧副作用"没有以 `written === true` 为门 ⇒ 在 row 5（重跑产出但也被判陈旧）里，作为"最终 attempt"的 `written:false` 那次仍会消费四个一次性集合、并写出"关于一次并未发生的发布"的 cap/removal 日志与 notify | 改为"发布侧副作用**仅在 `written:true` 时**执行"；`written:false` 只允许 step-8 append、写前备份、`memory-stale` 留档、中性日志、keep-adoption 的 warning toast；退出形态由三种改四种；T9 加验收断言 |
+| IM-2 | §8 的五句不完备：重跑若产出 `semanticEmpty` 或 opaque < 40 字符，`recordMemoryDocument` **根本不会被调用** ⇒ 无 `MemoryWriteResult`，五句无一命中，`"superseded"` 与"编辑被保住"的结果句缺失（INV-3 在该格不成立） | §8 补入该格（`…the re-run's reply carried nothing usable and was discarded`），明确它同样走 `"superseded"` 且不执行发布侧副作用 |
+
+### R4 的 11 条 nit（v4.1 已逐条修）
+
+`pass.ts:151` 的 forceDedupe 返回；`loadMemory` 闭合在 `:160`；读侧 clip 在 `:138-142`（`:119-127` 只是 raw 读取）；
+清空守卫读侧在 `store.ts:106`（写侧才是 `:63`）；T2 断言应写 `outcome2 === undefined`；
+`lastWrite.delete` 后 `consolidateReply` 拿不到 `info` ⇒ 命令回复文本要钉死；
+row 5 的括注"回复留在历史"只对第 8 步陈旧成立；cap 在读/写之间被改 ⇒ 一次假陈旧（补 R-17）；
+`kept` 是生效文本而非文件字节；D2 fix note 的 §4"写副本在前"也失效、且其 residual-1 要在 v0.2.1 落实；
+step-8 的 append 在 rotation 之后 ⇒ journal 可暂超 512 KB（补 R-12b）。
+
+### R4 零写入证明
+
+```
+cd /tmp/pi-context-rev31
+git status --porcelain -uall | sort | diff - /tmp/rev31-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev31-baseline-files.txt → 无差异（340 文件基线）
+md5sum -c /tmp/rev31-live-md5.txt                                              → 活仓库设计文件未变
+```
+
+### 收敛观察（R1→R4）
+
+| 轮 | blocking | important | 性质 |
+|---|---|---|---|
+| R1 | 2 | 8 | 入口不存在 / 窗口未处理（根本性） |
+| R2 | 0 | 5 | 报告级语义、契约、流程表（结构性） |
+| R3 | 1 | 1 | 重排时丢了一次 append（回归型）+ seam 位置 |
+| R4 | **0** | **2** | 规格级澄清（副作用门、句表补格），其余为行号与措辞 |
+
+### R4 处置
+
+→ 设计改 **v4.1**（IM-1/IM-2 + 11 nit），然后按协议**开 R5**。

@@ -1,0 +1,51 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 4 轮）**。被审工件 = **设计 v4**（尚未实施，无代码 diff）。工作区 `/tmp/pi-context-rev31`（**先 cd 进去**）。
+
+**独立性**：前三轮结论是同行意见，不是事实，自己从源码判定。R1（v1）2 blocking+8 important；R2（v2.1）0 blocking+5 important；R3（v3）**1 blocking（B-1：第 8 步检出却不 append ⇒ 重跑基线是被丢弃的回复）+ 1 important（seam 注入点未钉死）+ 12 nit**。v4 声称已按 R3 全部处置，并定稿了 §17 四项。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev31`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`；`appendMemoryOp`/`foldMemoryJournal`/`loadMemory`/`recordMemoryDocument`）。R1/R2/R3 共靠 probe 找出 3 条 blocking 与 6 条 important。也允许跑 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev31-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（v4）
+3. 同目录 `external-edit-adoption-overwritten-report.md`、`external-edit-adoption-overwritten-review-report.md`、`...-design-review-round{1,2,3}-independent.txt`、`repro-write-ordering.mjs`
+4. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document,prompt,input}.ts`；`extensions/project-context/shared/{lock,gitignore,project-state,migrate,files,llm}.ts`
+5. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 本轮必须做的四件事
+
+**A. 逐条判定 R3 的 B-1 / IMPORTANT-1 / 12 nit 是否真解决**（给 v4 章节 + 源码头文件行号 + 依据）。特别注意：
+   - B-1 的修法现在是「第 8 步 append `nowKey`（规范化键）后返回」。**用 probe 复现 R3 的 combo 3b**（编辑落在第 3 步 `resolveMemory()` 之后、第 6 步 append 之前），断言：journal 末条 = 编辑、attempt 2 的 `basisKey` = 编辑、最终 `MEMORY.md` = 重跑回复，且**没有**倒置。也验"append `nowKey` 而非 `nowRaw`"这一选择在**带尾换行/CRLF/行尾空格**的编辑上是否仍自洽（`foldMemoryJournal` 会 `trim()` 末条）。
+   - IMPORTANT-1：seam 位置（第 3 步之后、第 5/6 步之前）是否真能同时覆盖"非空触发→新字节进 journal"与"清空按 R-15 发布"两种接线。
+
+**B. 攻 v4 新引入/改动的部分**（本轮重点）：
+   - 第 8 步的触发式 `basisKey !== undefined && nowKey !== "" && nowKey !== renderKey && nowKey !== memoryComparisonKey(rendered, limit)`：**穷举**它该触发/不该触发的全部情形（含 `renderKey=""`（原文件不存在）→ 窗口内出现文件、窗口内清空、窗口内写入与 `rendered` 规范化相同的内容、窗口内 CRLF-only 改写、窗口内先清空再写）。有没有**该触发却漏判**（⇒ 发布覆盖编辑）或**不该触发却触发**（⇒ 白跑一轮）的组合？
+   - `overflow 留档移到"发布成功之后"`（§9）：会不会产生新的不一致（例如 toast 文案提到 overflow 文件而文件还没写、或 `memoryCapWarned` 一次性集合的语义变化）？与 D2 的 fix note 的对应改动是否完整？
+   - §8 的结果句表：五行的**互斥性与完备性**（有没有两组条件同时成立、有没有状态落不进任何一行）？"重跑未发生"与"重跑产出但也被判陈旧"能否用现有信息区分？
+   - `kept` / `adopted` 的字段语义拆分是否足以让 report 落地五行？`written:false` 时 `kept = nowKey`（规范化）而 `MEMORY.md` 上是 `nowRaw`——report 若把 `kept` 写进日志/留档，会不会与文件实际内容不一致？
+   - §9 的 `lastWrite.delete` + `"superseded"` 必须在 `memoryKept` 分支之前短路：对照 `report.ts:204-216` 与 `:345` 的实际控制流，判断这个改法是否可实现、有无遗漏的消费点（如 `/memory` 命令的其它分支、status、notify 阈值）。
+   - §12 R-16 声称"三者自洽"：**验它**（fold 与 `MEMORY.md` 在语义上相等吗？`resolveMemory().text` 会不会因 `nowKey` 规范化而与文件字节不同而导致下一次读取判定异常？）。
+
+**C. 四时序组合回归**（沿用 R3 的穷举，但用 v4 的流程重跑一遍）：编辑早于读取 / 编辑落在模型调用期间 / 编辑落在发布窗口内（含清空与 CRLF 变体）/ 无编辑（必须逐字节等于今天）。给出每种组合的"第几步触发、最终 fold 与 `MEMORY.md`、日志句"。
+
+**D. 对抗性一轮 + 文档准确性**：假定 v4 仍藏 bug（数据丢失/活锁/编辑仍未保住/正常路径被误判陈旧/日志说谎）去找它；并核对 v4 引用的行号、常量、函数名、断言方向（前三轮共抓到 6 处行号偏移）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节复核表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条 `file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出。
+- 只有以下情况给 `PASSED`：R3 的 B-1/IMPORTANT-1/12 nit 全部真解决、v4 新改动你**实测**无 blocking/important、§17 四项定稿判定合理。
+- 若设计已可实施，把"实施时必须注意但不必再改设计"的点放进 `learning`/`residual-risk`，不要为凑发现而降级判定。

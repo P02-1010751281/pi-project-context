@@ -1,0 +1,108 @@
+本次评审在 `/tmp/pi-context-rev31`（HEAD `06f0903`，设计 md5 `f46d9e9cf36dc377850bd82810194706` = `/tmp/rev31-live-md5.txt` 一致）。探针全部写在 `/tmp/rev31-probes`：`probe-v4sim.mjs`（用真实原语逐字实现 v4 §6 九步流程 + 各 inflection 注入）、`probe-combos.mjs`、`probe-keyforms.mjs`（7 种编辑形态）、`probe-edge.mjs`、`probe-compat.mjs`。复现脚本退出码 0（bug 仍在），`memory-ops-test` / `consolidation-test` 全绿。零写入已证：`git status --porcelain -uall`、`find … stat` 两份快照均无差异，设计 md5 未变。
+
+---
+
+## A. R3 逐条复核
+
+| R3 项 | v4 处置（章节/行） | 判定 | 依据（源码行号 + probe） |
+|---|---|---|---|
+| **B-1** 第 8 步检出却不 append | 第 8 步先 `appendMemoryOp("replace", nowKey)` 再返回，`design:117`、`:122-127`、`:308` | **已解决** | `probe-combos` combo3b（编辑落在第 3 步之后、第 6 步之前）：attempt1 `{written:false, external-edit-during-publish}`，journal `A→A→C→E`、attempt2 `basisKey=E`、最终 `A→A→C→E→D`、`MEMORY.md=D`；`loadMemory==fold` 与 `key(MEMORY.md)==fold` 两条断言均真。`probe-keyforms` 对 7 种编辑（无尾换行/CRLF/行尾空格/前后空行/超 cap/poison）全部满足 `lastEntry==nowKey`、`fold==nowKey`、`loadMemory==fold`、`attempt2 basisKey==fold`、`MEMORY.md==D`、`key` 幂等 ⇒ **append `nowKey` 而非 `nowRaw` 在 fold 的 `trim()`（`journal.ts:92-93`）下仍自洽** |
+| **IMPORTANT-1** seam 注入点 | 第 3b 步 = 第 3 步之后、第 5/6 步之前（`design:112`、`:277`、`:319`） | **已解决** | 非空变体（`probe-combos`/`probe-edge`）：seam 写 E → `external-edit-during-publish`、E append、重跑 `basisKey=E`；清空变体：`written:true`、journal `A→A→C`，无 "not published" 日志 ⇒ R-15 接线被 seam 同时覆盖。名字误读风险（"before writeAtomic"）由 §17.3 的显式位置消除 |
+| N-1 第 2 步限定 `entries>0` | `design:110` 明写"仅当 `entries.length > 0`（与 `store.ts:56` 的 `else` 同域）" | 已解决 | 与 `store.ts:50` 的空 journal 分支不再冲突；`probe-compat` case1 与今天逐字节一致 |
+| N-2 §5 三处行号 | `design:75,80-81`：archive `:132`✓、`.pi :145`✓、OMP `:152`✓ | **部分解决** | `loadMemory` 实际 `store.ts:87-160`（v4 写 87-159，差 1）；`store.ts:50-55` 是**写路径种子**，而 read 侧 `MEMORY.md` 原样/`clipToLineBoundary` 在 `:138-142`，v4 引的 `:119-127` 只是 raw 读取。见 nit-1 |
+| N-3 `modelBlocked` 行号 | F10 与 §7 均写 `pass.ts:154`（`design:68,152`） | 已解决 | `pass.ts:154` 确为 `if (!force && modelBlocked(...)) return cached?.outcome;` |
+| N-4 lastWrite 语义 | `design:198-201`、`:316-317` 不再称"现有语义"，明确新增 `lastWrite.delete` + `"superseded"` 在 `memoryKept` 前短路 | 已解决 | 对照 `report.ts:115`（唯一清空点）、`:204-216`（现行 `memoryKept:true`）、`:345`（唯一消费点），描述与代码一致 |
+| N-5 T2 构造法 | `design:273` 只留 `resolveAuxModel` 返回 undefined 一种 | 已解决 | 该路径确实让 `consolidateProjectState` 返回 `undefined`（`pass.ts:158-163`），version 断言必失败。断言措辞"version 相同"不精确，见 nit-5 |
+| N-6 false 分支字段 | `adopted` 只留在 `written:true`；false 分支用 `kept`，并写明 report 不得反推采纳（`design:98-105`） | 已解决 | 与 `probe-edge` peer 场景（`kept=Q`、本调用没采纳）吻合 |
+| N-7 两种退出措辞 | `design:174-175` 分"未发生/未产出"与"重跑的回复也被丢弃" | 已解决（设计层面） | 可用 `outcome2 == undefined` / version 不等 / attempt2 的 `MemoryWriteResult` 三种现有信息区分（见 nit-7 对 row 5 的补充） |
+| N-8 overflow 去重 | `design:187-190` 移到 `written === true` 之后；§10 去重规则 | 已解决 | 与 `report.ts:159-165/188-199` 对照可实现；stale 路径不再产生 overflow 孤儿 |
+| N-9 toast 门控 | `design:202-204` `!silent` + 命令走 `consolidateReply("superseded")` | 已解决 | `session_shutdown`/`/memory update` 确为 `silent=true`（`report.ts:333/344`） |
+| N-10 `nowKey===key(rendered)` | 已纳入触发式（不触发），`design:117,134-136` | 已解决 | `probe-edge` 触发矩阵："write exactly rendered"、key 相等变体均 false；CRLF 仍 true（R-14） |
+| N-11 basisKey 传递闭环 | `design:236-241` 第 2 条给出 `report.ts:171` 的完整新调用 | 已解决 | 与 `report.ts:171` 现状对照可实施 |
+| N-12 跳过行号 | `design:61,132` 均写 `journal.ts:92-93` | 已解决 | `journal.ts:92-93` 确为 `trim` + `continue` |
+
+**B/C 实测摘要（v4 流程重跑四时序；`probe-combos`）**
+
+| 时序 | 触发步 | journal | MEMORY.md | 日志归属 |
+|---|---|---|---|---|
+| 编辑早于 pass 读取 | 第 2 步采纳、第 3 步不陈旧 | `A→A→B→C` | `C` | row 1（同一次写入里替换） |
+| 编辑落在模型调用期间（pass 读后、写路径前） | 第 2 步采纳、**第 4 步**陈旧 | `A→A→B→D` | `D` | row 3 |
+| 编辑落在第 3→6 步（seam） | **第 8 步** append `nowKey` | `A→A→C→E→D` | `D` | row 3；E 是重跑基线 |
+| 编辑落在第 6→8 步 | 第 8 步 | `A→A→C→E→D` | `D` | row 3 |
+| 窗口内清空（seam） | 第 8 步空守卫不触发 | `A→A→C` | `C` | row 2（R-15） |
+| 第 8 步读后→rename（R-2） | 不触发 | `A→A→C` | `C`（编辑字节丢，已明示） | row 2 |
+| 无编辑 | 无 | `A→A→C` | `C` | row 2；与真实 `recordMemoryDocument` 逐字节一致（`probe-compat` case1/case2） |
+
+---
+
+## blocking
+
+无。B-1 / IMPORTANT-1 已在真实原语上验证闭合，四时序均无倒置、无编辑丢失（设计声明的 R-2 残留除外）。
+
+## important
+
+**IM-1 §9 的"最终 attempt 执行发布侧副作用"没有以 `written === true` 为门，且三退出列表漏掉 §8 row 5。**
+- `file:line`：`design:182-183`（"只有最终 attempt 执行 `saveOverflowReply`、CONTEXT.md 写入、`lastWrite`、四个一次性警告集合…与 notify"）、`design:194-195`（退出形态只列"重跑未发生或未产出"）、`design:197`；源码 `report.ts:159-200`、`:217-226`、`:232-272`。
+- 影响：row 5（重跑产出但也被判陈旧，`design:175`、T7 `design:278`）中 attempt 2 就是"最终 attempt"。按字面实现，`written:false` 的它仍会执行/消费：`contextShapeWarned`、`memoryCapWarned`、`memorySectionCapWarned`、`memoryRemovalWarned`，并写出"memory exceeded maxMemoryChars…middle dropped"或"no longer carries N entries"这类**关于并未发生的一次发布**的 errors.log/notify —— 正是本 issue 要消灭的说谎日志，且一次性集合被烧掉后真正的下一次事件不再告警。`lastWrite`（`:198`）与 overflow（`:189-190`）已被单独覆盖，其余三处没有。
+- 修复边界（一句话即可）：把 `design:182` 改为"发布侧副作用仅在最终 `recordMemoryDocument` 返回 `written:true` 时执行；任何 `written:false` 的 attempt 只允许：step-8 append、写前备份、`memory-stale` 留档、中性日志（keep-adoption 的 warning toast 除外）"，并把 row 5 补进 `design:194-195` 的退出列表。
+
+**IM-2 §8 五行的完备性缺"重跑产出 outcome 但 `memoryChanged === false`"这一格。**
+- `file:line`：`design:169-175`、`design:194-195`；源码 `report.ts:131-133`（`memoryChanged`）、`:159`（写路径门）。
+- 影响：重跑回复若为 `semanticEmpty`（heading-only）或 opaque < 40 字符，`recordMemoryDocument` **根本不会被调用**，因此不存在 `MemoryWriteResult`，五行无一命中：row 3/5 需"发布成功/也被判陈旧"，row 4 需"未发生"。实现很可能落回今天的 `"unchanged"`/context-only 路径，`"superseded"` 与"你的编辑被保住"的结果句缺失（INV-3 的"每次陈旧检测产出与 fold 一致的句子"在该格不成立）。
+- 修复边界：在 §8 增一行或在 §9 明写该格映射（例如 `the newer content was kept; the re-run's reply carried nothing usable and was discarded`），并确认它同样走 `"superseded"`、不执行发布侧副作用。
+
+## nit
+
+1. `design:64`、`design:150-151` 引 `pass.ts:149-150`：`throttled` 在 `:149-150` 对，但 `force && cached…forceDedupeMs` 的返回在 **`pass.ts:151`**。与 R3-N-3 同类偏移。
+2. `design:75` 引 `loadMemory` `store.ts:87-159`：实际闭合在 **`:160`**。
+3. `design:80` 引 `:119-127` 说明 `MEMORY.md` 原样/`clipToLineBoundary`：该范围只是 raw 读取；clip 在 **`:138-142`**。`store.ts:50-55` 是写路径种子，不是 read 侧契约的来源。
+4. `design:249` R-1 引 `store.ts:63` 的 `renderRaw.trim()`：写侧采纳守卫在 `:63`，但"清空后回复胜出"的 read 侧守卫在 **`store.ts:106`**（两处都存在，引用指向了错的一处）。
+5. `design:273` T2：auxModel 缺失使 `consolidateProjectState` 返回 **`undefined`**，断言应写"`outcome2 === undefined` ⇒ 不调用写路径"，"version 相同"在无 outcome 时无对象可断。
+6. `design:203-204/316-317`：`lastWrite.delete` 之后 `consolidateReply("superseded")` 拿不到 `info`，只能产出一句通用文案，无法区分 row 4 与 row 5（R3-N-7 只保证 report 结果句区分）。请钉死命令回复文本，或把 loop 状态单独传给它。
+7. `design:175` row 5 括注"attempt 2 的回复按 R-10 留在历史里"只对**第 8 步陈旧**成立；若 attempt 2 在第 4 步陈旧，step 6 未到，回复从未 append。
+8. R3 residual 建议的"pass 读与 report 写之间 cap 被改 ⇒ 一次假陈旧、有界重跑自愈"没有进 §12（重跑一次即自愈，非阻塞；建议补 R 项）。
+9. `design:104-105` 的 `kept` 是**规范化/生效文本**（探针实测 `kept == fold == loadMemory().text`），而 `MEMORY.md` 上可能是 `nowRaw`（CRLF/尾空格/超 cap）。设计已禁止反推采纳，但未说"日志/测试不得把 `kept` 当文件字节比"；建议点明。
+10. `design:191` 对 D2 的影响只提了 fix note 的"落盘时机在任何裁剪之前"；其 §4"**写副本在前、写受限文档在后**"同样会失效，应一并更新。另 D2 fix note §5 residual-1（发版前补独立评审）在本设计的 v0.2.1 计划里未提。
+11. step 8 的 append 在第 7 步 rotation 之后，可能把 journal 重新推过 512 KB 且当次不再旋转（下一个 pass 才收敛）。属 R-12 同族，建议一句话并入 R-12。
+
+## suggestion
+
+- T7/T11 增加针对 IM-1 的断言：keep-adoption 退出后 `memoryCapWarned`/`memoryRemovalWarned` 未被消费、errors.log 无 cap/removal 行、CONTEXT.md 未变（一条测试即可把该语义钉死）。
+- §12 R-4 的"重跑不加剧（概率不变）"建议修正为："重跑把同样概率的 `activeConsolidation` join 机会从 1 次增加到 2 次；且 version 断言无法识别跨项目 join（version 全局唯一）"——本设计明示接受即可。
+- T13 增一句 `kept == loadMemory().text`（而非 `MEMORY.md` 字节）的断言，把 nit-9 的语义固化。
+
+## learning
+
+- **L-1** 第 8 步必须在返回前 append，且只能用**字节谓词**（`renderKey/nowKey/key(rendered)`）；一旦 step 6 的 append 落盘，journal mtime 反超窗口编辑，任何 mtime 依据都会把编辑藏起来（R3 L-1 在 v4 上成立并被探针再次确认）。
+- **L-2** store/report 交接的字段（`kept`）是"生效内容"而非"文件字节"；报告层只应比较 `fold`/`memoryComparisonKey`，不要字符串比较 `MEMORY.md`。
+- **L-3** 发布侧副作用集合（CONTEXT、四个 one-time set、notify、overflow、`lastWrite`）应作为一个整体以 `written === true` 为门，否则每加一条新 effect 就会再犯一次"attempt 1 说谎"的错（R1-I5 的推广）。
+
+## praise
+
+- B-1 的修法方向（append `nowKey` 而非 `nowRaw`）经 7 种编辑形态实测自洽：`lastEntry==nowKey`、`fold==nowKey`、`loadMemory==fold`、`attempt2 basisKey==fold`、`MEMORY.md==D` 全部为真；`probe-compat` 证明**正常路径与 edit-early 的 legacy 路径与今天逐字节一致**（含 journal op/text 序列与 `MEMORY.md` 字节）。
+- seam 位置钉死后，非空触发与 R-15 清空两条接线都能被同一注入点确定性覆盖，R3-IMPORTANT-1 的修复是干净的。
+- 触发式的穷举未发现漏判：`nowKey ∈ {"", renderKey, key(rendered)}` 三种不触发都对应"无有效损失"；CRLF/行尾空格触发属 R-14 明示的安全侧。
+- §17.4 拒绝保留策略、把删除证据列为更糟，判断合理。
+
+## residual-risk
+
+- R-2（第 8 步读→rename）仍是唯一字节丢失窗口；v4 未假装关闭，接受。
+- R-1（mtime 回退 `cp -p`、窗口内清空）与 F9（模块级单飞不按 root 键）经探针复核仍成立；重跑使 join 机会翻倍但概率量级不变，version 断言覆盖不了跨项目 join。
+- 新增提示：进程若在 step 6 与 step 8 之间被杀（rotation/gitignore 期间），窗口编辑只在 `MEMORY.md` 上、不在 journal；下一次写路径的 step 2 会因 mtime 更旧而不采纳它，编辑可能被后续发布覆盖。属崩溃窗口而非交错窗口，建议记入 §12 或至少不要宣称"第 3→6 步窗口已完全关闭"。
+- `memory-stale-*` / `memory-overflow-*` 只增不减（R-13，接受）。
+- pass 读与 report 写之间的 cap 变更会造成一次假陈旧并有界重跑自愈（未记录，见 nit-8）。
+
+---
+
+## Test And QA Focus
+
+1. **B-1 验收线（最高优先）**：按 `probe-combos` combo3b 构造——seam 固定在第 3 步后、第 5/6 步前注入 E；断言 journal 末条==`nowKey`（含 CRLF/无尾换行/超 cap 三种变体）、fold==`memoryComparisonKey(MEMORY.md)`、attempt 2 `basisKey` 含该字节、最终 `MEMORY.md`==重跑回复、无倒置。`probe-keyforms` 的输出可直接移植为断言模板。
+2. **IM-1 门控**：T7 场景下额外断言 keep-adoption 退出**不**消费 `contextShapeWarned`/`memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned`、errors.log 无 cap/removal 行、CONTEXT.md 保持原字节；`memory-stale-*` 数量==被丢弃回复数。
+3. **IM-2 落点**：让重跑返回 heading-only/空回复（fake model 第二次调用返回 `## Project` 四标题骨架），断言 `ConsolidateReport === "superseded"`、结果句为"re-run 无可写回复"类且与 fold 一致、无第三次 attempt、无发布侧副作用。
+4. **T2 修正**：断言 `outcome2 === undefined`（而非"version 相同"）、`recordMemoryDocument` 未被调用、B 仍是 fold。
+5. **命令路径**：`consolidateReply("superseded")` 不得落入 `report.ts:399-420` 的 `memoryKept`/最终 fallthrough `Project memory and context updated.`；断言其文本与 `/memory update` 的 warning/info 阈值都符合 §17.1。
+6. **T13**：小 fixture 下 `memoryComparisonKey(MEMORY.md)===foldMemoryJournal(entries)`，分"陈旧后/重跑成功后"两段；同时断言 `kept === loadMemory().text`。
+7. **兼容**：把 `probe-compat` 的两条用例（normal、edit-early legacy）固化为 md5 级字节断言，防止 `resolveMemory()` 抽取时漂移。
+8. 实施前修掉 A 表 N-2 的残留行号与 nit-1..7，再开 R5。
+
+VERDICT: CHANGES-REQUESTED

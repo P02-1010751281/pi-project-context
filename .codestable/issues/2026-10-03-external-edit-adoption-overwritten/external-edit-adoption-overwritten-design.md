@@ -3,7 +3,7 @@ doc_type: design
 issue: 2026-10-03-external-edit-adoption-overwritten
 status: draft
 created_at: 2026-10-03
-revision: 4
+revision: 4.1
 related: [external-edit-adoption-overwritten-report.md, external-edit-adoption-overwritten-review-report.md, repro-write-ordering.mjs, ../2026-09-30-auxiliary-call-noise-and-memory-cap/over-cap-reply-persistence-fix-note.md]
 tags: [memory, memory-journal, external-edit-adoption, lost-update, write-ordering, consolidation, design]
 ---
@@ -18,6 +18,11 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 | R1 | v1 | CHANGES-REQUESTED | 2 blocking（重跑被 pass 去重吞掉；发布窗口 TOCTOU）+ 8 important |
 | R2 | v2.1 | CHANGES-REQUESTED | 0 blocking + 5 important（报告级语义、`basisKey` 口径、契约、流程表） |
 | R3 | v3 | CHANGES-REQUESTED | 1 blocking（第 8 步漏 append）+ 1 important（seam 注入点）+ 12 nit |
+| R4 | v4 | CHANGES-REQUESTED | **0 blocking** + 2 important（发布侧副作用未以 `written:true` 为门；§8 句表缺一格）+ 11 nit |
+
+**v4.1 = R4 之后的修订**（未评审，必须进 R5）：发布侧副作用改为**仅在 `written:true` 时执行**、§8 句表补
+"重跑产出但无可用内容"一格、退出形态由三种改四种，以及 11 条 nit（行号、`kept` 语义、T2 断言、
+命令回复文本、D2 fix note 两处同步、R-12b/R-17）。
 
 **v4 = R3 之后的修订**：第 8 步补 append（B-1）、钉死测试 seam 的调用点、逐条修 12 条 nit。
 owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → **不发布** → **用采纳后的内容重跑一轮**，
@@ -61,7 +66,7 @@ owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → *
 | F3 | `foldMemoryJournal` 取末条**非空** `replace`（空 text 被 `continue`） | `journal.ts:89-97`，跳过在 `:92-93` |
 | F4 | 读取侧在同一条件下返回**外部编辑**；陈旧的是**模型调用期间**落地的编辑 | `store.ts:106-116` |
 | F5 | 写入是否发生由 `memoryChanged` 门决定 ⇒ 生效条件反转 | `report.ts:132` |
-| F6 | pass 层去重会吞掉重跑：`throttled` 与 `force && cached && … < forceDedupeMs` | `pass.ts:149-150` |
+| F6 | pass 层去重会吞掉重跑：`throttled`（`:149-150`）与 `force && cached && … < forceDedupeMs` 的返回（`:151`） | `pass.ts:149-151` |
 | F7 | 空 journal 分支（条件在 `store.ts:50`，块体 `:51-55`）**不经过**采纳检测；采纳块在 `else`（`:56`）内 | `store.ts:50-71` |
 | F8 | rotation 用**默认 32000** 折叠，与项目 cap 解耦 | `journal.ts:111` |
 | F9 | `activeConsolidation` 模块级单飞、不按 projectRoot 键 | `pass.ts:135,137` |
@@ -72,12 +77,13 @@ owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → *
 
 ## 5. 决策 1：单一判据 + 基线取"读取函数的精确返回值"
 
-**判据只有一处实现**：把 `loadMemory`（`store.ts:87-159`）的主体抽成内部 `resolveMemory()`，
+**判据只有一处实现**：把 `loadMemory`（`store.ts:87-160`）的主体抽成内部 `resolveMemory()`，
 返回 `{ text, source, poisoned, damaged, unreadable }`；`loadMemory` 变成薄包装，写路径调用**同一个**
 `resolveMemory()` 并只取 `.text`。
 
 - **契约**：写路径取得的文本**逐字节等于** `loadMemory(projectRoot, limit).text`，**包含**
-  `entries.length === 0` 时的 `MEMORY.md` 原样/`clipToLineBoundary`（`store.ts:50-55`、`:119-127`）、
+  `entries.length === 0` 时的 `MEMORY.md` 原样/`clipToLineBoundary`（**读侧**在 `store.ts:138-142`；
+  写路径的空 journal 种子是另一处，在 `:50-55`）、
   `newestMemoryArchive` 回退（`:132`）、`.pi` legacy（`legacyPiDir` `:145`）与 OMP 回退（`legacyOmpDir` `:152`）。
   抽取必须覆盖这些分支——只实现 journal 分支会让 I2 的修复静默失效，且 T5 的弱判据照样绿（R2-IM-5）。
 - **判断方式**：`stale = options.basisKey !== undefined && options.basisKey !== currentText`，两边都是
@@ -103,6 +109,8 @@ export type MemoryWriteResult =
 > 字段语义：`written:true` 的 `adopted` 只在**本调用确实采纳了外部编辑**时存在；
 > `written:false` 的 `kept` 是"当前保持生效的内容"，**不代表本调用采纳过任何东西**
 > （peer 先采纳时本调用根本没采纳）。report **不得**用 `kept` 反推"本次发生过采纳"（R3-N-6）。
+> 另：`kept` 是**生效文本**（探针实测 `kept == fold == resolveMemory().text`），**不是文件字节**——
+> `MEMORY.md` 上可能是带 CRLF/行尾空格/超 cap 的原文；日志与测试**不得**拿 `kept` 与文件字节比（R4-nit-9）。
 
 | 步 | 动作 | 相对今天 |
 | --- | --- | --- |
@@ -148,7 +156,7 @@ export type MemoryWriteResult =
 `consolidateProjectState` 选项加 `rerun?: boolean`（参数行 `pass.ts:132`）：
 
 - `rerun: true` **跳过** `throttled` 返回与 `force && cached && Date.now()-cached.at < forceDedupeMs`
-  返回（`pass.ts:149-150`）⇒ 若产出 outcome 则 `nextVersion += 1`（`pass.ts:319`）。
+  返回（`pass.ts:149-151`）⇒ 若产出 outcome 则 `nextVersion += 1`（`pass.ts:319`）。
 - **不**跳过失败停放：`modelBlocked` 时 `pass.ts:154` 返回 `cached?.outcome`（第 1 次成功后 `lastOutcome`
   必有值），且 `force=true` 本就不查它（F10）——"路由故障时不重跑"的兜底是**version 断言**，不是该分支。
 - `activeConsolidation`（`pass.ts:135`）在第一次调用的 `.finally` 里已清空，不阻塞重跑；它是模块级、
@@ -172,15 +180,22 @@ export type MemoryWriteResult =
 | 最终发布 attempt 无 `adopted` | 沿用今天的 `Project memory updated: …`（**不得**出现 adopted 字样） |
 | 检出陈旧（两种 reason 共用同一有界循环）→ 重跑**发布成功** | `the memory changed while the reply was being built or published: the reply was discarded, the newer content was kept, and the pass was re-run` |
 | 检出陈旧 → 重跑**未发生/未产出 outcome** | `…the newer content was kept; the re-run did not happen` |
-| 检出陈旧 → 重跑产出了回复但**也被判陈旧** | `…the newer content was kept; the re-run's reply was also discarded`（attempt 2 的回复按 R-10 留在历史里） |
+| 检出陈旧 → 重跑产出了回复但**也被判陈旧** | `…the newer content was kept; the re-run's reply was also discarded`（**仅当该次在第 8 步被判陈旧**时，其回复才按 R-10 留在历史里；若它在第 4 步就判陈旧，回复从未 append） |
+| 检出陈旧 → 重跑**产出 outcome 但 `memoryChanged === false`**（heading-only / opaque < 40 字符，`report.ts:131-133`） | `…the newer content was kept; the re-run's reply carried nothing usable and was discarded`（R4-IM-2 补的格；它同样走 `"superseded"`，且**不**执行任何发布侧副作用） |
 
 **选择句子用循环状态，不是 `adopted` 的存在性**：重跑成功时 attempt 2 自己也可能有 `adopted`，
 只有"最终发布 attempt 的 `adopted`"才允许出现采纳句（R2-IM-2 的注意项 + R3-N-7 区分后两种退出）。
 
 ## 9. 决策 5：副作用只在最终 attempt 执行
 
-**只有最终 attempt** 执行 `saveOverflowReply`、CONTEXT.md 写入、`lastWrite`、四个一次性警告集合
-（`contextShapeWarned`/`memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned`）与 notify。
+**"只在最终 attempt 执行"的正确读法（R4-IM-1）**：发布侧副作用
+（`saveOverflowReply`、CONTEXT.md 写入、`lastWrite`、四个一次性警告集合
+（`contextShapeWarned`/`memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned`）与 notify）
+**仅在最终 `recordMemoryDocument` 返回 `written:true` 时执行**。任何 `written:false` 的 attempt——**包括作为
+"最终 attempt"的那一次**（§8 的 row 5 / row 6）——只允许：第 8 步的 append、写前备份、
+`memory-stale` 留档、中性日志，以及 keep-adoption 的那一次 warning toast。否则会写出
+"memory exceeded maxMemoryChars…middle dropped"或"no longer carries N entries"这类**关于一次并未发生的发布**的
+errors.log/notify，并把一次性集合烧掉、让真正的下一次事件不再告警。
 attempt 1 允许的副作用只有：采纳 append（INV-1）、写前备份 `backupMemoryBeforeWrite`
 （先于检测执行、无法避免，且是外部编辑的额外保底）、被丢弃回复的留档（§10）。
 
@@ -188,11 +203,13 @@ attempt 1 允许的副作用只有：采纳 append（INV-1）、写前备份 `ba
 （`report.ts:159-165`）。若最终 attempt 在 step 8 被判陈旧，先前的顺序会同时留下 `memory-overflow-*`
 与 `memory-stale-*`，违反"同一份回复只留一种"。更准确的语义是：**只有被裁过的文档真的发布，才需要那份
 可恢复副本**。因此 v4 把该调用移到 `written === true` 之后立即执行（仍然是 best-effort、失败只记日志）。
-对 D2 的影响：其 fix note 的"落盘时机在任何裁剪之前"改为"在发布成功之后立即落盘"；D2 尚未发版，
-无兼容问题；失去的只是"发布成功但与写副本之间进程死掉"这一窄窗口（诊断便利，非正确性）。
+对 D2 的影响：其 fix note 有**两处**要同步改——§3 的"落盘时机在任何裁剪之前"改为"在发布成功之后立即落盘"，
+以及 §4 的"写副本在前、写受限文档在后"这条边界**不再成立**（顺序反了）；
+另 D2 fix note §5 residual-1（发版前补一轮独立评审）必须在 `v0.2.1` 计划里落实。
+D2 尚未发版，无兼容问题；失去的只是"发布成功但与写副本之间进程死掉"这一窄窗口（诊断便利，非正确性）。
 
-`consolidate()` 的退出形态三种：**发布成功** / **保留采纳内容（重跑未发生或未产出）** /
-**失败**（既有失败路径不变）。
+`consolidate()` 的退出形态四种：**发布成功** / **保留采纳内容且重跑未发生或未产出 outcome** /
+**保留采纳内容且重跑产出但未发布**（row 5 / row 6） / **失败**（既有失败路径不变）。
 
 - `ConsolidateReport` 新增 `"superseded"`，用于"检出陈旧但最终保留新内容"的两种退出。
 - **keep-adoption 退出必须 `lastWrite.delete(projectRoot)`**：今天无写入时是
@@ -246,7 +263,7 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
 
 | # | 项 | 处置 |
 | --- | --- | --- |
-| R-1 | **不可观察窗口**：mtime 回退的编辑（`cp -p`/`rsync --times`）不被采纳检测看到；owner **清空** `MEMORY.md` 时（`store.ts:63` 的 `renderRaw.trim()` 守卫）回复胜出 | 明示为已接受语义；目标 1 据此收窄 |
+| R-1 | **不可观察窗口**：mtime 回退的编辑（`cp -p`/`rsync --times`）不被采纳检测看到；owner **清空** `MEMORY.md` 时（**写侧**守卫 `store.ts:63`，**读侧**返回 fold 的守卫 `store.ts:106`）回复胜出 | 明示为已接受语义；目标 1 据此收窄 |
 | R-2 | **第 8 步读取 → rename** 窗口内落地的编辑丢字节（Node 无 CAS） | 窗口压到最小并明示（第 3→6 步窗口已由第 8 步的 append 关闭） |
 | R-3 | cap>32000 时 rotation 用默认 32000 折叠（F8）⇒ fold 可能落后 render | 既有问题；**T13 只在未触发 rotation 的小 fixture 下断言**，否则改断言 `resolveMemory().text` |
 | R-4 | `activeConsolidation` 模块级、不按 projectRoot 键（F9） | 既有；重跑不加剧（概率不变），记录待办 |
@@ -258,6 +275,8 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
 | R-10 | 第 8 步触发时 `rendered` 留在历史但非生效 | 有意；测试断言"未成为 render"，不是"不在 journal" |
 | R-11 | `written.set` 的 claim 语义 | 最终 attempt 的 version 一经确定，仍在任何 `await` 之前同步 claim；**stale-stop（非异常、未发布）时保持 claim**（防缓存 outcome 被回放）；失败时按既有 `wroteMemory` 模式释放 |
 | R-12 | 第 4 步早退跳过 `rotateMemoryJournalIfNeeded`/`ensureMemoryGitignore`（第 7 步之前 return） | 明示：journal 可暂超 512 KB，无损坏，属可接受延迟 |
+| R-12b | 第 8 步的 append 发生在第 7 步 rotation **之后** ⇒ 可能把 journal 重新推过 512 KB 而当次不再旋转（下个 pass 才收敛） | 与 R-12 同族；明示为可接受延迟 |
+| R-17 | pass 读到 report 写之间 **cap 被改**（`maxMemoryChars`）⇒ 一次假陈旧 | 有界重跑一次即自愈（R4-nit-8）；非阻塞，记录 |
 | R-13 | `memory-stale-*` / `memory-overflow-*` 只增不减 | 本设计不引入保留策略（与 D3 同族），§17.4 |
 | R-14 | 窗口内 CRLF-only / 行尾空格重写会被判陈旧 | `memoryComparisonKey` 只归一化文档级尾空白；安全侧，明示不收紧 |
 | R-15 | 窗口内把 `MEMORY.md` **清空**时按 R-1 语义发布（回复胜出） | 定稿：空内容不是"更新的记忆"；日志必须与实际 fold 一致 |
@@ -270,14 +289,14 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
 | # | 场景 | 通过判据 |
 | --- | --- | --- |
 | T1 | **重跑验收线**：fake `modelRegistry.complete` 第 1 次调用期间改 `MEMORY.md` 为 B；force（`session_shutdown`）与非 force（`agent_settled`，需把 `consolidateTurns` 配小或让间隔已过，否则被 `pass.ts:149` 节流） | 第 2 次真实 pass 发生（completion 计数增加）；最终 `MEMORY.md` = 第 2 次回复；第 1 次回复未成为 render；B 在 journal 历史；`memory-stale-*.md` 存在 |
-| T2 | 重跑不得写缓存回复 | **唯一构造法**（R3-N-5）：让 `rerun` 那次的 `resolveAuxModel` 返回 undefined（在 fake 首调里改 `ctx`）；断言 `version` 相同则不调用写路径，B 仍生效 |
+| T2 | 重跑不得写缓存回复 | **唯一构造法**（R3-N-5 + R4-nit-5）：让 `rerun` 那次的 `resolveAuxModel` 返回 undefined（在 fake 首调里改 `ctx`）⇒ `consolidateProjectState` 返回 **`undefined`**；断言 `outcome2 === undefined` 时**不调用**写路径，B 仍生效 |
 | T3 | 误报守卫，两个 fixture：(a) 无 journal 项目、(b) prompt 被 `fitMemoryInput` clip（密集记忆，输出上限 8192 量级） | 都不判陈旧、发生发布 |
 | T4 | peer 先采纳：fake 首次调用里直接调 `recordMemoryDocument(root, Q)` 模拟 peer，随后本写路径 | 判陈旧；本次回复未写；Q 仍是 fold；B 未退回纯历史 |
 | T5 | 空 journal 首写，判据收紧 | 断言"**B 进 journal** **且**重跑回复被发布"；只断言"B 仍生效"不算通过 |
 | T6 | TOCTOU：用 `__testOnBeforePublish`（位置 = 第 3 步之后、第 5/6 步之前）注入编辑，含**窗口内清空**变体 | 非空：走陈旧分支、**该字节 append 进 journal**、**重跑 `basisKey` 含该字节**（R3-B1 的验收线）、日志与最终 fold 一致；清空：按 R-15 发布，日志不得声称"未发布" |
 | T7 | 重跑期间再次编辑 | 有界停止；保留采纳内容；`ConsolidateReport === "superseded"`；结果句为"re-run's reply was also discarded"；无第三次 attempt |
 | T8 | 锁：pass 阶段不持锁、两个写窗口各持锁一次 | fake 阻塞期间轮询 `MEMORY.md.lock` 不存在；总耗时 < `MEMORY_LOCK_WAIT_MS` |
-| T9 | 记账 | keep-adoption 时 `lastWrite` 被 `delete`（不是 `memoryKept`）；`consolidateReply("superseded")` 在 `memoryKept` 分支之前短路；并发两次 `consolidate()` 不重复写同一 version |
+| T9 | 记账与副作用门 | keep-adoption 时 `lastWrite` 被 `delete`（不是 `memoryKept`）；`consolidateReply("superseded")` 在 `memoryKept` 分支之前短路；并发两次 `consolidate()` 不重复写同一 version；**keep-adoption 退出后 `memoryCapWarned`/`memoryRemovalWarned`/`contextShapeWarned` 未被消费、errors.log 无 cap/removal 行、CONTEXT.md 未变**（R4-IM-1 的验收线） |
 | T10 | 调用上界 | 用 R2 的配方（tools 抛非 provider 错 → 回落坏 JSON → retry 有效 → condense）实测 completion 数 = 具名常量 |
 | T11 | D2 交互与去重 | 最终 attempt 陈旧时**只有** `memory-stale-*`（无 overflow 孤儿）；发布成功且超 cap 时**只有** `memory-overflow-*`；gitignore 覆盖两者；留档失败不阻断；日志点名实际文件 |
 | T12 | 兼容 / I7 | `run-all` 全绿；migrate 输出 md5 不变；**不传 `basisKey` 且确实发生采纳**时 journal 含采纳记录，行为与今天逐字节一致 |
@@ -305,16 +324,25 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
 - **自纠**（v2.1，未评审）：第 7 步比有效内容会恒触发 → 改比 `MEMORY.md` 自身字节。
 - **R2**（v2.1）`CHANGES-REQUESTED`（0 blocking + 5 important）→ v3。
 - **R3**（v3）`CHANGES-REQUESTED`（1 blocking + 1 important + 12 nit）→ **v4**：
-  - B-1：第 8 步**先 append 再返回**（重跑基线 = 编辑）；
+  - B-1：第 8 步**先 append 再返回**（重跑基线 = 编辑），且 append 的是 `nowKey`（与第 2 步采纳块同一形式）；
   - IMPORTANT-1：seam 调用点钉在**第 3 步之后、第 5/6 步之前**；
   - N-1 第 2 步限定 `entries.length > 0`；N-2/N-3/N-12 行号修正；N-4 `lastWrite.delete` + `"superseded"` 短路；
     N-5 T2 构造法钉死；N-6 `kept` 取代 `adopted` 的误用；N-7 两种退出分开措辞；N-8 overflow 移到发布成功后；
     N-9 toast `!silent` 门控；N-10 纳入 `nowKey === key(rendered)` 不触发；N-11 §11 实施清单闭环。
+- **R4**（v4）`CHANGES-REQUESTED`（**0 blocking** + 2 important + 11 nit）→ **v4.1**：
+  - IM-1：发布侧副作用（overflow/CONTEXT/`lastWrite`/四个一次性集合/notify）**只在 `written:true` 时执行**，
+    `written:false` 的"最终 attempt"（row 5/6）不得写"关于一次并未发生的发布"的日志、不得烧掉一次性集合；
+  - IM-2：§8 句表补"重跑产出 outcome 但 `memoryChanged === false`"一格；退出形态改四种；
+  - nit：`pass.ts:151` / `store.ts:87-160` / 读侧 `:138-142` / 清空守卫 `:106` / T2 断言 `outcome2 === undefined` /
+    `kept` 不是文件字节 / 命令回复文本要钉死 / D2 fix note 两处同步 / R-12b / R-17。
 
 ## 17. 定稿的开放项
 
 1. **`ConsolidateReport` / keep-adoption 语义**：新增 `"superseded"`；**`lastWrite.delete`**；命令回复由
    `consolidateReply("superseded")` 产出且必须在 `memoryKept` 分支之前短路（§9，R3-N-4）。
+   **命令回复文本要钉死**（R4-nit-6）：`lastWrite.delete` 之后 `consolidateReply` 拿不到 `info`，只能给通用文案；
+   若要区分 row 4（重跑未发生）与 row 5/6（重跑产出但未发布），必须把 loop 状态单独传给文案函数，
+   或接受通用文案并在结果句里区分——**二选一，实施时定并写进本项**。
 2. **toast**：成功发布不新增；keep-adoption 发一次 warning toast，由 `!silent` 门控（§9，R3-N-9）。
 3. **测试 seam**：`__testOnBeforePublish`，位置 = **第 3 步之后、第 5/6 步之前**（§6 第 3b 步，R3-IMPORTANT-1）。
    理由：要验证的是 INV-2 的**时间窗性质**与 R-15 的接线，纯函数单测测不到接线。
