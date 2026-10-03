@@ -1,0 +1,58 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 3 轮）**。被审工件 = **设计 v3**（尚未实施，无代码 diff）。工作区路径 `/tmp/pi-context-rev30`（**先 cd 进去**）。
+
+**独立性要求**：前两轮的结论是同行意见，不是事实。自己从源码判定。R1（v1）给 CHANGES-REQUESTED（2 blocking + 8 important），R2（v2.1）给 CHANGES-REQUESTED（**0 blocking** + 5 important：IM-1…IM-5）。v3 声称已按 R2 的 5 条 important 重排流程并定稿了四个开放项（§17）。
+
+## 只读规则
+
+- 工作区绝对路径 `/tmp/pi-context-rev30`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace` 加载 `memory/store.ts`、`memory/journal.ts`、`memory/poison.ts`；`appendMemoryOp` / `foldMemoryJournal` / `loadMemory` / `recordMemoryDocument`）。R1/R2 正是靠 probe 找出了 2 条 blocking 与 5 条 important。也允许跑 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`（只在 /tmp mkdtemp）。
+- 活仓库待审文件 md5 在 `/tmp/rev30-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（v3）
+3. `.../external-edit-adoption-overwritten-report.md`（证据）
+4. `.../external-edit-adoption-overwritten-review-report.md`（R1+R2 轮次与发现）
+5. `.../external-edit-adoption-overwritten-design-review-round{1,2}-independent.txt`（前两轮 transcript）
+6. `.../repro-write-ordering.mjs`
+7. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document,prompt}.ts`；`extensions/project-context/shared/{lock,gitignore,project-state,migrate,files,llm}.ts`；`extensions/project-context/memory/input.ts`（`fitMemoryInput`/`MemoryInput`）
+8. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 本轮必须做的四件事
+
+**A. 逐条判定 R2 的 IM-1…IM-5 是否真解决**（给 v3 章节 + 源码头文件行号 + 你的依据）。
+   - IM-1（窗口内清空 ⇒ 日志与 fold 相反；非空触发无结果句/无重跑决策）
+   - IM-2（`written:true` 缺 `adopted` ⇒ 常态采纳句不可产出）
+   - IM-3（流程表把采纳块并进 stale 分支 ⇒ 编辑早于读取时外部字节不再单独进历史）
+   - IM-4（`basisKey` 口径：用 `fitted.text` 会永久自锁；用规范化键在无 journal 项目假陈旧）
+   - IM-5（`effectiveMemoryKey` 契约漏空 journal/archive/legacy 回退 ⇒ I2 静默失效而 T5 仍绿）
+   同时判定 R2 的 10 条 nit 与 4 条 suggestion 在 v3 里的处置是否到位（v3 声称已采纳 S-1…S-4 并在 §17 定稿）。
+
+**B. 攻 v3 的新结构（本轮重点）**。v3 把流程重排为「采纳块（独立）→ 陈旧判定 → 种子 → append → rotation → recheck → publish」。请**穷举四种时序组合**并逐一推演 v3 的实际结果（用 probe 验证，不要只推理）：
+   1. 编辑早于 pass 读取（`basisKey == currentText`）；
+   2. 编辑落在模型调用期间（应判陈旧 → 不发布 → 重跑）；
+   3. 编辑落在发布窗口内（recheck 捕获；含**清空**与**CRLF-only**变体）；
+   4. 无编辑（常态，必须逐字节等于今天）。
+   特别检查：第 2 步沿用今天的采纳谓词（`external !== foldedView` **且** `render.mtime > journal.mtime`）与第 3 步的 `basisKey !== currentText` 之间**有没有不自洽的组合**——例如 render 更新却等于 fold、编辑保留了 mtime（`cp -p`）、journal 刚被 rotate、`MEMORY.md` 不存在但在窗口内出现、`renderRaw` 只有空白。逐一给出"第几步触发/不触发、最终 fold 与 `MEMORY.md` 各是什么、日志说了什么"。
+   另外检查：`resolveMemory()` 抽取后，`loadMemory` 的 `source`/`poisoned`/`damaged`/`unreadable` 语义是否可能被改变（读侧回归）；第 4 步早退后**调用方的重跑前提**是否真的成立（journal 的末条与 mtime 是否保证重跑读到 adopted 内容）。
+
+**C. 攻 §17 的四条定稿**：`"superseded"` + keep-adoption 语义（`lastWrite` 清空是否真是现有语义）、无新增 toast、`__testOnBeforePublish` seam（是否会被生产路径误传、是否与 `options` 的类型/命名约定冲突）、不留档保留策略。判定是否合理、是否可实现、有没有更简单且不损失可验证性的写法。
+
+**D. 对抗性一轮 + 文档准确性**：假定 v3 仍藏 bug（数据丢失 / 活锁 / 编辑仍未保住 / 正常路径被误判陈旧 / 日志说谎）去找它；并核对 v3 引用的**行号、常量、函数名、断言方向**（R1 抓到 4 处行号偏移，R2 又抓到 2 处）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节复核表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条 `file:line`、影响、修复边界），再给 **Test And QA Focus** 一节，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出；不要凭印象。
+- 只有以下情况给 `PASSED`：R2 的 5 条 important 全部真解决、v3 新结构在四种时序组合下你**实测**无 blocking/important、且 §17 定稿判定合理。
+- 若你认为设计已可实施，也应把"实施时必须注意但不必再改设计"的点放进 `learning` 或 `residual-risk`，不要为了凑发现而降级判定。

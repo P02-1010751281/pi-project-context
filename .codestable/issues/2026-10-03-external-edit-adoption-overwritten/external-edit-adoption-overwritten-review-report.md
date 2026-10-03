@@ -12,6 +12,7 @@
 |---|---|---|---|
 | R1 | 设计 v1（活仓库 md5 `60ae6b48870b`） | **CHANGES-REQUESTED** | 2 blocking + 8 important + 3 nit + 1 suggestion；见下 |
 | R2 | 设计 v2.1（v2 + 开轮前自纠；沙箱 HEAD `0118cab`） | **CHANGES-REQUESTED** | **0 blocking** + 5 important（IM-1…IM-5）+ 10 nit + 4 suggestion + 3 learning；R1 的 B1/B2/I1/I3/I7/I8 判「已解决」，I2/I4/I5/I6 判「部分解决」 |
+| R3 | 设计 v3（沙箱 HEAD `8907b3a`） | **CHANGES-REQUESTED** | **1 blocking**（B-1）+ 1 important + 12 nit。R2 的 IM-1…IM-5 判「已解决」（契约/类型层面）；B-1 是 v2→v3 重排时**丢掉了 R1 修复边界里明写的那个动作** |
 
 ### R1 发现（按评审分桶）
 
@@ -123,3 +124,61 @@ find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
   | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev29-baseline-files.txt → 无差异（336 文件基线）
 md5sum -c /tmp/rev29-live-md5.txt                                              → 活仓库设计文件未变
 ```
+
+## R3 轮次详情
+
+| 项 | 值 |
+|---|---|
+| 被审候选 | 设计 v3（沙箱 HEAD `8907b3a`） |
+| 裁决 | **CHANGES-REQUESTED**（1 blocking + 1 important + 12 nit） |
+| transcript | `external-edit-adoption-overwritten-design-review-round3-independent.txt`（17608 字节） |
+| 沙箱 | `/tmp/pi-context-rev30`（338 文件基线） |
+| provider 失败 | 无 |
+
+### R3 的 blocking：B-1（v3 第 8 步漏了"把新字节 append 进 journal"）
+
+- **位置**：`design:120`（第 8 步只返回 `adopted:nowRaw`，不落 journal）vs `design:32`（INV-1）与 `design:168`（结果句 "the newer content was kept"）。
+- **场景**（probe-v3sim combo 3b）：编辑落在 **第 3 步 `resolveMemory()` 读 render 之后、第 6 步 `appendMemoryOp(rendered)` 之前**——即 v3 声称的"唯一残留窗口（第 8 步 → rename）"**之外**：
+  1. 第 2 步时文件仍是 A，不采纳；第 3 步读 A ≡ basisKey，不判陈旧；
+  2. E 落在第 3→6 步之间 ⇒ E 的 mtime **早于**第 6 步刚 sync 的 journal；
+  3. 第 8 步按字节捕获 E，返回 `{written:false, external-edit-during-publish}`，但 **E 从未 append**；
+  4. 重跑的 `loadMemory()` 因 `E.mtime < journal.mtime` 返回**attempt 1 被丢弃的回复 C**（probe 输出 `attempt2 basisKey=C`）；
+  5. 最终 `MEMORY.md=D`、journal `A→A→C→D` ⇒ **E 不在 journal、不是任何回复的基线、生效被顶掉**，日志却说 "kept"。
+- **三重违反**：INV-1（编辑必须进 journal）、INV-2（重跑的 D 基于旧的 C）、INV-3（"kept" 说谎）。
+- **评审给出并实测了修法**：第 8 步返回前先 `appendMemoryOp("replace", nowKey)`（`nowKey` 已保证非空且 ≠ `renderKey`）⇒ probe-v3fix 实测 `journal=A→A→C→E`、`attempt2 basisKey=E`、最终 `A→A→C→E→D`，三条 FAIL 全转 OK。
+- **性质**：这正是 **R1 的 B2 修复边界里明写过的动作**（"把新 key 采纳进历史"），v2→v3 重排流程表时丢掉了。属"修复引入的回归"，即本仓库协议里那条已知模式。
+
+### R3 的 important：IMPORTANT-1（T6 的 seam 注入点未钉死）
+
+`design:204` 的类型名 `__testOnBeforePublish` 自然读作"`writeAtomic` 之前"（第 8 步之后），而那正是 R-2 的
+残留窗口——注入的编辑会被第 9 步直接覆盖，T6 的非空断言必红；若实现者据此固定 seam，T6 就测不到第 8 步、
+也覆盖不了 B-1 的窗口。修法：明写 seam 位于**第 3 步之后、第 6 步之前**。
+
+### R3 的 12 条 nit（摘要）
+
+1. 第 2 步"无条件执行"（`design:99`）与"逐行等价 `store.ts:61-71`"（`:114`）字面冲突——后者在 `entries.length === 0` 的 `else` 内；须写死"仅 `entries.length > 0` 时执行"。
+2. §5 三处行号错（`loadMemory` 实际 `store.ts:87-159`；archive `:129-137`；`.pi` `:145-149`、OMP `:151-157`）——而 §4 声称"行号已复核"。
+3. `modelBlocked` 的真正返回在 `pass.ts:154`（非 `:146-147`）。
+4. §17.1 说 `lastWrite` 清空是"现有语义"**不实**：清空只发生在 `report.ts:115`；无写入时现行是 `lastWrite.set({memoryKept:true,…})`（`:204-216`）。
+5. T2 的构造法仍含糊：`rerun` 会跳过去重，唯一确定性构造是让 `resolveAuxModel` 在重跑时返回 undefined。
+6. `adopted` 字段语义重载（`written:false` 分支里它是"当前生效内容"，不是"本调用采纳过"）——建议改名或注释。
+7. "第二次仍陈旧"沿用"did not produce a newer reply"不贴切（attempt 2 可能确实产出并 append 了，只是未发布）。
+8. overflow 与 stale 留档的去重机制**没写**：最终 attempt 在 `written:false` 时会同时留两种档。
+9. keep-adoption 的 toast 必须由 `!silent` 门控（`session_shutdown` 与 `/memory update` 都是 `silent=true`）。
+10. `nowKey === memoryComparisonKey(rendered)` 是否纳入第 8 步触发条件**悬空**（须定稿）。
+11. `basisKey` 的传递在 §11 未闭环（`report.ts:171` 今天只有三个实参）。
+12. `journal.ts:91-93` 的跳过实际在 `:92-93`。
+
+### R3 零写入证明
+
+```
+cd /tmp/pi-context-rev30
+git status --porcelain -uall | sort | diff - /tmp/rev30-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev30-baseline-files.txt → 无差异（338 文件基线）
+md5sum -c /tmp/rev30-live-md5.txt                                              → 活仓库设计文件未变
+```
+
+### R3 处置
+
+→ 设计改 **v4**：第 8 步补 append（B-1）、钉死 seam 调用点（IMPORTANT-1）、逐条修 12 条 nit，然后开 R4。
