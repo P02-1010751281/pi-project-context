@@ -81,9 +81,16 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
 
 ## 未查完（诚实声明）
 
-- `handoff/run.ts`（**538 行，全仓最大模块**）的机制——`language auto/zh/en`、replay 过滤、staged settings、
-  切点选择——**未逐条核对**是否有现场依据。建议单独审计一次（判据同上）。
-- `shared/config.ts` 302 行、`handoff/prompt.ts` 199 行的可配置项与提示层未审计。
+> **2026-10-03 已补审完成**：本节的四项（`handoff/run.ts`、`shared/config.ts`、`handoff/prompt.ts` 及顺带的
+> `handoff/settings.ts`/`summary.ts`）已在 `2026-10-03-design-complexity-audit-addendum-handoff-config.md` 里逐条查完，
+> 判据同本文。结论摘要：handoff 的 8 个旋钮在本机 9 个配置里**从未被改过**（唯一被改的是 `maxMemoryChars`）；
+> 旧配置兼容层 0/9 无现场证据（可定退役窗口）；`prompt.ts` 标题映射与 pi 真模板**完全对齐无死项**；
+> `saveConfig` **无**本文点名的丢失更新问题；真实 handoff 故障链路是 memory 在 `session_shutdown` 抛错；
+> 触发门与事务仍无测试（已接受残留）。补审的第二轮未查清单见该文 §6。
+
+- ~~`handoff/run.ts`（**538 行，全仓最大模块**）的机制——`language auto/zh/en`、replay 过滤、staged settings、
+  切点选择——**未逐条核对**是否有现场依据。建议单独审计一次（判据同上）。~~（已补审，见上）
+- ~~`shared/config.ts` 302 行、`handoff/prompt.ts` 199 行的可配置项与提示层未审计。~~（已补审，见上）
 
 ## 状态变更（2026-10-03 评估后决定）
 
