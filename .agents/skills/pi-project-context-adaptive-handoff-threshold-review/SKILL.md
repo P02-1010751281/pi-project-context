@@ -4,7 +4,7 @@ description: "Derive, test, and independently review adaptive handoff thresholds
 ---
 
 ## When to use
-Use when changing adaptive handoff thresholds, budget formulas, summarizer limits, pricing-tier caps, or `/auto-handoff status` diagnostics.
+Use when changing adaptive handoff thresholds, budget formulas, summarizer limits, pricing-tier caps, or `/handoff status` diagnostics.
 
 ## Procedure
 1. Inspect `extensions/project-context/handoff.ts`, `tests/handoff-test.mjs`, and the configuration documentation in `README.md`.
@@ -15,7 +15,7 @@ Use when changing adaptive handoff thresholds, budget formulas, summarizer limit
    - compute the conservative knee `knee = W - (W - 157000) * sigmoid(ln(W / 450000) / 0.04)` and set `T0 = max(min(usable - 4000, knee), baseline + keep + handoffTargetTokens)`
    - cap by summarizer capacity, first pricing tier, then `usable - 4000`
    - disable the threshold if it falls below the minimum floor.
-3. Ensure `/auto-handoff status` identifies the binding cap (`summarizer`, `tier`, or `usable`) rather than displaying a contradictory ratio, and that `/auto-handoff auto` rejects a trailing ratio (fixed mode owns `handoffThresholdRatio`).
+3. Ensure `/handoff status` identifies the binding cap (`summarizer`, `tier`, or `usable`) rather than displaying a contradictory ratio, and that `/handoff auto` rejects a trailing ratio (fixed mode owns `handoffThresholdRatio`).
 4. Add or update tests for: ratio floor, small summarizer windows, pricing-tier caps, usable-window caps, disabled thresholds, and status diagnostics.
 5. Run the full suite:
    ```bash

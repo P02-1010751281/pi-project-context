@@ -23,7 +23,7 @@ session.jsonl ──► session.md ──► INDEX.md
 | 存档 | 每轮落 JSONL；settle/shutdown 收尾渲染 | `session.jsonl`、`session.md`、`INDEX.md` |
 | 整理 | 用户轮数和时间节流达到条件 | `CONTEXT.md`、`memory.jsonl`、`MEMORY.md` |
 | 沉淀 | 材料更新且达到轮数/时间门槛 | 项目 skill 或候选 skill |
-| 交接 | 上下文达到阈值，或手动 `/auto-handoff now` | successor session、`HANDOFF.md` |
+| 交接 | 上下文达到阈值，或手动 `/handoff now` | successor session、`HANDOFF.md` |
 
 ## 数据布局
 
@@ -99,6 +99,7 @@ extensions/project-context/
 │   ├── prompt.ts           #    提示词：固定规则 + 装配后的文档
 │   ├── input.ts            #    记忆 + 上下文适配进输入预算
 │   ├── parse.ts            #    回复解析（容错 JSON + 逐字段裁决）
+│   ├── sections.ts         #    分节表示：抽取、渲染与按节预算（`record_memory` schema）
 │   ├── document.ts         #    MEMORY.md 规范化与截断标记
 │   ├── schema.ts           #    固定小节 schema 与每节字符预算
 │   ├── context-schema.ts   #    CONTEXT.md 固定小节 schema 与每节预算
@@ -114,6 +115,7 @@ extensions/project-context/
 │   ├── evidence.ts         #    会话索引、历史会话与取证文本预算
 │   ├── candidate.ts        #    候选文件、准入规则、approve/reject
 │   ├── parse.ts            #    回复 → 提案
+│   ├── schema.ts           #    `record_skill` 工具 schema（always-object 决策形状）
 │   └── skill.ts            #    技能形状、SKILL.md 渲染、安全校验
 ├── handoff/                # ④ 交接（1 次 LLM）
 │   ├── run.ts              #    交接事务、自动触发、命令注册
@@ -132,8 +134,9 @@ extensions/project-context/
 │   └── session-lineage.ts  #    新会话挂在哪个祖先（父链压平、会话头读取）
 └── shared/                 # 四个能力共用
     ├── config.ts           #    配置与旧布局兼容
-    ├── llm.ts              #    JSON LLM 调用与辅助路由
+    ├── llm.ts              #    JSON LLM 调用与辅助路由；`callAux` / `pickToolCall` / `tools` 回退
     ├── call-policy.ts      #    辅助调用失败分类、冷却与会话停用
+    ├── complete.ts         #    命令参数补全（verbs-as-args 的 Tab 菜单）
     ├── project-state.ts    #    项目状态**门面**（再导出原有公共 API）
     ├── paths.ts            #    项目根与路径助手
     ├── limits.ts           #    字符预算

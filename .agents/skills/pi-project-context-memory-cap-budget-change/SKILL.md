@@ -23,7 +23,7 @@ Changing anything about the memory character budget in `pi-project-context`: `ma
 
 5. **Overflow = one bounded condensation call.** If a reply to consolidate exceeds the cap, make exactly one condensation call (keep durable facts, merge duplicates, drop the least durable). Adopt it only if it fits; otherwise keep the original reply and let the existing cap warning speak. Silent tail-dropping is not acceptable.
 
-6. **Wire diagnostics, not silence.** The `errors.log` entry, non-silent pass warning, `/memory-learn` command reply, and `/project-context status` should all name the cap and what was dropped. Update `docs/architecture.md` if a new shared module was added.
+6. **Wire diagnostics, not silence.** The `errors.log` entry, non-silent pass warning, `/memory update` command reply, and `/project-context status` should all name the cap and what was dropped. Update `docs/architecture.md` if a new shared module was added.
 
 7. **Verify.**
    ```bash
