@@ -1,0 +1,119 @@
+# 独立设计评审（lane A / 第 2 轮）——v2.1
+
+审读方式：只读工作区 + `/tmp` 探针（全部写在 `os.tmpdir()`，活仓库未写）。本轮自建 5 个探针：
+`probe-store.mjs`（store 原语与 v2.1 自纠/空 journal/TOCTOU 五情形）、`probe-crlf.mjs`、`probe-pass.mjs`（pass 去重/单飞时序/调用上界）、`probe-v2sim.mjs`（用真实原语实现 v2.1 的 §6 流程并驱动各时序）、`probe-naive-key.mjs`。另允许脚本已运行（退出码 0）。被审设计 md5 `3a2a11c`（与 `/tmp/rev29-live-md5.txt` 一致）。
+
+---
+
+## A. R1 finding 逐条复核
+
+| R1 | v2.1 判定 | 证据与我的判定 |
+|---|---|---|
+| **B1** pass 去重回放 | **已解决（设计层面）** | §7（设计 `:143-155`）新增 `rerun` 跳过 `throttled`/`forceDedupeMs` 并断言 version 递增。probe-pass 实测现状：第二次 `force` 调用确被 `forceDedupeMs` 吞掉（模型调用 1→1、同一对象）；`activeConsolidation` 在 `await` 返回时已清空（把 `forceDedupeMs` 设 0 后第二次是真 pass，version 1→2）。修法可直接落在 `pass.ts:149-151`。残留：loop 的报告级语义（见 important-2/3）。 |
+| **B2** TOCTOU | **已解决（设计层面）** | §6 第 7 步（设计 `:124`）。probe-v2sim 的 TOCTOU 场景：编辑 D 落在 append 窗口内 → step 7 捕获、D 留在 `MEMORY.md`、进入 fold、reply 不发布，窗口缩到 recheck→rename；R-2 接受剩余窗口。残留：empty-now 变体（important-1）。 |
+| **I1** peer 先采纳 | **已解决** | §5（设计 `:88-98`）改为对「有效内容」无条件比较。probe-store (e)：peer 采纳 B 并写 Q 后 `current = fold = Q ≠ basisKey = F`，判陈旧成立。 |
+| **I2** 空 journal | **部分解决** | 判据放到入口（设计 `:94`）方向正确；但 `effectiveMemoryKey` 的契约（设计 `:79`）只引用 `store.ts:110-118`，**没写 entries.length===0/archive/legacy 的内容规则**（那些在 `store.ts:119-146`）。probe-naive-key：只按 110-118 抽取时空 journal 返回 `""`，step 3 判陈旧但 `current` 为空不 append，rerun 再判陈旧 → B 始终只留在 `MEMORY.md`、从不进 journal，而 T5 的弱判据（"B 仍生效"）照样通过。 |
+| **I3** 调用上界 | **已解决** | §3（设计 `:45-50`）与源码相符。probe-pass 实测最坏路径可达 **4 次 completion/attempt**（首调 tools 抛参数错→callAux 回落 1 次；回落回复不可解析→retry；retry 有效→condense），`callAux` 上限 3/attempt、`consolidate()` ≤8 真实。 |
+| **I4** 日志归属 | **部分解决** | §8（设计 `:157-170`）的"中性事实 / 结果句"拆分方向对；但 `{written:true}`（设计 `:199-203`）**不携带"本次是否采纳了外部编辑"**，report 无法产出 `:166` 的常态句；若改成无条件输出就会新增一条谎报采纳的日志。且 `external-edit-during-publish` 在 §8/§9 没有对应的结果句与重跑决策。 |
+| **I5** 副作用后置 | **部分解决** | §9（设计 `:172-187`）方向可实现：现有 `report.ts` 控制流的"CONTEXT 更新但 memory 未写"组合本就存在（`report.ts:204/219`），把 `saveOverflowReply`/CONTEXT/`lastWrite`/四个一次性集合/notify 收进"只在最终 attempt 执行"的一个函数是可行的。但 keep-adoption 退出的 `lastWrite`/`ConsolidateReport` 语义未定（T9 只钉一条措辞），且"后置"必须读作"只在最终 attempt 执行"——overflow 留档仍要在该次写**之前**。 |
+| **I6** 测试计划 | **部分解决** | T5/T8 已按 R1 修正；仍见 C 节：T6 seam 未决（设计 `:291`）、T13 在 rotation+cap>32000 下断言不成立、T3/T5 的 fixture 抓不到 I2/`basisKey` 两个口子、T2 无确定性构造法。 |
+| **I7** `undefined` 守卫 | **已解决** | 设计 `:100-102` 明确写成接口级 `options.basisKey !== undefined &&`，T12（`:253`）钉 legacy 采纳行为。 |
+| **I8** `written` claim | **已解决（设计层面）** | §12 R-11（`:234`）保留 `report.ts:121-124` 的"version 确定后在 await 前同步 claim"模式；重跑第二写路径的 claim 只需复用同一模式。残留：stale-stop（非异常、未写）时是否释放 claim 未写，无害但应说明。 |
+| R1 nits | 基本已修 | 4 处行号（F3、`store.ts:63`、`report.ts:125`、`pass.ts:160`）已修正；`repro-write-ordering.mjs` 头部路径已对。新增：§7 引 `pass.ts:133`（应为 `:132`），§4 F7 `store.ts:51-56`（分支条件在 `:50`）。 |
+| R1 residual | 接受合理 | R-1（mtime 回退/清空）、R-3（rotation 默认 32000）、R-4（模块级单飞）在 §12 明示并接受，判定合理。遗漏了 R1 列的"陈旧分支跳过 rotation/gitignore"（v2 仍成立：step 3 在 step 6 之前 return），见 residual-risk。 |
+
+---
+
+## blocking
+
+无。核心链路（判陈旧→不发布→锁外重跑→version 断言→留档）在真实原语上成立：probe-v2sim 的 normal/stale/TOCTOU 三场景全部符合设计意图，probe-pass 的 4 次 completion 上界也真实可达。
+
+## important
+
+**IM-1 `external-edit-during-publish` 在报告级没有落地：空内容时会撒谎，非空时无结果句/无重跑决策。**
+- `file:line`：设计 `:124`（step 7）、`:166-168`（结果句清单）、`:173-187`（退出形态）、`:248`（T6）/`:249`（T7）；源码 `journal.ts:91-93`（`foldMemoryJournal` 跳过空 text）。
+- 影响：probe-v2sim "clear-in-window" 实测——窗口内 `MEMORY.md` 被清空时，step 7 因 `nowKey="" ≠ renderKey` 触发，但 `appendMemoryOp("replace","")` 对 fold 是 **no-op**，第 5 步 append 的 `rendered` 仍是生效 fold；函数却返回 `written:false, reason:"external-edit-during-publish"`。report 随后会留档并说"未发布"，而 `loadMemory()` 返回的正是这条"被丢弃"的回复 ⇒ **INV-2/INV-3 双双被违反**，`R-1` 只说"清空会被回复顶掉"，没描述这个"顶掉了但说没顶掉"的倒置；若拿 T13 测该状态，`memoryComparisonKey(MEMORY.md) === fold` 必红。非空编辑触发时，§8 也没有对应结果句（"重跑成功"句说 rerun，"重跑未产出"句说没重跑），且 §9 没说它是否进入同一重跑循环。
+- 修复边界：step 7 镜像 step 2 的空守卫（`nowRaw.trim() ? key : ""`），空内容一律按 R-1 的已接受语义走发布（或与 `rendered` 的 key 比较后返回 `{written:true}`），不做假 adopt；明确 `external-edit-during-publish` 与 `pass-reply-was-stale` 共用同一个有界循环，并补一条第二次陈旧的准确结果句；T6 增加"窗口内清空"断言 final 日志与实际 fold 一致。
+
+**IM-2 `{written:true}` 不携带采纳事实，§8 的"常态"结果句不可产出。**
+- `file:line`：设计 `:166` vs `:199-203`；`report.ts:123-135`。
+- 影响：report 只能在 `recordMemoryDocument` 返回后知道"写成功/未写"，无法区分"写了且同一次写里采纳了外部编辑"与"没有任何外部编辑"。按 §11 的类型，`written:true` 无字段可判；无条件输出 `:166` 就会在绝大多数没有外部编辑的 pass 上谎报"adopted an externally edited MEMORY.md"。这正是 I4 要消灭的"成功日志说假话"。
+- 修复边界：`{written:true; adopted?: string}`（或返回 `externalKey/foldKey`），report 只在 `adopted` 存在时输出该句；T1/T3 各加一条"有采纳/无采纳时日志不同"的断言。
+
+**IM-3 编辑早于 pass 读取时，v2 流程表丢掉了既有采纳 append，INV-1 与 T12 的 legacy 承诺都会破。**
+- `file:line`：设计 `:116-125`（step 3-8 未提 `entries>0` 的旧采纳块 `store.ts:61-71`）；设计 `:32-33`（INV-1）；`:253`（T12 要求 legacy 不传 `basisKey` 时行为与今天一致，而今天的行为正是 `store.ts:68` 的采纳 append）。
+- 影响：probe-v2sim "edit-early" 实测——pass 读到 B（`basisKey == current == B`）时，按流程表实现 journal 为 `A→C`，B **不再单独进历史**，而今天（`store.ts:68`）是 `A→B→C`，且 `repro-write-ordering.mjs` S1 的输出即含 B。若实现者保留旧块，则 `store.ts:70` 的完成态日志会回来，与 §8"store.ts 只输出两条中性事实"冲突。两种读法各有一个必须明说的后果。
+- 修复边界：在流程表里显式写"`entries.length > 0` 的既有采纳块保留/替换/删除"。保留则把 `:70` 的完成态日志换成中性事实，并在 §8 增加对应结果句；删除则必须弱化 INV-1 并解释原始外部字节为何不再需要单独留史（T12 的"逐字节一致"要相应改为只对 migrate 的种子路径）。
+
+**IM-4 `basisKey` 的口径在 v2 被删糊了：用 `fitted.text` 会永久自锁，用规范化键在无 journal 项目会有一次假陈旧。**
+- `file:line`：设计 `:92`（只说"pass 读到的记忆"）、`:212`（构造于 `:323`）、`:232`（R-9"同一个 `effectiveMemoryKey`"）；源码 `pass.ts:161`（`existing`）、`input.ts:44`（`fitted`）。
+- 影响：v1 曾明写 `basisKey = memoryComparisonKey(existing.text, …)`，v2 删掉了表达式。probe-v2sim 的 trap 实测：模型输出上限 8192 时，`fitMemoryInput` 把 29728 字符的密集记忆裁到 7585 字符（`fitted.text !== existing.text`）；若 `basisKey` 取自 `fitted.text`，`current`（完整有效内容）永远不等 ⇒ 每次 pass 都判陈旧、rerun 再判、有界停止，**永不发布**（模型工作全部白扔）。若取 `memoryComparisonKey(existing.text)` 而 `current` 是无 journal 路径的 raw clip（probe-store (b) 实测 raw≠key），第一次 pass 会白跑一轮。
+- 修复边界：明确写 `basisKey` 就是同一次 `loadMemory()` 的 `.text`（即 `effectiveMemoryKey` 的返回值），不是 `fitted.text`、不另做规范化；T3/T12 增加"prompt 被 clip + 无 journal"两个 fixture，断言不判陈旧、发生发布。
+
+**IM-5 `effectiveMemoryKey` 的功能契约不完整，I2 的修复全押在它身上。**
+- `file:line`：设计 `:79`（签名）、`:83`（引用 `store.ts:110-118`）；源码 `store.ts:119-146`（空 journal 的 `MEMORY.md` raw、`newestMemoryArchive`、`.pi`/OMP legacy）。
+- 影响：设计说"loadMemory 改为调用它（可观察行为不变）"，但 `loadMemory` 还返回 `source/poisoned/damaged/unreadable`，这些必须留在外层；外层若照旧复制一遍分支，就回到"两处漂移"。更实际的风险是空 journal：该函数的条目参数是 `entries`，容易只实现 journal 分支。probe-naive-key 已演示后果：首页 consolidation 的 stale 分支什么都不 append，B 永不进 journal，T5 仍绿。
+- 修复边界：把契约写成"与 `loadMemory().text` 逐字节相同，含 entries 为空时的 archive/legacy 回退"；T5 判据改为"B 进 journal 且 rerun 的回复发布"，T3 用无 journal fixture 断言"不判陈旧"。
+
+## nit
+
+- **N-1** 设计 `:145` 引 `pass.ts:133`，参数行实为 `:132`（`:133` 是 `): Promise<…>`）。
+- **N-2** 设计 `:66` F7 引 `store.ts:51-56`，分支条件在 `:50`。
+- **N-3** 设计 `:150-152` 说 `modelBlocked` 时"返回 `undefined`"：实际是 `pass.ts:146-147` 的 `return cached?.outcome`（attempt 1 成功后 `lastOutcome` 必有值），而且 `force=true` 根本不查 `modelBlocked`（`:146` 的 `!force`）。真正的兜底是 version 断言，句子的行为描述不准。
+- **N-4** 设计 `:148` "一定跑一次真实 pass"：`resolveAuxModel` 返回 undefined、并发 join 到别的 pass、或者 pass 抛错时都不会产出新 version。version 断言能兜住，措辞应改为"若产出 outcome 则 version 递增"。
+- **N-5** 设计 `:254` T13：`memoryComparisonKey(MEMORY.md) === foldMemoryJournal(entries)` 在 **rotation + cap>32000** 下仍不成立（`journal.ts:111` 用默认 32000 折叠；R1 probe4 已测 32040 vs 40035）。R-3 声称该断言能修 T5，只对不触发 rotation 的 fixture 成立。建议 T13 明确用小 fixture/低 journal 体积，或改断言 `loadMemory().text` 与重跑结果一致。
+- **N-6** 设计 `:246` T5 判据过弱（IM-5 的证据）。
+- **N-7** 设计 `:236` 的 T2 在 `rerun:true` 下没有确定性构造法：attempt 1 成功会 `noteModelSuccess` 清空停放，唯一让 rerun 返回同 version 的代码路径是并发 join/`auxModel` 缺失。应写明用哪个 seam 构造。
+- **N-8** 设计 `:255` T14 的"或显式传 `basisKey`"变体只验证"编辑被保住"，完全不驱动重跑；且脚本头部注释的 exit-code 语义要同步重写（现在 0=复现 bug）。
+- **N-9** R-11 只说"失败时释放 claim"；stale-stop（非异常、未写）是否释放未写。留着不释放更安全（防止缓存 outcome 回放），但应写明。
+- **N-10** step 7 对 **CRLF-only / 行尾空格** 的外部重写会触发陈旧（`memoryComparisonKey` 只归一化文档级尾空白，不归一化行内 `\r`/行尾空格，probe-crlf 实测）。行为是安全侧，但它不属于直觉上的"规范化后相同"；如果要更精确，可在 step 7 同时比较 `nowKey === memoryComparisonKey(rendered)` 再决定。
+
+## suggestion
+
+- **S-1** §12 补回 R1 的残余："陈旧分支跳过 rotation/gitignore"（v2 仍成立），否则读者会以为 v2 已覆盖。
+- **S-2** 把 step 7 的检测抽成纯函数（设计 `:291` 的备选）比测试专用 `beforePublish` 钩子对生产代码更友好；两者都可行，但应在本轮定稿，不然 T6 无法落笔。
+- **S-3** `memory-stale-*` / `memory-overflow-*` 的保留策略（`:292`）建议至少纳入 `cleanStaleTemps` 或一个与 backup 同族的 prune，否则长期只增不减。
+- **S-4** 在 §8 的句子里附"产生条件"（哪类 `MemoryWriteResult`/哪个 attempt），实现者才不会漏路径。
+
+## learning
+
+- **L-1** "发布前 recheck 要比**将被覆盖的那个文件自己的字节**，不能比有效内容"这条 v2.1 自纠是对的（probe-store (a)：`append(rendered)` 后 `loadMemory()` 返回 `rendered`，旧式子恒真）。这条经验值得进 compound。
+- **L-2** "prompt 基线"与"prompt 实际装下的内容"是两个概念；任何跨层传递的基线都必须是读取函数返回的**精确值**，不能是它的规范化形式，更不能是下游裁剪结果。
+- **L-3** 返回值类型要按调用方的**日志需求**定：report 要发结果句，就必须拿到能区分结果的事实（IM-2），否则会把日志压力推回被明确禁止的层。
+
+## praise
+
+- 三条不变式 + version 断言 + 锁外重跑 + 写前备份/留档这一套方向正确；probe 在真实原语上确认了 store 层各形态（peer、TOCTOU、正常路径）都按设计工作。
+- §3 的调用上界这次是**真数过**的：probe 实测 4 次 completion/attempt 可达，不是纸面值。
+- §13 的测试计划比 v1 强很多，T10/T13/T14 直接针对 R1 的 I3/T5/T8 缺口；设计 `:16` 主动标注 v2.1 未评审，透明度好。
+
+## residual-risk
+
+- R-1（mtime 回退 + 清空）与 R-3（rotation 默认 32000）、R-4（模块级单飞不按 root 键）的"接受"判定**合理**；但 R-3 的 T13 修法声明在 rotation 触发时不成立（N-5）。F9 的"重跑不加剧"没有被证明（rerun 与普通调用一样可能 join 到另一个 project 的 active pass），只是概率不变。
+- 陈旧分支仍跳过 rotation/gitignore（R1 已列，v2 漏记）。
+- `memory-stale-*` 永不 prune（与 overflow 同类）。
+- R-2 的 recheck→rename 窗口仍是字节级损失窗口，接受。
+- `repro-write-ordering.mjs` 仍是 store 级，不能验证 report 级重跑（T14 要重写才能覆盖）。
+
+---
+
+## Test And QA Focus
+
+1. **T1（重跑验收）可行**：fake `modelRegistry.complete` 在首次调用期间改 `MEMORY.md` 即可；`session_shutdown` 是 force 路径，`agent_settled` 非 force 路径需要把 `consolidateTurns` 配小或用间隔已过的 fixture，否则会被 `pass.ts:149-150` 节流掉（测试要显式处理，否则"没重跑"会被误判成实现 bug）。"version 递增"从 report 层不可见，用 completion 计数与最终 `MEMORY.md`/journal 断言更稳。
+2. **T2 目前不可构造**（见 N-7）：`rerun:true` 跳过两条去重后，同 version 只能在并发 join / auxModel 缺失时出现；需要在计划里写清构造法，否则这条会变成永远绿的空测试。
+3. **T3 可行但 fixture 要加厚**：必须包含（a）无 journal 项目、（b）prompt 被 `fitMemoryInput` clip 的项目，否则 IM-4/IM-5 两条口子都测不到。
+4. **T4 可行**：在 fake model 首次调用里直接调 `recordMemoryDocument(root, Q)` 模拟 peer（不带 basisKey，走旧采纳块），随后本写路径必须判陈旧。断言 Q 仍是 fold、B 未退回纯历史。
+5. **T5 判据要收紧**（见 N-6/IM-5）：断言"B 进 journal **且** rerun 的回复被发布（或至少 `written:true`）"；只断言"B 仍生效"会在 naive `effectiveMemoryKey` 下通过。
+6. **T6 取决于 seam 决策**（设计 `:291`）：`beforePublish` 钩子最直接；纯函数单测更干净。判据要加"结果句与 fold 一致"（覆盖 empty-now，IM-1）。
+7. **T7 可行但句子未定义**：第二次陈旧（step-3 或 step-7）走哪个结果句、`ConsolidateReport` 取什么值，先定稿（§17.1）再写断言。
+8. **T8 可行但观察手段要写死**：fake model 阻塞期间轮询 `MEMORY.md.lock` 不存在即可证明"pass 不持锁"；"两个写窗口各持锁一次"需要 seam 或对锁文件做存在性采样，否则只能证伪不能证数。
+9. **T9 可行**：但 keep-adoption 退出的 `lastWrite`/reply 还没定义（§17.1），先补语义。
+10. **T10 可行**：probe-pass 已给出 4-completion 的完整 fake 配方（tools 抛非 provider 错→回落返回坏 JSON→retry 有效→condense 触发）；把上界写成具名常量并断言相等。
+11. **T11 可行**：opaque 超 cap + attempt 1 陈旧时，注意"被丢弃走 stale、被裁剪走 overflow"的去重只在最终 attempt 落地后判定。
+12. **T12 可行**：`run-all` + migrate 输出 md5；"不传 basisKey 且确实发生采纳"要断言 journal 含采纳记录（这正是 IM-3 的检测线）。
+13. **T13 可行但需限定**（见 N-5）：小 fixture 下规范化相等成立；CRLF 变体自洽（两边都保留 `\r`）；rotation 触发时应改断言。
+14. **T14 需重写**：主用例应驱动 report/pass 全链路（`session_shutdown` + fake model）才能验证重跑；显式传 `basisKey` 的 store 级变体只能当"编辑保住"的补充用例。脚本的 exit-code 注释与判定要一并改。
+
+---
+
+VERDICT: CHANGES-REQUESTED

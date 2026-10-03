@@ -11,6 +11,7 @@
 | 轮 | 被审候选 | 裁决 | 该轮发现 |
 |---|---|---|---|
 | R1 | 设计 v1（活仓库 md5 `60ae6b48870b`） | **CHANGES-REQUESTED** | 2 blocking + 8 important + 3 nit + 1 suggestion；见下 |
+| R2 | 设计 v2.1（v2 + 开轮前自纠；沙箱 HEAD `0118cab`） | **CHANGES-REQUESTED** | **0 blocking** + 5 important（IM-1…IM-5）+ 10 nit + 4 suggestion + 3 learning；R1 的 B1/B2/I1/I3/I7/I8 判「已解决」，I2/I4/I5/I6 判「部分解决」 |
 
 ### R1 发现（按评审分桶）
 
@@ -69,3 +70,56 @@ R1 的 B1/B2 属**设计缺陷**（不是实现细节）：v1 的重跑入口不
 设计据此改为 v2（新增 pass 层 `rerun` 入口与会话级去重说明、陈旧判据改为「有效内容」无条件比较并
 覆盖空 journal 分支、发布前 recheck、副作用后置、日志归属拆分、调用上界重写、测试计划重列），
 然后按协议**开 R2**（一个 PASSED 轮不覆盖其后的改动）。
+
+R2 的 5 条 important 全是**结构性的**（报告级语义缺失、基线口径含糊、契约不完整、流程表把采纳块
+并进 stale 分支），因此改为 **v3**：采纳块恢复为独立步骤（INV-1 与 T12 的 legacy 承诺）、
+`basisKey` 定稿为 `loadMemory().text` 原值（不规范化、不用 `fitted.text`）、`resolveMemory()` 契约
+覆盖空 journal/archive/legacy 回退、第 8 步空内容不触发、`written:true` 带 `adopted`、
+陈旧两原因共用同一有界循环，并定稿了 v2 遗留的四个开放项（§17）。
+
+## R2 轮次详情
+
+| 项 | 值 |
+|---|---|
+| 被审候选 | 设计 v2.1（沙箱 HEAD `0118cab`） |
+| 裁决 | **CHANGES-REQUESTED**（0 blocking + 5 important + 10 nit + 4 suggestion + 3 learning） |
+| transcript | `external-edit-adoption-overwritten-design-review-round2-independent.txt`（18714 字节） |
+| 沙箱 | `/tmp/pi-context-rev29`（336 文件基线） |
+| provider 失败 | 无（首跑即返回 `VERDICT`） |
+
+### R2 对 R1 的逐条复核
+
+| R1 finding | R2 判定 |
+|---|---|
+| B1 pass 去重回放 | 已解决（`rerun` 跳过两条去重 + version 断言；probe 实测现状确被 `forceDedupeMs` 吞掉） |
+| B2 TOCTOU | 已解决（窗口缩到 recheck→rename）；残留 empty-now 变体见 IM-1 |
+| I1 peer 先采纳 | 已解决（probe：`current = Q ≠ basisKey = F` 判陈旧成立） |
+| I2 空 journal | **部分解决**（判据位置对，但 `effectiveMemoryKey` 契约没写 entries 为空/archive/legacy 的内容规则 ⇒ IM-5） |
+| I3 调用上界 | 已解决（probe 实测 4 completion/attempt 可达，≤8 真实） |
+| I4 日志归属 | **部分解决**（`{written:true}` 不携带采纳事实 ⇒ IM-2；`external-edit-during-publish` 无结果句 ⇒ IM-1） |
+| I5 副作用后置 | **部分解决**（方向可实现；keep-adoption 退出的语义未定） |
+| I6 测试计划 | **部分解决**（T5 判据过弱、T13 在 rotation 下不成立、T2 无构造法、T14 需重写） |
+| I7 `undefined` 守卫 | 已解决（写成接口级要求 + T12 钉 legacy 采纳行为） |
+| I8 claim 同步 | 已解决（R-11）；stale-stop 是否释放未写 ⇒ v3 补为「保持 claim」 |
+| R1 nits | 4 处行号已修；新增 2 处（`pass.ts:132`、`store.ts:50`）⇒ v3 已修 |
+| R1 residual | 接受判定合理；⚠️ v2 漏记「陈旧分支跳过 rotation/gitignore」⇒ v3 补为 R-12 |
+
+### R2 的 5 条 important（v3 全部按修）
+
+| # | 内容 | v3 处置 |
+|---|---|---|
+| IM-1 | 窗口内**清空** `MEMORY.md` 时 `appendMemoryOp("replace","")` 对 fold 是 no-op（`journal.ts:91-93`）⇒ 实际生效的是被声称"未发布"的回复，日志与 fold 相反（INV-2/INV-3 双破）；非空编辑触发时也没有结果句与重跑决策 | 第 8 步加空守卫（空内容不触发，R-15）+ 陈旧两原因共用同一有界循环 + 补结果句清单 |
+| IM-2 | `{written:true}` 不携带"本次是否采纳"⇒ report 无法产出常态采纳句；无条件输出即在多数 pass 上谎报采纳 | `{written:true; adopted?: string}`；采纳句只在 `adopted` 存在时输出 |
+| IM-3 | v2 流程表把采纳块并进 stale 分支 ⇒ "编辑早于读取"时外部字节不再单独进历史（今天是 `A→B→C`，v2 会成 `A→C`），破 INV-1 与 T12 | 采纳块恢复为**独立第 2 步**（逐行等价于今天的 `store.ts:61-71`），陈旧只决定发不发布 |
+| IM-4 | `basisKey` 口径在 v2 被删糊：用 `fitted.text` 会**永久自锁**（probe：29728→7585 字符裁剪，每次 pass 都判陈旧）；用规范化键在无 journal 项目会假陈旧一次 | 定稿 `basisKey` = 同一次 `loadMemory()` 的 `.text` **原值**，两侧都不规范化；T3 加 clip 与无 journal 两个 fixture |
+| IM-5 | `effectiveMemoryKey` 契约不完整（只引 `store.ts:110-118`，漏 `:119-146` 的空 journal/archive/legacy 回退）⇒ I2 的修复会静默失效而 T5 仍绿 | 抽 `resolveMemory()`，契约写为"逐字节等于 `loadMemory().text`，含空 journal/archive/legacy 回退"；T5 判据收紧为"B 进 journal **且**重跑回复被发布" |
+
+### R2 零写入证明
+
+```
+cd /tmp/pi-context-rev29
+git status --porcelain -uall | sort | diff - /tmp/rev29-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev29-baseline-files.txt → 无差异（336 文件基线）
+md5sum -c /tmp/rev29-live-md5.txt                                              → 活仓库设计文件未变
+```

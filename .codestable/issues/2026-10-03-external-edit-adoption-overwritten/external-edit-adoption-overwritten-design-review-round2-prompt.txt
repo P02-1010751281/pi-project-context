@@ -1,0 +1,70 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 2 轮）**。你审的是**设计文档**（尚未实施，无代码 diff）。
+本轮 = 第 2 轮：第 1 轮（R1）对 v1 给出 `CHANGES-REQUESTED`（2 blocking + 8 important + 3 nit + 1 suggestion，transcript 在工作区里）。设计已按它改成 **v2，并在开本轮前自查修正了一个第 7 步缺陷（v2.1，未评审）**。
+
+**独立性要求**：R1 的结论是同行意见，不是事实。你要**自己从源码判定**：(1) R1 的每条 finding 在 v2.1 里是否真的被解决；(2) v2.1 新引入的机制有没有新问题。不要照抄 R1 的措辞或结论。
+
+## 工作区与只读规则
+
+- 工作区绝对路径：`/tmp/pi-context-rev29`（**先 cd 进去**，pi 按 cwd 解析项目根；不要在活仓库工作）。
+- **只读**：不得写工作区任何文件；不得 `git add/commit/checkout/stash/restore`。临时产物只放 `/tmp`。
+- 允许**运行**只读探针，以及 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`（只在 `/tmp` 下 mkdtemp）。**鼓励**你用仓库真实原语（`appendMemoryOp` / `foldMemoryJournal` / `loadMemory` / `recordMemoryDocument`，经 `tests/harness.mjs` 的 `loadNamespace`）在 `/tmp` 里写小 probe 去**实测**设计的关键断言——R1 就是这么做的，质量因此很高。
+- 活仓库待审文件的 md5 记在 `/tmp/rev29-live-md5.txt`；不要动活仓库。
+
+## 要读的东西
+
+1. `.codestable/attention.md`
+2. 待审设计：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（**v2.1，本轮被审工件**）
+3. 问题报告：同目录 `external-edit-adoption-overwritten-report.md`
+4. 上一轮记录：同目录 `external-edit-adoption-overwritten-review-report.md` 与 `...-design-review-round1-independent.txt`
+5. 复现脚本：同目录 `repro-write-ordering.mjs`
+6. 源码：`extensions/project-context/memory/{store,journal,pass,report,poison,document}.ts`；`extensions/project-context/shared/{lock,gitignore,project-state,migrate,files,llm}.ts`；`extensions/project-context/memory/prompt.ts`
+7. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+8. `git log --oneline -5`
+
+## R1 的 finding（你要独立复核是否已解决；不要预设有罪也不要预设无罪的结论）
+
+- **B1**：`attempt 2 = consolidateProjectState(force)` 会命中 pass 层去重（`pass.ts:149-151` 的 `throttle` 与 `forceDedupeMs`，默认 15000 ms）⇒ 返回同一 outcome、模型调用 0 次 ⇒ 回放陈旧回复并再次顶掉外部编辑。
+- **B2**：采纳读取（`store.ts:62-64`）之后、发布（`store.ts:77-80`）之前的 TOCTOU 编辑被静默顶掉且不进 journal/备份。
+- **I1**：只在 `external` 分支比 `basisKey` 会漏判「peer 先采纳后写入」的时序。
+- **I2**：空 journal 分支（`store.ts:45-56`）没有陈旧检测。
+- **I3**：「单次 pass 模型调用 ≤2」错（单 attempt ≤4 次 provider completion）。
+- **I4**：日志无法只在 `store.ts` 说真话（重跑与写入成功都只有 `report.ts` 知道）。
+- **I5**：「attempt 1 side effect 只有采纳 append + 备份」与现状不符（还有 overflow 留档、CONTEXT 写入、`lastWrite`、四个一次性警告集合、notify）。
+- **I6**：T5/T8 不可实现、T2/T4 被 B1 阻塞、缺关键用例。
+- **I7**：`basisKey` 省略的兼容是"实现纪律"（`external !== undefined` 恒真）。
+- **I8**：`written.set` 的 claim 语义需保持同步。
+- nits：设计里的行号偏移；`repro-write-ordering.mjs` 头部路径写错（**已修**）。
+- residual-risk：mtime 回退的编辑不被采纳；清空 `MEMORY.md` 被顶掉；cap>32000 时 rotation 用默认 32000 折叠（`journal.ts:111`）；`activeConsolidation` 模块级不按 projectRoot 键；陈旧分支跳过 rotation/gitignore；session_shutdown 最坏 8 次调用。
+
+## 本轮必须完成的五件事
+
+**A. 逐条复核 R1 的 B1/B2/I1–I8**：每条给"已解决 / 部分解决 / 未解决"，附 v2.1 的 `file:line`（设计文档的章节 + 源码头文件行号）与你自己的判定依据。R1 里被 v2 明确"接受为残留"的项（R-1/R-3/R-4 等），判定"接受是否合理"，而不是要求修。
+
+**B. 攻 v2.1 新引入的机制**（这是本轮的重点，R1 无法覆盖）：
+   - `effectiveMemoryKey` 抽取（把 `loadMemory` 的规则挪成单一函数）：**真的行为等价吗**？逐条对照 `store.ts:110-118` 的原始分支（`renderRaw.trim()` 空守卫、`external &&` 守卫、`external !== view`、`renderInfo.mtimeMs > journalInfo.mtimeMs`、`damaged`/`unreadable` 的传播、无 journal 时的 archive 回退路径 `:120-135`）。抽取会不会漏掉无 journal 的情况？
+   - §6 第 2 步记 `renderKey` / 第 7 步比 `MEMORY.md` 字节的 recheck：**是否真的正确**？在"编辑早于 pass 读取""编辑落在窗口内""MEMORY.md 不存在→出现""MEMORY.md 被清空""内容变但规范化后相同（如 CRLF/尾换行）"这五种情形下各应触发与否，逐一推演。第 5 步先 append `rendered` 再 recheck 的顺序有没有副作用（journal 里留下未发布的记录）？IGN-1 是否仍然成立？
+   - §7 的 `rerun: true`：真的能绕过 `throttle` 与 `forceDedupeMs` 吗？`modelBlocked` 保留是否合理？`activeConsolidation` 与 `.finally` 的时序是否保证重跑不被单飞吞掉？`version` 递增的断言在 force 与非 force 两条路径上都成立吗？
+   - §9 副作用后置：把 `saveOverflowReply` / CONTEXT 写入 / `lastWrite` / 四个一次性警告集合 / notify 都移到最终 attempt 之后，**有没有可实现的写法**？现有 `report.ts` 的控制流（写入块与 CONTEXT 块的相对位置、`wroteMemory`/`claimed`/`failing` 之类的状态）是否允许这种搬移而不产生新的不一致（例如"CONTEXT 更新了但 memory 没写"的合法组合是否已经存在）？
+   - §3 的调用上界常量：数一遍 `consolidateProjectState` 内部所有 `callAux` 调用点与 `callAux` 自身的回落，确认 ≤4/attempt 与 ≤8/`consolidate()` 是不是**真实**上界（多算漏算都要说）。
+   - §2 的三条不变式：能不能被第 13 节的测试真正钉住？有没有别的不变式被违反（例如"journal 不增长垃圾记录"）？
+
+**C. 测试计划的可行性**：T1–T14 逐条判断"能不能构造出来、断言是否可判"。特别看 T6（测试 seam）与 T14（复现脚本要驱动 report 级流程，但脚本现在用的是 store 级 API——需要怎么改才可能）。
+
+**D. 对抗性一轮**：假定 v2.1 在生产里仍藏着 bug（数据丢失 / 活锁 / 编辑仍未保住 / 正常路径被误判陈旧），去找它。找不到要说清搜过哪些面。
+
+**E. 文档准确性**：v2.1 里引用的行号、常量值、函数名、断言方向是否都对（R1 在 A 节抓到过 4 处行号偏移）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节的复核表，再按严重度分桶：`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk`，每条给 `file:line`、影响、修复边界。再给 **Test And QA Focus** 一节。最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体命令输出；不要凭印象。
+- 最好用实测 probe 支撑关键判定（R1 用 probe 找出了两个 blocking，这是本仓库期望的强度）。
+- 只有以下情况才给 `PASSED`：R1 的 blocking/important 全部真解决，且 v2.1 新机制你**没有**找到 blocking/important。
