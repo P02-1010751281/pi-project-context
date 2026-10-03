@@ -1,0 +1,3 @@
+ M .agents/memory/CONTEXT.md
+ M .agents/memory/HANDOFF.md
+ M .agents/memory/MEMORY.md

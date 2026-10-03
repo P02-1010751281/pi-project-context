@@ -3,222 +3,279 @@ doc_type: design
 issue: 2026-10-03-external-edit-adoption-overwritten
 status: draft
 created_at: 2026-10-03
-related: [external-edit-adoption-overwritten-report.md, repro-write-ordering.mjs, ../2026-09-30-auxiliary-call-noise-and-memory-cap/over-cap-reply-persistence-fix-note.md]
+revision: 2
+related: [external-edit-adoption-overwritten-report.md, external-edit-adoption-overwritten-review-report.md, repro-write-ordering.mjs, ../2026-09-30-auxiliary-call-noise-and-memory-cap/over-cap-reply-persistence-fix-note.md]
 tags: [memory, memory-journal, external-edit-adoption, lost-update, write-ordering, consolidation, design]
 ---
 
-# 外部编辑采纳后被旧内容覆盖 修复设计
+# 外部编辑采纳后被旧内容覆盖 修复设计（v2）
 
-问题与证据见 `external-edit-adoption-overwritten-report.md`；本文件只写**怎么修**。
-owner 2026-10-03 定调：**选 C，且取最彻底形态**——不是"跳过旧回复"，而是"判为陈旧 → 不写 →
-**用采纳后的内容重跑一轮 consolidation**"，并让日志说真话、丢弃的模型工作留档。
+问题与证据见 `external-edit-adoption-overwritten-report.md`；v1 的独立评审（R1）两条 blocking 与八条
+important 见 `external-edit-adoption-overwritten-review-report.md`。**v2 是 R1 之后的修订版**：
+重跑入口、陈旧判据位置、发布窗口、副作用归属、调用上界与测试计划全部按评审结论改写。
+
+owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → **不发布** → **用采纳后的内容重跑一轮**，
+日志说真话，丢弃的模型工作留档。
 
 ## 1. 目标
 
-1. **外部编辑在任何时序下都不被顶掉**：手改、`git checkout` 恢复、旧版本 build 写入，都不再被
-   "由更旧快照生成的回复"覆盖。
-2. **不白扔模型工作**：判为陈旧时，本轮 consolidation 的结果应被重跑替代，而不是直接丢弃。
-3. **丢弃与采纳都可见**：日志陈述**结果**而不是意图；被丢弃的回复有本地留档。
-4. **常态零变化**：没有外部编辑时，写入路径的行为与现在逐字节一致。
+1. **扩展能观察到的任何时序下，外部编辑都不被"由更旧基线生成的回复"顶掉。**
+   措辞按 R1 收窄：残留的不可观察窗口见 §12，不声称"任何时序"。
+2. **不白扔模型工作**：判为陈旧时本轮工作由重跑替代。
+3. **丢弃与采纳都可见**：日志陈述**结果**；被丢弃的回复有本地留档。
+4. **常态零变化**：没有外部编辑时，行为与今天逐字节一致。
 
-## 2. 硬约束
+## 2. 不变式（测试要钉的就是这三条）
 
-- 零新依赖（项目无 `package.json`），只用 Node 标准库与已暴露的 pi-ai 能力。
-- 不改外部文件格式：产物仍是 `# Project Memory` + 四节 Markdown。
-- **读侧不动**：`loadMemory` 的「render 更新且与 fold 不同」规则、`foldMemoryJournal`、
-  `normalizeMemoryDocument` 语义不变。
-- **单次 pass 的模型调用有界**：≤ 2 次（首次 + 最多 1 次重跑），不得出现"每轮都重跑"的活锁。
-- **重跑必须在锁外**：`shared/lock.ts:179` 的 `withMemoryLock` 是带等待上限（`MEMORY_LOCK_WAIT_MS`）
-  的文件锁，**不可重入**——在锁内重跑会等自己持有的锁直到超时。
+- **INV-1 字节守恒**：扩展**观察到的**外部内容，要么成为 `MEMORY.md`、要么成为 journal 折叠结果、
+  要么留在 journal 历史里；**任何检测到的外部内容都必须 append 进 journal**。
+- **INV-2 无陈旧发布**：`MEMORY.md` 由本 pass 写入的内容，其基线不早于发布时刻已知的最新内容；
+  **只要检测到陈旧就不发布**。
+- **INV-3 可观测**：每次陈旧检测产出一句陈述**结果**的日志；被丢弃的回复留档。
+
+## 3. 硬约束
+
+- 零新依赖（项目无 `package.json`）。
+- 不改外部文件格式（仍是 `# Project Memory` + 四节 Markdown）。
+- **读侧可观察行为不变**：`loadMemory` / `foldMemoryJournal` / `normalizeMemoryDocument` 的语义逐字节不变
+  （§5 的抽取是"把同一条规则挪到一个函数里"，不是改规则；由既有测试与新用例共同钉住）。
+- **重跑在锁外**：`shared/lock.ts:179` 的 `withMemoryLock` 是带等待上限（`MEMORY_LOCK_WAIT_MS`）的
+  文件锁，**不可重入**（`open(…,"wx")` + 超时），在锁内重跑会自锁到最后超时。
+- **调用上界（按 R1-I3 重写）**：单次 `consolidateProjectState` 最多 **3 次 `callAux`**
+  （首调、解析/截断重试、condense），而 `callAux` 在 provider 拒绝 tools 时会**再发一次**
+  （`shared/llm.ts` 的 tools-回落）⇒ 单 attempt ≤ **4 次 provider completion**；
+  `consolidate()` 最多 **2 个 attempt** ⇒ ≤ **8 次**。常态仍是 1 attempt。这条上界写成**具名常量**
+  并由测试断言（按 attempt/version 计数，不按"模型调用次数"这种会被内部重试污染的指标）。
 - 向后兼容：`recordMemoryDocument` 的既有调用方（`shared/migrate.ts:127`、`tests/memory-ops-test.mjs`、
   `tests/consolidation-test.mjs`）不改也能工作。
-- 落地前走 `.agents/skills/pi-project-context-sandboxed-independent-review/SKILL.md` 的沙箱只读
-  独立评审（审/校 对，多轮直到每轮 `VERDICT: PASSED`）。
+- 落地前走 `.agents/skills/pi-project-context-sandboxed-independent-review/SKILL.md`：多轮直到每轮
+  `VERDICT: PASSED`，且 **PASSED 轮不覆盖其后的改动**。
 
-## 3. 现状（代码事实，均已核实）
+## 4. 现状（代码事实，行号已按 R1 的 A 节复核）
 
 | # | 事实 | 位置 |
 | --- | --- | --- |
-| F1 | 一次 `recordMemoryDocument` 调用里**两次 append**：先采纳、再写本次 pass 的 render | `store.ts:68` → `:77` → `:80` |
+| F1 | 一次 `recordMemoryDocument` 调用里两次 append：先采纳、再写本次 pass 的 render | `store.ts:68` → `:77` → `:80` |
 | F2 | 采纳日志在两次 append **之间**写出，措辞是完成态 | `store.ts:70` |
-| F3 | `foldMemoryJournal` 取末条 `replace`，故 `:77` 那条决定生效内容 | `journal.ts:89` |
-| F4 | 读取侧在同样条件下返回**外部编辑**，所以 prompt 不陈旧；陈旧的是**模型调用期间**落地的编辑 | `store.ts:114` |
-| F5 | 写入是否发生由 `memoryChanged` 门决定 ⇒ 生效条件反转（pass 成功则顶掉，失败则保留） | `report.ts:132` |
-| F6 | 现场：QM 142 条 / UF 35 条 `adopted …`；顶掉记录与更早记录**逐字节相同** | 报告第 2 节 |
-| F7 | 已确定性复现（脚本退出码 0），`A → B → A` 即兄弟仓库形态 | `repro-write-ordering.mjs` |
+| F3 | `foldMemoryJournal` 取末条 `replace` | `journal.ts:91-97` |
+| F4 | 读取侧在同一条件下返回**外部编辑**；陈旧的是**模型调用期间**落地的编辑 | `store.ts:114`、`:110-118` |
+| F5 | 写入是否发生由 `memoryChanged` 门决定 ⇒ 生效条件反转 | `report.ts:132` |
+| F6 | pass 层去重会把重跑吞掉（`throttle` 与 `forceDedupeMs`） | `pass.ts:149-151` |
+| F7 | 空 journal 分支**不经过**采纳检测 | `store.ts:51-56` |
+| F8 | rotation 用**默认 32000** 折叠，与项目 cap 解耦 | `journal.ts:111` |
+| F9 | `activeConsolidation` 是模块级单飞、**不按 projectRoot 键** | `pass.ts:135,137` |
+| F10 | 现场：QM 142 条 / UF 35 条 `adopted …`；顶掉记录与更早记录逐字节相同 | 报告 §2 |
+| F11 | 已确定性复现（脚本退出码 0），`A → B → A` 即兄弟仓库形态 | `repro-write-ordering.mjs` |
 
-## 4. 决策 1：判据用「本次 prompt 的基线内容」，不猜意图
+## 5. 决策 1：单一判据函数 + 对「有效内容」无条件比较
 
-pass 在构造 prompt 前已经读到了记忆（`pass.ts:160` 的 `const existing = await loadMemory(...)`）。
-**那正是本次回复赖以生成的内容**。把它的规范化键带出来：
+**判据只有一处实现**。把 `loadMemory`（`store.ts:110-118`）现有的"render 更新且与 fold 不同则取
+render，否则取 fold"这条规则抽成：
 
-- `ConsolidateOutcome`（`pass.ts:35-52`）新增 `basisKey: string` = `memoryComparisonKey(existing.text, config.maxMemoryChars)`；
-  在 `pass.ts:323` 构造 outcome 时填入。
-- `recordMemoryDocument` 的采纳分支里已有 `external = memoryComparisonKey(renderRaw, limit)`（`store.ts:63`）。
-  **`external !== basisKey` ⇒ 采纳进来的字节比本次回复的基线更新 ⇒ 回复必定陈旧。**
+```ts
+/** The content this project's memory reads right now — one rule, used by both read and write. */
+async function effectiveMemoryKey(projectRoot: string, limit: number, entries: readonly MemoryJournalEntry[]): Promise<string>
+```
 
-**为什么不猜"是谁写的"**：现有信息（内容不同 + render mtime 更新）**区分不了** owner 的有意编辑与旧版本
-build 的退化写入。而这个设计不需要区分，因为两者的正确动作**恰好相同**：
+`loadMemory` 改为调用它（可观察行为不变），写路径也调用它。这样"什么算当前内容"不会两处漂移
+（R1-I1 的根因之一就是判据只写在采纳分支里）。
 
-- 对 owner 的编辑：当前行为直接毁掉它 → 必须保。
-- 对旧版本 build 的退化写入：该内容无论如何都会成为记忆的当前内容（下一个 pass 读的就是它），
-  当前行为（用基线快照的回复顶掉它）并不比"以它为基线重跑"更好——重跑至多把这份内容重新
-  consolidate 一次。**取舍**：若外部内容本身是坏版本，重跑会把它固化一轮；这一取舍被明确接受，
-  并由日志与留档使其可见，而不是引入一个猜不准的意图判据。
+**比较方式（R1-I1 的修法）**：不再只在"检出 external"的分支里比较，而是
 
-**误报守卫**：若编辑在 pass 读取**之前**就已存在，则 `basisKey === external` ⇒ **不判陈旧**，
-走原行为（写入本次 render）。这正是"外部编辑本来就该被 consolidat"的正常情形。
+```
+current = await effectiveMemoryKey(...)
+stale   = options.basisKey !== undefined && options.basisKey !== current
+```
 
-## 5. 决策 2：陈旧时**不写**，保留采纳字节，由调用方在锁外重跑一轮
+- `basisKey` 来自 pass 构造 prompt 时读到的记忆（§7），**是本次回复的基线**。
+- 有效性：`current ≠ basisKey` ⇒ 记忆在 pass 读取之后变了 ⇒ 回复基于更旧的内容 ⇒ **陈旧**。
+- **空 journal 分支同样被覆盖**（R1-I2）：判据在函数入口，早于 `entries.length === 0` 的分支。
+- **peer 先采纳也覆盖**（R1-I1）：peer 已写入 Q 时 `current = fold = Q ≠ basisKey = F` ⇒ 判陈旧 ✓。
+- **不猜意图**：区分不了 owner 编辑与旧版本 build 的退化写入，而两者的正确动作相同——保更新的字节、
+  以它为基线重跑。取舍（退化内容被重跑固化一轮）**明确接受**，可观测（日志 + 留档），不引入意图判据。
+- **误报守卫**：编辑早于 pass 读取时 `current === basisKey` ⇒ 不判陈旧 ✓。
 
-`recordMemoryDocument` 返回值加宽（原为 `Promise<void>`）：
+**显式 `undefined` 守卫（R1-I7）**：`basisKey` 省略时必须**永不**判陈旧。写成
+`options.basisKey !== undefined &&` 是**接口级**要求，不是实现纪律；由 legacy 回归用例钉住
+（不传 `basisKey` 且**确实发生**采纳时，行为必须与今天一致）。
+
+## 6. 决策 2：陈旧时不发布；发布前 recheck 把窗口压到「recheck → rename」
+
+`recordMemoryDocument` 的返回类型加宽（原 `Promise<void>`）：
 
 ```ts
 export type MemoryWriteResult =
   | { written: true }
-  | { written: false; reason: "adopted-newer-external-edit"; adopted: string; discardedReply?: string };
+  | { written: false; reason: "pass-reply-was-stale" | "external-edit-during-publish"; adopted: string };
 ```
 
-陈旧分支的行为：
+流程（v2）：
 
-1. 采纳 append（`store.ts:68`）**照旧执行**——外部字节进历史，这是采纳的意义所在；
-2. **跳过** `:77` 的 `appendMemoryOp(rendered)` 与 `:80` 的 `writeAtomic(MEMORY.md, rendered)`；
-3. 返回 `{ written: false, reason: "adopted-newer-external-edit", adopted: external }`。
+| 步 | 动作 |
+| --- | --- |
+| 1 | 读 journal（`entries` / `damaged` / `unreadable`；unreadable 照旧抛） |
+| 2 | `current = effectiveMemoryKey(...)` |
+| 3 | 若 `basisKey !== undefined && basisKey !== current` → **陈旧**：若 `current` 非空且不是当前 fold，则 `appendMemoryOp("replace", current)`（**INV-1**：外部字节进历史）；发中性日志（§8）；返回 `{written:false, reason:"pass-reply-was-stale", adopted:current}`。**不做后续任何事** |
+| 4 | `entries.length === 0` 的既有种子逻辑（此时已通过第 3 步，等价于旧行为） |
+| 5 | `rendered = normalizeMemoryReply(...)`；`appendMemoryOp("replace", rendered)` |
+| 6 | `rotateMemoryJournalIfNeeded` / `ensureMemoryGitignore` |
+| 7 | **recheck**：重新读 journal 并算 `after = effectiveMemoryKey(...)`；若 `after !== current` → 发布窗口内落了编辑：`appendMemoryOp("replace", after)`（INV-1）+ 中性日志 + 返回 `{written:false, reason:"external-edit-during-publish", adopted:after}`，**不写 `MEMORY.md`** |
+| 8 | `writeAtomic(MEMORY.md, rendered)`；返回 `{written:true}` |
 
-**自洽性（关键）**：采纳 append 之后，journal 的 mtime 比 `MEMORY.md` 新，于是 `loadMemory`
-的外链条件（`render.mtime > journal.mtime`）**不再成立**，下一次读取取 fold＝**采纳的内容**。
-也就是这次 append 自己就把 fold 更新成了最新真相，**重跑无需任何额外搬运**。
+**为什么 recheck 放在 append(rendered) 之后**：这样第 7 步到 rename 的窗口是**唯一**残留窗口，
+被压到"再读一次 → rename"（本机 μm–ms 级）；放在之前则 append + fsync + rotation + gitignore
+全落在窗口里（R1-B2 的现场量级 69–450 ms 正来自这类序列）。
 
-调用方（`report.ts` 的 `consolidate()`）在**锁外**包一层有界循环：
+**代价与残留（R1-B2 的答复）**：Node 没有 CAS，窗口**不可能完全关闭**；窗口内落地的编辑会**丢字节**
+（不只是丢生效），因为它的字节只存在于被 rename 覆盖掉的那个文件里。设计把窗口缩到最小并在 §12
+明示，而不是假装关闭。第 7 步若触发，`rendered` 那条记录仍在 journal 历史里，但 fold 已被
+`after` 覆盖 ⇒ 生效内容是新编辑，状态自洽。
 
-```
-attempt 1: outcome1 = consolidateProjectState(force)
-           write1 = withMemoryLock(backup + recordMemoryDocument(..., { basisKey: outcome1.basisKey }))
-           write1.written === true  → 结束（常态路径，零变化）
-           write1.written === false → 记一条明确日志 + 留档被丢弃回复 → 进入 attempt 2
-attempt 2: outcome2 = consolidateProjectState(force)      // 新 pass，基线已是采纳内容
-           write2 = withMemoryLock(backup + recordMemoryDocument(..., { basisKey: outcome2.basisKey }))
-           write2.written === false → **停止**（不再重跑），保留采纳内容，日志说明"重跑仍遇并发外部编辑"
-```
+## 7. 决策 3：重跑必须走 pass 层的新入口，并断言 version 递增（R1-B1）
 
-**为什么重跑而不是只跳过（原 A 方案）**：只跳过会让本轮模型调用白花；边跑边编辑的场景里
-"编辑一次就丢一轮 consolidation" 会累积。重跑把编辑与本轮工作**都**保住。
+`consolidateProjectState` 的选项加 `rerun?: boolean`（`pass.ts:133`）：
 
-**为什么上限 1 次**：`callAux` 已有失败退避与路由冷却，重跑本身也要花钱；上限保证收敛。
+- `rerun: true` 时**跳过** `throttled` 返回与 `force && cached && Date.now()-cached.at < forceDedupeMs`
+  返回（`pass.ts:149-151`）⇒ 一定跑一次真实 pass、`nextVersion += 1`（`pass.ts:319`）。
+- **不**跳过失败停放（`modelBlocked`）：路由刚故障时重跑只会放大调用量；此时返回 `undefined`，
+  调用方保留采纳内容（见 §9 的第 3 种退出）。
+- `activeConsolidation`（`pass.ts:135`）不会阻塞重跑：第一次调用已经完成并在 `.finally` 里清空。
+  但它是**模块级、不按 projectRoot 键**（F9）——两项目并发时可能互串（既有问题，见 §12）。
+- 调用方（`report.ts`）拿到 `outcome2` 后**必须断言** `outcome2.version !== outcome1.version`；
+  不满足则**不得**进入写路径，按"重跑未发生"处理（保留采纳内容 + 日志），否则就是 R1-B1 的
+  陈旧回放。
 
-**记账纪律**：`written` / `lastWrite` / `notify` 只对**最终被采纳的尝试**执行；attempt 1 的
-side effect 限定为「采纳 append + 写前备份」（两者都是幂等意义上的无害物）。`report.ts:125` 的
-`written.set(projectRoot, outcome.version)` 与 `claimed` 的语义要按最终尝试设置，否则 dedupe 会误判。
+## 8. 决策 4：日志归属拆分（R1-I4）
 
-## 6. 决策 3：日志陈述结果，不陈述意图
+`store.ts` **说不出**最终结果：它不知道调用方会不会重跑，也不知道自己之后是否写入成功（第 8 步可能抛）。
+所以：
 
-现状（F2）：`adopted an externally edited MEMORY.md into the memory journal` 在覆盖**之前**写出、
-完成态措辞，142/35 条，读起来像"编辑已生效"。
+- `store.ts` 只输出**中性事实**，两条：
+  - `the memory changed while this pass's reply was being built; the reply was not published and the newer content stays effective`
+  - `an external edit landed during the publish window; the newer content was adopted and this pass's reply was not published`
+- `report.ts` 在**循环结束后**输出**结果句**，且含"成功"字样的行必须在发布成功之后：
+  - 常态：`adopted an externally edited MEMORY.md into the memory journal; this pass's reply replaced it in the same write`
+  - 陈旧 → 重跑成功：`an external edit landed while the reply was being built: the reply was discarded, the edit was kept, and the pass was re-run`
+  - 陈旧 → 重跑未发生/未产出：`…the adopted memory was kept; the re-run did not produce a newer reply`
 
-**改法（采用 (i)）**：把该行的发出时机移到**决策之后**，措辞含结果：
+**为什么不用"保留原行 + 加一条"**：只有一处知道结果，两条并存正是 142/35 条误导日志的成因（F2）。
 
-- 常态（回复已写入）：`adopted an externally edited MEMORY.md into the memory journal; this pass's
-  reply replaced it in the same write`
-- 陈旧（回复被丢）：`adopted an externally edited MEMORY.md that this pass's reply was older than;
-  the reply was discarded and the pass re-run against the adopted memory`
-- 重跑仍陈旧：`…; an external edit landed again during the re-run: the adopted memory was kept and
-  this pass's reply discarded`
+## 9. 决策 5：副作用全部后置到最终 attempt（R1-I5）
 
-**为什么不用"保留原行 + 新增一条"**：只有一处知道结果，两条并存的现状正是误导的来源。
+v1 声称"attempt 1 的 side effect 只有采纳 append + 写前备份"，与现状不符：attempt 1 还会
+`saveOverflowReply`（`report.ts:164`）、写 CONTEXT.md（`:219`）、`lastWrite.set`（`:204`）、
+消耗四个一次性警告集合（`:138/:145/:189/:194`）、发 notify（`:237-259`）。
 
-## 7. 决策 4：被丢弃的回复留档（与 D2 对称）
+v2 规则：**只有最终 attempt 驱动所有副作用**——`saveOverflowReply`、CONTEXT.md 写入、`lastWrite`、
+一次性警告集合、notify。attempt 1 的副作用限定为：
 
-`saveOverflowReply` 保的是"**被裁剪**的回复"（`1f0672c`）；这里保"**被丢弃**的回复"。
-同一模式：写 `.agents/memory/memory-stale-<ISO>.md`（`writeAtomic`、best-effort、失败只记日志、
-不阻断主流程），`shared/gitignore.ts` 的 `MEMORY_GITIGNORE_LINES` 增加 `memory-stale-*.md`，
-日志点名该文件。
+- 采纳 append（journal 历史，INV-1 要求）；
+- 写前备份 `backupMemoryBeforeWrite`（它先于检测执行，无法避免，且是外部编辑的一份额外保底）；
+- 被丢弃回复的留档（§10）——与 `saveOverflowReply` 去重：**同一份回复只留一种档**
+  （被丢弃走 `memory-stale-*`，被裁剪走 `memory-overflow-*`，不会两份都写）。
 
-对称性论证：两条路径都遵守同一条纪律——**模型的产出不因流程决策而静默消失**。
+`consolidate()` 的退出形态因此有三种：**发布成功** / **保留采纳内容（重跑未发生或未产出）** /
+**失败**（既有失败路径不变）。三者在 `errors.log` 与 toast 上各不相同（§8）。
 
-## 8. 接口改动
+## 10. 决策 6：被丢弃的回复留档
+
+与 `saveOverflowReply`（D2，`report.ts:56`）对称：写 `.agents/memory/memory-stale-<ISO>.md`，
+时间戳照抄 `replace(/[:.]/g,"-")`，`writeAtomic`、best-effort（失败只记日志、不阻断主流程），
+`shared/gitignore.ts` 的 `MEMORY_GITIGNORE_LINES` 增加 `memory-stale-*.md`，日志点名该文件。
+`writeAtomic` 的 `*.tmp` 残片由既有 `cleanStaleTemps`（1 h）回收，不额外处理。
+
+## 11. 接口改动
 
 ```ts
-// extensions/project-context/memory/store.ts
+// memory/store.ts
+export type MemoryWriteResult =
+  | { written: true }
+  | { written: false; reason: "pass-reply-was-stale" | "external-edit-during-publish"; adopted: string };
+
 export async function recordMemoryDocument(
-  projectRoot: string,
-  text: string,
-  limit: number = MAX_MEMORY_CHARS,
-  options: { preserveMarker?: boolean; basisKey?: string } = {},
+  projectRoot: string, text: string, limit?: number,
+  options?: { preserveMarker?: boolean; basisKey?: string },
 ): Promise<MemoryWriteResult>;
 ```
 
 ```ts
-// extensions/project-context/memory/pass.ts
-export type ConsolidateOutcome = { /* 既有字段 */ basisKey: string; };
+// memory/pass.ts
+export type ConsolidateOutcome = { /* 既有字段 */ basisKey: string };   // :35-52，构造于 :323
+export async function consolidateProjectState(pi, ctx, options?: { force?: boolean; rerun?: boolean });
 ```
 
-- `report.ts` 的 `consolidate()`：有界循环 + 两种新报告字符串；`ConsolidateReport` 类型若需扩展新值
-  （如 `"superseded"`）一并更新。
-- `shared/project-state.ts:9` 的 re-export 无需改（只多导出一个类型）。
+- `consolidateProjectState` 的调用点在 `report.ts:120`（+ 新增的重跑调用）。
+- `ConsolidateReport` 若需新值（如 `"superseded"`）一并扩展，供命令输出与 toast 使用。
+- `shared/project-state.ts:9` 的 re-export 需要多导出一个类型。
 
-## 9. 向后兼容
+## 12. 风险与残留
 
-- `basisKey` **省略**（`migrate.ts` 的 legacy 导入、既有测试）⇒ 永不判陈旧 ⇒ 行为与今天完全一致。
-- 返回值从 `void` 加宽为联合类型：忽略返回值的调用方不受影响。
-
-## 10. 风险
-
-| 风险 | 说明 | 处置 |
+| # | 项 | 处置 |
 | --- | --- | --- |
-| 重跑放大调用量 | 每次"模型调用期间发生外部编辑"多 1 次调用（历史量级 142/35 次） | 上限 1 次；日志可计数；`callAux` 的失败退避/冷却仍生效 |
-| 基线比较口径不一致导致误判 | `basisKey` 与 `external` 若用不同 `limit` 规范化，可能假陈旧 | 两侧都用 `config.maxMemoryChars`（同一个值，`pass.ts` 与 `report.ts` 都从 `getConfig` 取） |
-| 退化外部写入被重跑固化 | 见决策 1 的取舍 | 明确接受 + 日志/留档可见；不引入意图判据 |
-| 重跑期间再次编辑 | 第二次仍判陈旧 | 有界停止，保留采纳内容，明确日志 |
-| 备份重复 | 两次尝试各有一次写前备份 ⇒ 多一份 `memory-backup-*` | 接受（备份本就多份）；备选：只在真正写入前备份，但那会改变"写前备份"的既有语义 |
-| 锁内重跑自锁 | `withMemoryLock` 不可重入 | 循环写在 `withMemoryLock` **之外**（硬约束） |
-| 与 dedupe 冲突 | `written`/`version` 的记账若按 attempt 1 设置，重跑的 pass 会被 dedupe 吞掉 | 记账按最终尝试设置（决策 2 记账纪律） |
+| R-1 | **不可观察窗口**：mtime **回退**的编辑（`cp -p` / `rsync --times`）根本不被采纳检测看到；owner **清空** `MEMORY.md` 时（`store.ts:63` 的 `renderRaw.trim()` 守卫）回复会顶掉"清空"动作 | **明确列为已知残留**；目标 1 的措辞按 R1 收窄为"扩展能观察到的时序"。字节保底只有 `report.ts:170` 的写前备份 |
+| R-2 | 发布窗口（第 7 步 → rename）内落地的编辑会丢字节（Node 无 CAS） | 窗口压到最小并明示；不做假承诺 |
+| R-3 | cap>32000 时 rotation 用默认 32000 折叠（F8，`journal.ts:111`）⇒ journal fold 可能落后 render，`loadMemory` 回退到 render | **既有问题**，本文档不修；但 §2 的 INV-1 措辞与测试断言用 `memoryComparisonKey(MEMORY.md) === fold` 而不是原始字节相等（R1-I6/T5） |
+| R-4 | `activeConsolidation` 模块级、不按 projectRoot 键（F9） | 既有问题；重跑不加剧（重跑在锁外、且单飞已释放），记录待办 |
+| R-5 | **未升级的 peer 进程仍会顶掉编辑**：本修法要在每个运行中的进程里生效；一个旧版本 peer 依然会 adopt-then-supersede | 明示：全部进程升级后才对所有交错成立 |
+| R-6 | 重跑放大调用量 | 上限 2 attempt（§3）；`modelBlocked` 停放对重跑同样生效；日志可计数 |
+| R-7 | session_shutdown 的同步 pass 在重跑下最坏 8 次 provider completion ⇒ 退出变慢 | 接受并记录；重跑只在真的检测到陈旧时发生 |
+| R-8 | 退化外部写入被重跑固化一轮 | 决策 1 的取舍，可观测 |
+| R-9 | 基线口径不一致导致误判 | 两侧都用 `config.maxMemoryChars` 与同一个 `effectiveMemoryKey` |
+| R-10 | 第 7 步触发时 `rendered` 留在历史里但非生效 | 有意的（历史保留）；测试断言的是"未成为 render"，不是"不在 journal"（R1-I6/T2） |
+| R-11 | `written.set` 的 claim 语义（R1-I8） | 最终 attempt 的 version 一经确定，仍在任何 `await` **之前**同步 claim；失败时按既有 `wroteMemory` 模式释放。并发 `consolidate()` 不得重复写同一 version |
 
-## 11. 测试计划
+## 13. 测试计划（按 R1 的 Test And QA Focus 重列）
 
-新增 `tests/external-edit-test.mjs`（若与既有文件耦合过多则并入 `tests/consolidation-test.mjs`）：
+新增 `tests/external-edit-test.mjs`：
 
-| # | 场景 | 断言 |
+| # | 场景 | 通过判据 |
 | --- | --- | --- |
-| T1 | 无外部编辑（常态） | 回复写入；`written === true`；无重跑（模型调用 1 次）；日志为原措辞 + 结果 |
-| T2 | 模型调用期间外部编辑，回复陈旧 | `MEMORY.md` 保持**外部内容**；journal **不含**该回复；发生 1 次重跑；最终 render = 重跑结果 |
-| T3 | 编辑早于 pass 读取（`basisKey === external`） | 正常写入；**不**判陈旧；无重跑（误报守卫） |
-| T4 | 重跑期间再次编辑 | 恰好 2 次调用后停止；保留采纳内容；1 条明确日志；无第三次调用 |
-| T5 | 陈旧分支后的状态自洽 | journal fold == `MEMORY.md`，且都等于采纳内容 |
-| T6 | 留档（决策 4） | `memory-stale-*.md` 存在、内容 = 被丢弃回复、gitignore 含该模式、日志点名 |
-| T7 | `migrate.ts` 路径 | 不带 `basisKey` ⇒ 行为与今天逐字节一致 |
-| T8 | 复现脚本转绿 | `repro-write-ordering.mjs` 的期望改为"外部编辑生效"，退出码 0 |
+| T1 | **重跑真的发生（B1 验收线）**：默认配置下 fake model 第 1 次调用期间改 `MEMORY.md` 为 B；分别走 `session_shutdown`（force）与 `agent_settled`（非 force） | 发生第 2 次真实 pass（`version` 递增、模型调用数增加）；最终 `MEMORY.md` = 第 2 次回复；第 1 次回复未成为 render；B 仍在 journal 历史；`memory-stale-*.md` 存在 |
+| T2 | attempt 2 不得写缓存回复 | 若 attempt 2 返回 `version === outcome1.version`，**不得**调用写路径；B 仍生效 |
+| T3 | 误报守卫：编辑早于 pass 读取（`basisKey === current`） | 正常写入；不判陈旧；无重跑 |
+| T4 | peer 先采纳（I1）：pass 读到 F，peer 采纳 B 并写 Q，随后我们的写路径 | 判陈旧；我们的回复未写；Q / B 未被退回纯历史 |
+| T5 | 空 journal 首写（I2）：删 journal、只留 `MEMORY.md=A`；调用期间写 B | B 仍生效（或至少进 journal 且 `MEMORY.md` 不回退）；B 不得只存在于历史 |
+| T6 | TOCTOU（B2）：用仅在测试传入的 seam 在"检测完成后"改 `MEMORY.md` | 走陈旧分支；B 的 key 进 journal；`lastWrite`/`errors.log` 不得声称本次回复已覆盖 |
+| T7 | 重跑期间再次编辑 | 有界停止；保留采纳内容；恰好 1 条结果句；无第三次 attempt |
+| T8 | 锁（锁外重跑、不自锁） | pass 阶段不持锁；两个写窗口各持锁一次；总耗时 < `MEMORY_LOCK_WAIT_MS` |
+| T9 | 记账 | 陈旧停止后 `/memory update` 的回复不得说"already up to date"；`lastWrite` 指向最终 attempt 的备份；并发两次 `consolidate()` 不重复写同一 version |
+| T10 | 调用上界（I3） | 首调截断 + retry 坏 JSON + condense 触发时的 provider completion 数 ≤ 具名常量；记录 session_shutdown 的数量 |
+| T11 | D2 交互 | opaque 超 cap 且 attempt 1 陈旧：`memory-overflow-*` 与 `memory-stale-*` 的数量/内容正确、gitignore 覆盖两者、留档失败不阻断、日志点名实际文件 |
+| T12 | 向后兼容 / I7 | `node tests/run-all.mjs` 全绿；`migrate.ts` 路径不传 `basisKey` 时输出与基线逐字节一致；**不传 `basisKey` 且确实发生采纳**时仍按旧行为（防止"全判陈旧"） |
+| T13 | INV 断言（T5 修正版） | `memoryComparisonKey(MEMORY.md) === foldMemoryJournal(entries)`（**规范化**相等），分「陈旧分支后」「重跑成功后」两段断言；用无尾换行 / CRLF 的 B 各测一遍 |
+| T14 | 复现脚本转绿（T8 修正版） | `repro-write-ordering.mjs` 改为驱动 report 级流程（或显式传 `basisKey`）后断言最终 `MEMORY.md` 含外部编辑、退出码 0；另留一个 legacy 直调用例断言"采纳被顶掉"的旧行为不变 |
 
-另有既有 14 个测试文件必须全绿（`node tests/run-all.mjs`）。
+## 14. 评审计划
 
-## 12. 评审计划
+沙箱只读独立评审（`pi -p --no-session --no-project-context --no-skills --no-prompt-templates
+--tools read,bash --model commandcode/deepseek/deepseek-v4.1-flash-fast`），每轮记录候选定版 md5；
+零写入证明 = 前后 `git status --porcelain -uall` + `find … stat` 快照（`-prune` 掉 `.agents/memory`）；
+**空 transcript / 0 字节 = provider 失败，必须重跑，不算一轮**；**PASSED 轮不覆盖其后的改动**。
+轮次与残留记入 `external-edit-adoption-overwritten-review-report.md`。
 
-- 沙箱只读独立评审（`pi -p --no-session --no-project-context --no-skills --no-prompt-templates
-  --tools read,bash --model commandcode/deepseek/deepseek-v4.1-flash-fast`），审/校 对；
-  每轮记录候选定版 md5；零写入证明 = 前后 `git status --porcelain -uall` + `find … stat` 快照
-  （`-prune` 掉 `.agents/`，因 `--no-project-context` 仍会在 cwd 建该目录）；
-  **空 transcript / 0 字节 = provider 失败，必须重跑，不算一轮**。
-- 「一个 PASSED 轮不覆盖其后的改动」：任何 post-PASSED 的改动都要再开一轮。
-- 记录归档为 `external-edit-adoption-overwritten-review-report.md`（轮次表 + 残留清单 + 零写入证明）。
+## 15. 非目标
 
-## 13. 非目标
+- **M / N**（opaque 回复迁移到分节路径）：另立设计（见 `over-cap-reply-persistence-fix-note.md` §5.3）。
+- **D1**（opaque 路径按节丢整条）被 N 覆盖；**S4**（分节路径按优先序丢）被冻结设计列为非目标
+  （`structured-consolidation-output-design.md:401`）。
+- 可配置 CONTEXT cap、CONTEXT.md 读侧迁移、归档 vault/加密/上传、autolearn 节流与准入、handoff 摘要路径。
+- **意图判据**（owner 编辑 vs 旧版本退化写入）：显式不引入（决策 1）。
+- R-1 / R-3 / R-4 三个既有残留：本文档记录但不修。
 
-- **M / N**（把 opaque 回复迁移到分节路径：重试改目标 / 任意块粒度丢弃）：另立设计，见
-  `over-cap-reply-persistence-fix-note.md` 第 5 节第 3 条。
-- **D1**（opaque 路径按节丢整条）与 **S4**（分节路径按优先级丢）：前者被 N 覆盖，后者被冻结设计
-  列为非目标（`structured-consolidation-output-design.md:401`）。
-- 可配置 CONTEXT cap、CONTEXT.md 读侧迁移、归档 vault/加密/上传、autolearn 节流与准入、
-  handoff 摘要路径。
-- **意图判据**（区分 owner 编辑 vs 旧版本退化写入）：本设计显式不引入（决策 1）。
+## 16. 决策记录
 
-## 14. 决策记录
-
-- **owner 2026-10-03**：选 **C**（把 pass 的基线带进写入路径，判陈旧后处理），并要求**取最彻底形态**
-  ⇒ 采用「判陈旧 → 不写 → 锁外重跑一轮」而非「只跳过」；决策 3 采用 (i) 结果化日志；决策 4 做留档。
-  （若 owner 反悔其中任一子项，按"一个 PASSED 轮不覆盖其后改动"重开评审轮。）
+- **owner 2026-10-03**：选 **C** 且要求取**最彻底形态** ⇒ 判陈旧 → 不发布 → 锁外重跑一轮；
+  日志结果化；被丢弃回复留档。
+- **R1 评审 2026-10-03**：`CHANGES-REQUESTED`（2 blocking + 8 important）。v2 按 R1 结论改写：
+  重跑入口（B1）、发布前 recheck（B2）、有效内容无条件比较与空 journal 覆盖（I1/I2）、
+  上界重写（I3）、日志归属拆分（I4）、副作用后置（I5）、测试计划重列（I6）、显式 `undefined` 守卫（I7）、
+  claim 同步（I8）。
 - **owner 2026-10-03**：发版次序为 设计 → 修 + 测试 + 独立评审 → 与 D2 一起切 `v0.2.1`。
 
-## 15. 仍开放
+## 17. 仍开放
 
-1. `ConsolidateReport` 是否需要新值来区分"陈旧重跑成功/有界放弃"，还是仅靠 `errors.log` 与 toast。
-2. 重跑的 toast 策略：静默（只记日志）还是提示一次（owner 可见"你的编辑被完整采纳，本轮已重跑"）。
-3. 留档文件是否需要保留策略（与 D2 的 `memory-overflow-*.md`、D3 的 session-log 保留策略同族问题）。
+1. `ConsolidateReport` 是否需要新值区分"陈旧重跑成功 / 保留采纳内容"，还是仅靠 `errors.log` + toast。
+2. 重跑的 toast 策略：静默（只记日志）还是提示一次。
+3. T6 的测试 seam（`recordMemoryDocument` 的 `beforePublish` 钩子）是否可接受为测试专用 API，
+   还是改为把"检测 → 发布"的 recheck 抽成纯函数做单测。
+4. 留档文件（`memory-stale-*` / `memory-overflow-*`）的保留策略（与 D3 同族）。

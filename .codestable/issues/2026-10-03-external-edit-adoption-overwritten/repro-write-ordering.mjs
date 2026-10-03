@@ -10,7 +10,7 @@
  * 兄弟仓库 journal 里那对「一次采纳紧接一次另一版写入、间隔 70–450 ms」就是这两次 append，
  * 不需要第二个进程、也不需要第二次模型调用。
  *
- * 运行：node .codestable/issues/2026-10-03-consumer-repo-memory-drift/repro-write-ordering.mjs
+ * 运行：node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs
  * 退出码 0 = 复现成功（外部编辑被顶掉）；1 = 未复现（说明该行为已被修掉或代码已变）。
  */
 

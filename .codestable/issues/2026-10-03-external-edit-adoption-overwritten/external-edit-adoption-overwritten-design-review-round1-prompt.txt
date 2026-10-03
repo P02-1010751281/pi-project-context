@@ -1,0 +1,72 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A）**。你要审的是一份**设计文档**（尚未实施，仓库里没有对应代码改动），所以本轮没有 diff 可看——你的任务是**用源码验证设计的正确性、找漏洞、判定它能不能落地**。
+
+## 工作区与只读规则（必须遵守）
+
+- 工作区绝对路径：`/tmp/pi-context-rev28`（**先 cd 进去**，pi 按 cwd 解析项目根；不要在活仓库 `/run/media/user/.../Projects/pi-project-context` 里工作）。
+- **只读**：不得写工作区任何文件；不得 `git add/commit/checkout/stash/restore`；不得改任何源码或文档。
+- 临时产物只能放 `/tmp`。允许**运行**只读探针与 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`（它只在 `/tmp` 下 `mkdtemp`），但不要让它写工作区。
+- 待审设计的活仓库 md5 已记在 `/tmp/rev28-live-md5.txt`；你不要去动活仓库。
+
+## 背景
+
+问题：`pi-project-context` 的记忆写入路径里，**外部编辑被"采纳"后又被顶掉**。已立 issue 并确定性复现。要审的设计给出修法：**owner 选 C 且要求取最彻底形态**。
+
+先读这些（用 read，不要整文件灌进上下文，按需 grep/sed）：
+
+1. `.codestable/attention.md`（项目注意事项）
+2. 被审设计：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`
+3. 问题报告（证据）：同目录 `external-edit-adoption-overwritten-report.md`
+4. 复现脚本：同目录 `repro-write-ordering.mjs`
+5. 上游审计：`.codestable/issues/2026-10-03-consumer-repo-memory-drift/audit.md`（及其同目录 `unifield-adopt-review-report.md` 可选）
+6. 源码（**这是你判定的主要依据**）：`extensions/project-context/memory/store.ts`、`journal.ts`、`pass.ts`、`report.ts`、`poison.ts`、`document.ts`；`extensions/project-context/shared/lock.ts`、`gitignore.ts`、`project-state.ts`、`migrate.ts`、`files.ts`
+7. 测试：`tests/memory-ops-test.mjs`、`tests/consolidation-test.mjs`、`tests/harness.mjs`
+8. `git status --short` 与 `git log --oneline -3`（设计已提交在 HEAD）
+
+## 必须完成的四件事
+
+**A. 逐条验证设计第 3 节的代码事实 F1–F7。** 每条给出 `file:line` 证据，并明确说"成立 / 不成立 / 无法验证"。特别注意 F4（`loadMemory` 在什么条件下返回外部编辑而不是 fold）与 F5（写入门 `memoryChanged`）——这是设计两个论证的支柱。
+
+**B. 独立验证设计的中心机制（不要相信设计的断言，自己从源码推）。** 设计声称：判为陈旧后**保留采纳 append、跳过 render 的 append 与 `writeAtomic`**，此时
+   (a) `foldMemoryJournal` 的结果就是**外部内容**；
+   (b) **重跑**那一轮 `loadMemory` 返回的是外部内容（而不是旧 render 或旧 fold）；
+   (c) 重跑那一轮的 `recordMemoryDocument` **不会再次**判为采纳/陈旧；
+   (d) 结束后 journal 折叠结果与 `MEMORY.md` 自洽，且**外部内容的字节仍在两者之一里**。
+   逐步用代码论证 (a)–(d) 是否真的成立。**若任一步不成立，(a)–(d) 的哪一步、为什么**，要说清楚。
+
+**C. 攻击设计。** 至少覆盖这些面（发现不在列表里的问题更好）：
+   - 基线 `basisKey` 的口径：`memoryComparisonKey` 在两处是否用同一个 `limit`；空记忆、不可读/损坏/中毒 journal、截断标记（marker）会怎样；`existing.text` 与 `renderRaw` 的规范化是否可比。
+   - 误报：编辑早于 pass 读取（`basisKey === external`）时会不会仍判陈旧；反过来，**会不会有该判陈旧却漏判**的时序。
+   - 有界性：重跑上限、`consolidateProjectState` 内部自己的重试（截断重试 / no-tools 回落）与"重跑"叠加后**单次 pass 的模型调用上限**到底是几次；会不会活锁。
+   - 记账：`report.ts` 的 `written` / `lastWrite` / `claimed` / `outcome.version` dedupe / `activeConsolidation` 单飞 / session_shutdown 强制 pass / 命令强制 pass，在"attempt 1 陈旧 → attempt 2"路径上会不会漏写、重复写或误吞。
+   - 锁：设计说重跑必须在 `withMemoryLock` 外（`shared/lock.ts:179`）。核实这个约束是否成立，以及 attempt 1 里 `backupMemoryBeforeWrite` 的副作用（备份、`lastWrite`）在只采纳不写的情况下是否留下错误状态。
+   - 数据安全：有没有状态会让**外部内容与本次回复都不在 `MEMORY.md`**；有没有路径会让 journal 增长/轮转（`rotateMemoryJournalIfNeeded`）在跳过写入时产生不一致。
+   - 与 D2（`saveOverflowReply`）的交互：opaque 超 cap 与"陈旧跳过"同时发生时，`memory-overflow-*.md` 还会不会写、写完是否成为孤儿。
+   - 设计第 7 节（被丢弃回复留档 `memory-stale-*.md`）的 gitignore/测试/清理面是否自洽。
+   - 向后兼容：`basisKey` 省略时 `migrate.ts:127` 与既有测试是否真的逐字节不变；返回值由 `void` 加宽为联合类型是否影响任何调用点。
+   - 设计第 11 节测试计划是否**能钉住**设计声称的每条性质；缺哪些用例（尤其 T3/T4 的构造方式是不是真的能构造出对应时序）。
+
+**D. 对抗性一轮**：假定这个设计在生产里藏着一个 bug（数据丢失、活锁、或"编辑仍未保住"），去找它。找不到也要说明你搜过哪些面、为什么排除。
+
+## 输出格式（中文，正文用中文；代码/标识符保留原文）
+
+按严重度分桶，每条给 `file:line`、影响、修复边界：
+- `blocking`：按现状设计实施会造成数据丢失 / 活锁 / 核心承诺（外部编辑不被顶掉）不成立。
+- `important`：会导致错误行为、不可观测的丢失、或测试无法钉住设计。
+- `nit` / `suggestion` / `learning` / `praise` / `residual-risk`：按实质归桶。
+
+最后给 **Test And QA Focus** 一节（实施后必须测什么、怎么构造、怎么判定通过），然后**最后一行**只写：
+
+```
+VERDICT: PASSED
+```
+或
+```
+VERDICT: CHANGES-REQUESTED
+```
+（确实无法审时用 `VERDICT: BLOCKED` 并说明原因。）
+
+## 判定纪律
+
+- **独立判断**，不要继承任何先前轮次的结论（本轮是该 issue 的第 1 轮）。
+- 每条结论必须能指到 `file:line` 或具体命令输出；**不要凭印象**。
+- 若你发现设计文档自己的引述有误（例如行号、断言方向、引用的常量值），也要报出来——文档准确性属于本轮评审范围。

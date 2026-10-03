@@ -1,0 +1,145 @@
+# pi-project-context 独立设计评审（lane A，第 1 轮）
+
+评审对象：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（HEAD `f7cedc2`，未实施）。
+工作方式：只读 + `/tmp` 探针（probe1–7，均只写 `os.tmpdir()`）。复现脚本已按允许运行。
+
+---
+
+## A. 第 3 节代码事实 F1–F7
+
+| # | 判定 | 证据 |
+| --- | --- | --- |
+| F1 | **成立** | `store.ts:68`（采纳 append）→ `:77`（render append）→ `:80`（`writeAtomic`），与设计完全一致 |
+| F2 | **成立** | `store.ts:70` 的 `adopted an externally edited …` 正好夹在两次 append 之间，完成态措辞 |
+| F3 | **成立（结论对，行号错）** | `foldMemoryJournal` 的 loop 覆盖 `document`：`journal.ts:94`（设计写 `:89`；函数声明在 `:88`）。后出现的 replace 决定 fold |
+| F4 | **成立** | 读侧条件 `store.ts:114`（`external && external !== view && render.mtimeMs > journal.mtimeMs`）与写侧 `store.ts:67` 逐条件相同；读侧返回 external 在 `:115`，所以「读到的编辑已经是最新」的 prompt 不陈旧，陈旧的是模型调用期间落地的编辑 |
+| F5 | **成立** | `report.ts:132`：`memoryChanged = !semanticEmpty && (sectioned || memoryText.length >= 40)`；只有它为真才进 `:159` 的写块。pass 成功产出 → 顶掉采纳；失败/空/opaque<40 → 不写 → 采纳保留。方向确如设计所述 |
+| F6 | **无法验证** | 现场仓库（QM/UF）与 errors.log 不在本工作区；本仓库无法复核 142/35 与 `[1]≡[3]≡[5]`。机制与报告一致，且 F7 可复现 |
+| F7 | **成立** | 实测 `node …/repro-write-ordering.mjs` 退出码 0；S1 `A→B→C`、S2 `A→B→A`，两次都 `外部编辑仍然生效: false` |
+
+**设计引述的行号错误（§3 与 §4）：**
+- `journal.ts:89` → 实际 `:94`（F3 的证据行）。
+- `store.ts:63` 的 `external` → 实际 `:64`（§4）。
+- `pass.ts:160` 的 `const existing` → 实际 `:161`（§4）。
+- `report.ts:125` 的 `written.set` → 实际 `:123`（§5 记账纪律）。
+- `pass.ts:35-52`、`pass.ts:323`、`store.ts:114`、`report.ts:132`、`migrate.ts:127`、`lock.ts:179`、`project-state.ts:9`、`structured-consolidation-output-design.md:401` 均准确。
+
+---
+
+## B. 中心机制 (a)–(d) 独立验证
+
+方法：用仓库真实原语（`appendMemoryOp` + `foldMemoryJournal` + `loadMemory` + `recordMemoryDocument`）在 `/tmp` 里精确模拟「判陈旧 → 只做采纳 append → 跳过 render append/writeAtomic → attempt 2」。probe1 覆盖 5 种外部编辑形态（canonical / 无尾换行 / 行尾空格 / CRLF / 超 cap）。
+
+- **(a) 成立**：采纳 append 后 `foldMemoryJournal(entries) === memoryComparisonKey(B)`，5/5 形态为真。`journal.ts:94` 取末条 replace，采纳记录就是末条。
+- **(b) 成立**：append 后 journal mtime 晚于 render（或同 ms 时 mtime 比较失败但 view 本来就是 fold），`loadMemory` 返回 fold＝外部内容，source 为 journal；probe1 5/5 为真。**但只在“内容”意义上**：非 canonical 的 B（无尾换行/CRLF/行尾空格/超 cap）`fold !== MEMORY.md 原始字节`（probe1）。设计 §5 的「自洽性」与 T5 的“journal fold == MEMORY.md”只在外部文件本来就被规范化时成立。
+- **(c) 成立（仅当 attempt 2 是真正的新 pass）**：render（B）== fold（B）⇒ `external !== foldedView` 为假 ⇒ 采纳分支不触发；`recordMemoryDocument` 只新增 1 条记录（reply），probe1 5/5 为真。`memoryComparisonKey` 对 over-cap / marker / poison / 空串都幂等（probe3），所以 T3 的 `basisKey === external` 守卫在函数层面成立。
+- **(d) 成立（store 层面，带保留）**：真正重跑后 fold == MEMORY.md == 重跑 render，B 留在 journal 历史（probe1）。保留条件：cap>32000 且触发 rotation 时，`rotateMemoryJournalIfNeeded` 用默认 32000 折叠（`journal.ts:111`），fold 会被裁到 32000 而 MEMORY.md 是 40k（probe4：fold 32040 / render 40035，`loadMemory` 回退到 render）——设计对 (d) 的无条件断言不成立。
+
+**关键分叉**：以上 (c)/(d) 的前提是 **attempt 2 真的跑了一次新 pass**。设计 §5 把它写成 `consolidateProjectState(force)`，实测这个调用会被 pass 层自己的去重吞掉（见 blocking-1），于是 (c)/(d) 在 report 层不成立。
+
+---
+
+## C. 攻击与发现
+
+### blocking
+
+**B1. `attempt 2 = consolidateProjectState(force)` 会命中 pass 层去重，回放陈旧回复并再次顶掉外部编辑。**
+`pass.ts:149-151`：
+```
+const throttled = !force && (turns - baseline < config.consolidateTurns || Date.now() - (previous?.at ?? 0) < config.consolidateIntervalMs);
+if (throttled) return cached?.outcome;
+if (force && cached && Date.now() - cached.at < config.forceDedupeMs) return cached.outcome;
+```
+attempt 1 在 `pass.ts:320/334` 写入 `throttle` 和 `lastOutcome`。probe2 实测（默认 `forceDedupeMs=15000`）：
+- 自动路径 `force=false`：第二次调用返回**同一个 outcome 对象**，模型调用 0 次（`v2===v1`, `sameObject=true`）。
+- 强制路径 `force=true`（session_shutdown / `/memory update`）：同样返回缓存（15s 窗口内必然命中），模型调用 0 次。
+- 只有 `forceDedupeMs=0` 才真的第二次调用模型。
+
+后果分两种实现都坏：
+1. 循环照写：`outcome2` 的 `result.memory` 是 attempt 1 的陈旧回复，`recordMemoryDocument` 里 render==fold（都是 B）⇒ 采纳分支不触发 ⇒ 只做「陈旧检测」的代码根本不会被走到，reply 被 append + 写入 —— **probe7 实测 `MEMORY.md` 变成陈旧的 C，B 只剩 journal 历史**，正是本 issue 要修的 bug。
+2. 实现者加 `version` 判断提前停：外部编辑守住了，但重跑没发生、模型工作白扔、日志说“已重跑”是假的（目标 2/3 失败）。
+
+**影响**：核心承诺（外部编辑不被顶掉）在主路径上按现状设计不成立；且是最初报告的形态重演。
+**修复边界**：必须给重跑一个真正绕过 `throttle`/`lastOutcome`/`forceDedupeMs` 的入口（新的 `{ rerun: true }` 或在调用前清理该项目 pass 状态），并断言 `outcome2.version !== outcome1.version`；否则不得进入写路径。
+
+**B2. TOCTOU：采纳读取（`store.ts:62-64`）之后、发布（`store.ts:77-80`）之前落地的外部编辑被静默顶掉，且不进 journal、不进写前备份。**
+写路径在 memory lock 内，但 owner 的编辑器不持锁。检测只发生在 `readOptional`/`stat` 那一刻；之后还要经过两次 `appendMemoryOp`（各有 `handle.sync()`，`journal.ts:65`）、rotation、gitignore，最后才 `writeAtomic`。probe5 按真实调用顺序演示：B 在“读取之后、发布之前”落地 ⇒ `MEMORY.md` 无 B、journal 无 B、备份也没有 B（备份在 `report.ts:170`，早于 `store.ts:62` 的读取）。本机窗口约 1 ms（probe6），但报告现场同一次调用两次 append 间隔 69–450 ms，说明目标慢盘上该窗口量级相当。
+**影响**：与「任何时序都不被顶掉」直接冲突；这是**字节级**丢失，不是仅生效丢失。
+**修复边界**：在 `appendMemoryOp(rendered)`/`writeAtomic` 前立即重读并重算 render 的 `memoryComparisonKey`，与采纳检测时的 key 不一致就走陈旧分支（把新 key 采纳进历史）；把窗口缩到“最后检查→rename”。Node 无 CAS，完全关闭不可能，但不应把两次 fsync 的窗口留在检测之后。
+
+### important
+
+**I1. 只比 `external !== basisKey` 会漏判“编辑被对等进程先采纳”的时序。**
+若 owner 在模型调用期间编辑出 B，另一个 pi 进程先 `recordMemoryDocument`：它采纳 B 并写入自己的回复 Q；我们的写路径看到 render==fold==Q，采纳分支不触发 ⇒ 不判陈旧 ⇒ 用基于旧 F 的回复覆盖 Q，B 退回纯历史（probe3 的 peer 场景即此形状，实测 R 被 C 顶掉）。修复边界：不要只在 `external` 分支比，应对「本次会读到的有效内容」（检出 external 时取 external，否则取 foldedView）与 `basisKey` 做无条件比较：`currentKey !== basisKey ⇒ 陈旧`。T3（编辑早于读取）在 `currentKey===external===basisKey` 时仍不误报。
+
+**I2. 空 journal / 归档恢复分支没有陈旧检测。**
+`store.ts:45-56`：`base.entries.length === 0` 时走 `loadMemory` + append base，**不经过采纳分支**。probe3 实测：项目还没有 journal、MEMORY.md=A，模型调用期间外部编辑 B，`recordMemoryDocument(root, C, limit, { basisKey })` 后 journal `B→C`、MEMORY.md=C、B 仅历史。目标 1 在“该项目第一次 consolidation”窗口不成立。修复边界：把 I1 的有效内容比较放进这个分支（或把检测提到分支之前）。
+
+**I3. “单次 pass 模型调用 ≤2”不成立。**
+一次 `consolidateProjectState` 最多 3 次 `callAux`：首次 `pass.ts:197`、解析/截断重试 `:221`、condense `:248`；首次带 tools，`callAux` 自身在工具被拒时还会再发一次（`llm.ts:250-270`，`withTools=false` 重发）⇒ 单 attempt 最多 4 次 provider completion；加上重跑最多 **8 次/次 `consolidate()`**。session_shutdown 会同步放大延迟。修复边界：把硬约束改写为「≤2 个 consolidation attempt；provider 调用上限 = 2×(1+1)+… 的显式值」，并让 T1/T4 按“pass/version 计数”而不是“模型调用次数”断言（或固定 fake 只走首调路径）。
+
+**I4. 日志归属自相矛盾，无法只在 `store.ts` 说真话。**
+§6 三条措辞中「reply was discarded and the pass re-run」「an external edit landed again during the re-run」只有 `report.ts` 知道；`store.ts` 在 `writeAtomic` 之前也不知道“this pass's reply replaced it in the same write”是否真的成功（若 `appendMemoryOp(rendered)`/`writeAtomic` 抛异常，日志会撒谎）。修复边界：`store.ts` 最多输出中性事实（含 `written:false` 的技术原因），最终三条结果句由 `report.ts` 在循环结束后发出；含成功字样的行必须在发布成功之后。
+
+**I5. §5「attempt 1 side effect 限定为采纳 append + 写前备份」与 `report.ts` 现状不符。**
+attempt 1 在锁前还会：`saveOverflowReply` 写 `memory-overflow-*.md`（`report.ts:159-165`）、写 CONTEXT.md（`:216-226`）、`lastWrite.set`（`:207-215`）、消费 `contextShapeWarned`/`memoryCapWarned`/`memorySectionCapWarned`/`memoryRemovalWarned` 一次性集合（`:136-158, 198-205`）、发 notify/`errors.log`。若只按 §5 字面实现，会出现：陈旧 attempt 留下 orphan overflow、陈旧 CONTEXT.md 被写出、一次性警告被 attempt 1 消耗、toast 谎称 memory 更新。修复边界：把「除 pass + 最终一次写之外」的全部副作用移入最终 attempt 之后；overflow 留档与 stale 留档在“回复被丢弃”时去重。
+
+**I6. T5/T8 按现状不可实现或断言错误；T2/T4 在 B1 修好前必红。**
+- T5「journal fold == MEMORY.md，且都等于采纳内容」：非 canonical render（无尾换行/CRLF/行尾空格/超 cap）时 fold≠原始字节（probe1）；重跑成功后 fold==MEMORY.md==重跑结果，不等于“采纳内容”。应改为 `memoryComparisonKey(MEMORY.md) === fold`，并分「重跑前」「重跑后」两段断言。
+- T8「复现脚本期望改为外部编辑生效」：脚本两次 `recordMemoryDocument` 都不带 `basisKey`（`repro-write-ordering.mjs:60-64`），按 §9「省略 ⇒ 永不判陈旧」行为与今天一致，外部编辑仍被顶掉 ⇒ 只改期望不可能转绿。必须改脚本走 report/pass 全链路（或显式传 `basisKey`）。
+- T2/T4 需要 attempt 2 真的跑；不改 pass 去重就会命中 B1（T4「恰好 2 次调用后停止」实际是 1 次 pass + 0 次新调用）。
+- 缺口：无 TOCTOU、peer-adoption、空 journal、mtime 回退、空 render、`basisKey` 省略陷阱的用例。
+
+**I7. `basisKey` 省略的向后兼容是“实现纪律”而非接口保证。**
+把判断写成 `if (external !== options.basisKey)` 会让 `options.basisKey === undefined` 时永远为真 ⇒ `migrate.ts:127` 与既有测试全部走陈旧分支。§9 已声明「省略 ⇒ 永不判陈旧」，实现必须显式 `options.basisKey !== undefined`，并加一条 legacy 路径的回归用例（T7 不能只跑 migrate 就够，要让 adoption 真的发生但 basisKey 缺失）。
+
+**I8. `written.set` 的 claim 语义在“最终 attempt”措辞下可能被破坏。**
+`report.ts:121-124` 现在是「检查 + 同步 set 后再 await」。改成“最终尝试记账”时若把 set 移到写成功之后，两个并发 `consolidate()` 可能同时通过检查并重复写。修复边界：最终 attempt 的 version 一经确定仍在任何 await 之前同步 claim，失败时再按 `wroteMemory` 释放（现有 `:275` 模式）。
+
+### nit / suggestion / learning / praise
+
+- **nit**：§3 F3 行号、§4 `store.ts:63`、`pass.ts:160`、§5 `report.ts:125` 四处偏移（见 A 节）。
+- **nit**：`repro-write-ordering.mjs` 头部“运行：…/2026-10-03-consumer-repo-memory-drift/…”路径与实际目录不符。
+- **suggestion**：`memory-stale-<ISO>.md` 的 `<ISO>` 建议照抄 `saveOverflowReply` 的 `replace(/[:.]/g,"-")`（`report.ts:57`），避免冒号文件名；`writeAtomic` 的 `…tmp` 残片不被 `memory-stale-*.md` 匹配，建议同时想清楚清理（现有 `cleanStaleTemps` 1h 后回收，可接受）。
+- **praise**：store 层机制本身是对的——(a)(b)(c) 在真实原语上 5/5 形态验证通过；不猜意图、把基线带进写路径、上限 1 次、锁外重跑（`lock.ts:179` 确实不可重入：`open(…,"wx")` + `MEMORY_LOCK_WAIT_MS=5000`）都是正确取向；T3 守卫、幂等 `memoryComparisonKey`、返回值加宽不破坏调用方（`migrate.ts:127` 与测试均忽略返回值）都成立。
+
+### residual-risk（不阻塞本轮，但设计若声称“任何时序”需收窄）
+
+- mtime 规则本身漏判：回退 mtime（`cp -p`/`rsync --times`）的编辑不被采纳、不留在 history（probe3），只有 `report.ts` 的写前备份能救字节；owner 清空 `MEMORY.md` 时（`store.ts:63` 的 `renderRaw.trim()` 守卫）回复会顶掉“清空”动作（probe3）。
+- cap>32000 时 rotation 用默认 32000 折叠（`journal.ts:111`），会让 journal fold 长期落后于 render（probe4），设计 (d)/T5 的无条件自洽断言不成立；这是既有问题，但与本设计共处同一状态机。
+- `activeConsolidation` 是模块级、不按 projectRoot 键（`pass.ts:79,135`）：两个项目并发 pass 会互相串（既有）。
+- 陈旧分支跳过 `rotateMemoryJournalIfNeeded`/`ensureMemoryGitignore`（`store.ts:78-79`）：journal 可暂超 512KB、gitignore 依赖 `withMemoryLock`/`backup` 先行（当前 `report.ts:169-170` 保证了），无损坏，属可接受延迟。
+- session_shutdown 同步 pass 在重跑下最坏 8 次 provider 调用，退出变慢。
+
+---
+
+## D. 对抗性一轮：我假定“生产里藏着 bug”，搜过的面
+
+- 中心机制本身：用真实原语逐形态模拟（probe1），未发现 store 层漏洞；**(a)(b)(c) 成立**。
+- 跨层交接：找到 B1（pass 去重回放陈旧回复）——这是“藏在生产里的那个 bug”，因为它把修好的 store 层重新绕回原 bug。
+- 时序缝隙：找到 B2（检测→发布之间的 TOCTOU，字节不进历史/备份）与 I1（peer 先采纳导致漏判）。
+- 状态分支：找到 I2（空 journal 首写窗口）。
+- 记账/副作用：找到 I5（锁前 overflow、context、一次性警告）。
+- 边界输入：mtime 回退、空 render、poison、marker、超 cap、CRLF、cap>32k rotation（probe3/4）——列 residual-risk。
+- 锁：确认不可重入约束成立、重跑确实在锁外的写法不会自锁；但 attempt 2 到不了锁（B1）。
+- 重复劳动与浪费：B1 会导致模型工作白扔或更糟；I3 修正了成本模型。
+- 测试计划：T5/T8 不可实现、T2/T4 被 B1 阻塞、缺关键用例。
+
+---
+
+## Test And QA Focus（实施后必须测、怎么构造、怎么判）
+
+1. **重跑真的发生（B1 回归，最高优先）**：默认配置（`consolidateTurns:6`,`consolidateIntervalMs:300000`,`forceDedupeMs:15000`）下，fake model 第 1 次调用期间把 `MEMORY.md` 改成 B；分别走 `session_shutdown`（force）与 `agent_settled`（非 force）。判定：发生第 2 次真实 pass（`version` 递增且模型调用数增加），最终 `MEMORY.md` = 第 2 次回复，attempt 1 回复不在 journal、在第 1 个 `memory-stale-*.md` 里，B 仍在 journal 历史。**修好前这条必红，是 B1 的验收线。**
+2. **attempt 2 不得写缓存回复**：即使实现选择“去重则停止”，也要断言 attempt 2 返回 `version === outcome1.version` 时**不调用 `recordMemoryDocument`**，B 仍生效。
+3. **TOCTOU（B2）**：在 `recordMemoryDocument` 里加测试专用 seam（例如 options 上的 `beforePublish` 钩子，仅测试传），在检测完成后把 `MEMORY.md` 写成 B；断言 B 生效（或 pass 走陈旧分支），且 B 的 key 进入 journal；`lastWrite`/errors.log 不得声称已用本次回复覆盖。若不想加 seam，就抽出「检测→发布」之间的 recheck 为纯函数做单测。
+4. **peer-adoption 漏判（I1）**：单进程内构造 interleaving——pass 读到 F，peer 的 `recordMemoryDocument` 采纳 B 并写入 Q，然后我们的写路径必须判陈旧（`currentKey=Q !== basisKey=F`）并保留 Q/B；断言我们的回复未写、B 未退回仅历史。
+5. **空 journal 首写（I2）**：删掉 journal、只留 `MEMORY.md=A`；模型调用期间写 B；断言 pass 后 B 仍生效（或至少 B 进入 journal 且 `MEMORY.md` 不回退），B 不得只存在于历史。
+6. **锁外重跑与自锁**：让 `consolidateProjectState` 的 fake model 阻塞，同时另一路径持有 `MEMORY.md.lock`；断言 pass 阶段不持锁、只有两个写窗口各持锁一次、总耗时不超过 `MEMORY_LOCK_WAIT_MS`。
+7. **记账**：stale-stop 后 `/memory update` 的回复不得说 “already up to date/nothing rewritten” 而实际刚发生采纳；`lastWrite` 指向最终 attempt 的备份；连续两次并发 `consolidate()` 不得重复写同一 version。
+8. **模型调用上界（I3）**：让首调返回截断、retry 又返回坏 JSON、condense 触发，统计 provider completion 数，断言等于实现声明的上界（建议显式写成常量的测试），并记录 session_shutdown 的调用数。
+9. **D2/D4 交互**：opaque 超 cap 且 attempt 1 陈旧——断言 `memory-overflow-*` 与 `memory-stale-*` 的数量/内容、gitignore 覆盖两者、留档失败不阻断、日志点名实际文件。
+10. **向后兼容**：`node tests/run-all.mjs` 全绿；`migrate.ts` 路径不带 `basisKey` 时行为与基线逐字节一致（用 `git stash` 前后的同一 fixture 对比输出，或对 `memory.jsonl`/`MEMORY.md` 做 md5 断言）；未传 `basisKey` 时 adoption 仍按旧行为发生（防止 I7 的“全判陈旧”）。
+11. **T5 修正版**：断言 `memoryComparisonKey(MEMORY.md) === foldMemoryJournal(entries)`（规范化相等），并分别断言「陈旧分支后」与「重跑成功后」两个状态；用无尾换行/CRLF 的 B 各测一遍。
+12. **T8 修正版**：复现脚本改为驱动 report 级流程（或传 `basisKey`）后，断言最终 `MEMORY.md` 含外部编辑、退出码 0；保留一个 legacy 直调 `recordMemoryDocument`（无 `basisKey`）的用例，断言其行为仍是旧的“采纳被顶掉”，以钉住 §9 的兼容承诺。
+
+VERDICT: CHANGES-REQUESTED
