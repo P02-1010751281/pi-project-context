@@ -87,12 +87,20 @@ handoff its model and thinking level」），不是现场事故。按判据 1 �
 > `lock.ts` 陈旧窃取路径的现场依据，**是错的**。核查：`lock.ts` 的锁路径是 `${target}.lock`，当前全部
 > 调用点只锁 `memory/session-index.lock`、`MEMORY.md.lock`、`project-context.json.lock`；
 > `git log --all -p -- extensions/project-context/` 全历史里 `withMemoryLock(...)` 只出现过
-> `sessionIndexLockTarget(projectRoot)` 一种参数 ⇒ **本仓从未锁过会话目录**；兄弟移植用的是
-> `fcntl.flock`（不产生锁文件）⇒ 移植侧也不是来源。
+> `sessionIndexLockTarget(projectRoot)` 一种参数 ⇒ **本仓从未锁过会话目录**；兄弟移植不是「不产生锁文件」（见下）
+> ——本节的归属判定当时只做了“排除”，未做“坐实”，而排除的一半是错的。
 
 事实部分保留：CipherCat 的 `.agents/memory/session-logs/*/` 下确有 **22 个 0 字节 `.lock`**
-（2026-09-15 ~ 2026-10-02），**无人回收**（卫生问题），但**归属不明**，不能作为本扩展的现场依据。
-`lock.ts` 的存在理由回到它自己的代码依据（陈旧窃取 + inode 绑定 + 持有者自删），**不再声称有现场证据**。
+（2026-09-15 ~ 2026-10-02），**无人回收**（卫生问题）。它可以作为「锁文件会孤儿化」的一般现象，
+但**不能**作为本扩展的现场依据；`lock.ts` 的存在理由回到它自己的代码依据（陈旧窃取 + inode 绑定 + 持有者自删），
+**不再声称有现场证据**。
+
+> **归属已坐实 + 已清理（2026-10-04）**：这些锁是 **Codex 移植**的
+> `contextctl.py:317` `file_lock()` 用 `O_CREAT` 打开 `session_dir / ".lock"`（`:987` / `:1300` / `:1476`）
+> 后 flock、从不 unlink 留下的 0 字节文件；目录命名 `s-{urlsafe_b64(session_id)}`（`:105-106`）与现场一致。
+> 现场实测共 **19 个**（CipherCat 15 / codex-project-context 3 / 本仓 1，原文「CipherCat 22 个」数字不准），
+> 已按 owner 指令核验（未跟踪、无进程持有、0 字节且超 1 小时）后全部删除。
+> 详见 `2026-10-04-design-complexity-audit-addendum-3-autolearn-archive.md` §2。
 
 ### D8【已核非复杂度】`maybeTrigger` → `/handoff force-auto` 的消息往返是 API 约束
 

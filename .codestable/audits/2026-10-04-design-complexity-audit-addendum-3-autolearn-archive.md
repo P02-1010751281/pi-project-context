@@ -27,7 +27,7 @@ tags: [process, design-review, complexity, evidence, autolearn, archive]
 | P3 | `skill-candidates/`（autolearn 写盘路径的产物） | 6 个仓共 ~40 个文件，最新 2026-10-04 |
 | P4 | 归档不变性：归档是否为 pi 源文件的**前缀**（append-only 承诺的正确形式） | 239 前缀 / **67 非前缀**（见 N1） |
 | P5 | 索引上限是否被现场触发（`MAX_INDEX_LINES=200`） | QM `INDEX.md` = **200 条索引行**（正好触顶） |
-| P6 | 归属核查：谁会写 `session-logs/<id>/.lock` 与 `migration-manifest.json` | 见 §2（两条假设均被排除/改判） |
+| P6 | 归属核查：谁会写 `session-logs/<id>/.lock` 与 `migration-manifest.json` | 锁 = **Codex 移植**的 flock 文件（已坐实并清理）；manifest = 移植产物（假设已排除）见 §2 |
 
 ## 2. 两处判定的重判
 
@@ -50,18 +50,28 @@ CipherCat（2026-09-19）与量子矩阵（2026-09-16）的 `.agents/memory/` �
 手改正文与全部兄弟资产、无比较无备份无报告），但那是**代码级理由，不是现场事实** ⇒ 与补审二一致：
 保留 + 定退役窗口，不再扩展。
 
-### D7【更正】22 个陈旧 `.lock` 的归属查不出来，不能算 `lock.ts` 的依据
+### D7【更正 + 归属已坐实】陈旧 `.lock` 是 Codex 移植的 flock 锁文件，不是 `lock.ts` 的
 
 - `lock.ts` 的锁路径是 `${target}.lock`（`lock.ts:180`），当前全部调用点只锁三个目标：
   `memory/session-index.lock`、`MEMORY.md.lock`、`project-context.json.lock`。
 - 全历史 `git log --all -p -- extensions/project-context/` 里 `withMemoryLock(...)` 只出现过
   `sessionIndexLockTarget(projectRoot)` 一种参数 —— **本仓从未锁过会话目录**。
-- 兄弟移植用的是 OS 级 `fcntl.flock`（`codex-project-context/scripts/contextctl.py:317`），**不产生锁文件**。
+- **归属在清理时坐实：来自 Codex 移植**。`codex-project-context/scripts/contextctl.py:317` 的 `file_lock()`
+  用 `os.open(path, O_RDWR|O_CREAT|O_NOFOLLOW, 0o600)` 打开后 `fcntl.flock`，**从不 unlink**；它锁的正是
+  `session_dir / ".lock"`（`:987` `render_session`、`:1300` 维护检查、`:1476/:1527/:1539` 经 `request_path.parent`）。
+  目录命名同样对得上：`:105-106` 生成 `s-{urlsafe_b64(session_id)}`，与现场 `s-MDFhMDdiOTYt…`
+  （解码 `01a07b96-384e-7ab0-9763-75e9c253cd1f`）一致；同目录里的 `maintenance-request.json` 由 `:1299` 写出，
+  而该文件名在**本扩展现码 0 命中**。
 
-⇒ `session-logs/<id>/.lock`（CipherCat，22 个 0 字节，2026-09-15 ~ 10-02）**无法归属**到本扩展或移植。
-可能来自更早的工具链，但无证据。它仍证明「锁文件会孤儿化」这一**一般**现象，但**不能**作为
-`lock.ts` 陈旧窃取路径的现场依据。**我补审二里把它写成本扩展的依据，是错的**（该结论当时未做归属核查）。
-卫生问题本身保留：无人回收这些残留。
+⇒ **补审二 D7 的归属是错的**：这些不是 `lock.ts` 陈旧窃取路径的现场依据，`lock.ts` 的依据仍只有代码级理由。
+（顺带更正本节初稿的另一处错：移植并不「不产生锁文件」—— flock 本身不必留文件，但移植的 `file_lock()` 带
+`O_CREAT`，**每次 `render_session` 都在会话目录留一个 0 字节文件**，数量以会话目录数为上界。
+另：我先前记的「CipherCat 22 个」数字不准确，现场实测 CipherCat 15、codex-project-context 3、本仓 1。）
+
+**已清理**（owner 指令「3 清理了吧」，2026-10-04）：共 **19 个 0 字节 `.lock`**。删前逐项核验三件事：
+未被 git 跟踪（并被 `.agents/memory/session-logs/.gitignore` 的 `*/` 覆盖）、无进程持有（`fuser`）、
+全部 0 字节且 mtime 超 1 小时；删后会话目录本体完好（`session.jsonl` 68 / 14 / 0 份）且三个仓的
+`git status` 未受影响。**归属已正，故本条不再是「无主残留」。**
 
 ## 3. autolearn/*（8 文件 / 729 行）
 
@@ -161,8 +171,9 @@ parked; without this the pass retried on every settle and one provider outage be
 ## 5. 收口与规模账
 
 - 至此 **58/58 模块**全部过完（主审计 + 补审一 + 补审二 + 补审三）。
-- 本轮净结果：**1 条更正**（D7 锁归属）、**1 条维持并附排除记录**（D4 迁移）、**1 条重要现场发现**
-  （N1 pi 会话文件非只追加）、**1 条残留**（N2 autolearn 第二级降级从未触发）、**1 条未证**（inventory 8000 字符）。
+- 本轮净结果：**1 条更正并把归属坐实**（D7 陈旧锁 = Codex 移植的 flock 文件，非 `lock.ts`，已清理 19 个）、
+  **1 条维持并附排除记录**（D4 迁移）、**1 条重要现场发现**（N1 pi 会话文件非只追加）、
+  **1 条残留**（N2 autolearn 第二级降级从未触发）、**1 条未证**（inventory 8000 字符）。
 - 两族均无死模块：`autolearn/*` 有 55 次真实调用 + ~40 个候选产物；`archive/*` 有 ~440 个归档 + 索引触顶。
 - 记忆层教训（与补审二 D1 同族）：**「日志键 0 命中」只能证明该*错误*没发生，不能证明机制没运行**；
   本轮 D4 靠「找成功产物」（manifest）才发现要重新判定，而核查后 manifest 属兄弟移植 —— 两次都要落到产物上。
