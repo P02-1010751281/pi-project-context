@@ -925,6 +925,13 @@ try {
 			check("the command reply names the cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("maxMemoryChars cap"));
 			await pi.commands.get("project-context").handler("status", ctx);
 			check("status names the cap", /at the cap, so both ends were kept/.test(String(ctx.notifications.at(-1)?.[0] ?? "")));
+			// The middle this cap drops is gone for good, so the unclipped reply is kept beside the memory.
+			const overflow = (await readdir(capDir)).filter((name) => name.startsWith("memory-overflow-") && name.endsWith(".md"));
+			check("the unclipped reply is kept locally", overflow.length === 1);
+			const keptReply = overflow.length === 1 ? await readFile(path.join(capDir, overflow[0]), "utf8") : "";
+			check("the local copy holds the whole reply, not the clipped render", keptReply.trim() === grown && keptReply.length > rendered.length);
+			check("the local copy is gitignored", (await readFile(path.join(capDir, ".gitignore"), "utf8")).includes("memory-overflow-*.md"));
+			check("errors.log names the kept copy", overflow.length === 1 && capLog.includes(overflow[0]));
 		} finally {
 			await rmTemp(capTmp);
 		}
@@ -1451,7 +1458,7 @@ try {
 			await writeFile(memory, "# Project Memory\n\n## Project\n- keep.\n");
 			await backupMemoryBeforeWrite(memory);
 			const ignore = await readFile(path.join(dir, ".gitignore"), "utf8");
-			check("backups are gitignored next to the memory", ignore.includes("*.memory-backup-*") && ignore.includes("errors.log"));
+			check("backups are gitignored next to the memory", ignore.includes("*.memory-backup-*") && ignore.includes("errors.log") && ignore.includes("memory-overflow-*.md"));
 			await backupMemoryBeforeWrite(memory);
 			check("the gitignore is appended only once", (await readFile(path.join(dir, ".gitignore"), "utf8")) === ignore);
 

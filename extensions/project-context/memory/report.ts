@@ -46,6 +46,25 @@ const memorySectionCapWarned = new Set<string>();
 /** Projects already told that a consolidation dropped Invariants/Pitfalls entries. */
 const memoryRemovalWarned = new Set<string>();
 
+/**
+ * Keep a local, gitignored copy of a reply the cap is about to clip.
+ *
+ * The sectioned and parseable entries drop whole entries through the renderer and report what went,
+ * and the opaque entry keeps both ends of the text — but the middle it drops is gone for good. This
+ * is best-effort on purpose: the capped write and its warning must still happen if the copy fails.
+ */
+async function saveOverflowReply(projectRoot: string, text: string): Promise<string | undefined> {
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const file = `${memoryDir(projectRoot)}/memory-overflow-${stamp}.md`;
+	try {
+		await writeAtomic(file, `${text}\n`);
+		return file;
+	} catch (error) {
+		await logError(projectRoot, "memory", `an over-cap reply was clipped and could not be kept locally: ${errorText(error)}`);
+		return undefined;
+	}
+}
+
 /** The cap sentence for a section-based reply, naming only the components that triggered it. */
 function sectionCapSentence(outcome: ConsolidateOutcome): string {
 	const parts: string[] = [];
@@ -136,7 +155,14 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let cappedSections = false;
 			// Declared at this scope: the non-silent toast below needs it, and the write is conditional.
 			let neededChars = 0;
+			let overflowPath: string | undefined;
 			if (memoryChanged) {
+				// Before anything is clipped: on the opaque entry the cap keeps both ends and drops the
+				// middle, and those bytes are otherwise unrecoverable. The other two entries drop whole
+				// entries through the renderer, which reports them, so only this one needs the copy.
+				if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
+					overflowPath = await saveOverflowReply(projectRoot, memoryText);
+				}
 				// Always keep the bytes that are on disk right now, whatever this pass believed
 				// earlier; the lock keeps another process from replacing them mid-write. The journal
 				// is the source of truth: this pass appends its document, then MEMORY.md is rendered.
@@ -169,7 +195,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					await logError(
 						projectRoot,
 						"memory",
-						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)`,
+						`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)${overflowPath ? `; the unclipped reply is kept at ${overflowPath}` : ""}`,
 					);
 				}
 			}
@@ -225,7 +251,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				} else if (cappedMemory) {
 					notify(
 						ctx,
-						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.`,
+						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.${overflowPath ? ` The unclipped reply is kept at ${overflowPath}.` : ""}`,
 						"warning",
 					);
 				} else if (report === "clipped") {

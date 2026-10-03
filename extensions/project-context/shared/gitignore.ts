@@ -8,7 +8,7 @@ import { readOptional, writeAtomic } from "./files.ts";
 /** Lines every project's memory dir ignores locally, written next to its first local artifact. */
 const MEMORY_GITIGNORE_HEADER = "# project-context: local artifacts, do not commit";
 
-const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "errors.log", "*.lock", "*.steal", "*.broken-*", "memory.jsonl", "memory-log-*.jsonl", "memory.jsonl.*.tmp", "handoff-session-settings.json"];
+const MEMORY_GITIGNORE_LINES = ["*.memory-backup-*", "memory-overflow-*.md", "errors.log", "*.lock", "*.steal", "*.broken-*", "memory.jsonl", "memory-log-*.jsonl", "memory.jsonl.*.tmp", "handoff-session-settings.json"];
 
 const gitignoreEnsured = new Set<string>();
 
