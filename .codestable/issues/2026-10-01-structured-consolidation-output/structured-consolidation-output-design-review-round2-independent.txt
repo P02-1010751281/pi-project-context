@@ -1,0 +1,81 @@
+# Round 2 Independent Design Review — fix delta
+
+Baseline re-established before judging: `node tests/run-all.mjs` in the sandbox → **13 test files, “All 13 tests passed.”** Repo file metadata snapshot before/after (389 files) is byte-identical; all probes wrote only under `/tmp`.
+
+## Findings
+
+**F1 — blocking — `sectionsFromMarkdown` as contracted rejects the canonical document, so the unified fallback path can never parse a real memory.** (design 决策 3, extraction contract; `prompt.ts:37`, `document.ts:114-117`, `parse.ts:61`)
+Evidence: the prompt requires `memory_markdown` to be “the whole document, including its `# Project Memory` heading”, and `normalizeMemoryDocument` always emits `# Project Memory\n\n` first. The contract says “首个节头之前的引言…任一非空即 undefined” and never exempts that header. So `sectionsFromMarkdown(parseConsolidated(reply).memory)` and `sectionsFromMarkdown(loadMemory().text)` both return `undefined`.
+Impact: “降级·可解析” never runs (everything lands in the opaque path), and the guard’s old side is always unparseable → guard never fires. Two advertised features are dead as written, contradicting “今天的规范回复与新路径行为一致”.
+Minimal fix boundary: the contract must consume exactly one optional leading `# Project Memory` line (same shape `parseMemoryValue` strips, case-insensitive, first non-empty line) before applying the preamble rule, and test it.
+
+**F2 — important — I1 is narrowed but the silent `{memory:""}` no-op still exists for an unusable tool call.** (design 接口改动 llm.ts bullet; `llm.ts:103-106`, `parse.ts:78`, `report.ts:73`)
+Evidence: the revision suppresses the throw when *any* `toolCall` part was extracted. A `toolUse` reply whose call has a non-`record_memory` name, or `arguments` that fails runtime validation (R5), is rejected by `pass.ts`, which then falls back to `parseConsolidated(completion.text)`. Probe: `parseConsolidated("")` → `{"memory":""}` (also `"   "` → `{"memory":"   "}`). `report.ts:72-73` trims and treats it as unchanged; nothing is logged.
+Impact: same silent-success class I1 was raised for, one step narrower.
+Minimal fix boundary: suppress the throw only for a usable call (name match + non-null object args), or make `pass.ts` treat “toolCall present but unusable AND text empty” as an error rather than feeding `""` to `parseConsolidated`.
+
+**F3 — important — I7 retry on a tools-rejected request has no trigger definition.** (design 决策 2 last bullet; `pass.ts:83-94`)
+Evidence: “`complete` 因 `tools` 参数报错（400 / unsupported）时，做一次不带 `tools` 的重试” never says how that error is recognized. Provider errors surface as strings; the existing `call()` wrapper records every failure via `noteModelFailure`/`throttle`.
+Impact: implementer either retries *every* first failure (extra paid call on quota/auth outages, colliding with call-policy backoff) or string-matches error text (fragile).
+Minimal fix boundary: choose one policy in the design — e.g. one unconditional no-tools retry on the first tools-enabled failure, bounded to once, with its `noteModelFailure` interaction stated — or define the classifier and its allowlist.
+
+**F4 — important — B1’s count survives, but the re-used cap diagnostics now say the wrong thing.**
+(design 决策 4 + 接口 store/report bullet; `report.ts:111-113, 118-126`)
+Evidence: with `renderMemoryDocument` pre-trimming, `exceedsMemoryCap(memoryText)` is false and `neededChars = memoryDocumentChars(trimmed)` ≤ current cap. If report only swaps in `dropped > 0`, the log/toast still says “both ends were kept and the middle dropped on a line boundary” and advises `max-memory ${neededChars}` where `neededChars` can equal the current cap.
+Impact: operator guidance becomes wrong exactly on the event B1 wants visible; `lastWrite.capped` (line 114) inherits the same stale semantics.
+Minimal fix boundary: renderer returns the untrimmed size (or `neededChars`) alongside `dropped`; report gets a distinct per-section-trim event/wording, keeping the old 60/40 wording only for the opaque path.
+
+**F5 — important — the condensation quality loop is silently retired for structured/parseable output and the design never rules on it.**
+(`pass.ts:128-151`; design 决策 4 / 接口改动)
+Evidence: the only condensation attempt is gated by `exceedsMemoryCap(result.memory, cap)`, which is now always false because the renderer guarantees `text ≤ cap`. The interface-change list doesn’t mention that block.
+Impact: over-budget model output is now mechanically trimmed per section on the first reply instead of getting one curated shrink; durable items can be dropped with only a once-per-process warning. That is a real behavior change and an owner-level tradeoff.
+Minimal fix boundary: state explicitly that per-section trimming replaces condensation (and why), or define a `dropped`-threshold-triggered condense and adapt the condense prompt.
+
+**F6 — important — I2 still doesn’t define intra-section non-bullet content.** (design 决策 3 extraction contract)
+Evidence: the contract enumerates preamble / unknown sections / trailing content / missing headings, but says nothing about non-empty lines *inside* a recognized section that don’t start with `- ` (prose continuation, `*` bullets, indented bullets), nor whether a tool-call item’s leading `- ` is stripped.
+Impact: implementer may silently ignore them — the silent-loss class I2 exists to prevent — or reject entire documents; either choice changes the fallback contract.
+Minimal fix boundary: state the rule (conservative: any non-blank non-`- ` line inside a section → `undefined`) and strip a single leading `- ` from tool-call items.
+
+**F7 — nit — `sectionsFromMarkdown` is assigned to two files.** 接口改动 says `memory/sections.ts` owns it and `memory/parse.ts` “新增” it. Pick one (sections.ts, with parse.ts retaining `parseConsolidated`).
+
+**F8 — nit — the N1 correction is itself inaccurate.** `~/.pi/agent/custom-providers/commandcode/models.json` has 76 entries; only 8 declare `api: "anthropic-messages"`; 68 omit `api` and therefore inherit `provider.json`’s `openai-completions` (`provider-composer.js:72`, `definition.api ?? providerConfig.api`). The design’s “commandcode 的模型全部是 anthropic-messages” is wrong; the strict-off conclusion is unaffected because no model declares either strict compat key.
+
+**F9 — nit — strict self-check import path.** `makeStrictJsonSchema` is not exported from pi-ai’s root/`compat` entry; tests must import `@earendil-works/pi-ai/api/constrained-sampling` or the dist path (harness alias only covers the bare specifier). The “或等价本地校验” hedge covers this, but the plan should name the subpath.
+
+**F10 — nit —** 决策 4’s assertion mentions `marker.length` while B1’s fix deliberately stops relying on a renderer marker and `store.ts:76` strips it. Clarify whether the new renderer appends any marker at all (I read it as no).
+
+**F11 — suggestion —** “仍开放：无阻塞项” is stale. F1–F6 are decisions that must be settled before coding; list them.
+
+**F12 — praise / verified —** The draft schema is strict-ready: probe shows `makeStrictJsonSchema(draft)` deep-equals the draft, second pass does not throw, `prefer`+unsupported → `undefined`, `require`+unsupported throws, `$ref` behaves as documented. `parseStreamingJson` repair reproduced (`{"memory":{…,"index":["i1","i2` → complete object with `index:["i1","i2"]`; mid-string cut keeps a truncated string; mid-key cut drops the rest). B1/B2 line citations (`store.ts:76`, `report.ts:111`, `document.ts:87/96/118`, `pass.ts:128`, `prompt.ts:24`, `llm.ts:89-92/103-106`, `parse.ts:61-74`) and the strict-default claims (openai `1288-1289/1331`, anthropic `145`, bedrock `907`, Google `google-shared.js:333/353-356`) all check out.
+
+**F13 — residual-risk —** If a route declares `compat.supportsStrict*: true` but the provider 400s on strict, `prefer` does not retry non-strict and the pass fails. The real-route probe is correctly required; it must be reversible.
+
+## Round-1 disposition
+
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| B1 | drop count erased by write path | **ADDRESSED** | 决策 4 + 接口: `renderMemoryDocument → {text, dropped}`, pass carries `dropped` as the cap event; but diagnostics wiring needs F4. |
+| B2 | truncated tool args repaired | **ADDRESSED** | 接口 pass.ts: “`stopReason === "length"` 优先级高于「拿到了 toolCall」…强制走 retry/condense”; probe confirms the repair premise. |
+| I1 | toolUse error-contract no-op | **PARTIALLY** | Throw is suppressed only on a real toolCall part, but unusable-call + empty text still yields `{memory:""}` (F2). |
+| I2 | extraction contract | **PARTIALLY** | Preamble/unknown/trailing/missing-heading defined, but canonical `# Project Memory` header (F1) and intra-section non-bullets (F6) are not. |
+| I3 | fallback prompt shape | **ADDRESSED** | 决策 3: fallback/retry/condense keep `{memory_markdown, context}`; prompt keeps the prose escape hatch. |
+| I4 | budget units + cap assertion | **ADDRESSED** | 决策 4: rendered-body units incl. `- `/newlines, newline normalization, `document.length + marker <= cap` assertion. |
+| I5 | memory/context independent validation | **ADDRESSED** | 接口: `sectionsFromToolCall` must not drop memory on a bad context; `contextUnusable` path, no `parseConsolidated("")` fallback. |
+| I6 | regression guard | **ADDRESSED** | 决策 5: pre-clip diff, old side from `loadMemory()`, skip conditions, normalization, FP/FN, no veto, silent path; guard tests added. |
+| I7 | tools parameter rejected | **PARTIALLY** | One-shot no-tools retry is stated, trigger recognition is not (F3). |
+| I8 | goal overstatement / PI_* probe | **ADDRESSED** | Goal now scopes to function-calling semantics; probe uses `project-context.json`/`/project-context model`; `PI_*` correction cites `docs/environment-variables.md:28-32` (verified). |
+| I9 | stale “follow-up issue” | **ADDRESSED** | 决策 1 now says guard is in scope; 非目标 no longer implies otherwise. |
+| N1 | Google / commandcode facts | **PARTIALLY** | Google and strict-key claims corrected and verified; commandcode description still inaccurate (F8). |
+| N2 | line citations | **ADDRESSED** | `document.ts:87/96/118`, `constrained-sampling.js:163-183` verified. |
+| S1 | toolChoice rationale | **ADDRESSED** | 决策 2 states why `"auto"` (prose fallback, `required` route support). |
+
+## Test And QA Focus
+
+- **Observed count:** `node tests/run-all.mjs` → 13/13 passed (autolearn, aux-model, call-policy, consolidation, context-schema, handoff, index, loadtest, memory-budget, memory-ops, registration, switches, sync). Sandbox was not modified.
+- **`/tmp` probes:** (1) `parseStreamingJson` truncation repair confirmed verbatim; (2) draft schema strict-ready confirmed (deep-equal, second pass OK, prefer/require semantics, `$ref` counterexample); (3) `parseConsolidated("")` → `{memory:""}` — the F2 no-op is real.
+- **What the revised test plan still would not catch:** canonical-header parsing unless the “降级·可解析” fixture is checked against a real stored/emitted document (F1); the I7 retry trigger classification (F3); the condense-retirement decision (F5); `neededChars`/wording on the reused cap event (F4); B2 fidelity if the test mocks `complete` directly instead of feeding args through `parseStreamingJson` or the provider adapter (the design says “流”, so this should be made explicit).
+- **Scope discipline:** no out-of-scope item smuggled in; S4, configurable CONTEXT cap, CONTEXT read-side migration, vault/encryption/archive, and command renaming are correctly excluded (the command-naming issue is referenced only as elsewhere).
+
+**Remaining decisions before coding:** the canonical-header rule (F1), the unusable-toolCall+empty-text contract (F2), the tools-rejection retry trigger (F3), the per-section-drop diagnostics/`neededChars` (F4), and the fate of the condensation retry (F5).
+
+VERDICT: CHANGES-REQUESTED

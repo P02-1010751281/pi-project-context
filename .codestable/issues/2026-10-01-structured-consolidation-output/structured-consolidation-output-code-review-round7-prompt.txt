@@ -1,0 +1,29 @@
+You are an independent code reviewer. This is code-review round 7 for the pi-project-context extension, at /tmp/pi-context-rev27.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev27.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 6 returned VERDICT: PASSED and listed four residual findings (F1-F4). All four were then FIXED anyway (F1 had a silent-overwrite shape, so it was not left as an accepted boundary). The change under review is therefore the round-5 state PLUS those four fixes; the round-6 PASSED does NOT cover it. The fix table is under "代码评审 round 6" in implementation-note.md.
+
+YOUR JOB
+1. Confirm the four fixes are present and correct, each with a quoted line:
+   F1 quote-aware `TAG_SPAN_RE` plus a narrow `UNTERMINATED_TAG_RE`;
+   F2 fence closers require same char, run length >= opener, and an empty info string;
+   F3 the `===` underline is tested on the RAW line;
+   F4 `AUTOLINK_RE` gains a bare-email alternative and was deliberately NOT broadened to every `scheme:` form.
+2. Attach each fix with your own probes, BOTH directions:
+   - F1: `<x title="a>b">`-wrapped and unterminated `<memory`-wrapped skeletons are refused; `<3 this project` and `<b>bold text</b>` are content. Try to find a wrapper that still strips dirty, and a real line the new rules wrongly refuse.
+   - F2: `~~~` block containing a ``` line; a ```js info-string line inside a ``` block; a 4-backtick opener closed by 3; a nested/never-closed block; and the plain `===` setext skeleton outside any block still refused. Construct a case where the closer rule is wrong.
+   - F3: `real fact\n- ===` is content; bare `Project Memory\n===` is still refused.
+   - F4: `<user@example.com>` and `<MAILTO:x@y.example>` are content; `<ns:memory>`-wrapped skeleton is STILL refused (the R5-I1 regression must not reopen); `<tel:…>`/`<urn:…>` alone are refused as recorded boundaries.
+3. Run `node tests/run-all.mjs`; report the result and the opaque-gate check count of tests/sections-test.mjs. Verify the note's updated counts (74 / 136) are accurate.
+4. ADVERSARIAL PASS: assume a NEW bug was introduced by these four fixes specifically. Pick the least-tested branch — candidates: `UNTERMINATED_TAG_RE` against short/odd lines, `TAG_SPAN_RE` with nested angle brackets or an apostrophe inside a double-quoted attribute, the fence `info` rule with trailing whitespace, or `AUTOLINK_RE`'s email alternative against a tag that contains `@`. Falsify it and report exactly what you ran.
+5. VERDICT-AWARE: this is round 7 and the prior round already passed. If these four fixes are correct and introduce no new blocking/important issue, return PASSED and state plainly what residual risk the owner accepts. Do not manufacture a low/nit finding to avoid a PASSED, and do not rubber-stamp: if a fix is wrong or opened a hole, say so.
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: a short confirmation table for the four fixes, then any new findings by severity, then the test result, then the adversarial pass, then residual risks, then the verdict rationale. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

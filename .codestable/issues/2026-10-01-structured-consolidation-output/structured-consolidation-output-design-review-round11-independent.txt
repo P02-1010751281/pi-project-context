@@ -1,0 +1,42 @@
+# Round 11 — Narrow Confirmation: F1–F8
+
+Verified against rev18 diff, installed pi-ai 0.99.2 (`constrained-sampling.js`, `anthropic-messages.js`), pi built-ins (executed `createAllToolDefinitions`), `autolearn/parse.ts`, `autolearn/skill.ts`, and by running the schemas extracted from the doc through `makeStrictJsonSchema` / `resolveJsonSchemaStrictSampling` (probes under `/tmp/round11`, zero sandbox writes).
+
+## Disposition table (item 1)
+
+| # | Disposition | Evidence (current doc line) |
+|---|---|---|
+| F1 | **ADDRESSED** | doc:182 now: *"One line: why this proposal is worth storing. Code trims it to 500 chars and embeds it in the candidate SKILL.md header (autolearn/parse.ts:28, autolearn/skill.ts:51)."* — both facts verified true at those exact lines; the false *"Not read back by code"* is gone. |
+| F2 | **PARTIALLY** | Lengths are now the delivered ones (doc:280 *"edit 326、read 303、bash 248、grep 221、find 186、ls 184、write 127"*; new descs doc:282/286/290 = 413/294, all independently reproduced). But the replacement claim at doc:282 is false: *"两个工具描述（…413、294 字符）仍长于全部内置工具（最长 edit 326）"* — record_skill 294 < edit 326. |
+| F3 | **ADDRESSED** | doc:115 *"pi-ai 自己的 **16 键**禁用表（`constrained-sampling.js:3-20`）"*; doc:284 *"**16 键**禁用表"*; doc:304 *"16 + 11 的并集"*; doc:340 *"16+11 并集扫描"*. Installed list = exactly 16 keys (file lines 3–20). No live "14 键" remains (only the round-10 record row mentions the old error). |
+| F4 | **ADDRESSED** | doc:383 *"（`record_memory` 10 条、`record_skill` 8 条）"*. Recursive count of actual schema description values: record_memory 10 (memory, 4 sections, context, 4 context fields), record_skill 8 (skill, name, description-schema, body, evidence, candidate, reason, inspect). Match. |
+| F5 | **ADDRESSED** (minor tail) | doc:115 now cites distinct ranges: *"键集在 `anthropic-messages.js:1223-1233`…`format` 白名单 `:1236-1247`；判定谓词 `:1248-1256`"*, and the correction is now precise: *"**对 `maxItems` 是错的**；`maxLength` 两张表都不含"*. Whitelist and predicate ranges are exact; the key-set end line still clips the literal's last two lines (real: 1223–1235 incl. `maxProperties` at 1234 — this was round 10's own stated number). |
+| F6 | **ADDRESSED** | doc:242 context description now: *"Keep entries short and pointerized; no inline formulas, tables, or command transcripts."* |
+| F7 | **ADDRESSED** | doc:288 *"secrets, API keys, credentials, generic advice"*; doc:292 *"generic programming advice"*. Both phrases restored. |
+| F8 | **ADDRESSED** | doc:304 *"它必须覆盖 provider 附加表…要么传**真实**的 `isAnthropicStrictUnsupportedKeyword`，要么扫 **16 + 11 的并集**"*; doc:340 *"测试传 `() => false` **只用于固定「基表」行为，不构成完整校验**…必须另跑 provider 回调或 16+11 并集扫描"*. Requirement stated, implementable and testable (see item 9). |
+
+## Items 2–8 details
+
+- **F1 (item 2):** new text = "One line: why this proposal is worth storing. Code trims it to 500 chars and embeds it in the candidate SKILL.md header (autolearn/parse.ts:28, autolearn/skill.ts:51)." `parse.ts:28` does `raw.reason.replace(/\s+/g," ").trim().slice(0, 500)`; `skill.ts:51` embeds it only in the `candidate: true` header (`<!-- evidence: … — ${skill.reason} -->`). True.
+- **F2 (item 3):** delivered built-ins remeasured by running `createAllToolDefinitions`: **edit 326, read 303, powershell 254, bash 248, grep 221, find 186, ls 184, write 127** — the doc's quoted seven are exact (powershell simply omitted). New descriptions measured from the doc text: **413 / 294 — exact**. Both are accurate descriptions of code behavior (headings/cap/whole-entry drops; validation/storage). The only defect is the comparative sentence: 294 is *not* longer than all built-ins (edit 326, and it's below the house-style max), so "仍长于全部内置工具…这是刻意的" is false for `record_skill`.
+- **F3 (item 4):** base list = **16** keys (file lines 3–20). Doc says 16 everywhere (115, 284, 304, 340, 383); zero occurrences of "14 键" as a live claim.
+- **F4 (item 5):** actual counts **10 / 8**; doc claims 10 / 8. (Round 10's "7" was against rev18; rev19 added the `skill`-object description, correctly raising it to 8.)
+- **F5 (item 6):** real ranges: key literal **1223–1235** (11 keys at 1224–1234), format whitelist **1236–1247**, predicate **1248–1256**. Doc cites 1223–1233 / 1236–1247 / 1248–1256. The maxItems-vs-maxLength wording is now accurate: `maxItems` is in the Anthropic 11; `maxLength` is in neither table.
+- **F6/F7 (item 7):** yes to both (lines 242, 288, 292 above).
+- **F8 (item 8):** yes, the doc requires provider-table coverage and the test plan forbids `() => false` as the completeness check. Implementable: the 16+11 union scan is directly implementable; note the "real predicate" option needs an in-test replica because `isAnthropicStrictUnsupportedKeyword` is **not exported** from `anthropic-messages.js` (only `stream`/`streamSimple` are), though that replica is mechanical. Testable, as the probes below demonstrate.
+
+## Item 9 — probe outcomes
+
+- `makeStrictJsonSchema(schema)` (single arg): **record_skill PASS, record_memory PASS**.
+- `makeStrictJsonSchema(schema, realAnthropicPredicate)` (predicate replicated byte-for-byte from `anthropic-messages.js:1223–1256`): **both PASS**; descriptions preserved byte-for-byte at every level (8/8 and 10/10); every object has `required == propertyNames` and `additionalProperties: false`; **zero keys from the 16+11 union**.
+- `resolveJsonSchemaStrictSampling(tool, supportsStrictMode=true, realPredicate)` with `strict:"prefer"`: **`true` for both**. `supportsStrictMode=false` + `"prefer"`: **`undefined`** (fallback); + `"require"`: throws.
+- F8 sanity probe: a synthetic schema containing `maxItems` is **PASSED by `() => false`** (key hidden) but **throws** with the real predicate (`maxItems: 3 is unsupported`) and degrades to `undefined` under `"prefer"` — exactly the loophole the doc now closes.
+- `description` inside `items` survives strict transformation (synthetic probe), consistent with doc:284's "(含 `items` 层级)".
+
+## Item 10 — new contradiction / frozen-ready
+
+One **new, non-blocking but factual contradiction** was introduced by the remediation: doc:282 asserts *both* tool descriptions "仍长于全部内置工具（最长 `edit` 326）", yet the same sentence states `record_skill` is 294 — shorter than `edit` 326 (and below the house-style cap). This is the same class of length-accuracy defect F2 was raised about, so F2 is not completely remediated; the internal records (doc:384/386 "F1–F8 已全部落地 / 已全部修正") inherit the overstatement. Secondary residual: the key-set citation end (1223–1233) still clips the literal (1235); harmless since all 11 keys are enumerated inline, but it can be tightened to 1224–1234 / 1223–1235.
+
+No blocking or important issue; both schemas are strict-clean, F1/F3–F8 are correct, and the design remains implementable. Fix the `record_skill` comparative claim (e.g., "record_memory 413 长于全部内置工具；record_skill 294 与 edit 326 同档，短于 edit") and the delta is frozen-ready.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,73 @@
+## Round 8 — focused re-review of the post-PASSED amendment
+
+I compared rev16 against the round‑7 input (`/tmp/pi-context-rev15/.../structured-consolidation-output-design.md`) to isolate the delta, then verified the claims against the installed pi-ai 0.99.2 and the extension code.
+
+---
+
+### Verification of the amendment's factual claims (items 1–2)
+
+**1. `Context.tools` is the carrier — VERIFIED, but the amended citation is off by one.**
+- `tools?: Tool[]` is at `.../pi-ai/dist/types.d.ts:535` (interface `Context` at 532). The amendment (design line 249) cites `types.d.ts:536`; line 38 of the same document still cites 535. Actual 535.
+- `complete<TApi extends Api>(model: Model<TApi>, context: Context, options?: ModelsApiStreamOptions<TApi>)` is at `.../pi-coding-agent/dist/core/model-registry.d.ts:40`; `ModelRegistry.complete` delegates to `ModelRuntime.complete` (`dist/core/model-runtime.js:77-78`), which does `stream()` → `normalizeContext(context)` (`model-runtime.js:479`), folding `Context.tools` into `toolsAdded` on the leading system message (`pi-ai/dist/utils/transcript.js:6-17, 23-27`). Adapters then read them via `getCurrentTools(context.messages)` (e.g. `api/google-generative-ai.js:288`). So `ctx.modelRegistry.complete(model, {messages, tools}, opts)` is a real, working carrier.
+
+**2. `functionCall` is wire-only; normalized part is `type:"toolCall"` — VERIFIED.**
+- Normalized pieces: `ToolCall` at `types.d.ts:280-288` with `type:"toolCall"` (281) and `arguments: JsonObject` (284); `AssistantMessage.content: (TextContent | ThinkingContent | ToolCall)[]` at `types.d.ts:374`. `functionCall`/`function_call` does **not** occur anywhere in `types.d.ts`.
+- `functionCall` only in wire adapters: `google-generative-ai.js:117-147`, `google-vertex.js:120-149`, `google-shared.js:230` (request builder), `openai-completions.js:296-334` (normalizing `toolCall.function` to `{type:"toolCall"}` at :309) and `:1199` (`function_call`/`tool_calls` finish_reason), plus `openai-responses-shared.js:231/365/607` and `openai-codex-responses.js`. The cited ranges check out; the list is non-exhaustive but the claim holds, so "one `type === "toolCall"` extraction covers all routes" is sound.
+- `registerTool` is the pi extension tool registry (`pi-coding-agent/dist/core/extensions/types.d.ts:1186`); `grep -rn "registerTool" extensions/` in the sandbox is empty. Claim verified (and decision-record Q1 already said this).
+
+---
+
+### Findings
+
+**F1 — important — `pickToolCall(toolCalls, name)` cannot implement the policy it is pinned to implement (missing reply text).**
+- Where: design 接口改动 lines 252 and 255; current `shared/llm.ts:103-106`.
+- Evidence: the pinned policy is "有 toolCall 但不可用**且文本为空** ⇒ 判错" and "名称匹配、以及「有 toolCall 但不可用且 text 为空」的判定，由共享的 `pickToolCall` 统一落实". But the signature has no text. `completeWithMeta` is deliberately name-agnostic: a `toolUse` reply with one structurally usable but name-mismatched toolCall and **non-empty** text returns `{text, toolCalls}` without throwing (suppression condition only requires one non-null-object-arguments toolCall). `pickToolCall(toolCalls, name)` cannot distinguish that valid text-fallback case from the empty-text error case.
+- Impact: the implementer must either silently extend the signature (undocumented contract change) or throw on any name mismatch, which kills the fail-open text fallback for a mismatched call the design explicitly wants to keep; either way the "策略只一份" claim is false and the exact old duplication returns to the callers.
+- Minimal fix boundary: pass the text (e.g. `pickToolCall(toolCalls, name, text)` / options bag), or make it return `{call, presentButUnusable}` and document the shared throw site; add the mismatched-toolCall+empty-text case to the I1 test (today's test only covers zero toolCalls).
+
+**F2 — important — the merge left two stale name/accounting-ownership statements in 决策 7, contradicting the new shared abstraction.**
+- Where: design lines 197, 198, 199 vs lines 251-255.
+- Evidence: line 197 "「有 toolCall 但不可用且文本为空」仍由 pass 判为错误" and line 199 "名称匹配由 `autolearn/pass.ts` 自己判" directly contradict line 255 "名称匹配…由共享的 `pickToolCall` 统一落实" and line 252. Line 198 still cites the per-pass wrapper `autolearn/pass.ts:92-102` for `noteModelSuccess`/`noteModelFailure`, while line 196 says the wrapper exists only once in `callAux`. These lines were consistent with rev15 and are now stale (they were not in the amendment's merged 接口改动 pair, so the "two bullets merged" claim didn't reach them).
+- Impact: an implementer reading 决策 7 (the autolearn section) can legitimately implement name matching and failure accounting in `autolearn/pass.ts`, re-creating exactly the duplication the amendment forbids; the test plan has no case that would catch the divergence.
+- Minimal fix boundary: rewrite/delete lines 197 and 199 to reference `pickToolCall`/`callAux`, and state at line 198 that the pass wrappers stop calling `noteModel*` themselves.
+
+**F3 — important (one-line fix) — `callAux`'s pinned options cannot carry the accounting identity its guarantee requires.**
+- Where: design line 251 vs `shared/call-policy.ts:66,99` (`noteModelFailure(scope, projectRoot, error)`, `noteModelSuccess(scope, projectRoot)`) and `autolearn/pass.ts:92-102` / `memory/pass.ts:83-96`.
+- Evidence: `callAux(ctx, prompt, { model, maxTokens, tools, state })` promises "`noteModelFailure` 只在两次都失败后记一次", but nothing in the signature supplies `scope`/`projectRoot`, and the design says only that `state` holds the sticky switch. `ctx` has no project root (`getProjectRoot(pi, ctx.cwd)` needs `pi`); callers already compute `projectRoot`. It also does not say callAux owns `noteModelSuccess` (the existing wrappers call it on every success, and failure counts reset only because of it).
+- Impact: as written the single shared helper cannot deliver its pinned guarantee; the implementer must add parameters or re-split accounting — a design-level decision left unpinned.
+- Minimal fix boundary: put `{ scope, projectRoot }` in the options/state bag and state that `callAux` owns both `noteModelSuccess` and the single post-both-attempts `noteModelFailure`; pass-specific side effects (`throttle.set`) stay in the caller's catch.
+- Note on the question asked: sticky state *is* genuinely per-pass. `memory/pass.ts` makes up to 3 calls (initial :104, retry :121, condense :134) all inside one `consolidateProjectState` invocation; `autolearn/pass.ts` makes up to 3 (first look :117, evidence :127, plus the new length retry) inside one `run()`. A pass-local state object is sufficient, and the "once after both attempts" count is satisfiable inside one helper — once the identity issue above is fixed.
+
+**F4 — nit — new citation inconsistency for `Context.tools` and `ToolCall`.**
+- Where: design line 249 (`types.d.ts:536`, `280-287`) vs line 38 (`types.d.ts:535`, `280-284`) vs line 266 (`280-286`).
+- Evidence: installed pi-ai: `tools?: Tool[]` at `types.d.ts:535`; `ToolCall` interface spans 280-288. N10 anticipated drift, but the amendment introduced a wrong line inside the same document that cites the right one.
+
+**F5 — nit — `callAux` bullet's mechanism wording diverges from decision 2.**
+- Where: design line 251 vs lines 83/196.
+- Evidence: line 251 says fallback happens "在本 pass 第一次 **tools 被拒**时", while decision 2 explicitly rejects error classification ("不尝试字符串分类") and pins "第一次**带 tools 的调用抛出**时无条件回退一次". Also "按 `compat` 解析 strict" is not something the extension can or should do: strict/compat resolution lives in pi-ai (`resolveJsonSchemaStrictSampling` called inside adapters, e.g. `anthropic-messages.js:1261`, `bedrock-converse-stream.js:907`, `google-shared.js:339`); the extension only sets `constrainedSampling:{strict:"prefer"}`. An implementer could add dead compat logic.
+- Minimal fix: mirror decision 2's "first tools-bearing call throws" wording and replace "按 compat 解析 strict" with "原样透传 `constrainedSampling`".
+
+**F6 — nit — round-7 评审记录 row is garbled.**
+- Where: design line 327 ("F6-3..R6-9 均 ADDRESSED").
+- Evidence: there is no F6-3 in any transcript; round 7's findings are F1–F12 and its disposition table is R6-1..R6-9. The rest of the row (fuzz 6,000 / 0 violations, the F7 correction about the optional second argument, "可以无歧义实现") matches the transcript. Status truth is otherwise fine: front-matter `design-passed-round7-amended-pending-round8`, the post-PASSED row marked `pending-review`, and the closing "待 round 8 复核后冻结" all describe reality.
+- Minimal fix: correct to "F3–F10 与 R6-3..R6-9".
+
+**F7 — suggestion — the two new shared pieces have no direct tests.**
+- Test plan has no case for `pickToolCall` on "present but unusable toolCall + empty text → error" (I1 only covers zero toolCalls) and none for `callAux`'s central promise (both attempts fail → exactly one `noteModelFailure`, sticky thereafter). These are the amendment's core behaviors; add two test rows.
+
+**F8 — praise — amendment B is accurate and the "share mechanism, not policy" direction is right.**
+- All of B's claims reproduce (file:line above); one extraction over normalized `type:"toolCall"` is genuinely provider-agnostic on this installed version; `registerTool` is a different registry and the design doesn't touch it. The shared abstraction removes a real duplication (name matching + unusable-call error was split across two bullets), and with F1–F3 fixed the boundary (mechanism: callAux/pickToolCall; policy: prompts, schemas, adoption, admission, retry payloads) is implementable. No scope creep; nothing in the amendment re-opens R6-1/R6-2/B1/B2/N1 or decision 7's shape.
+
+---
+
+### Explicit answers
+
+- **Item 3 (name-policy consistency):** the merged bullet itself (line 255) is single and self-consistent, but the doc still contains the stale ownership clauses at lines 197/199 (F2), so the document as a whole is not yet non-contradictory.
+- **Item 4 (shared helpers):** no contradiction with earlier decisions; per-pass sticky state is sound; "noteModelFailure once after both attempts" is satisfiable in one helper, but the pinned signatures need the small fixes in F1/F3.
+- **Item 5 (status rows):** truthful, except the garbled "F6-3" in the round-7 row (F6).
+- **Item 6 (new blocking/important):** no new blocking issue and no scope creep. Three importants are amendment-local (F1–F3), each with a small, already-directioned fix boundary; no re-litigation of settled findings is needed.
+
+**Is the amendment sound and is the design still implementable without further design decisions?**
+Directionally sound, and B is fully verified. As written, A is not quire frozen: `pickToolCall` cannot enforce the pinned empty-text policy without the reply text, `callAux` cannot do its own accounting without scope/root, and 决策 7 still assigns the shared policy to `autolearn/pass.ts`. Those are two one-line interface corrections plus one wording cleanup, all with obvious fixes already dictated by decision 2 — after them, yes, the design remains implementable without any new design-level decision. No blocking defect.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,53 @@
+You are an independent design reviewer. This is round 4: a FOCUSED re-review of the round-3 fix delta.
+Rounds 1–3 all returned VERDICT: CHANGES-REQUESTED; the design has been revised three times.
+Judge the CURRENT design in /tmp/pi-context-rev12 on its own merits.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev12.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the design doc’s claims, or the earlier rounds’ conclusions: verify against the code.
+
+INPUTS
+- Revised design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Earlier rounds: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design-review-round1-independent.txt (and round2, round3)
+- Code: extensions/project-context/shared/llm.ts, extensions/project-context/memory/{parse.ts,pass.ts,prompt.ts,schema.ts,document.ts,store.ts,report.ts}, extensions/project-context/shared/limits.ts
+- pi-ai (read-only, OUTSIDE the sandbox):
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/{types.d.ts,api/constrained-sampling.js,api/openai-completions.js,api/anthropic-messages.js,utils/json-parse.js}
+
+ROUND 3 FINDINGS THIS ROUND MUST JUDGE:
+- N1 blocking: a schema-valid all-empty-sections reply renders a headings-only document (~72 chars), passes the `length >= 40` change test, and wipes MEMORY.md. The revision adds 决策 6 (semantic-empty gate). Verify the gate is placed and specified so it actually prevents the wipe on BOTH the structured and fallback-parseable entries.
+- N2: the “preamble before the first heading ⇒ undefined” bullet was re-added; verify it is present and consistent with the test plan.
+- N3: the opaque path must keep `exceedsMemoryCap` as its condense gate; verify this is stated.
+- N4: the no-tools fallback must be sticky, and retry/condense must not carry tools; verify this is stated and internally consistent with I3.
+- N5: `dropped` must be split into section-overflow vs item-truncation, with cause-correct wording/advice and a report discriminator; verify.
+- N6: test plan I4 must assert `text.length <= cap` (no `marker`); verify.
+- N7: a trailing truncation-marker line must be stripped before the intra-section rule; verify.
+- N8: the guard diff point must be pinned to the sections actually adopted for the write; verify.
+- N9: llm.ts must not own the memory-specific tool-name check; verify.
+- N10: pi-ai line citations drifted; verify the revision re-points them or states function-name lookup.
+- N11: the backward-compat claim for “old 4-section memories” must be qualified to bullet-shaped docs; verify.
+
+YOUR TASK
+1. For EACH finding N1–N11, state ADDRESSED / PARTIALLY ADDRESSED / NOT ADDRESSED with the design section and one line of evidence. “Addressed” requires a workable mechanism, not a promise.
+2. Adversarially hunt for NEW problems introduced by THIS revision (especially 决策 6, the N4 stickiness, and the N5 split), and for contradictions between sections.
+3. Re-verify the corrected factual claims.
+4. Is the design now implementable without further design-level decisions? List any remaining decision that must be made before coding.
+5. Quality bars: over-engineering, unclear boundaries, unstated assumptions, scope creep.
+
+TEST AND QA FOCUS
+- Run `node tests/run-all.mjs` in the sandbox (read-only); report the count you saw.
+- Probe anything you doubt in /tmp and report the actual output.
+
+SCOPE DISCIPLINE
+- Out of scope (do NOT flag as missing): S4 priority clipping, configurable CONTEXT cap, CONTEXT read-side migration,
+  vault/encryption/archive upload, command renaming (separate issue 2026-10-01-command-naming-consolidation).
+- DO flag if the design smuggles any of these in.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line (or design section), evidence, impact, minimal fix boundary (do not implement).
+Then the N1–N11 disposition table, then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

@@ -1,0 +1,94 @@
+# Independent Design Review — Structured consolidation output
+
+Read-only audit performed. `git status --short`/`git diff --stat` are byte-identical before and after (tests/probes wrote only to `/tmp` and `os.tmpdir()`). Baseline: `node tests/run-all.mjs` → **All 13 tests passed**, matching the design's "13/13" claim.
+
+## Verification of cited claims (design "现状")
+
+Verified true:
+- `prompt.ts:24` asks for `{memory_markdown, context}`; `shared/llm.ts:89-92` sends only `{messages}`; `llm.ts:97` uses only `extractText`; `llm.ts:103-106` throws on `toolUse`+empty text.
+- `parse.ts:61-74` uses `parseJsonObject` (fence strip + brace scan) and `jsonStringField` recovery; `pass.ts:128-150` does one condense then keeps the first reply; `store.ts:76` routes through `normalizeMemoryReply`.
+- pi-ai types: `constrainedSampling` `types.d.ts:506-521`, `Context.tools` `types.d.ts:535`, `ToolCall.arguments` `types.d.ts:280-284`; `resolveJsonSchemaStrictSampling` `constrained-sampling.js:163-183`; OpenAI-compatible `supportsStrictMode` default `false` (`openai-completions.js:1288-1289`, resolved in `getCompat` line 1331); Anthropic `supportsStrictTools ?? false` (`anthropic-messages.js:145`); bedrock default false; `makeStrictJsonSchema` `constrained-sampling.js:42-110`. The unsupported-key list in the design is exactly the code's list.
+- Local route reality: only the two deepseek models in `~/.pi/agent/models-store.json` declare `supportsStrictMode: true`; commandcode/scnet declare none; `.agents/memory/project-context.json` has `provider`/`model` empty; no `registerTool` in `extensions/`.
+- Probes (see below): draft schema is already strict, deep-equal under `makeStrictJsonSchema`, second pass does not throw; `$ref` throws under `require` and is skipped under `prefer`; `strict:"require"` + unsupported throws.
+
+Incorrect / stale:
+- Google does **not** default strict off: `google-shared.js:333` has `supportsStrictMode = true`, and callers pass `supportsGoogleStrictToolSampling(model.id)` (`google-generative-ai.js:298`, `google-vertex.js:368`), which is true for Gemini 3+ (`google-shared.js:353-356`).
+- commandcode's models are all `anthropic-messages` (8/8); only the provider's *default* api is `openai-completions`.
+- `document.ts:87` is `CLIP_HEAD_SHARE`; `clipToLineBoundaryBothEnds` is at `document.ts:96` (called at 118). `constrained-sampling.js:163-182` should end at 183.
+- Test plan's `PI_PROVIDER`/`PI_MODEL` cannot select a route — they are session-description outputs from bash (`docs/environment-variables.md:28-32`), not inputs. The aux route is selected by `project-context.json` or `/project-context model`.
+
+## Findings
+
+**B1 — Blocking — Per-section/per-item drops become invisible; the write path undoes the marker the design depends on.** (设计 目标/决策 4; `document.ts:132,136`; `store.ts:76`; `report.ts:111`)
+Evidence: any marker the renderer appends is removed by `normalizeMemoryReply` → `stripMemoryMarker`, and `report.ts:111` sets `cappedMemory = exceedsMemoryCap(memoryText, …)`, which is false for a document the renderer already trimmed. `isMemoryTruncated` is only consulted by the `/memory` command, never by the write path. Probe of the marker chain confirms a renderer-authored marker does not survive `recordMemoryDocument`.
+Impact: decision 4's "dropped 计数并入现有 marker 与 report 日志/告警" is not implementable through the current APIs without design-level changes. Per-section and per-item truncation silently delete content — the exact failure class this design exists to remove.
+Fix boundary: define `renderMemoryDocument` as returning `{text, dropped}` (or preserve its marker through the store), and make `report.ts` treat `dropped > 0`/`isMemoryTruncated` as the cap event so the existing log/notify fires. Do not rely on `exceedsMemoryCap`.
+
+**B2 — Blocking — Truncated tool-call arguments are silently repaired into shape-valid sections, and the retry path may accept them.** (设计 接口改动/风险 R2; `pass.ts:95-117`; pi-ai `utils/json-parse.js:90-107`, `openai-completions.js:261`, `anthropic-messages.js:511,551`)
+Evidence: pi-ai finalizes every tool call with `parseStreamingJson`; my probe shows the truncated string `{"memory":{…,"index":["i1","i2` becomes a complete object with `index:["i1","i2"]`. `pass.ts` currently computes `result` first and only retries when `!result`; the design says "stopReason length 仍是截断信号" but never states it takes precedence over a present `toolCall`.
+Impact: a reply cut at `finish_reason:"length"` can yield valid-looking but truncated arrays, no retry, no marker — silent content loss, the central invariant of this design.
+Fix boundary: in `pass.ts`, `stopReason === "length"` must force the retry/condense branch even when a `toolCall` was extracted; add a mocked stream-level test that ends with `length` after a partial tool call.
+
+**I1 — Important — The `toolUse` contract change is too broad and still leaves an empty-success hole.** (设计 接口改动; `llm.ts:103-106`; `parse.ts:55-59,72`)
+If the implementation simply stops throwing for `toolUse` when `tools` was sent, a `toolUse` with **no** usable tool call returns `text: ""`; `parseConsolidated("")` returns `{memory: ""}` via `looksLikeJsonReply` fallthrough; `report.ts:73` (`length >= 40`) treats it as unchanged and nothing is logged. Fix: only suppress the throw when an actual `type:"toolCall"` part was extracted; otherwise keep throwing.
+
+**I2 — Important — `sectionsFromMarkdown` loss semantics are undefined, and the "unchanged vs today" backward-compat claim is unproven.** (设计 决策 3 表; `parse.ts:61-74`)
+Not specified: what happens to preamble text before the first `##`, unknown sections (`## Notes`), content after the last section, missing one of the four headings, non-bullet prose, bullet-marker/case/whitespace normalization. If the parser silently keeps only recognized bullets, fallback·可解析 deletes model content. If it requires all four headings, behavior differs from today's verbatim Markdown path. Fix: state the extraction contract (recognized heading set, what counts as an entry, what is dropped), return `undefined` when the reply is not canonical enough, and test each case.
+
+**I3 — Important — Fallback prompt shape is incoherent with the parser.** (设计 接口改动 "按同样结构返回 JSON"; `pass.ts:113,133`; `parse.ts:63`)
+`parseConsolidated` only accepts `memory_markdown`; decision 3's fallback·可解析 expects `parseConsolidated().memory` as Markdown. "同样结构" (the sections object) cannot be parsed and would fail after retry — a regression for providers that ignore `tools`. The retry and condense prompts still demand `memory_markdown` and object context, contradicting a tool-first prompt. Fix: explicitly keep the prose fallback as `{memory_markdown, context}` (or extend the parser to the sections shape), and align all retry/condense wording.
+
+**I4 — Important — Renderer budget units and the final cap invariant are unspecified.** (设计 决策 4; `schema.ts:31-43`; `document.ts:114-130`)
+`memorySectionBudgets` yields body-character shares. Bullets add `"- "` + `"\n"` (3 chars/item), and item strings may contain newlines. If the renderer counts only item text, the rendered body exceeds the budget; the document can exceed the cap, triggering `pass.ts:128-150`'s condense with a `memory_markdown` prompt that no longer matches, then the global 60/40 clip returns. Fix: define counted units (full rendered body, or subtract bullet overhead), assert `document.length (+marker) <= cap`, and test a section of many short items.
+
+**I5 — Important — Whole-arguments validation can discard good memory because one context field is malformed.** (设计 风险 R5; `parse.ts:18-42`, `pass.ts:97`)
+`parseContext` deliberately keeps memory when context drifts. If `sectionsFromToolCall` rejects the entire arguments object on any shape error, a valid `memory` is thrown away and the fallback is `parseConsolidated("")` on a tool-only reply (see I1). Fix: validate `memory` and `context` independently, mirroring the existing partial semantics (`contextUnusable`), and define item sanitization (newlines, heading/marker-shaped strings) in the renderer.
+
+**I6 — Important — The regression guard's exact set-diff cannot detect what it claims.** (设计 决策 5)
+Concrete false positives: rewording/condensing an invariant; merging two entries into one; moving an item Invariants→Pitfalls; bullet-prefix/whitespace/case differences; old free-form bullets not stripped the same way. False negatives: old free-form without `## Invariants` yields no entries to diff; new reply through fallback·不可解析 has no arrays; content already lost by an earlier cap is absent from the old render; per-item truncation may happen after the diff. Also undefined: diff before or after renderer clipping, against `existing.text` (journal-aware) or the on-disk file, and what happens in the `silent` shutdown path. Fix: define normalization, skip conditions (either side not section-parseable → no warning), diff point, and accept/document FP/FN limits with tests.
+
+**I7 — Important — "Fail-open" does not cover a route that rejects the `tools` parameter.** (设计 目标/风险 R1)
+`strict:"prefer"` only governs strictification (`constrained-sampling.js:163-183`). If an OpenAI-compatible provider 400s on `tools`, the request fails at `ctx.modelRegistry.complete`; there is no text reply to fall back to and no retry-without-tools described. Fix: state a one-shot retry without `tools` on tool-parameter errors, or explicitly declare this fail-closed and document it.
+
+**I8 — Important — Goal overstatement + a test-plan prerequisite that is factually wrong.** (设计 目标, 测试计划)
+"用 pi-ai 的结构化输出…一次性消掉三类正确性问题" is not honest for the routes in use: strict is off, so `constrainedSampling` is a no-op and this is ordinary tool-calling; Entry C still keeps the 60/40 clip, and Entry B only if the reply is canonical Markdown. Also `PI_PROVIDER`/`PI_MODEL` cannot point the aux route at a real route (they report the session model). Fix: scope the goal sentence; use `project-context.json`/`/project-context model` in the probe.
+
+**I9 — Important — Internal contradiction on guard scope.** (设计 决策 1 vs 决策 5 / 决策记录 Q3 / 非目标)
+决策 1 says the guard "列为后续 issue，见「非目标」", while 决策 5 and the owner record include it, and 非目标 never lists it. Delete the stale parenthetical.
+
+**N1 — Nit —** Google strict default and commandcode API mix are described incorrectly (see claim audit).
+
+**N2 — Nit —** `document.ts:87` / `constrained-sampling.js:163-182` line citations are off (function at 96; region ends 183).
+
+**S1 — Suggestion —** `toolChoice` is available in the complete options (`SimpleStreamOptions.toolChoice`, `types.d.ts:244`, per-API types). "auto" with a prose fallback invites ignored tool calls; the design should state why `required`/`any` is not used (provider support vs. fallback).
+
+**Learning / Praise —** The draft schema is verified strict-ready: `makeStrictJsonSchema(draft)` does not throw and is deep-equal (no rewrite); the design's "all properties required avoids `anyOf` wrapping" and "second normalization of an optional object would throw" claims match code exactly. The renderer plan mirrors the already-shipped `context-doc.ts:56-82` pattern (per-section budgets, dropped count, marker), and `MEMORY_SECTIONS` as the single source of headings/order/shares is the right boundary. Owner decisions (context in the same tool, guard in scope, prefer not require) are represented coherently.
+
+**Residual risk —** Route-side `compat.supportsStrictMode/StrictTools: true` is a static capability claim; if the provider actually rejects `strict`, `prefer` does not retry non-strict and the pass fails. The owner-settled decision is sound, but the probe must verify per route and it must be reversible.
+
+## Test And QA Focus
+
+Baseline observed: `node tests/run-all.mjs` → 13 tests, all passed (design's 13/13 is correct).
+
+Strict probe (run in `/tmp` against the pi-ai dist):
+- `makeStrictJsonSchema(draft)` → OK, output deep-equal to input; second pass → OK (no `anyOf` wrapping).
+- `resolve draft+prefer` supported=false → `undefined`; supported=true → `true`.
+- `resolve draft+require` supported=false → throws "strict tools are unsupported".
+- `$ref` schema: `prefer`+supported=true → `undefined` (no throw); `require`+supported=true → throws "$ref schemas are unsupported".
+- Optional object property wrapped in `anyOf` throws on a second pass ("object and array unions are unsupported").
+
+What the design's test plan would NOT catch:
+1. `finish_reason:"length"` with a partial tool call repaired into valid arguments (B2) — a mock returning a plain object bypasses `parseStreamingJson`.
+2. Renderer drops not reaching the marker/log (B1) — renderer-unit tests alone pass.
+3. `toolUse` with no tool call → `{memory:""}` silent no-op (I1).
+4. Unknown/preamble content dropped by `sectionsFromMarkdown` (I2).
+5. Bullet/newline overhead pushing the document over cap (I4).
+6. Independent memory/context validation (I5).
+7. Regression-guard false positives/negatives and its fallback/silent paths — the test plan currently contains **no guard tests at all**.
+8. A provider that 400s on `tools` (I7).
+9. Strict route-side activation actually being accepted by the provider (only a real probe catches it; the design truthfully flags paid-route verification).
+10. Item strings containing newlines, the truncation-marker shape, or `##` headings corrupting the code-owned structure.
+
+Scope discipline: nothing out of scope was smuggled in; S4, configurable CONTEXT cap, CONTEXT read-side migration, vault/encryption/archive, and command renaming are correctly excluded. The per-section clipping here is the renderer allocating section budgets, not S4's priority-based dropping.
+
+VERDICT: CHANGES-REQUESTED

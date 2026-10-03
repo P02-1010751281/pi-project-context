@@ -1,0 +1,39 @@
+You are an independent design reviewer. This is round 9: a NARROW confirmation pass.
+Round 8 returned CHANGES-REQUESTED with findings F1-F7 on a post-PASSED amendment (shared abstraction). The doc has been edited to remediate exactly those. Judge ONLY whether F1-F7 are correctly and completely remediated, and whether the edits introduced a NEW contradiction. Do not raise new stylistic preferences.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev17.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the doc: verify against the extension code and installed pi-ai.
+
+INPUTS
+- Design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 8 transcript (the findings): .../structured-consolidation-output-design-review-round8-independent.txt
+- Previous rev (pre-fix) for diffing, if present: /tmp/pi-context-rev16 (same design file)
+- Code: extensions/project-context/shared/llm.ts, shared/call-policy.ts, memory/pass.ts, autolearn/pass.ts, autolearn/parse.ts
+
+THE SEVEN FINDINGS TO CONFIRM
+F1 (important) pickToolCall(toolCalls, name) had no reply text, so it could not enforce "present-but-unusable toolCall AND empty text => error" while keeping the legitimate fail-open case "name-mismatched toolCall with NON-empty text".
+F2 (important) 决策 7 still assigned name matching to autolearn/pass.ts and failure accounting to the per-pass wrapper (autolearn/pass.ts:92-102), contradicting the new shared callAux/pickToolCall abstraction.
+F3 (important) callAux's pinned options lacked scope/projectRoot, so it could not own "noteModelFailure at most once after both attempts"; the doc also did not say callAux owns noteModelSuccess.
+F4 (nit) citation drift: Context.tools line, ToolCall line ranges inconsistent within the same document.
+F5 (nit) callAux wording diverged from decision 2 ("tools rejected" vs "first tools-bearing call throws") and wrongly implied the extension resolves strict/compat itself.
+F6 (nit) the round-7 评审记录 row contained a garbled finding id ("F6-3").
+F7 (suggestion) no test rows for pickToolCall's mismatched-call cases or callAux's accounting/stickiness.
+
+CONFIRM, WITH EVIDENCE
+1. For each of F1-F7: ADDRESSED / PARTIALLY / NOT, one line of evidence each (quote the current line).
+2. F1 specifically: does the current signature/contract now distinguish "mismatched name + non-empty text" (must NOT error, falls back to text) from "mismatched name + empty text" (MUST error)? Is that implementable from what the doc pins?
+3. F3 specifically: is `noteModelFailure`-once-after-both-attempts actually satisfiable given shared/call-policy.ts's real signature, and does the doc now name which side owns noteModelSuccess? Check the real noteModelSuccess/noteModelFailure signatures.
+4. Does any wording anywhere in the document STILL assign name matching or noteModel* accounting to a per-pass module? Grep the document for these and report each occurrence.
+5. Are the corrected citations now accurate against installed pi-ai (Context.tools line; ToolCall range)? Give the real numbers.
+6. Did the remediation introduce any NEW contradiction or any new blocking/important issue?
+7. Is the design now frozen-ready (implementable with no further design-level decisions)?
+
+OUT OF SCOPE (do not flag): command renaming, session-archive durability, tool description copy, S4, configurable CONTEXT cap, vault/encryption, and any finding already dispositioned in rounds 1-7.
+
+OUTPUT
+Then the F1-F7 disposition table, then an explicit answer to items 6 and 7.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

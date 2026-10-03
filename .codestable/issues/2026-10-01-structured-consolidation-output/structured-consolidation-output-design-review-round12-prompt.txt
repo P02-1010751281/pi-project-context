@@ -1,0 +1,32 @@
+You are an independent reviewer. This is round 12, a MINIMAL confirmation pass over a two-line remediation. Round 11 returned CHANGES-REQUESTED for exactly one factual defect (a comparative length claim) plus one optional citation tightening. Judge ONLY whether those two are fixed and whether the fix introduced a new contradiction. Do not add new preferences.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev20.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Verify, do not trust.
+
+INPUTS
+- Design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 11 transcript: .../structured-consolidation-output-design-review-round11-independent.txt
+- Pre-fix revision: /tmp/pi-context-rev19 (same design file)
+- pi built-ins: /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/*.js
+- pi-ai: /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/
+
+THE TWO ITEMS
+R1. doc:~282 previously asserted BOTH tool descriptions are "仍长于全部内置工具（最长 edit 326）", which is false for record_skill (294 < edit 326). It must now state the facts correctly for each of the two descriptions.
+R2. The Anthropic key-set citation previously read `anthropic-messages.js:1223-1233`, clipping the literal's last two lines (real: 1223-1235). It should now cite the correct range everywhere it appears.
+
+CONFIRM, WITH EVIDENCE
+1. Quote the current doc:282 sentence. Is the comparative claim now TRUE for both `record_memory` (413) and `record_skill` (294)? Independently re-measure the built-in delivered description lengths and confirm the max.
+2. Independently re-measure the two descriptions' lengths from the doc text. Do they still equal 413 and 294?
+3. Grep the whole document for `anthropic-messages.js:1223-1233` and for `1223-1235`. Report every occurrence and confirm the range is now correct (check the real literal's line span in the installed source).
+4. Did this remediation introduce ANY new contradiction, including in the 评审记录 rows (which claim F1-F8 are fully landed)? Is any claim elsewhere in the doc now inconsistent with the corrected sentence?
+5. Is the delta frozen-ready?
+
+OUT OF SCOPE: everything else — command renaming, session-archive durability, S4, configurable CONTEXT cap, vault/encryption, and all findings dispositioned in rounds 1-11.
+
+OUTPUT
+A short disposition for R1 and R2, then explicit answers to items 4 and 5.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

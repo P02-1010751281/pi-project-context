@@ -1,0 +1,35 @@
+You are an independent design reviewer. This is round 8: a FOCUSED re-review of a post-PASSED amendment to a design that already passed round 7.
+Judge only the amendment delta and its consistency with the rest of the document. Do not re-litigate settled findings unless the amendment breaks them.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev16.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch or hook anything. Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the design doc's claims: verify against installed pi-ai and the extension code.
+
+INPUTS
+- Design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 7 transcript: .../structured-consolidation-output-design-review-round7-independent.txt
+- Code: extensions/project-context/shared/llm.ts, memory/*.ts, autolearn/*.ts
+- pi-ai (read-only, OUTSIDE the sandbox): /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/
+  NOTE: makeStrictJsonSchema(schema, isUnsupportedKeyword?) — the second argument is OPTIONAL.
+
+THE AMENDMENT UNDER REVIEW (owner-requested, after round 7 PASSED):
+A. "共用抽象" (shared abstraction) — the design now pins that the tools call + sticky no-tools fallback + failure accounting are implemented ONCE in shared/llm.ts as `callAux`, plus `pickToolCall(toolCalls, name)` and a test-side `assertStrictReady(schema)`, with an explicit "share the mechanism, not the policy" boundary. Two previously separate and partly duplicated name-policy bullets were merged into one.
+B. A verified note that `tools` goes into `Context.tools`, that pi-ai's normalized content model has only `type:"toolCall"` (function_call/functionCall is only the OpenAI/Google WIRE name normalized by provider adapters), that one extraction covers all routes, and that `registerTool` is a different mechanism this design does not use.
+
+VERIFY (with evidence, not by trusting the doc):
+1. `Context.tools` really is the carrier accepted by `ctx.modelRegistry.complete(model, context, options)`; give the file:line for both the `tools?` field and the complete() context parameter.
+2. `functionCall` appears ONLY in provider wire adapters, never in pi-ai's normalized content model; the normalized part type is `"toolCall"`. Give file:line for the normalization and for the `ToolCall` type.
+3. The merged name-policy bullet is now single, non-contradictory, and consistent with 决策 2, 决策 7, the test plan, and the rest of 接口改动. Flag any remaining duplicate or now-stale statement elsewhere in the document (grep the doc for name-policy text).
+4. `callAux` / `pickToolCall` / `assertStrictReady` do not contradict any earlier decision, and the stated boundary (what is shared vs what stays per-pass) is actually implementable: in particular, is the sticky fallback state genuinely per-pass (memory/pass.ts and autolearn/pass.ts each call the model more than once: initial + retry + condense)? Is the "noteModelFailure at most once after both attempts" requirement satisfiable inside a single shared helper given the existing accounting in shared/call-policy.ts and autolearn/pass.ts:92-102?
+5. The document's status/评审记录 rows still tell the truth about what has and has not been reviewed.
+6. Does the amendment introduce any NEW blocking/important issue? Is the design still implementable without further design-level decisions?
+
+OUT OF SCOPE (do not flag): command renaming (separate issue), session-archive durability, tool description copy, S4 priority clipping, configurable CONTEXT cap, vault/encryption.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk), file:line or design section, evidence, impact, minimal fix boundary.
+Then: an explicit answer to "is the amendment sound and is the design still implementable without further design decisions?".
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

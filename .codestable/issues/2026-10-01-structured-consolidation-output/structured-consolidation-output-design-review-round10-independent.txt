@@ -1,0 +1,83 @@
+I verified the delta against the rev17→rev18 diff, the installed pi-ai 0.99.2 (`.../node_modules/@earendil-works/pi-ai/dist/`) and pi-coding-agent 0.99.2 built-ins, and by running `makeStrictJsonSchema` on the two schemas exactly as they appear in the rev18 doc (extracted to `/tmp/round10/`, no sandbox writes). The extension and tests are byte-identical between rev17 and rev18 (`diff -rq` exit 0), so this is a doc-only delta.
+
+## Findings
+
+**F1 (important) — `skill.reason` field description is factually false and contradicts the design.**
+doc:181 says: *"Why this proposal is worth storing. Not read back by code; kept for the transcript only."*
+The code reads it and writes it: `autolearn/parse.ts:28` does `reason: typeof raw.reason === "string" ? …`, and `autolearn/skill.ts:51` embeds it in the candidate SKILL.md header (`<!-- evidence: … — ${skill.reason} -->`). The design itself keeps `ProposedSkill`/`skillDocument` unchanged (doc:192, doc:317), so this stays true after the change. This is a new, model-facing falsehood introduced by D2. This also fails D2(c): the prose elsewhere (doc:48 says only the *top-level* old `reason` was unread; the new `skill.reason` is read).
+
+**F2 (important) — the house-style claim is not met, and the evidence is measured wrongly.**
+doc:279 claims built-in tool descriptions are `read` 344, `bash` 304, `grep` 279, `ls` 222 chars; those are exactly the **raw, unexpanded template literals in the .js sources** (I extracted them: 344/304/279/222 including `${DEFAULT_MAX_LINES}`, `${config.shellName}`, etc.). The strings actually delivered by `createReadToolDefinition()` etc. are **read 303, bash 248, grep 221, ls 184** (all seven built-ins: 127–326, longest `edit` 326). Against that, the two new descriptions measure **623 (`record_memory`, doc:285) and 439 (`record_skill`, doc:289)** — larger than every built-in; `record_memory` is ~2× `read`. doc:380's "两个工具描述压到房规长度" and doc:279's "其余字段级规则全部归 schema 的 `description`" are therefore not accurate: both tool descriptions still carry field-level content (four sections, one-statement-per-entry, context rewrites/state; the no-skill field shape).
+
+**F3 (important) — pi-ai's base unsupported-key list has 16 keys, not 14.**
+`api/constrained-sampling.js:3-20` (`UNSUPPORTED_STRICT_SCHEMA_KEYS`) contains 16 keys: `$ref $defs definitions allOf oneOf patternProperties dependentSchemas dependencies unevaluatedProperties propertyNames contains prefixItems not if then else`. The doc says "14 键" at doc:115 and doc:281 and "pi-ai 14 + Anthropic 11" at doc:380, while its own enumeration at doc:272 is the correct 16. No design conclusion changes (the base list still does not contain `maxLength`/`maxItems`), but the verification claim is wrong.
+
+**F4 (nit) — the description counts are wrong.**
+doc:380 (and the round-10 prompt) says `record_memory` 9 / `record_skill` 10 descriptions. Actual counts: **10** (`memory`, 4 section fields, `context`, 4 context fields) and **7** (`name`, `description`, `body`, `evidence`, `candidate`, `reason`, `inspect`). Every field has one; nothing is missing. This is record-keeping only.
+
+**F5 (nit) — Anthropic citation drift and an over-broad correction.**
+The 11-key set is at `api/anthropic-messages.js:1223-1233`, the format whitelist at `1236-1247`; doc:115/281 cite `1248-1258`, which is the predicate (`isAnthropicStrictUnsupportedKeyword`, 1248-1256) rather than the literal lists. Also doc:115's "原稿…那个前提是错的" is over-broad: the old premise was wrong for `maxItems`, but `maxLength` is in neither the base 16 nor the Anthropic 11 (it falls only under reason ② "providers may not enforce"). Conclusion unchanged.
+
+**F6 (nit) — context-entry hygiene scope narrowed.**
+The old global sentence "Keep every entry short and pointerized: one line plus `see docs/<topic>.md` or `file.ts:123`, never an inline formula, table, or command transcript" now lives only on the `memory` object description (doc:213). `key_points`/`open_tasks` (`doc:254/259`) do not repeat it, and the old sentence followed both the memory and context clauses. Not a clear drop (context desc still says "state and pointers", and the prompt retains the guidance), but it is the only rule whose scope arguably shrank.
+
+**F7 (nit) — "API keys" / "programming" wording dropped.** doc:285/289 say "secrets, credentials, generic advice" where the old text said "secrets, API keys, credentials, generic advice" / "generic programming advice". Subsumed; no behavior loss.
+
+**F8 (suggestion) — make `assertStrictReady` actually cover the Anthropic list.**
+doc:301/337 specify one shared `assertStrictReady(schema)` but doc:337 says the test passes `() => false` to `makeStrictJsonSchema`, which disables provider-specific checks. The delta's own D1 fact (and doc:380's "零禁用键（pi-ai 14 + Anthropic 11）") is only enforceable if the check passes the real Anthropic predicate (or scans the 16+11 union). The two schemas are clean either way (verified below); this is about the test capturing the new contract.
+
+**F9 (praise/verified) — D2 mechanics pass cleanly.**
+Running `makeStrictJsonSchema` on both doc schemas (single-arg and with a replicated `isAnthropicStrictUnsupportedKeyword`):
+- `record_skill`: PASS (both calls). 7 descriptions preserved byte-for-byte at every level.
+- `record_memory`: PASS (both calls). 10 descriptions preserved byte-for-byte at every level.
+- No `anyOf`, root and nested `required == propertyNames`, `additionalProperties:false` on every object, zero base-16 or Anthropic-11 keys.
+- A synthetic schema confirms `description` survives inside `items` too (`structuredClone` + targeted mutations in `makeJsonSchemaNodeStrict`). The real schemas have no items-level descriptions.
+- D1 Anthropic facts are exact: 11 keys including `maxItems`, `minItems` only 0/1, `format` only the 10-format whitelist, and `"prefer"` silently degrades via `resolveJsonSchemaStrictSampling` (`constrained-sampling.js:174-195`).
+
+## Rule-loss table (old (A)/(B) verbatim → new location)
+
+| # | Old rule | Now lives in | Status |
+|---|---|---|---|
+| A1 | Submit consolidated durable memory + current session context | tool desc doc:285 | preserved |
+| A2 | Call once, at end of pass | tool desc doc:285 | preserved |
+| A3 | memory = four fixed sections (project/invariants/pitfalls/index) | tool desc doc:285 + memory desc doc:213 | preserved |
+| A4 | exactly one self-contained statement per entry | tool desc doc:285 + memory desc doc:213 | preserved |
+| A5 | no section headings / no `# Project Memory` header; code renders them | memory desc doc:213 + tool desc doc:285 ("code renders the headings") | preserved (adds "no bullets") |
+| A6 | context: working state, rewritten from scratch every pass | context desc doc:241 (+ doc:285) | preserved |
+| A7 | context: state and pointers, not rules | context desc doc:241 (+ doc:285) | preserved |
+| A8 | context: nothing that already lives in memory | context desc doc:241 | preserved |
+| A9 | entries short & pointerized, one line + `see docs/…` / `file:line` | memory desc doc:213 | preserved for memory; not repeated for context (F6) |
+| A10 | never an inline formula, table, or command transcript | memory desc doc:213 | preserved for memory; not repeated for context (F6) |
+| A11 | never "truncated"/"omitted"; code drops whole entries and reports | tool desc doc:285 | preserved (generalized to "truncation or omission markers") |
+| A12 | never secrets / API keys / credentials / generic advice / overrides | tool desc doc:285 | preserved; "API keys" folded into secrets/credentials (F7) |
+| B1 | Submit this pass's skill decision | tool desc doc:289 | preserved |
+| B2 | no-skill: `name:""`, other fields empty, never omit object | tool desc doc:289 + name desc doc:176 | preserved |
+| B3 | name: new lowercase-kebab, never reused | name desc doc:176 | preserved |
+| B4 | description: one line | description desc doc:177 | preserved |
+| B5 | body: concise Markdown, when-to-use + exact commands/paths | body desc doc:178 | preserved (length bounds remain in autolearn prompt) |
+| B6 | evidence: verified session ids copied from index | evidence desc doc:179 | preserved |
+| B7 | candidate=false: ≥2 distinct verified ids | candidate desc doc:180 | preserved |
+| B8 | candidate=true: stored for user confirm, ≥1 | candidate desc doc:180 | preserved |
+| B9 | inspect: up to four ids when raw evidence needed | inspect desc doc:184 | preserved |
+| B10 | never secrets / credentials / generic programming advice / overrides | tool desc doc:289 | preserved; "programming" dropped (F7) |
+
+No rule is silently dropped. The only scope question is A9/A10 for context entries (F6); everything else is relocation or harmless paraphrase.
+
+**Item 3, second half:** yes, a common rule on the parent `memory` object does reach the model. `Context.tools` carries `Tool.parameters`, and every adapter forwards nested field schemas: OpenAI `parameters: getJsonSchemaToolParameters(...)` (`openai-completions.js:1153`); Anthropic `input_schema` either the strict schema spread or the legacy `{type, properties, required}` with `properties` taken from the parameters (`anthropic-messages.js:1267-1274`) — nested `description`s survive both; Google `parametersJsonSchema` or `parameters: sanitizeForOpenApi(...)`, which strips only `$schema`-family meta keys (`google-shared.js:296-346`); Bedrock `inputSchema.json` (`bedrock-converse-stream.js:912`). Under strict, `makeStrictJsonSchema` preserves them (probe above). Caveat: on the no-tools fallback path none of the schema descriptions travel, but the design keeps the equivalent rules in the prompts (doc:315 and interface changes), so that path does not lose the contract.
+
+## 4. Remaining contradictions after the delta
+
+1. doc:115 / doc:281 / doc:380 "pi-ai 14 键" vs doc:272's own 16-key enumeration and installed `constrained-sampling.js:3-20` (16) — F3.
+2. doc:380 "record_memory 9 / record_skill 10" vs the actual 10 / 7 descriptions (doc:176-184, 213-259) — F4.
+3. doc:380 "两个工具描述压到房规长度" + doc:279 "220–344" vs the actual 623/439 and the actual delivered built-ins 127–326 — F2.
+4. doc:181 "Not read back by code" vs `autolearn/parse.ts:28`, `autolearn/skill.ts:51`, and doc:192/317 — F1.
+5. doc:279's "其余字段级规则全部归 schema 的 `description`" vs field-level content still present in doc:285/289 — F2.
+6. Minor: `anthropic-messages.js:1248-1258` names the predicate, not the literal 11-key set (1223-1233); "那个前提是错的" is over-broad for `maxLength` — F5.
+
+Grep confirms the old wording "`maxLength`/`maxItems` 不在 strict 的拒绝清单里" survives only inside the round-9 record row at doc:380 (as a description of what was corrected), not as a live claim, and the old tool-description texts no longer appear anywhere.
+
+## 5. New blocking/important issue; frozen-ready?
+
+No blocking issue. The schemas are strict-ready (both pass `makeStrictJsonSchema`, with descriptions preserved), the rule set is preserved, and nothing in the delta changes the design's mechanics. The new defects are delta-local accuracy/compliance: the false `skill.reason` description (F1), the unmet house-style normalization plus wrong measurement basis (F2), and the wrong 14-key count (F3), with F4–F8 as cleanups. The design remains implementable; the delta should be corrected before it is recorded as the frozen state ("frozen-ready once F1–F5 are fixed" rather than "as written").
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,70 @@
+You are an independent design reviewer. Review the DESIGN for "structured consolidation output"
+(pi-ai constrained-sampling tools + code-owned memory sections) in /tmp/pi-context-rev9.
+There is NO production code for this change yet: you are reviewing the design BEFORE implementation.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev9.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the design doc's own claims; verify every factual claim against the code and the pi-ai dist.
+
+INPUTS
+- Design under review: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Already-shipped context: .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/auxiliary-call-noise-and-memory-cap-s1-s3-design.md
+- Code the design touches:
+  extensions/project-context/shared/llm.ts, extensions/project-context/memory/{parse.ts,pass.ts,prompt.ts,schema.ts,document.ts,store.ts,report.ts}, extensions/project-context/shared/limits.ts
+- pi-ai (read-only, OUTSIDE the sandbox):
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/types.d.ts
+- `git status --short` and `git diff` inside the sandbox.
+
+CONTEXT / INTENT
+- Today consolidation asks the model for one JSON object {memory_markdown: <markdown string>, context: {...}}.
+  A reply over maxMemoryChars is clipped by memory/document.ts as whole-document head 60% / tail 40%, dropping the
+  middle (Invariants/Pitfalls) first.
+- The design moves the memory's STRUCTURE into code: the model fills MemorySections
+  {project,invariants,pitfalls,index: string[]}, and code renders headings/order/blank lines and enforces
+  per-section budgets.
+- Transport: pi-ai Tool.constrainedSampling with strict:"prefer" (NOT "require"), plus a fail-open fallback to the
+  existing prose+parse path.
+- Owner decisions already settled (do NOT relitigate; DO check coherent implementation):
+  (a) strict is enabled route-side via compat; (b) the memory regression guard is IN scope; (c) context travels
+  through the same tool.
+
+YOUR TASK
+1. Verifiability: is EVERY factual claim the design makes about pi-ai and the existing code TRUE? Check each
+   file:line the design cites. Report any claim that is wrong, stale, or unverifiable — this doc drives implementation.
+2. Does "sections + code-owned rendering" actually remove the positional-clip loss end to end? Trace
+   tool args -> sections -> render -> write, and each of the 3 fallback entries. Where can loss still happen silently?
+3. Adversarially review the plumbing: shared/llm.ts:103-106 currently throws when stopReason==="toolUse" has empty
+   text. Does the design's contract change fully close that hole? What about toolChoice, multiple tool calls, a model
+   that answers with prose instead of calling the tool, and a provider that silently ignores `tools`?
+4. strict:"prefer" semantics: given supportsStrictMode/supportsStrictTools default to false on every route this
+   project actually uses, what does the design still buy? Is the design honest that strict is NOT the guarantee?
+5. Schema: is the design's draft schema actually strict-ready under constrained-sampling.js makeStrictJsonSchema?
+   Run it in a /tmp probe (import the module from the pi-ai dist path) and report the result. List any key that
+   would throw under "require", and check the "all properties required" rule the design states.
+6. Regression guard: can "diff old vs new Invariants/Pitfalls arrays" detect the losses it claims? Give concrete
+   false positives and false negatives. Does it survive the fallback path, where the old memory may be free-form?
+7. Backward compatibility: trace a free-form MEMORY.md (no canonical headings) through all 3 entries. Is the
+   "unchanged vs today" claim true?
+8. Quality bars: over-engineering, unclear boundaries, unstated assumptions, scope creep. Cite design sections.
+
+TEST AND QA FOCUS
+- Run `node tests/run-all.mjs` in the sandbox (read-only) and report the count you actually saw (regression baseline).
+- In a /tmp probe, exercise makeStrictJsonSchema on the design's draft schema and report whether it throws.
+- State what the design's test plan would NOT catch.
+
+SCOPE DISCIPLINE
+- Out of scope (do NOT flag as missing): S4 priority clipping, configurable CONTEXT cap, CONTEXT read-side
+  migration, vault/encryption/archive upload, and command renaming (separate issue 2026-10-01-command-naming-consolidation).
+- DO flag if the design smuggles any of these in, or if an out-of-scope boundary is unclear.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line (or design section), evidence, impact, and a minimal fix boundary (do not implement). Then a
+Test And QA Focus section. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

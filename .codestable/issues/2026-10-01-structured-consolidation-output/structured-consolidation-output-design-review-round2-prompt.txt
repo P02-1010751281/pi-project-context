@@ -1,0 +1,55 @@
+You are an independent design reviewer. This is round 2: a FOCUSED re-review of the fix delta.
+Round 1 of this design returned VERDICT: CHANGES-REQUESTED. The design has since been revised.
+Your job is to judge the REVISED design in /tmp/pi-context-rev10 on its own merits.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev10.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the design doc’s own claims, or round 1’s conclusions: verify against the code.
+
+INPUTS
+- Revised design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 1 findings (the delta this round must judge): .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design-review-round1-independent.txt
+- Code the design touches: extensions/project-context/shared/llm.ts, extensions/project-context/memory/{parse.ts,pass.ts,prompt.ts,schema.ts,document.ts,store.ts,report.ts}, extensions/project-context/shared/limits.ts
+- pi-ai (read-only, OUTSIDE the sandbox):
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/{types.d.ts,api/constrained-sampling.js,api/openai-completions.js,api/anthropic-messages.js,utils/json-parse.js}
+
+ROUND 1 FINDINGS THAT MUST BE ADDRESSED (verify each against the revised design, not just that text was added):
+- B1 renderer drop-count is erased by the write path (store.ts:76 stripMemoryMarker; report.ts:111 exceedsMemoryCap); the revised design must show HOW the count survives.
+- B2 a length-truncated tool call is silently repaired by parseStreamingJson into shape-valid arguments; the revised design must make length precedence explicit.
+- I1 the toolUse error-contract change must not create a silent {memory:""} no-op.
+- I2 sectionsFromMarkdown extraction contract (preamble, unknown sections, missing heading, trailing content).
+- I3 fallback prompt shape must stay {memory_markdown, context} or the fallback breaks.
+- I4 renderer budget units + the final cap assertion.
+- I5 memory/context validated independently.
+- I6 regression guard: diff point, skip conditions, normalization, false positives/negatives.
+- I7 a provider that rejects the tools parameter.
+- I8 goal overstatement + the wrong PI_PROVIDER/PI_MODEL probe claim.
+- I9 stale “follow-up issue” parenthetical for the guard.
+- N1/N2 factual corrections (Google strict default; commandcode api mix; line citations).
+- S1 toolChoice rationale.
+
+YOUR TASK
+1. For EACH finding above, state: ADDRESSED / PARTIALLY ADDRESSED / NOT ADDRESSED, with the design section and one line of evidence. Being “addressed” requires a workable mechanism, not a promise or a restatement.
+2. Adversarially hunt for NEW problems introduced by the revision: contradictions between sections, contracts that cannot be implemented as written, and newly over-specified or under-specified areas.
+3. Re-verify the corrected factual claims (Google, anthropic supportsStrictTools, commandcode api mix, json-parse.js behaviour, the line numbers newly cited).
+4. Is the design now implementable without further design-level decisions? Name any remaining decision that must be made before coding.
+5. Quality bars: over-engineering, unclear boundaries, unstated assumptions, scope creep.
+
+TEST AND QA FOCUS
+- Run `node tests/run-all.mjs` in the sandbox (read-only); report the count you saw.
+- If you doubt a pi-ai behaviour the design relies on (e.g. parseStreamingJson repairing truncated args), reproduce it in a /tmp probe and report the actual output.
+
+SCOPE DISCIPLINE
+- Out of scope (do NOT flag as missing): S4 priority clipping, configurable CONTEXT cap, CONTEXT read-side migration,
+  vault/encryption/archive upload, command renaming (separate issue 2026-10-01-command-naming-consolidation).
+- DO flag if the design smuggles any of these in.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line (or design section), evidence, impact, minimal fix boundary (do not implement).
+Then the round-1 disposition table, then a Test And QA Focus section.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

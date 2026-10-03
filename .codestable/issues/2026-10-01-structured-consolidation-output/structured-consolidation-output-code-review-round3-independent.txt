@@ -1,0 +1,85 @@
+# Round 3 Independent Review — pi-project-context structured consolidation
+
+Read-only verification of `/tmp/pi-context-rev23` (worktree dirty with the implementation). All probes ran under `/tmp/probe-r3`; no file inside the sandbox was created, edited or deleted, and no git mutation was performed. `git status --porcelain` still shows only the implementation's own 47 entries; `git diff --check` is clean.
+
+## 1. Round-2 disposition
+
+| # | Disposition | Current-code evidence |
+|---|---|---|
+| **R2-B1** | **PARTIALLY** — all *structural* bypasses and all four self-check gaps are closed; one variant named in R2 still overwrites | Fixed: `memory/sections.ts:173` strips any backtick/tilde fence family with any info string; `:174` strips thematic breaks / frontmatter; `:177` normalizes `\r\n`, `\r`, U+2028, U+2029; `:179-182` content = not an ATX heading (`:149` `^#{1,}(?:\s.*)?$`) and holds `[\p{L}\p{N}]`. Probes: ` ```md `, ` ```json `, `~~~`, mixed families, indented/nested fences, frontmatter, ZWSP/BOM, thematic breaks, star separator — all now `true` (empty). Four self-check gaps verified (below). Still open: the R2 text's **"prose preamble"** example — `Here is the consolidated project memory:\n# Project Memory\n…` still writes (`/tmp/probe-r3/decorated.mjs` → `WROTE … "Project memory and context updated."`), as do XML-tag, bullet-prefixed, ZWSP-prefixed, setext and `#######Project` skeletons. Note the rule R2 itself proposed ("at least one line containing `[\p{L}\p{N}]`") does not close a preamble either; this is now tracked as R3-I2, a recorded fail-open boundary, not a failed implementation of D7. |
+| **R2-I1** | **ADDRESSED** (one wording nit, R3-N1) | `report.ts:111` `memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= 40)`; `report.ts:184` `memoryKept: !memoryChanged`; reply gate `report.ts:378-380` (`if (info?.memoryKept && report !== "unchanged")`); toast gate `report.ts:204-207`. E2E verified for every skip reason (table in §3). |
+| **R2-I2** | **ADDRESSED** | `design.md:156` now carries **D7** ("opaque 侧改为「`>= 40` **且**文档含至少一行正文」…") and `:157` the condense-adoption amendment ("同一修订也适用于 condense 采纳（R2-N3）…"). Code matches: `sections.ts:170-183` is exactly that predicate; `pass.ts:260-268` `condensedEmpty … !condensedEmpty` gates adoption. |
+| **R2-N1** | **ADDRESSED** | `sections.ts:149` `ATX_HEADING_RE = /^#{1,}(?:\s.*)?$/`; probe: `#1 rule must hold` → content, `#1` → content, `####### X` → empty, `#######\tProject` → empty, `#\u00a0Heading` → empty. Pinned at `tests/sections-test.mjs:280` (7-hash) and `:297-299` (`#1 rule`). |
+| **R2-N2** | **ADDRESSED** | `implementation-note.md:99` now reads "该描述长度仍是 294（实测），`record_memory` 仍是 413"; `:117` "更正 D6：两项改动相消，长度不变"; `design.md:393` agrees. Measured: `record_memory.description` 413, `record_skill.description` 294, `reason` field 166 (`/tmp/probe-r3/lengths.mjs`). |
+
+## 2. The four self-check gaps — verification
+
+| Gap | Claim | My probe | Result |
+|---|---|---|---|
+| (a) `\r` / CRLF / U+2028 / U+2029 | skeleton refused | `predicate.mjs`, `e2e.mjs` | **Verified**: all four separators, mixed separators, separators with surrounding whitespace → empty; e2e memory byte-identical, toast "kept unchanged", log "carried no entries". |
+| (b) 7+ `#` | `####### X` refused, `#1 rule` content | `predicate.mjs` | **Verified**: 7/8/9-hash + space or tab or no text → empty; `#1 rule must hold`, `#1` → content. |
+| (c) HTML comment | comment-only refused, unclosed comment content | `predicate.mjs`, `e2e.mjs` | **Verified**: `<!-- no changes -->`, multi-line and multi-comment → empty; `<!-- no changes` and a 60-char unclosed comment → content (and e2e writes it, fail-open as declared). |
+| (d) bullets with no text | refused | `predicate.mjs`, `e2e.mjs` | **Verified**: `- `, `-\n`, `* `, `+ `, indented, `- \u200b` → empty; e2e refuses. Note the branch that catches this is the general `CONTENT_RE` path (`:182`), not the `- ` branch (`:181`), because `.trim()` turns `"- "` into `"-"`. |
+
+## 3. R2-I1 — every skip reason, named path
+
+| Reason the memory is not written | Code path | Reply/toast | Claim of update? |
+|---|---|---|---|
+| `semanticEmpty` (sections or heading-only opaque) | `pass.ts:285-292` → `report.ts:111` false → `:184` `memoryKept=true` | `report.ts:378-380` kept-branch; toast `:204-207` | No (e2e: semantic-empty + context, and + no context) |
+| opaque text `< 40` | same `report.ts:111` → `:184` | same kept-branch | No, but parenthetical false → **R3-N1** |
+| pass threw | `pass.ts` throws; `report.ts` catch → `"failed"` | `consolidateReply` failed branch | No (e2e: route exploded) |
+| version already written | `report.ts:100` → `"deduped"` | `"already up to date … nothing was rewritten."` | No (e2e: second forced call) |
+| nothing changed anywhere | `report.ts:197` → `"unchanged"` | `"Consolidation ran but produced no new memory or context."` | No |
+| throttled / `modelBlocked` / no aux model | `pass.ts:123,131`; `consolidate` `!outcome` → `"deduped"` | deduped reply | No |
+
+## 4. New findings
+
+### R3-I1 — IMPORTANT (regression, fail-safe): the fence strip crosses non-`\n` line boundaries
+`extensions/project-context/memory/sections.ts:173`
+
+```ts
+.replace(/^[^\S\n]*(?:```|~~~)[^\n]*$/gm, "")
+```
+
+`[^\n]*` can swallow `\r`, U+2028 and U+2029, and because the end-of-string `$` satisfies the match first, a document whose first physical line is a fence and which uses lone CR/LS/PS separators loses **everything after the opening fence**. Impact: a content-bearing opaque reply is classified `semanticEmpty`, the write is skipped, and `report.ts:380` / `pass.ts:292` claim "the reply carried no entries" (false). E2E (`/tmp/probe-r3/regression.mjs`, `cr-fence.mjs`): CR-only, U+2028- and U+2029-joined fenced real memories (>40 chars) were all **REFUSED** with that false diagnostic; the LF control wrote. The old R2 predicate (reconstructed from the round-2 transcript) classified the CR/LS versions as content, so this is a regression introduced by the new fence strip. The JSDoc at `sections.ts:161-163` even claims "Line terminators are normalized first", but the replaces run before the split. Fix boundary: use `[^\r\n\u2028\u2029]` in the fence matcher (and optionally `[^\S\r\n\u2028\u2029]` in the thematic matcher), or actually normalize line endings before the replaces; pin one CR/LS + fence case unit and e2e. The existing CR case (`tests/sections-test.mjs:283`) starts with `#`, so it never catches this.
+
+### R3-I2 — IMPORTANT residual (design-sanctioned boundary): text-bearing skeletons are still "content"
+`extensions/project-context/memory/sections.ts:179-182`; condense branch `pass.ts:260-268`
+
+The rule is "not an ATX heading **and** holds a letter/digit", so any wrapper line defeats it. E2E (`/tmp/probe-r3/decorated.mjs`): preamble + skeleton, `<memory>`-wrapped, HTML-heading, numbered-heading and bullet/ZWSP-prefixed skeletons all **overwrote** real memory and toasted "Project memory and context updated."; the plain skeleton is correctly blocked. Worse, the condense branch adopts a decorated skeleton: first reply a ~4800-char real opaque memory over the 4000 cap, condense reply `- # Project Memory\n- ## Project…` → stored file 91 bytes of skeleton, first real result discarded, toast "updated" (`/tmp/probe-r3/condense.mjs`). This matches the recorded D7 loose rule, so it is not a code/design mismatch; but it is the same silent-replacement class R1/R2 blocked, reached through decorations. Fix boundary: either record the residual in decision 6/D7 (wrappers are accepted as content) or normalize each line before the ATX test (strip bullet/blockquote prefixes and zero-width chars; treat the normalized ATX as heading), and add a condense-branch case whose condensed reply is a decorated skeleton. `#######Project` (no space) is newly content vs. the R2 predicate, as the trade-off that keeps `#1 rule` content — intended, but worth a D7 sentence.
+
+### R3-N1 — NIT: the kept-memory reply generalizes the semantic-empty wording
+`extensions/project-context/memory/report.ts:380` (and comment `:25-26`)
+
+```ts
+return `Project context updated; project memory was kept unchanged (the reply carried no entries).${clippedNote}${guard}`;
+```
+
+For the opaque `< 40` skip the reply did carry text (`Short note.`), so "carried no entries" is false. Fix: branch the parenthetical on `outcome.semanticEmpty` (e.g. "the reply was empty or too short to be a change"); update the `memoryKept` comment accordingly.
+
+### R3-N2 — NIT: the self-check record claims 4 gaps, lists 3
+`implementation-note.md:147` says "自检抓到 **4 个**…真实缺口", but the table at `:150-155` has three named rows and a `| （无） | — | — |` row. The fourth gap (bullet-only skeletons, pinned at `tests/sections-test.mjs:285`) is not recorded. Fix: replace the `（无）` row with the bullet-only row. This matters because the whole point of this round is not to trust the self-check's bookkeeping.
+
+## 5. Tests
+
+`node tests/run-all.mjs` in the sandbox → **All 14 tests passed** (`autolearn`, `aux-model`, `call-policy`, `consolidation`, `context-schema`, `handoff`, `index`, `loadtest`, `memory-budget`, `memory-ops`, `registration`, `sections`, `switches`, `sync`). The opaque-gate block of `tests/sections-test.mjs` (`:262-305`) executes **27 checks**: 21 "carries nothing worth writing" + 5 "counts as content" + 1 "a heading whose text continues on the line is still just a heading".
+
+## 6. Adversarial pass
+
+The least-tested branch is the interaction of fix (a) with the new fence strip: no test combines CR/LS/PS with a leading fence (`sections-test.mjs:283` uses a plain heading skeleton; `consolidation-test.mjs` test 13 uses LF). I falsified it:
+
+- `/tmp/probe-r3/predicate.mjs` — ~100 both-direction cases (separators, fences, comments, bullets, combos, decorations, real-memory shapes).
+- `/tmp/probe-r3/e2e.mjs` — the four fixes, all round-2 reproductions, real writes, and all R2-I1 skip reasons through the registered extension.
+- `/tmp/probe-r3/cr-fence.mjs` + `/tmp/probe-r3/regression.mjs` — **found the bug**: `["```md","\r","# Project Memory","\r","- a real durable fact…"]` is judged empty and the e2e pass REFUSES the write with "carried no entries"; same for U+2028/U+2029; LF control writes.
+- `/tmp/probe-r3/old-predicate.mjs` — reconstructed the round-2 predicate and confirmed the CR/LS fenced memory was content before, so this is a regression.
+- `/tmp/probe-r3/condense.mjs` — **found the data-loss path**: decorated skeleton adopted over the first valid over-cap result, 91-byte stored file, toast claims update; the plain skeleton is correctly not adopted.
+- `/tmp/probe-r3/decorated.mjs`, `/tmp/probe-r3/real-writes.mjs`, `/tmp/probe-r3/lengths.mjs`.
+
+## 7. Residual risks
+
+- R3-I1 is fail-safe (no corruption) but silently stops writes for fenced CR/LS/PS replies and logs a false cause; one character class fixes it.
+- R3-I2 is the unbounded tail of the fail-open heuristic: preamble/tag/decoration wrappers cannot be separated from legitimate prose without risking false refusals; the condense branch turns it into data loss. The owner must either record the boundary or extend D7.
+- `#######Project` (no space) and setext-style headings count as content by the recorded rule; opaque replies under 40 chars are still refused with the same "carried no entries" wording (pre-existing design, aggravated by R3-N1).
+- Test gap: no e2e pins the `memoryKept` reply text for the short-opaque reason (only the toast is pinned at `consolidation-test.mjs:1766-1775`).
+
+VERDICT: CHANGES-REQUESTED

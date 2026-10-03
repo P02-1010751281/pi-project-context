@@ -1,0 +1,94 @@
+# Independent Review — structured consolidation output + command naming (uncommitted)
+
+Scope read: `git status --short`, full `git diff`, the frozen design (413 lines), the decided naming inventory, the implementation note (D1–D5 + N11 correction), all changed extension/test files. I ran the suite and ~8 independent probe programs under `/tmp/laneA-probe` (read-only in the sandbox; `git status` unchanged before/after). Verdict on D1–D5: **all five are justified**, with one residual each noted below. The N11 correction is **verified true**.
+
+---
+
+## Findings
+
+### BLOCKING
+
+**B1. `fallback-opaque` replies can still replace a real `MEMORY.md` with a bare heading skeleton.**
+`extensions/project-context/memory/report.ts:107` (`memoryChanged = sectioned ? !outcome.semanticEmpty : memoryText.length >= 40`) + `extensions/project-context/memory/pass.ts:95–99` (any text that fails `sectionsFromMarkdown` becomes `fallback-opaque`).
+Impact: a model reply that is a heading-only document with a missing/misspelled/unknown heading (or a preamble + 4 empty headings) does not parse into sections, lands on the opaque path, is ≥ 40 chars, and overwrites a populated `MEMORY.md`. The regression guard cannot fire either (new side has no sections), and the toast says “Project memory and context updated.” I reproduced it end-to-end (`gate-probe.mjs` cases `text-3heading-skeleton`, `text-misspelled-heading-skeleton`; `guard-probe.mjs` case 3): memory went from real content to `# Project Memory` + three empty headings. This is exactly the N1 failure class decision 6 was written to stop; the frozen design’s last bullet deliberately keeps `>= 40` for opaque replies, but its stated rationale (“the text is the previous memory re-emitted”) is falsified for a fresh malformed skeleton. Data loss (recoverable via journal/backups, but silent).
+Fix boundary: extend the semantic gate to opaque replies — e.g. treat an opaque body that contains only headings/blank lines (or any `##` and no `- ` entries) as `semanticEmpty`/unwritable — and/or require bullet-bearing opaque text before `>= 40` applies. This needs a recorded design amendment since decision 6 currently sanctions the behavior.
+
+### IMPORTANT
+
+**I1. `semanticEmpty` + `outcome.clipped` still claims the memory was updated.**
+`extensions/project-context/memory/report.ts:369` (command reply) and `:217–218` (non-silent toast) return the `clipped` wording *before* the `memoryKept` check at `:373`; the report kind is decided at `:191`.
+Impact: when the prompt input was shortened (`outcome.clipped`) and the reply carried zero entries (memory kept, context updated), the user is told “Project memory and context were updated, but existing content was shortened…” — a write that never happened. This is the exact wording rule of decision 6 / R6-4 (“must not say Project memory updated; say context updated; memory kept”), implemented only for `report === "updated"`.
+Evidence: direct `consolidateReply("clipped", {memoryKept:true})` and an e2e pass (`clipped-kept-probe.mjs`) with `maxTokens:256` over a large stored memory: `memory kept: true`, toast = the false “updated … shortened” sentence.
+Fix boundary: give `memoryKept` priority in both clipped branches (reply and toast), or merge the two facts (“context updated; memory kept; input was shortened…”).
+
+**I2. A matched `record_memory`/`record_skill` tool call with shape-invalid arguments and empty text is a silent no-op success.**
+`extensions/project-context/memory/pass.ts:79–95` (after `sectionsFromToolCall` fails it falls through to `parseConsolidated(completion.text)`; `parseConsolidated("")` returns `{memory:""}`) and `extensions/project-context/autolearn/pass.ts:113–119` (`parseDecision("")` → `undefined`).
+Impact: `pickToolCall` only throws for *name* mismatch; a call with the expected name but unusable args (e.g. `memory` missing `index`, `arguments: {}`) plus no text produces `fallback-opaque` with an empty memory, reports `unchanged` (or, without a stored `CONTEXT.md`, writes a placeholder and says “updated”), records **no** failure, and leaves a misleading “carried no context section” diagnostic. This is the silent `{memory:""}` spin the design’s I1/F2 policy was written to eliminate — the unified “有 toolCall 但不可用且 text 为空 ⇒ 判错” rule is only implemented for name mismatch, and the frozen test plan only covers name mismatch.
+Evidence: `gate-probe.mjs` cases `tool-malformed-no-text`/`tool-empty-args-no-text`; `malformed-tool-probe.mjs` (“Consolidation ran but produced no new memory or context.”, one call, no tool-call error).
+Fix boundary: after a name match whose arguments fail the shape check, if `text.trim()===""` throw (memory) / treat as error (autolearn); add a test, since the current plan misses it.
+
+**I3. The regression guard’s skip diagnostic is missing when the *new* reply is opaque.**
+`extensions/project-context/memory/pass.ts:286–294`: the block runs only `if (!semanticEmpty && sections)`, so the “本轮走降级·不可解析” case logs nothing; decision 5 requires “任一侧无法解析 → 不告警，只记一条诊断”.
+Impact: an opaque rewrite can wholesale drop Invariants/Pitfalls with no diagnostic to compare against and no line saying the guard was skipped; only the old-side skip is recorded. (A fresh project also emits a spurious skip line — nit N2.)
+Evidence: `guard-probe.mjs` cases 3/4 (no `guard|regression` line at all).
+Fix boundary: log a skip diagnostic when `sections === undefined` and the stored memory is non-empty.
+
+**I4. The rename sweep is incomplete in tracked, agent-facing files.**
+`.agents/skills/pi-project-context-memory-cap-budget-change/SKILL.md:26` still says `/memory-learn`; `.agents/skills/pi-project-context-adaptive-handoff-threshold-review/SKILL.md:7,18` still say `/auto-handoff status` / `/auto-handoff auto`; `.agents/memory/MEMORY.md:58` still instructs `/auto-handoff` (and `HANDOFF.md`/`CONTEXT.md` carry old names in narrative). The inventory’s construction item says “改名/删名 + 全仓引用清扫 … `.agents/memory/MEMORY.md` 中的引用”.
+Impact: these are runbooks for future reviews/implementation; they will test commands that no longer exist, and the stale memory line is injected into every session until the next consolidation.
+Fix boundary: sweep the two skills (and the generated memory at the next refresh / regenerate now); fold the leftover generated files into the release commit.
+
+### NITS / SUGGESTIONS / PRAISE
+
+- **N1 (residual, unreachable):** `renderMemoryDocument` violates `text.length <= cap` for caps below ~67 (the `< MIN_SECTION_BUDGET_CHARS = 8` branch renders all four headings unconditionally), and that branch counts *empty* sections as `sectionDropped` (`sections.ts:113–119`). `maxMemoryChars` is clamped to `[4000, 200000]` (`shared/config.ts:238`, `index.ts:145`), so no production path can hit it; the new test only fuzzes 4000–200000, which is the honest range. Document the reachable contract or guard the branch.
+- **N2:** fresh projects log “memory regression guard skipped: the stored memory is not a plain four-section bullet document” (`pass.ts:291`) even when there is no stored memory — noise in `errors.log`.
+- **N3:** condense adoption accepts a semantically empty *skeleton* (non-empty text, `sectionDropped === 0`) and discards the first capped result; the pass then reports “memory kept (reply carried no entries)” and suppresses the cap event (`pass.ts:253–259`; probe `condense-skeleton-probe.mjs`). Safe (old memory survives) but incoherent reporting; require `!sectionsSemanticallyEmpty(condensed.sections)` for adoption.
+- **N4:** `shared/config.ts:19` comment was changed to `~/.pi/agent/handoff.json`, but the code reads `auto-handoff.json` (`:202`) and `docs/configuration.md:111` still documents that file. The comment is now wrong.
+- **N5:** `docs/architecture.md` module tree omits the new `memory/sections.ts`, `autolearn/schema.ts`, and `shared/complete.ts` (the repo’s own invariant says architecture must list new shared modules); `docs/configuration.md` still describes only the whole-document 60/40 cap and never mentions the sectioned path / semantic gate.
+- **N6:** the new skill `.agents/skills/pi-project-context-structured-tool-output-strict-mode/SKILL.md` states `Tool.constrainedSampling = { type: "json_schema", schema }`; the actual config is `{ type: "json_schema", strict: "prefer" | "require" }` (`pi-ai/dist/types.d.ts:506–521`).
+- **N7:** the `record_skill.reason` field description embeds “autolearn/parse.ts:28” (`autolearn/schema.ts:38`), but the reason is now read at `autolearn/parse.ts:42` — model-facing text with a stale line reference.
+- **N8:** `memoryCapWarned` is one set for both the section cap and the opaque whole-doc cap (`report.ts:38,157–165`), so whichever fires first suppresses the other’s `errors.log` entry (toasts/replies are unaffected).
+- **Praise:** the per-section rendering math is sound — my 3000-case fuzz over caps 4000–200000 (CJK, emoji/surrogate streams, 900-char entries, thousands of entries) found **0 overflows, worst margin 11**, no lone surrogates, and full round-trip through `sectionsFromMarkdown`. The extractor rejected every adversarial acceptance attempt I made (prose, unknown/misspelled/duplicate headings, indent/star bullets, markers mid-document, second header, tabs), while accepting quoted fences, CRLF and trailing markers. `callAux` records exactly one failure per call (4 failing calls → not disabled; 5th → disabled), the sticky no-tools switch works within a pass and resets across passes, and a tools-rejected route still completes on the retry. Both schemas pass an independent scan of the base 16-key + Anthropic 11-key union, plus `makeStrictJsonSchema(schema, anthropicPredicate)` and `resolveJsonSchemaStrictSampling(..., true, predicate) === true`; `prefer` downgrades to `undefined` on non-strict routes.
+
+---
+
+## Judgment on the recorded deviations
+
+- **D1 (gate the no-tools fallback on non-provider failures): justified.** The design’s own trigger wording is “因 `tools` 参数报错时”, and reusing `classifyModelFailure` avoids inventing a second string classifier; I verified a tools-shaped rejection still falls back and errors are recorded once. Residual: a route that reports a tools rejection as 429/5xx/timeout, or as a non-final stop reason (`AuxCallError`), gets no fallback — flagged as standard residual, not a defect.
+- **D2 (`toolsAttempted` before the call): justified and necessary**, otherwise a success-then-failure sequence would be mistaken for the first call. Pinned by test and by my probe.
+- **D3 (reject empty condensed replies): justified — it fixes a real frozen-design hole.** Without `condensedText.trim() !== ""`, `parseConsolidated("") → {memory:""}` passes `!exceedsMemoryCap` and would discard a valid first result. Reproduced (`condense-probe.mjs` case 3).
+- **D4 (`removed` in `LastWriteInfo`): justified and verified** — the silent command path would otherwise never show the guard; the reply now carries it (`consolidateReply`).
+- **D5 (single `sectionCapSentence`): justified** — one string used by log (`report.ts:158`), toast (`:202/:208`) and reply (`:177/:369–373`); no wording drift.
+- **N11 correction: true.** `sectionsFromMarkdown(.agents/memory/MEMORY.md)` parses cleanly (project 5 / invariants 68 / pitfalls 26 / index 17), so the repo’s own memory does take the parseable-fallback path and the guard applies; the deleted example was indeed false.
+
+---
+
+## Test And QA Focus
+
+- **Suite:** `node tests/run-all.mjs` → **All 14 tests passed** (14/14; includes the new `sections-test.mjs`). `git diff --check` clean; sandbox `git status` unchanged after all probes.
+- **`renderMemoryDocument` cap/robustness (own probes, `/tmp/laneA-probe/render-fuzz.mjs`):** 3000 random caps in [4000, 200000] with mixed CJK/emoji/surrogate streams/800+-char/5000-entry sections → `over=0`, worst margin **11** chars; no lone surrogates; render round-trips through the extractor; `itemTruncated` and `droppedItems` can co-occur (design-consistent); `itemTruncated` alone does not trigger condense. Small-cap range 1–66 violates `text.length <= cap` (unreachable: config clamps to ≥4000).
+- **`sectionsFromMarkdown` (own probe, `extract-probe.mjs`):** 56/56 assertions. Rejects preamble, unknown/misspelled/trailing-junk headings, missing section, in-section prose, `*`/indented/tab bullets, trailing prose, marker not at end, second header; accepts optional header, lowercase headings, CRLF, fences, trailing marker, empty sections, arbitrary heading order, duplicate headings. `sectionsFromToolCall` rejects wrong types/missing arrays and drops bullet prefixes.
+- **`callAux` / `pickToolCall` (own probe, `aux-probe.mjs`):** tools-rejected route works on one no-tools retry; success clears the failure; **exactly one** `noteModelFailure` per call (4 calls → not disabled, 5th → disabled); sticky `toolsDisabled` within a pass, reset across passes; transient provider failures are not retried; `toolUse` + usable call + empty text returns, `toolUse` + unusable call throws; `pickToolCall` name-mismatch+empty-text throws, name mismatch+text falls back.
+- **Semantic-empty gate (own e2e, `gate-probe.mjs`, `malformed-tool-probe.mjs`, `guard-probe.mjs`):** 4-heading bare skeletons and tool calls with empty/whitespace/ZWSP/punctuation entries are blocked and leave a diagnostic; a malformed *matching* tool call short-circuits to a silent no-op (I2); a partial/unknown-heading skeleton on the opaque path still overwrites (B1); the guard fires on removals after condense adoption and is skipped for free-form old memory.
+- **Strict mode (own scan, `strict-probe.mjs`, not just `assertStrictReady`):** independent extraction of pi-ai’s base table and Anthropic’s 11-key table, recursive walk of both schemas, zero forbidden keys, `additionalProperties:false` and full `required` on every object; `makeStrictJsonSchema` passes with the real Anthropic predicate for both; `resolveJsonSchemaStrictSampling(..., supportsStrictMode=true, "prefer")` returns `true`; on a non-strict route both downgrade to `undefined`; negative control (`maxItems`) is caught.
+
+---
+
+## Adversarial Pass (what I actually ran)
+
+- **Condensation adoption** (`condense-probe.mjs`, 7 scenarios): parseable condense adopted; still-flooded condense rejected and cap reported; empty condense rejected (D3); opaque→parseable adoption with no 60/40 marker; opaque→empty rejected; `itemTruncated`-only does **not** call the model again and reports “per-item cap” with **no** numeric `max-memory` suggestion; guard runs on the adopted sections. One unexpected behavior: a condense reply that is a bare 4-heading skeleton is adopted and suppresses the first result’s cap event (N3).
+- **Opaque fallback** (`gate-probe.mjs`, `guard-probe.mjs`): partial/misspelled-heading skeleton overwrites real memory (B1); new-opaque guard skip has no diagnostic (I3); fresh project emits a spurious skip line (N2).
+- **Regression-guard skip branches** (`guard-probe.mjs`): free-form old memory → skipped + line; old absent → spurious line; new opaque → silence. Removal counting after condense works.
+- **Handoff rename leftovers + stale `/memory-learn`:** repo-wide grep (excluding `.git`/session-logs) found no stale user-facing docs/README references (the `/memory-learn` in `docs/configuration.md:85` and `--no-auto-handoff` are intentional), but found the tracked skill runbooks, the generated memory files, and the wrong `config.ts:19` comment (I4/N4). The `/handoff` command, prompt trigger (`pi.sendUserMessage("/handoff force-auto")`), and all usage strings are consistently renamed; only comments containing the flag name remain, which is correct.
+- **`semanticEmpty` + `clipped`** (`clipped-kept-probe.mjs`): reproduced the false “memory … was updated” claim (I1).
+
+---
+
+## Residual risks I could not settle
+
+1. **D1’s gating residual:** a route that rejects `tools` with a message classified `auth`/`quota`/`transient`, or with `stopReason: pending/deferred` and no text, will not retry without tools. No real route was available to probe; the note records this.
+2. **Real-route strict behavior:** `models-store.json` has strict off everywhere, so only non-strict function-calling + text fallback were exercised end-to-end; strict-actually-on behavior is unverified (disclosed in the note).
+3. **B1 reachability depends on model output** (partial heading skeleton with no entries); the frozen design sanctions the opaque `>= 40` rule, so the owner must either amend decision 6 or record B1 as an accepted residual.
+4. **Small-cap renderer contract:** the `cap < 67` behavior is unreachable through config but is not asserted anywhere; if `MIN_MEMORY_CHARS` ever changes, the guarantee breaks silently.
+
+VERDICT: CHANGES-REQUESTED

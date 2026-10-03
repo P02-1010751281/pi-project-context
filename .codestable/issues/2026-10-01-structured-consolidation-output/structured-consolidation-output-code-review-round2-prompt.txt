@@ -1,0 +1,27 @@
+You are an independent code reviewer. This is code-review round 2 for the pi-project-context extension, at /tmp/pi-context-rev22.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev22.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 1 (transcript at .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-code-review-round1-independent.txt) returned CHANGES-REQUESTED with B1 (blocking), I1-I4 (important) and N1-N8 (nits). A fix pass landed. The change under review is still uncommitted; `git diff` shows it.
+The fix note is `.codestable/issues/2026-10-01-structured-consolidation-output/implementation-note.md` — read its "代码评审 round 1 的修复" table first. The frozen design is `structured-consolidation-output-design.md` (see its 实施期修订 note).
+
+YOUR JOB
+1. For EVERY round-1 finding (B1, I1, I2, I3, I4, N1-N8): ADDRESSED / PARTIALLY / NOT, with the current line quoted as evidence. Verify against the code, not the note.
+2. Judge whether the fixes introduced NEW defects. Specifically attack:
+   - `isHeadingOnlyDocument` (memory/sections.ts): can it let a content-free reply through, or reject a legitimate opaque memory? The opaque path must keep behaving as before for prose/free-form memories. Try fences, markers, CRLF, `#` inside a bullet, an indented heading, a document that is only a truncation marker, whitespace-only.
+   - `memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= 40)` in memory/report.ts: is there any reply that now writes when it must not, or refuses to write when it must?
+   - The condense-adoption guard (`!condensedEmpty`): can a legitimate condensation now be rejected, or a bad one accepted?
+   - I2's throw: does it fire on a legitimate reply (e.g. a matching tool call whose arguments are fine but carries extra members, or a text+bad-args reply)? Does autolearn's version break the evidence backtrack?
+   - I3/N2: are the guard-skip diagnostics emitted in the right cases and only then?
+3. Re-run `node tests/run-all.mjs` in the sandbox and report the result plus the new case names in tests/sections-test.mjs and tests/consolidation-test.mjs.
+4. ADVERSARIAL PASS: assume a production bug is hiding in the FIXES. Pick the least-tested branch of the new code and falsify it with your own probe under /tmp. Report what you ran.
+5. Does the code still match the frozen design (with the recorded deviations D1-D6) after this fix pass? Any new divergence?
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: the finding-by-finding disposition table, then new findings by severity with file:line, then the test results, then the adversarial pass, then residual risks. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

@@ -1,0 +1,52 @@
+## Review round 5 — pi-project-context structured consolidation (sandbox `/tmp/pi-context-rev25`)
+
+Read-only confirmation pass. Every probe ran under `/tmp/rev25-probe/` (a `cp -r` copy of `extensions/` + `tests/`); no file inside `/tmp/pi-context-rev25` was created, edited, deleted or moved, and the worktree still has the implementation's 80 entries; `find … -newermt "2026-10-03 01:00"` returns nothing inside the sandbox.
+
+### 1. Disposition of the round-4 findings
+
+| # | Disposition | Current-code evidence |
+|---|---|---|
+| **R4-I1** | **ADDRESSED** | `memory/sections.ts:154-155` `/** Invisible characters… */ const INVISIBLE_RE = /\p{Cf}/gu;`, applied first in `canonicalLine` (`:167-169` `line.replace(INVISIBLE_RE, "").replace(DECORATION_RE, "")`). Probes: all 23 `Cf` code points (incl. LRM/RLM/U+202A-E/U+2061-64/U+2066-69/U+180E/U+061C) refused as first-line prefix, every-line prefix, and Cf-only line (`unit-probe.mjs`). E2E (`e2e-probe.mjs`): all 17 named chars keep `MEMORY.md` byte-identical on the plain path; on the condense path all 17 keep the first ~4800-char result (`seen=2`, written still contains `durable fact number`). Over-strip direction clean: Cf inside prose / URL / path stays content; Cf-only lines are structural; the only flips to refused are `#<Cf> Project` and `- <Cf># 1 rule` (heading markup, deliberate). |
+| **R4-L1** | **ADDRESSED for the reported case; new residual R5-L1** | `sections.ts:217-224` now has the parity loop (`let fenced = false; … if (FENCE_LINE_RE.test(line)) { fenced = !fenced; return; } if (!fenced && index > 0 && /^=+$/.test(line)) structural[index - 1] = true;`). Probes: single-family fenced body ending `===` content, unclosed variant content, `===` setext skeleton outside fence still refused, `- ``` `/`> ``` ` decorated fence works (`unit-probe.mjs`). Mixed-family/decorated parity is still wrong → R5-L1. |
+| **R4-L2** | **PARTIALLY** | `sections.ts:163-164`: `// A tag name, so <https://example.com> (an autolink, i.e. real text) is not a tag line.` / `const TAG_LINE_RE = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^>]*)?\/?>$/;`. Verified: autolink `<https://example.com/notes>` is content (`false`), `<memory>…</memory>` wrapper structural (`true`), `<T>` alone and `<h2>Overview</h2>` alone refused (`true`, recorded boundary). **But the narrowing dropped XML NameChars `_`, `:`, `.`** and opened a new data-loss bypass → R5-I1. The claimed D7 record (`implementation-note.md:187` “按 D7 记录为边界”) is not in D7. |
+| **R4-N1** | **ADDRESSED** | `tests/consolidation-test.mjs:1780-1782` now asserts on `toasts` (plus a positive reverse assertion at `:1703`); `report.ts:384` branches on `keepReason`. Mutation reproduced in `/tmp/rev25-probe/repo`: patched `report.ts:384` to `const why = "the reply carried no entries";`, ran `cd /tmp/rev25-probe/repo && node tests/consolidation-test.mjs` → `FAIL the short-reply toast names the real reason, not emptiness`, `FAILURES: 1`, exit 1. No longer vacuous. |
+| **R4-N2** | **PARTIALLY** | Count fixed and verified: opaque-gate block = **56** checks, whole `sections-test.mjs` = **118** (instrumented copy); `implementation-note.md:175/189` says 56/118. But the claimed design wording “判据是「去掉结构行后还剩不剩带字词的行」，两者不矛盾” is **not present** in `structured-consolidation-output-design.md` — D7/`:160` still juxtaposes “HTML 标题” structural with “元素内含文字” content without the criterion. |
+| **R4-N3** | **ADDRESSED** | stale comment gone (`tests/sections-test.mjs:306` now “the matchers (which are anchored)…”); ZWSP-prefixed heading pinned at `:297`; D7 got the “装饰 + ATX 的交互（R4-N3）” bullet at `design.md:159`. |
+
+### 2. New findings
+
+**R5-I1 — IMPORTANT (new regression introduced by the R4-L2 fix; blocks commit)**
+`extensions/project-context/memory/sections.ts:164` — the narrowed `TAG_LINE_RE` only accepts `[A-Za-z][A-Za-z0-9-]*`, so wrapper tags whose names contain `_`, `:` or `.` (`<foo_bar>`, `<ns:memory>`, `<my.tag>`) are no longer structural. A body-less skeleton wrapped in one is now “content”, re-opening the exact silent-data-loss class R3-I2/R4-I1 closed.
+- Evidence (`/tmp/rev25-probe/probes/e2e-probe.mjs`): plain path overwrote `# Project Memory\n\n## Project\n- keep me.` with the 81-byte skeleton and toasted `Project memory and context updated.`; condense path (`maxMemoryChars: 4000`) discarded the first 200-bullet real result and adopted a 65–71-byte skeleton (`seen=2`).
+- Differential (`/tmp/pi-context-rev24` copy, old `TAG_LINE_RE = /^<\/?[A-Za-z][^>]*>$/` at rev24 `:163`): those three wrappers are refused in both paths there and the 4024-char first result is kept. So this is new in round 4. `<_x>`, `<1memory>`, `<记忆>` were bypasses already in rev24 (pre-existing, not caused by this fix).
+- It also contradicts the code’s own JSDoc (`sections.ts:184-195`: “a wrapper tag … a skeleton wrapped in one still reads as a skeleton”) and design D7 `:158` (“独立 HTML·XML 标签”).
+- Fix boundary: allow XML NameChars in the tag-name class, e.g. `/^<\/?[A-Za-z][A-Za-z0-9._:-]*(?:\s[^>]*)?\/?>$/` — `<https://…>` still fails (`:` then `/` cannot continue the name or satisfy the attribute/`>` tail), while `<foo_bar>`/`<ns:memory>`/`<my.tag>` match. Pin one plain and one condense e2e case.
+
+**R5-L1 — LOW (residual of R4-L1): fence parity is family-blind and decoration-blind**
+`sections.ts:218-224` toggles `fenced` on any `FENCE_LINE_RE` line, including a different fence family and lines that only become fences after `canonicalLine`. Falsified (`unit-probe.mjs`, `adversarial-probe.mjs`):
+- `# Project Memory\n## Project\n~~~\n```\nreal fact must hold\n===\n~~~` → refused: the ```` ``` ```` line flips `fenced=false`, so `===` eats the only body line, though the only opened fence is `~~~`.
+- Same with `> ``` ` / `- ``` ` inside a ``` block (canonicalLine strips the decoration, flips parity).
+Impact: fail-safe false refusal + false “carried no entries” diagnostic; not new vs rev23 (unconditional consumption also refused it), but R4-L1’s stated boundary (“=== inside an odd fence count”) is not fully met. Fix boundary: remember the opening fence family and toggle only on a matching line, or skip setext consumption while any fence is open unless a same-family closer was seen; otherwise record the mixed-family boundary. The added test pins only the single-family case.
+
+**R5-N1 — NIT (documentation): the design wording claimed for R4-N2 (and the D7 record claimed for R4-L2) is missing**
+`implementation-note.md:189` claims the design now says the criterion “去掉结构行后还剩不剩带字词的行”; `structured-consolidation-output-design.md:156-160` contains no such sentence, and `implementation-note.md:187`’s “按 D7 记录为边界” for the R4-L2 narrowing is absent too. Impact: the same “claimed but not done” audit gap as the round-4 vacuous test, and the design now disagrees with the code about XML tags. Fix: add both boundaries (HTML heading vs element-with-text; actual tag-name shape) to decision 6/D7, or correct the note.
+
+### 3. Test result
+
+- `cd /tmp/pi-context-rev25 && node tests/run-all.mjs` → **All 14 tests passed** (autolearn, aux-model, call-policy, consolidation, context-schema, handoff, index, loadtest, memory-budget, memory-ops, registration, sections, switches, sync).
+- Opaque-gate block of `tests/sections-test.mjs` (instrumented copy `/tmp/rev25-probe/repo`): **56 checks** (file total **118**), matching `implementation-note.md:175/189`.
+- Mutation check (item 5): `cd /tmp/rev25-probe/repo && node tests/consolidation-test.mjs` with `report.ts:384` patched to always say “carried no entries” → `FAIL the short-reply toast names the real reason, not emptiness`, `FAILURES: 1`, exit 1.
+
+### 4. Adversarial pass
+
+Picked the fence-parity × `canonicalLine` branch (least-tested; the only tests are single-family, undecorated). Probe file `/tmp/rev25-probe/probes/adversarial-probe.mjs` (unit-level, run via the copy’s jiti harness): a decorated fence-like line inside a real fence (`> ``` `, `- ``` `) flips parity and lets `===` eat the only content line → `isHeadingOnlyDocument` returns `true` (false refusal). The mixed-family case `~~~ / ``` / value / === / ~~~` in `unit-probe.mjs` is the same root cause. The other two candidate branches are clean: `Cf`-prefixed content and `Cf`-decorated fence markers inside a fence keep the body as content, `Cf`-only lines are structural; the HTML-heading matcher treats `<h2>Overview</h2> and then real prose` and `the <h2>Overview</h2> section` as content, `<h7>`/unclosed `<h2>` as content, and only pure `<hN>…</hN>` as structural. The largest adversarial find was the `<foo_bar>` class (R5-I1), reproduced end-to-end in `e2e-probe.mjs`.
+
+### 5. Residual risks
+
+- R5-I1 is a one-regex regression with the same silent-overwrite + condense-loss impact as R3-I2/R4-I1; it must be fixed (or explicitly accepted by the owner, which the data-loss path makes unattractive) before commit.
+- R5-L1 is fail-safe but silently stops writes for docs that mix fence families or quote a fence inside a block; the false “carried no entries” cause is misleading.
+- Pre-existing fail-open wrapper shapes `<_x>`, `<1memory>`, `<记忆>` remain (not regressions), as do the recorded boundaries: prose preamble, `---` setext skeleton, lone `<T>`/`<hN>…</hN>`, punctuation/emoji-only bodies.
+- The Cf fix is direction-safe: no realistic prose/URL/path was observed to flip content → refusal; only markup-like lines do.
+- Documentation drift (R5-N1) means the design record overstates what D7 now says about HTML/XML tags.
+
+VERDICT: CHANGES-REQUESTED

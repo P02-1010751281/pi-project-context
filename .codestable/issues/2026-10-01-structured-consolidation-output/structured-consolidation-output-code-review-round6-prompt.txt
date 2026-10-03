@@ -1,0 +1,25 @@
+You are an independent code reviewer. This is code-review round 6 for the pi-project-context extension, at /tmp/pi-context-rev26. Confirmation pass on the round-5 fixes.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev26.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 5 (transcript: structured-consolidation-output-code-review-round5-independent.txt) returned CHANGES-REQUESTED with R5-I1 (important, a regression the round-4 fix introduced), R5-L1 (low) and R5-N1 (nit, documentation drift). All fixed; the table is under "代码评审 round 5（跑通）" in implementation-note.md.
+
+Round 5 also recorded a pattern: `isHeadingOnlyDocument` is a heuristic that in rounds 3/4/5 opened a new edge each time it was narrowed, so the round-5 fix deliberately replaced ENUMERATION with GENERAL RULES (whole Unicode `Cf` class; "no letters left once tags are gone"; fence-family and decoration awareness). Your job is to check whether that direction actually converged, and to say so plainly.
+
+YOUR JOB
+1. Disposition R5-I1, R5-L1, R5-N1 as ADDRESSED / PARTIALLY / NOT, quoting current lines.
+2. R5-I1: `isTagOnlyLine()` in memory/sections.ts. Verify with your own probes that wrappers `<foo_bar>`, `<ns:memory>`, `<my.tag>`, `<_x>`, `<1memory>`, `<记忆>`, `<memory>`, `</x>` are all structural (refused when they wrap a skeleton), in BOTH the plain and condense paths. Then verify the reverse: `<https://…>` and `<mailto:…>` autolinks, and real prose containing inline tags (e.g. `the <h2>Overview</h2> section`), are content. Try to construct a NEW bypass (a wrapper whose tag spans do not strip cleanly) AND a NEW false refusal (a real memory line that is markup-only but meaningful).
+3. R5-L1: fence-family and decoration-aware parity. Verify: a `~~~` block containing a ``` line keeps its body; a decorated `> ``` ` inside a block does not flip parity; an unclosed block; nested families; a `===` setext skeleton outside any block is still refused. Try to construct a document where the state machine is wrong.
+4. R5-N1: check that structured-consolidation-output-design.md now actually contains the four wordings the note claims (search for the D7 bullets about tags, fence parity, decoration+ATX interaction, and the criterion sentence). Report each as present/absent with the line.
+5. Run `node tests/run-all.mjs` in the sandbox; report the result and the check count of the opaque-gate block of tests/sections-test.mjs.
+6. ADVERSARIAL PASS: assume a production bug is hiding in THESE fixes. Pick the least-tested branch — candidates: `isTagOnlyLine` versus a line that is only a comment or a CDATA span, the `AUTOLINK_RE` scheme shape, or the fence state machine versus a fence with an info string. Falsify it with your own probe and report exactly what you ran.
+7. VERDICT-AWARE QUESTION: this is round 6. If you find no blocking or important issue, say so explicitly and state what residual risk the owner is accepting, rather than inventing a low/nit finding to avoid a PASSED. If you DO find one, be specific. Also state plainly whether the remaining fail-open boundaries (prose preamble, `---` setext skeleton, lone `<T>`/`<hN>…</hN>`, punctuation/emoji-only bodies) are acceptable to ship given they are now recorded in decision 6/D7.
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: disposition table, then new findings by severity (file:line, impact, fix boundary), then the test result, then the adversarial pass, then residual risks, then the verdict rationale. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

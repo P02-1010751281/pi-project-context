@@ -1,0 +1,71 @@
+# Round 4 Independent Review — pi-project-context structured consolidation
+
+Read-only confirmation pass over `/tmp/pi-context-rev24` (worktree dirty with the implementation). Every probe ran under `/tmp/probe-r4`, `/tmp/probe-r4-prefix` and `/tmp/probe-r4-prefix-sections`; no file inside `/tmp/pi-context-rev24` was created, edited, deleted or moved, and no git mutation was performed. `git status --porcelain -uall` still has the implementation's 78 entries and `find … -newermt` after the review start returns nothing inside the sandbox.
+
+## 1. Disposition of the round-3 findings
+
+| # | Disposition | Current-code evidence |
+|---|---|---|
+| **R3-I1** (regression) | **ADDRESSED** | `memory/sections.ts:199` `.replace(LINE_SEPARATOR_RE, "\n")` is the first operation on the value (`:152` `/\r\n?|[\u2028\u2029]/g`), before the comment strip (`:200`), the split (`:203`), `canonicalLine` (`:204`) and every matcher. The offending `$`-anchored `[^\n]*` fence strip is gone: `:161` `FENCE_LINE_RE = /^(?:```\|~~~)/`. Probes: a fenced real memory joined by LF / CR / CRLF / U+2028 / U+2029 and by rotating mixes of all five all return `false` (content); the same separators over a heading-only skeleton all return `true` (refused); unclosed fences over real memories return `false`. No document was found where the normalization order still matters — all remaining matchers are `$`-anchored over already-split canonical lines. |
+| **R3-I2** (residual + condense loss) | **ADDRESSED for every named vector and for the condense path; one residual class remains (R4-I1)** | `canonicalLine()` (`:167-168`) strips `ZERO_WIDTH_RE` then `DECORATION_RE`; the structural set (`:206-213`) covers fence / thematic / lone tag / HTML heading / `===` setext (and marks the underlined line). All named skeletons are now refused: `- # …`, `- - # …`, `> # …`, `1. # …`, ZWSP-prefixed, `<memory>`-wrapped, `<h2>…</h2>`, `===` setext. Over-strip direction green for prose, `-`/`*`/`+` bullets, ordered items (`.` and `)`), `> quoted fact`, `- #1 rule`, bare number, date, CJK, code block with body, URL-only, path-only and headings+prose. Both recorded boundaries still open: a prose preamble and a `---` setext skeleton count as content. Condense: the actual `tests/consolidation-test.mjs` test 15 fails by 2 assertions when rev23's predicate is restored (91-byte skeleton stored) and passes now (4 024-byte first result, cap report). |
+| **R3-N1** (nit) | **ADDRESSED in code** (the added e2e pin is vacuous — R4-N1) | `memory/report.ts:188` `keepReason: outcome.semanticEmpty ? "empty" : "short"`; `:384` branches the parenthetical. E2E probe: short opaque `"Short note."` → `"…the reply was too short to be a change"`; heading-only reply → `"…the reply carried no entries"`. But `tests/consolidation-test.mjs:1777` checks `!String(reply).includes("carried no entries")` while `reply` is `undefined` (`report.ts:320` returns nothing; `tests/consolidation-test.mjs:1529` returns `reply: answer`). Patching the reply wording to always say "carried no entries" still leaves all four test-14 checks green. |
+| **R3-N2** (nit) | **ADDRESSED** | `implementation-note.md:156` now carries the fourth row `只含空 bullet 的骨架`; the `（无）` placeholder is gone. |
+
+## 2. New findings
+
+### R4-I1 — IMPORTANT (residual of R3-I2): the invisible-character set is incomplete; the R3-I2 data-loss path is still reachable
+`extensions/project-context/memory/sections.ts:155` — `ZERO_WIDTH_RE = /[\u00ad\u200b-\u200d\u2060\ufeff]/g` covers only part of Unicode `Cf`. U+200E LRM, U+200F RLM, U+202A–202E bidi controls, U+2061–2064 invisible operators, U+2066–2069 isolates, U+180E, U+061C are not stripped. Because `canonicalLine` runs before the ATX test, a skeleton prefixed with one of them stays "content".
+
+Verified E2E (`/tmp/probe-r4/tests/rlm-condense.mjs`):
+- plain path: `\u200e# Project Memory\n\u200e## Project…` **overwrote** a real stored memory and toasted `"Project memory and context updated."`;
+- condense path: the first ~4 800-char real result was discarded, the stored file was an **86-byte** RLM-prefixed skeleton, toast `updated`.
+
+Impact: same silent data loss as R3-I2, on a different invisible prefix. Fix boundary: `ZERO_WIDTH_RE = /\p{Cf}/gu` (safe — stripping `Cf` can only move a line toward structural, never toward content), or enumerate the missing code points; pin one plain and one condense case. If the owner prefers to record rather than close, D7 must say "only the listed `Cf` characters are stripped; any other invisible prefix is content".
+
+### R4-L1 — LOW (new false refusal): the `===` setext rule ignores fence context
+`extensions/project-context/memory/sections.ts:213` — `lines.forEach(… if (index > 0 && /^=+$/.test(line)) structural[index - 1] = true)` has no fence-parity state. `# Project Memory\n## Project\n```\nvalue\n===\n```` judged heading-only → write refused; rev23's predicate judged it content. The code block has a body; the setext underline eats its only real line. Fix boundary: skip the line-above consumption when the `===` line sits inside an odd fence count (or record the case).
+
+### R4-L2 — LOW (new false refusals): lone tag / autolink / HTML-heading body
+`extensions/project-context/memory/sections.ts:163-164` — `TAG_LINE_RE` also matches a lone generic `<T>` and an autolink `<https://x.example>`, and `HTML_HEADING_LINE_RE` matches `<h2>Overview</h2>`. If that line is the only non-structural line, the whole reply is refused (rev23 wrote it). A plain URL-only line and path-only line still pass. Impact: rare opaque memories that consist of exactly one tag/autolink/HTML-heading line lose their write with the false "carried no entries" diagnostic. Fix boundary: narrow the tag matcher to wrapper tags, or record the boundary (the `<hN>…</hN>` part is deliberate per D7).
+
+### R4-N1 — NIT (test): the R3-N1 e2e assertion is vacuous
+`tests/consolidation-test.mjs:1777` asserts on `reply`, but the `memory` command handler returns `undefined` (`memory/report.ts:320`). Proof: with the reply wording patched to always say "carried no entries", the full `consolidation-test.mjs` still reports `OK the short-reply message does not claim the reply was empty`. Fix: assert on `toasts` (`toasts.some(m => m.includes("too short"))` and `!toasts.some(m => m.includes("carried no entries"))`). The implementation note's claim "并补 e2e 固定命令回复文本" is therefore false, and round-3 residual risk 4 is still open in test terms.
+
+### R4-N2 — NIT (documentation): count and design contradictions
+- `implementation-note.md:175` says the opaque gate "现为 60+" checks; instrumented run of `tests/sections-test.mjs` measures **49** checks in that block (29 refusal + 6 separator/fence + 11 content + 1 heading + 2 recorded-boundary; 111 in the file).
+- `structured-consolidation-output-design.md:158-159` lists "HTML 标题" as structural and in the very next sentence calls "元素内含文字" an accepted content boundary; `<h2>…</h2>` is content by the word of :159. `sections.ts:190` repeats the same over-broad JSDoc claim.
+
+### R4-N3 — NIT (test): stale comments/weaker cases
+- `tests/sections-test.mjs:301` says "The fence matcher is `$`-anchored"; the current matcher is prefix-only. The cases still pin normalization (they fail without it), but the comment describes rev23.
+- `tests/sections-test.mjs:277` pins a zero-width-only line + skeleton, not ZWSP-prefixed heading lines (the code handles the latter — probed — but it is not pinned).
+- The decoration+ATX interaction (`- # 1 rule must hold` refused when it is the only body line) is a deliberate consequence but is not stated in D7.
+
+## 3. Test result
+
+`cd /tmp/pi-context-rev24 && node tests/run-all.mjs` → **All 14 tests passed** (`autolearn`, `aux-model`, `call-policy`, `consolidation`, `context-schema`, `handoff`, `index`, `loadtest`, `memory-budget`, `memory-ops`, `registration`, `sections`, `switches`, `sync`).
+
+Opaque-gate block of `tests/sections-test.mjs`: **49 checks** (measured with a counter-instrumented copy of the test under `/tmp/probe-r4`; the test source was restored afterwards). The round-3 transcript's 27 became 49, not "60+" as `implementation-note.md:175` claims.
+
+## 4. Adversarial pass
+
+Least-tested branch picked: the `===` setext rule marking the line above it, plus the tag/HTML-heading matchers against real content. Probes (all under `/tmp/probe-r4`):
+
+- `tests/r3i1-probe.mjs`, `tests/mixed-sep-probe.mjs` — separator × fence × skeleton matrix (26 cases), all as expected.
+- `tests/r3i2-probe.mjs` — 16 decorated skeletons refused, 22 real-content shapes accepted, plus boundary/edge info.
+- `tests/adversarial.mjs` run in both `/tmp/probe-r4` (fixed) and `/tmp/probe-r4-prefix` (rev23 predicate copied in): the differential matrix found the new refusals D1 (fenced body + `===`), D2 (quote + `===`), D3/D4/D5 (lone `<T>`, autolink, `<h2>`); D6/D6b (RLM/LRI-prefixed skeleton) remains a bypass.
+- `tests/rlm-condense.mjs` — **found R4-I1**: plain overwrite and 86-byte condense adoption with U+200E.
+- `tests/pre-fix-condense.mjs` under the rev23 predicate → skeleton stored (91 bytes); the actual `tests/consolidation-test.mjs` under the same predicate reports **2 FAILs** exactly on test 15's assertions; `tests/fixed-condense.mjs` → first result stands. Test 15 is non-vacuous and genuinely fails on the pre-fix path.
+- `tests/r3n1-probe.mjs` + broken-wording patch of the full suite → test 14 stays green while the toast says "carried no entries" (R4-N1 vacuity proof).
+- `tests/edge-decor.mjs`, `tests/overstrip-probe.mjs` — decoration+ATX and punctuation/emoji/URL/path cases.
+
+## 5. Residual risks
+
+- R4-I1 is the same silent-data-loss class R3-I2 was about; it is a one-regex fix, but it should either be closed or explicitly recorded.
+- The documented fail-open boundaries remain: a prose preamble over a skeleton, an element with real text, a `---` setext skeleton, and model text that merely decorates a heading line (`- # 1 rule`) if that is the only body.
+- Punctuation-only, emoji-only and arrow-only bodies are still refused (CONTENT_RE, pre-existing accepted F8 risk); `#######Project` (no space) and setext headings count as content by the recorded rule.
+- R4-L1/L2 are fail-safe (old memory kept) but log the false "carried no entries" cause.
+- Test coverage: the short-reply reply text is effectively unpinned (R4-N1); no test pins the full `Cf` class or the fenced-setext interaction.
+
+The R3-I1/I2/N1/N2 fixes are correct in direction and verified; the change is not quite ready to commit because the invisible-prefix hole re-opens the exact condense data-loss path the fix targets, and the R3-N1 e2e pin is vacuous.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,44 @@
+You are an independent reviewer. This is round 11: a NARROW confirmation pass. Round 10 returned CHANGES-REQUESTED with findings F1-F8 on a post-freeze normalization delta. The doc has been edited to remediate exactly those. Judge ONLY whether F1-F8 are correctly and completely remediated and whether the edits introduced a NEW contradiction. No new stylistic preferences.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev19.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the doc: verify against the installed sources and by running the code.
+
+INPUTS
+- Design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 10 transcript (the findings): .../structured-consolidation-output-design-review-round10-independent.txt
+- Pre-fix revision for diffing: /tmp/pi-context-rev18 (same design file)
+- pi-ai (read-only, OUTSIDE the sandbox): /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/
+- pi built-ins: /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/*.js
+- Extension: extensions/project-context/autolearn/parse.ts, autolearn/skill.ts
+
+THE EIGHT FINDINGS TO CONFIRM
+F1 (important) `skill.reason`'s field description claimed "Not read back by code" — false: autolearn/parse.ts:28 reads it and autolearn/skill.ts:51 embeds it in the candidate SKILL.md header.
+F2 (important) the house-style claim was unmet and mis-measured: the doc quoted raw .js template literals (344/304/279/222) instead of the delivered strings (303/248/221/184; longest built-in `edit` 326), and the two new descriptions (623/439) were longer than every built-in.
+F3 (important) pi-ai's base unsupported-key list has 16 keys, not 14.
+F4 (nit) description counts were wrong.
+F5 (nit) Anthropic citation drift, and the "old premise was wrong" claim was over-broad (it was wrong for maxItems; maxLength is in neither list).
+F6 (nit) the pointerize / no-inline-formula rule no longer covered context entries.
+F7 (nit) "API keys" and "generic programming advice" wording was dropped.
+F8 (suggestion) assertStrictReady passing `() => false` disables provider-specific checks, so the "zero banned keys" claim was unenforceable.
+
+CONFIRM, WITH EVIDENCE
+1. For each of F1-F8: ADDRESSED / PARTIALLY / NOT, with one line of evidence each (quote the current line).
+2. F1: what does the reason description say now, and is it true of autolearn/parse.ts and autolearn/skill.ts?
+3. F2: are the quoted built-in description lengths now the DELIVERED ones? Independently re-measure them and report the numbers you get. Are the two new descriptions' stated lengths (413 / 294) correct? Are they accurate as descriptions of the final text?
+4. F3: how many keys are in pi-ai's base list? What number does the doc now say everywhere (grep for "14 键" and "16 键")?
+5. F4: count the `description` keys ACTUALLY present in each of the two schemas (do not use a naive string count — the record_skill schema has a property literally named "description"). Report the counts and compare with what the doc claims.
+6. F5: cite the real line ranges for the Anthropic key set, format whitelist, and predicate. Is the doc's new wording accurate about maxItems vs maxLength?
+7. F6/F7: is the context description now carrying the pointerize rule, and are the "API keys" / "generic programming advice" phrases back?
+8. F8: does the doc now require the provider list or predicate to be covered? Is that requirement implementable and testable?
+9. Re-run makeStrictJsonSchema on both schemas and (if you can) resolveJsonSchemaStrictSampling with the real Anthropic predicate. Report outcomes.
+10. Any NEW contradiction or blocking/important issue introduced by the remediation? Is the delta now frozen-ready?
+
+OUT OF SCOPE: command renaming, session-archive durability, S4, configurable CONTEXT cap, vault/encryption, and anything dispositioned in rounds 1-10.
+
+OUTPUT
+The F1-F8 disposition table, then explicit answers to items 9 and 10.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

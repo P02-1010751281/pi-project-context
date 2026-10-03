@@ -1,0 +1,37 @@
+You are an independent code reviewer for the pi-project-context extension. Review the UNCOMMITTED change in this sandbox at /tmp/pi-context-rev21.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev21.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp (e.g. /tmp/laneA-probe), never inside the sandbox.
+- Reading with `read`, `bash` (`git diff`, `grep`, `sed`, `node -e`) is expected; running the test suite from inside the sandbox is allowed (it writes only to os.tmpdir()).
+
+WHAT TO REVIEW
+`git status --short` and `git diff` in the sandbox: the implementation of two frozen artifacts:
+- `.codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md` (design-frozen, 12 prior design rounds)
+- `.codestable/issues/2026-10-01-command-naming-consolidation/command-naming-inventory.md` (decided)
+- And the implementation record: `.codestable/issues/2026-10-01-structured-consolidation-output/implementation-note.md` — read it FIRST; it lists five deliberate deviations (D1-D5) from the frozen design and one design-level factual correction. Judge whether each deviation is justified or a defect.
+
+Key files: extensions/project-context/memory/sections.ts (new), shared/llm.ts (callAux/pickToolCall/AuxCallError), memory/pass.ts, memory/report.ts, memory/prompt.ts, memory/parse.ts, memory/document.ts, memory/context-schema.ts, autolearn/schema.ts (new), autolearn/parse.ts, autolearn/pass.ts, autolearn/prompt.ts, index.ts, archive/archive.ts, handoff/run.ts, tests/harness.mjs, tests/sections-test.mjs (new).
+
+JUDGE INDEPENDENTLY. Do not inherit any earlier round's conclusions; there are none for this diff. Verify claims against the code and by running things.
+
+SEVERITY BUCKETS — every finding needs file:line, impact, and the fix boundary:
+- blocking: data loss, a silently wrong artifact, or a crash on a real path.
+- important: a stated contract is not met, or behavior diverges from the design without a recorded reason.
+- nit / suggestion / learning / praise / residual-risk.
+
+TEST AND QA FOCUS (required section in your report)
+- Run `node tests/run-all.mjs` in the sandbox and report the result.
+- The whole point of the change is that CODE owns the document structure and the cap. Try to break `renderMemoryDocument` / `sectionsFromMarkdown` yourself with your own probes (write them under /tmp): does `text.length <= cap` really hold for small caps and adversarial entries (surrogate pairs, 800+ char entries, thousands of entries, mixed CJK)? Does the extractor accept anything it should not (prose, unknown sections, markers)? Does the guard's comparison behave before clipping?
+- Probe `callAux` / `pickToolCall` against `shared/call-policy.ts` semantics: is a failure recorded exactly once? Can a `tools`-rejected route still work? Does a stuck `toolsDisabled`/`toolsAttempted` leak across calls in a pass?
+- Probe the semantic-empty gate: can any reply make the writer overwrite a real MEMORY.md with a bare heading skeleton?
+- The two tool schemas must survive pi-ai strict mode on BOTH the base table and Anthropic's extra table. Verify with your own scan, not by calling the repo's `assertStrictReady` only.
+
+ADVERSARIAL PASS (required)
+Assume a production bug is hiding in this change. Go find it: pick the least-tested path (condensation adoption, the opaque fallback, the regression guard's skip branches, the handoff rename's leftovers, a stale `/memory-learn` reference anywhere in the repo including docs and README) and try to falsify it. Report what you actually ran.
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, the handoff summary path.
+
+OUTPUT: findings by severity with file:line, then the Test And QA Focus section, then the adversarial pass, then residual risks you could not settle. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

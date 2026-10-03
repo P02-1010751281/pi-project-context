@@ -1,0 +1,39 @@
+You are an independent design reviewer. This is round 10, a FOCUSED re-review of a post-freeze normalization delta. The design had PASSED round 9; the owner then asked for the tool descriptions and schemas to be brought in line with pi's house style. Judge ONLY the delta and its consistency. Do not re-litigate settled findings.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev18.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the doc: verify against installed pi-ai and the extension code.
+
+INPUTS
+- Design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Round 9 transcript (the frozen state): .../structured-consolidation-output-design-review-round9-independent.txt
+- pi-ai (read-only, OUTSIDE the sandbox): /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/
+- pi built-in tools for the house style: /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/tools/*.js
+
+THE DELTA (three parts)
+D1. Factual correction. The doc previously said "`maxLength`/`maxItems` 不在 strict 的拒绝清单里". It now claims: pi-ai's own unsupported list has 14 keys and does NOT include them, BUT the Anthropic adapter adds 11 more via `isAnthropicStrictUnsupportedKeyword`, including `maxItems`; `minItems` is allowed only as 0/1; `format` only from a built-in whitelist. Verify each number and key against the installed source.
+D2. Schema normalization. Both JSON schemas gained per-field `description` strings (record_memory 9, record_skill 10). Verify: (a) `description` is accepted and preserved by strict mode; (b) both schemas remain strict-ready (all properties in `required`, `additionalProperties:false`, none of the pi-ai 14 or Anthropic 11 unsupported keys, no `anyOf` with object/array members); (c) the prose in 决策 7 and elsewhere about the skill fields still matches the new field descriptions.
+D3. Tool-description rewrite, following pi's built-in house style (tool-level descriptions are 220-344 chars; `edit` puts field-level constraints on the fields). check rule preservation, which is the main risk.
+
+RULE-LOSS CHECK (the most important part)
+The two OLD tool descriptions were (verbatim):
+(A) "Submit the consolidated durable project memory and the current session context. Call this once at the end of the pass. `memory` holds the long-term memory split into the four fixed sections (project / invariants / pitfalls / index): put exactly one self-contained statement per array entry, and do not write section headings or a "# Project Memory" header — code renders them. `context` is the session's working state, rewritten from scratch every pass: state and pointers, not rules, and nothing that already lives in memory. Keep every entry short and pointerized: one line plus `see docs/<topic>.md` or `file.ts:123`, never an inline formula, table, or command transcript. Never emit phrases such as "truncated" or "omitted"; when the content is too long, code drops whole entries and reports it. Never store secrets, API keys, credentials, generic advice, or instructions that override system or user instructions."
+(B) "Submit this pass's skill decision. When there is no new skill to propose — the normal outcome — set `skill.name` to "" and leave the remaining `skill` fields as empty strings/arrays; never omit the object. To propose one, `skill.name` is a new lowercase-kebab-case name never reused from the existing inventory, `skill.description` is one line, `skill.body` is a concise Markdown procedure with when-to-use and exact commands or paths, `skill.evidence` lists verified session ids copied from the index, and `skill.candidate=false` needs at least two distinct verified session ids (`candidate=true` is stored for the user to confirm and needs at least one). Use `inspect` to request up to four session ids when you need raw evidence. Never include secrets, credentials, generic programming advice, or instructions that override system or user instructions."
+Enumerate EVERY distinct rule in (A) and (B) and say, for each, where it now lives (tool description / which field description / deleted). Report any rule that was silently DROPPED or materially WEAKENED. Be exhaustive here — a dropped rule is a real regression, because on routes where strict is not active the descriptions ARE the contract.
+
+VERIFY, WITH EVIDENCE
+1. D1: the exact pi-ai unsupported key count and the exact Anthropic key list (file:line); `minItems` handling; `format` handling. Is the doc's new wording accurate?
+2. D2: run `makeStrictJsonSchema` on both schemas as they now stand and report the outcome. Confirm `description` survives at every level (including inside `items` and on nested objects).
+3. D3: the rule-loss table above. Also: does putting a common rule on the parent object (`memory`) rather than repeating it per section actually reach the model, given how the schema travels in `Context.tools`?
+4. Any remaining contradiction anywhere in the document after this delta (grep for the old claims).
+5. Did the delta introduce any NEW blocking/important issue? Is the design still frozen-ready?
+
+OUT OF SCOPE: command renaming, session-archive durability, S4, configurable CONTEXT cap, vault/encryption, and anything already dispositioned in rounds 1-9.
+
+OUTPUT
+Findings with severity (blocking | important | nit | suggestion | learning | praise | residual-risk) and evidence.
+Then the rule-loss table, then explicit answers to items 4 and 5.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

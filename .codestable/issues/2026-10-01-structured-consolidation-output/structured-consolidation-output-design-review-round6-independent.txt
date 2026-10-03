@@ -1,0 +1,111 @@
+# Round-6 Independent Review — structured consolidation output (rev14)
+
+Read-only honored: all probes ran via `node` from `/tmp`; repo `git status --porcelain` and the existing mtimes of `.agents/memory/*` are unchanged after the test run (tests wrote only under `os.tmpdir()`); the only files with new mtimes under the repo are none.
+
+## Findings
+
+### R6-1 — important — Per-section clipping algorithm and `sectionDropped` unit are still unpinned; the "text.length <= cap" invariant can break at `MIN_MEMORY_CHARS`
+- Where: design 决策 1 line 64, 决策 3 table line 83, 决策 4 lines 108–119, test plan line 235; code precedent `extensions/project-context/memory/context-doc.ts:47-54`; constants `extensions/project-context/shared/limits.ts:MAX_LIST_ITEM_CHARS=800`, `MIN_MEMORY_CHARS=4000`; `memory/schema.ts:44-46`.
+- Evidence: the design says only "按节预算 + 逐项截断" and "同一条裁剪方式", but never says *how* a section that exceeds its share is reduced (drop trailing entries? clip its text at a line boundary? drop the whole section?) nor what `sectionDropped` counts (sections clipped / entries dropped / chars). The only precedent, `clipList` for CONTEXT.md, drops whole trailing items but keeps at least one (`while (kept.length > 1 …)`), on the stated assumption "the smallest section budget exceeds the per-item cap". For memory that assumption is false at the configured minimum: probe `memorySectionBudgets(4000)` = Project 784 / Invariants 1569 / Pitfalls 981 / **Index 588**, while a single trimmed item can be `MAX_LIST_ITEM_CHARS + 3 = 803`. A naive `clipList` mirror therefore leaves the Index body at 802 > 588; with the other sections at budget, the document is 76 + 784 + 1569 + 981 + 802 = 4212 > cap. `normalizeMemoryReply` then silently re-enters the old 60/40 clip and appends a marker — exactly the B1 path the new renderer exists to replace — and the pinned test `text.length <= cap` would fail.
+- Impact: the central "no middle loss / per-section budget" promise and the B1 visibility path depend on an algorithm the design leaves to the implementer; one plausible implementation regresses to the old whole-document clip at small caps.
+- Minimal fix boundary: pin one sentence in 决策 4: "a section over budget drops whole trailing bullet entries; if the first surviving trimmed entry alone exceeds the remaining budget, clip that entry to the remaining budget at a surrogate-safe boundary; `sectionDropped` = number of sections that lost ≥1 entry"; add an I4 variant with one >budget item at `cap=4000`. Do not implement.
+
+### R6-2 — important — The condense adoption predicate is not evaluable for the structured path
+- Where: design 决策 4 line 116 vs line 115.
+- Evidence: line 115 pins "retry / condense **一律不带 `tools`**"; therefore a condense reply can never contain a `toolCall`. Yet line 116 defines the adoption check as "condense 回包**解析成功且其自身 `sectionDropped == 0`**（结构化 = toolCall 可用；降级·可解析 = `sectionsFromMarkdown` 非 `undefined`；…）". The "结构化 = toolCall 可用" branch is unreachable; the design never says whether a structured first result may adopt a condensed reply via `parseConsolidated` + `sectionsFromMarkdown` (the only possible route), or what `sectionDropped` is recomputed from. Read literally, structured condense is either never adopted or requires a kind switch the design never states.
+- Impact: F5-4's fix pins the fallback-sections and opaque branches but leaves the structured branch undefined; two implementers can produce materially different write results (condense adopted vs first over-budget reply kept) on the primary path.
+- Minimal fix boundary: replace the parenthetical with: "condense 回包始终是文本 JSON（不带 tools）；结构化与降级·可解析统一用 `parseConsolidated` → `sectionsFromMarkdown` → `renderMemoryDocument(..., cap).sectionDropped === 0` 判定；降级·不可解析用 `!exceedsMemoryCap`".
+
+### R6-3 — nit — Residual 决策 4 contract loose ends after the F5-6/F5-10 fix
+- Where: design lines 110, 111, 117, 118, 141, 197, 232.
+- Evidence: (a) line 110 still says "**只有 `sectionDropped > 0` 才给 `raise max-memory` 建议**" while line 111 says no numeric advice is given at all; (b) the pinned warning sentence ("某节超出其预算、内容被按节裁剪") is only correct for `sectionDropped>0`, yet the cap event fires for `itemTruncated>0` too (line 118) and the only test (line 232) checks absence of numeric advice, not that the item-truncation cause is named; (c) `neededChars` is still required by the renderer/outcome shape (lines 118, 141, 197) with no formula and no consumer after the numeric advice was dropped — the deferred formula at line 111 is explicitly "将来若要报"; (d) `content_s` is defined as "在**归一化、逐项截断之前**的渲染正文长度" (line 117), but normalization precedes rendering in the pipeline, so the ordering is ambiguous; it only feeds the deferred formula.
+- Impact: implementer/verifier disagreement on dead carriers and operator-facing wording, the exact class F4/N5/F5-6 targeted.
+- Minimal fix boundary: delete the line-110 raise-advice clause; add a one-clause item-truncation variant of the warning (or say the warning is composed from the fired count); either drop `neededChars` from the pinned shape/outcome or define its formula and consumer.
+
+### R6-4 — nit — The "context updated; memory kept" wording has no pinned carrier into the command replies
+- Where: design 决策 6 line 142; `memory/report.ts:73` (`memoryChanged`), `:102-121` (`lastWrite` set only when `memoryChanged`), `:289-292` (`consolidateReply`).
+- Evidence: the design says `report.ts:139`/`:159` **and 命令回复** must not say "Project memory updated", but the command path gets only `ConsolidateReport` plus `LastWriteInfo`, and `lastWrite` is written only inside `if (memoryChanged)`. Nothing states where `memoryKept`/`semanticEmpty` is carried so `consolidateReply` can choose the wording.
+- Impact: small — an implementer will invent the carrier — but the F5-5 promise is stated without its mechanism.
+- Minimal fix boundary: say the flag is added to `LastWriteInfo` (set even when memory is kept) and name the reply branch.
+
+### R6-5 — nit — `sectionsFromMarkdown` marker stripping says "末行", but the stored render ends with `\n`
+- Where: design line 94; `memory/document.ts:118-122` (`normalizeMemoryDocument` always emits `…marker\n`).
+- Evidence: with a trailing newline the last `split("\n")` element is the empty string; the contract should say "last non-empty line" (or "strip any marker-shaped line" as the existing `parseMemoryValue` does). The N7 test would catch a literal implementation, but the contract text is imprecise.
+- Minimal fix boundary: one word: "最后一个非空行".
+
+### R6-6 — residual-risk — The emptiness normalization does not cover non-whitespace invisible/punctuation-only entries
+- Where: design line 138.
+- Evidence (probe, Node + JS `trim`): `""`, `" "`, `"\n"`, `"- "`, `"\u00a0"` normalize to empty, but `"\u200b"` (ZWSP), `"\u00ad"` (soft hyphen) and `"-"`/`"##"` do not. `{project:["\u200b"]}` plus a valid context is schema-legal, survives `semanticEmpty`, and the renderer writes skeleton + an invisible bullet over the old memory.
+- Impact: the F5-1 bypass is closed for whitespace/bullet-shaped entries but not for every schema-legal reply. This is an accepted-looking residual, not a realistic model behaviour; documented as such is enough.
+- Minimal fix boundary: extend the definition once: "归一后不含任何字母/数字/表意字符的条目也视为空" (or explicitly list this as an accepted residual).
+
+### R6-7 — residual-risk — Clipped sections are no longer self-describing in the artifact
+- Where: design line 109 (renderer writes no marker).
+- Evidence: the written `MEMORY.md` for structured/parseable paths carries no trace of a per-section drop; visibility depends on the once-per-project warning / `errors.log` diagnostic. A later reader (or a different process after the warning set is reset) cannot tell the document was clipped.
+- Impact: accepted by design (the marker is stripped by the write path anyway); worth keeping as a stated residual, not a defect.
+
+### R6-8 — learning/nit — The 现状 model-store snapshot is already stale (external refresh during this review)
+- Where: design line 45.
+- Evidence (probe, 17:02): commandcode `models.json` now has **85** models, **10** `api:"anthropic-messages"`, **75** without `api`; the file mtime is **17:00:33 today**, after the design was written and after round 5. The design says 76 / 8 / 68. `~/.pi/agent/models-store.json` still shows exactly two strict models (`deepseek-flash`, `deepseek-v4-pro`), and commandcode/scnet still declare 0 strict keys, so the design's **conclusion** ("strict 默认全关; `prefer` + fallback are hard requirements") holds.
+- Impact: snapshot facts age; implementation should re-check counts, not the conclusion. The design already warns that models-store is refreshed (line 45) — fine.
+- Minimal fix boundary: none required; drop the exact counts or re-stamp "核对于 …".
+
+### R6-9 — nit — Path/citation polish
+- Where: design line 244 cites `docs/environment-variables.md:28-32`; the sandbox `docs/` contains only `architecture.md`, `configuration.md`, `handoff.md`, `README.md` — that file is pi's install doc (`@earendil-works/pi-coding-agent/docs/environment-variables.md:28-32`, where the claim is true). Line 114 says "不产生 `dropped`" and line 103's "只有这三种情况之一落空时才走既有 normalizeMemoryReply" is confusing because the opaque row *is* that path.
+- Minimal fix boundary: qualify the docs path as the pi install docs; replace the two bare `dropped` mentions with the renderer-count names.
+
+### Praise
+- F5-1/F5-2/F5-3/F5-7/F5-8/F5-9 are genuinely fixed and verifiable: the emptiness view and renderer filter are explicit; both llm.ts bullets are now name-agnostic with `pass.ts` owning the name/usability policy; 接口改动 now pins `{ text, sectionDropped, itemTruncated, neededChars }` and the `sectionDropped>0 || itemTruncated>0` cap event; `report.ts:75`, `constrained-sampling.js:192/188/180`, 67 raw/66 trim all check out; the guard and its `semanticEmpty` skip are pinned to `pass.ts`; the F4-7 diagnostic names `pass.ts` and has a test.
+
+## F5-1 … F5-10 disposition
+
+| # | Status | One-line evidence |
+|---|---|---|
+| F5-1 | **ADDRESSED** | Line 138 defines emptiness on normalized entries and drops empties in the renderer; probe: `""`/`" "`/`"\n"`/`"- "`/NBSP → empty. Residual R6-6 (ZWSP/SHY). |
+| F5-2 | **ADDRESSED** | 接口改动 lines 195–196 both state name-agnostic suppression, all extracted toolCalls returned (including name mismatch), name/usability judged in `pass.ts`; R2 consistent. |
+| F5-3 | **ADDRESSED** | 接口改动 line 197 and line 206 use the pinned shape/names; no `{text, dropped}` contract remains (bare "dropped" at 110/114 is prose — nit R6-9). |
+| F5-4 | **PARTIALLY** | Line 116 pins an adoption rule, but the "结构化 = toolCall 可用" branch is unreachable because line 115 sends retry/condense without tools → R6-2. |
+| F5-5 | **ADDRESSED** | Lines 139/142 keep `fallbackUpdate` semantics and pin "context updated; memory kept"; the N1 test is reworded to "memory 不变", so it can pass. Carrier not named (R6-4). |
+| F5-6 | **ADDRESSED** | Line 111 adopts the no-number branch and keeps the cause wording; residual line 110 + item-only variant + vestigial `neededChars` (R6-3). |
+| F5-7 | **ADDRESSED** | `report.ts:75` ✓, `constrained-sampling.js:192` (unsupported), `:188` (keyword rethrow), `:180` (`makeStrictJsonSchema` call) ✓, 67 raw/66 trim ✓. |
+| F5-8 | **ADDRESSED** | Line 141 puts the guard in `pass.ts` and its `semanticEmpty` skip there; `report.ts` consumes only `semanticEmpty`/counts for wording. |
+| F5-9 | **ADDRESSED** | Line 140 pins `pass.ts` as the plain-diagnostic emitter; test plan line 240 asserts it. |
+| F5-10 | **ADDRESSED** | Line 111 explicitly adopts the "不给数字" branch; test line 232 enforces no `raise max-memory` number. |
+
+## Remaining decisions from round 5
+
+| # | Decision | Status | Design section |
+|---|---|---|---|
+| 1 | Condense adoption predicate | **STILL OPEN** (structured branch) | 决策 4 line 116 vs line 115 (R6-2); fallback-sections and opaque branches are resolved |
+| 2 | `llm.ts` vs `pass.ts` ownership of the name check | **RESOLVED** | 接口改动 lines 194–196 + R2 line 217; pass.ts takes the first matching-name toolCall |
+| 3 | `record_memory.description` copy | **STILL OPEN** (explicit) | 仍开放 line 280 |
+| 4a | `kind` value domain | **RESOLVED** | 决策 6 line 141: `"structured" \| "fallback-sections" \| "fallback-opaque"`; line 206 carries it |
+| 4b | `itemTruncated` unit | **RESOLVED** | Line 117: count of items truncated to `MAX_LIST_ITEM_CHARS`, not characters |
+| 4c | `content_s` unit / `neededChars` semantics | **PARTIALLY** | Line 117 ordering ("归一化、逐项截断之前") ambiguous; `neededChars` still in the pinned contract with no formula/consumer (R6-3) |
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (sandbox, read-only): **13/13**, final line `All 13 tests passed.`
+- Probes (all under `/tmp`, actual output):
+  - Skeleton `"# Project Memory\n\n## Project\n\n## Invariants\n\n## Pitfalls\n\n## Index\n"` = **67 raw / 66 trimmed**; `66 >= 40` → true.
+  - Emptiness normalization: `""`, `" "`, `"\n"`, `"- "`, `"\u00a0"` → empty; `"\u200b"`, `"\u00ad"`, `"-"`, `"##"` → non-empty.
+  - `parseStreamingJson('{"memory":{…,"index":["i1","i2')` → `{"memory":{"project":["p1"],"invariants":[],"pitfalls":[],"index":["i1","i2"]}}` (B2 premise).
+  - `makeStrictJsonSchema(draft)` OK: nested `required` = property names, `additionalProperties:false`; `minLength` accepted (wrapped in `anyOf` only when the property is not required); `$ref` throws `$ref schemas are unsupported`.
+  - `memorySchemaOverheadChars()` = **76**; budgets at 4000 = **784/1569/981/588**; 588 < 800+3 (R6-1 premise).
+  - `parseConsolidated("")` → `{memory:""}`; `normalizeMemoryReply` on a marked document drops the marker; `normalizeMemoryReply(skeleton)` = skeleton (67 chars).
+  - Model-store drift: commandcode 85 models / 10 anthropic / 75 no `api`, 0 strict; scnet 19 / 0 strict; `models-store.json` strict-on = exactly `deepseek-flash`, `deepseek-v4-pro`.
+  - Citations re-verified: `types.d.ts:280/521/535`, `constrained-sampling.js:107/174/180/188/192`, `openai-completions.js:1288-1289/1331`, `anthropic-messages.js:146/1261`, `bedrock-converse-stream.js:907`, `google-shared.js:333`, `json-parse.js:90-107`, `index.ts:145`, `store.ts:76`, `document.ts:13/87/96/118`, `pass.ts:128-150`, `prompt.ts:24`, `llm.ts:89-92/103-106`, `provider-composer.js:72` all correct.
+  - Repo `.agents/memory/MEMORY.md` contains `## Documentation and review conventions` → `sectionsFromMarkdown` falls to the opaque path, as the design claims.
+
+## Quality Bars
+
+- **Over-engineering**: mild — `neededChars` is now a carrier with no consumer, and `sections` on `ConsolidateOutcome` is redundant once the guard lives in `pass.ts`; both can be trimmed.
+- **Unclear boundaries**: renderer clip algorithm / `sectionDropped` unit (R6-1); structured-path condense adoption (R6-2); command-reply callback for "memory kept" (R6-4).
+- **Unstated assumptions**: single trimmed item larger than its section budget (R6-1); item-only warning wording (R6-3); `neededChars`/`content_s` computation (R6-3); last-non-empty marker line (R6-5).
+- **Scope creep**: none found — S4, configurable CONTEXT cap, CONTEXT read-side migration, vault/encryption/archive upload, and command renaming stay excluded; the strict compat keys remain a route-side owner decision, not an extension contract change.
+
+## Is the design implementable without further design-level decisions?
+
+**No, not yet.** Two design-level choices are still missing or contradictory: (1) the per-section clipping algorithm plus the unit of `sectionDropped` and the single-entry-over-budget corner (R6-1), which decides whether the `text.length <= cap` invariant and the B1 no-marker path actually hold; and (2) the structured-path condense-adoption branch, which is unreachable as written because condense/retry carry no `tools` (R6-2). One explicitly open copy item (`record_memory.description`) and the `neededChars`/item-only-warning loose ends should be closed in the same pass. Everything else is pinned or derivable.
+
+VERDICT: CHANGES-REQUESTED

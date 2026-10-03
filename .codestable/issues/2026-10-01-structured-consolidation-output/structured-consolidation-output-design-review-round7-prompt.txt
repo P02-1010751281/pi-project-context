@@ -1,0 +1,57 @@
+You are an independent design reviewer. This is round 7: a FOCUSED re-review of the round-6 fix delta PLUS a newly added scope (autolearn structured output).
+Rounds 1–6 all returned VERDICT: CHANGES-REQUESTED; the design has been revised six times.
+Judge the CURRENT design in /tmp/pi-context-rev15 on its own merits.
+
+READ-ONLY RULES (mandatory):
+- Do NOT write, create, edit, delete or move any file inside /tmp/pi-context-rev15.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Do NOT patch, monkey-patch or hook anything. You only read.
+- Temporary probes may write only under /tmp (never inside the sandbox repo).
+- Do NOT trust the design doc's claims, or earlier rounds' conclusions: verify against the code.
+
+INPUTS
+- Revised design: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design.md
+- Earlier rounds: .codestable/issues/2026-10-01-structured-consolidation-output/structured-consolidation-output-design-review-round{1..6}-independent.txt
+- Code: extensions/project-context/shared/llm.ts, extensions/project-context/memory/*.ts, extensions/project-context/autolearn/*.ts, extensions/project-context/index.ts
+- pi-ai (read-only, OUTSIDE the sandbox):
+  /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/{types.d.ts,api/constrained-sampling.js,api/openai-completions.js,api/anthropic-messages.js,utils/json-parse.js}
+  NOTE: `makeStrictJsonSchema(schema, isUnsupportedKeyword)` takes a SECOND argument (a provider callback). Pass `() => false` in probes. Omitting it fails with `isUnsupportedKeyword is not a function`.
+
+ROUND-6 FINDINGS THIS ROUND MUST JUDGE:
+- R6-1 important: the per-section clipping algorithm and the unit of `sectionDropped` were unpinned; the `clipList` precedent assumes the smallest section budget exceeds the per-item cap, which is FALSE at cap=4000 (Index budget 588 vs item cap 803), so a naive mirror regresses to the whole-document 60/40 clip and breaks `text.length <= cap`. The revision claims a pinned algorithm (`itemCap_s = max(1, min(MAX_LIST_ITEM_CHARS, budget_s − 3))`, greedy fill, whole-entry drops) plus explicit units (`sectionDropped` = sections that lost >=1 entry, `droppedItems`, `itemTruncated`). Verify the arithmetic and that no schema-legal input can break `text.length <= cap`.
+- R6-2 important: the structured-path condense-adoption branch was unreachable because retry/condense carry no `tools`. Verify the revision now unifies adoption on `parseConsolidated → sectionsFromMarkdown → renderMemoryDocument(...).sectionDropped === 0`.
+- R6-3..R6-9 (nits/residuals): `neededChars` removed from the contract; item-only warning wording; `LastWriteInfo` carrier for “memory kept”; “最后一个非空行”; ZWSP/SHY emptiness; clipped-artifact not self-describing (accepted); model-store counts; docs-path citation; bare `dropped`.
+
+NEW SCOPE IN THIS REVISION — 决策 7 (autolearn structured output). Verify:
+- That the claim “only two auxiliary calls produce JSON (memory consolidation + autolearn), handoff does not” is true against the code (grep for completeText/completeWithMeta/parseJsonObject across the extension).
+- That autolearn’s current shape really is a nullable object (`skill: null | {...}`) and that this is strict-hostile: the revision claims (a) required `anyOf:[{object},{null}]` throws locally, and (b) optional `type:"object"` does NOT throw but gets wrapped into an object union AND forced into `required`, silently violating the strict subset. Reproduce BOTH with probes against the installed pi-ai.
+- That the proposed always-object shape (all fields required, `name:""` means “no skill”, no `action` discriminator, no null) passes `makeStrictJsonSchema`.
+- That the code-derived decision rule (`skill.name` non-empty → propose; else `inspect` non-empty → inspect; else none) is consistent with the existing `rejectionReason`/`collectEvidence` behaviour and the backward-compat path (old `{"skill": null}` → none).
+- That the B2 rule (stopReason "length" beats “got a toolCall”) and a single no-tools retry are actually specifiable for autolearn — note `completeText` currently DISCARDS `stopReason` (`llm.ts:118-124`); the revision switches autolearn to `completeWithMeta`. Check this is stated and sufficient.
+- Whether folding autolearn into this design is scope creep, or justified by the shared `llm.ts` plumbing.
+
+YOUR TASK
+1. Disposition table for R6-1…R6-9 (ADDRESSED / PARTIALLY / NOT), each with one line of evidence.
+2. Verdict on 决策 7: sound / needs work, with findings.
+3. Adversarially hunt for NEW problems in this revision, and for contradictions between sections.
+4. Re-verify corrected factual claims (line citations, constants, code behaviour).
+5. Is the design NOW implementable without further design-level decisions? Answer explicitly, and list anything still open.
+6. Quality bars: over-engineering, unclear boundaries, unstated assumptions, scope creep.
+
+TEST AND QA FOCUS
+- Run `node tests/run-all.mjs` in the sandbox (read-only); report the count you saw.
+- Run the strict-schema probes (makeStrictJsonSchema with the second argument) and report actual output.
+
+SCOPE DISCIPLINE
+- Out of scope (do NOT flag as missing): S4 priority clipping, configurable CONTEXT cap, CONTEXT read-side migration,
+  vault/encryption/archive upload, command renaming (separate issue 2026-10-01-command-naming-consolidation),
+  autolearn throttling/candidate lifecycle/admission rules (only its output shape + parse change), handoff summary path.
+- DO flag if the design smuggles any of these in.
+
+OUTPUT
+Findings each with severity (blocking | important | nit | suggestion | learning | praise | residual-risk),
+file:line (or design section), evidence, impact, minimal fix boundary (do not implement).
+Then the R6-x disposition table, then the 决策 7 verdict, then Test And QA Focus,
+then an explicit answer to “is it implementable without further design decisions?”.
+End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

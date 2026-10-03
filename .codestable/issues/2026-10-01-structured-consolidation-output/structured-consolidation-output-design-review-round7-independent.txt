@@ -1,0 +1,130 @@
+# Round-7 Independent Review — structured consolidation output (rev15) + autolearn structured output
+
+**Read-only honored**: probes and fuzz scripts were written only under `/tmp/review7-probes/`. Repo `git status --porcelain` is identical before/after; `.agents/memory/*` mtimes (17:15–17:16) predate my test run (~17:22), so `node tests/run-all.mjs` did not touch the sandbox. No writes/patches/hooks inside `/tmp/pi-context-rev15`.
+
+## Findings (new this round)
+
+### F1 — suggestion — Autolearn's tools-rejected fallback and failure accounting are inherited only by cross-reference
+- Where: design 决策 7 lines 195–198 vs 决策 2 lines 79–84; `extensions/project-context/autolearn/pass.ts:92-102`.
+- Evidence: decision 2 pins the trigger ("only the first tools call that throws falls back once, sticky afterwards") **and** "`noteModelFailure` only once after both attempts"; decision 7 says only "重试/后续调用保持旧文本 JSON 形状（fail-open），与决策 2/3 的粘性回退一致" and "`noteModelSuccess`/`noteModelFailure` 语义不变". Autolearn's `call` closure records one success/failure per invocation.
+- Impact: an implementer could (a) omit the no-tools fallback, so autolearn regresses to failing closed on routes that reject `tools` (today it works everywhere), or (b) count both the tools-reject and the retry failure, burning 2 of `AUTO_DISABLE_AFTER=5` consecutive failures per pass (call-policy.ts:23,87-90).
+- Minimal fix boundary: one sentence in 决策 7: "autolearn 的 tools-拒绝回退沿用决策 2 的触发与 `noteModelFailure` 单次计数（同一个 wrapper 包住两次尝试）".
+
+### F2 — nit — `parseDecision`'s input for tool-call arguments is not pinned
+- Where: design 接口改动 line 261; `autolearn/parse.ts:10` takes `text: string`; memory has `sectionsFromToolCall`.
+- Evidence: the memory side names a tool-argument entry point; the autolearn side only says "parseDecision 改为决策 7 的 strict-ready 形状". `toolCall.arguments` is already an object (`types.d.ts:280-286`), so pass must either `JSON.stringify` or the function must accept `unknown`.
+- Impact: trivial implementer divergence; both work because `parseJsonObject` only runs on strings today.
+- Minimal fix boundary: say "`parseDecision` accepts the tool `arguments` object directly (or is fed `JSON.stringify(arguments)`); shape validation unchanged".
+
+### F3 — nit — The pinned item truncation is not surrogate-safe
+- Where: design 决策 4 line 118; precedent `document.ts:74-82` (`clipToLineBoundary` / `isHighSurrogate`), `context-doc.ts:30-33`.
+- Evidence: `itemCap_s` pin says "把条目截到 `itemCap_s`" with no boundary rule. A naive `slice(0, itemCap_s)` can end on a lone high surrogate (emoji/CJK-ext at the cut); the existing CONTEXT renderer explicitly uses a surrogate-safe clipper.
+- Impact: rare invalid UTF-16 in `MEMORY.md`; cap invariant is unaffected (code units still counted).
+- Minimal fix boundary: one clause: "用现有 `clipToLineBoundary`（或 isHighSurrogate 回退）截断".
+
+### F4 — nit — "单项上限" wording and `itemTruncated`/`droppedItems` overlap
+- Where: design 决策 4 lines 118–124.
+- Evidence: `itemTruncated` counts items cut to `itemCap_s`, which is `min(MAX_LIST_ITEM_CHARS, budget_s−3)` — at `cap=4000` the Index cap is 585, not the named 800. The warning "K 条条目超过单项上限被截断" then describes an item that never exceeded `MAX_LIST_ITEM_CHARS`. Also an item truncated and then dropped by the greedy pass counts in both `itemTruncated` and `droppedItems`, and the composed warning reports both.
+- Impact: operator-facing wording/one count can be read as a contradiction.
+- Minimal fix boundary: "超过**本节**单项上限"; one clause stating truncated-then-dropped counts in both.
+
+### F5 — nit — Vestigial `content_s` and the scope of the "no numeric advice" rule
+- Where: design 决策 4 line 125; existing `report.ts:97/113/125/154`.
+- Evidence: `neededChars` is correctly removed from the renderer/outcome, but the rationale still uses an undefined `content_s` in `max_s(content_s/share_s)`. The existing opaque path still emits `raise it with /project-context max-memory <n>` (report.ts:125/154), and the design only says old 60/40 wording is `kind`-limited to fallback-opaque.
+- Impact: an implementer could delete the opaque numeric hint or leave `content_s` unexplained.
+- Minimal fix boundary: delete the vestigial formula fragment; state "不给数字建议 applies to structured/fallback-sections; fallback-opaque keeps the existing hint".
+
+### F6 — nit — `sections` carrier listed in one section but not the interface list
+- Where: design 决策 6 line 153 vs 接口改动 line 260.
+- Evidence: line 153 says `ConsolidateOutcome` carries `sections / semanticEmpty / sectionDropped / droppedItems / itemTruncated / kind`; line 260 lists everything except `sections`. Round 6 already noted `sections` on the outcome is redundant because the guard lives in `pass.ts`.
+- Minimal fix boundary: drop `sections` from line 153 (or list it).
+
+### F7 — nit — Test-plan strict-probe claims do not match installed pi-ai 0.99.2
+- Where: design test plan line 284.
+- Evidence (probes): `makeStrictJsonSchema(schema)` with **one argument does NOT throw** in 0.99.2 — `api/constrained-sampling.d.ts` marks `isUnsupportedKeyword?` optional and the implementation guards `if (isUnsupportedKeyword)`; `getJsonSchemaToolParameters` itself calls it one-arg (`constrained-sampling.js:110`). The "must pass / `isUnsupportedKeyword is not a function`（已实测）" sentence is stale. Separately, `import("@earendil-works/pi-ai/api/constrained-sampling")` from the repo CWD fails with `ERR_MODULE_NOT_FOUND` (no node_modules in the sandbox; harness alias only maps the bare name).
+- Impact: a test author following the doc hits a false claim; the prescribed `() => false` remains harmless/forward-compatible, and "(或 dist 路径)" already provides the working alternative.
+- Minimal fix boundary: delete the "must/TypeError" claim; specify the harness alias or absolute `${PI}/node_modules/.../dist/api/constrained-sampling.js` import.
+
+### F8 — residual-risk — Emoji/punctuation-only entries are now silently "empty"
+- Where: design line 149.
+- Evidence: the rule "不含任何字母/数字/表意字符的条目也视为空" classifies `"\u200b"`, `"\u00ad"`, `"-"`, `"##"` as empty (which R6-6 asked for), but also an entry that is only an emoji/arrow/date-like punctuation. Such an entry is dropped from the render and cannot make `semanticEmpty` false.
+- Impact: accepted-looking residual; practically negligible (memory entries carry prose), but it is a silent-drop rule and should be named next to the accepted-residual list.
+- Minimal fix boundary: add it to the documented accepted list (no code change needed).
+
+### F9 — residual-risk — Condense-adoption context merge is not restated for the unified branch
+- Where: design 决策 4 line 130; existing merge `pass.ts:142-150` (`condensed.context ?? result.context`).
+- Evidence: the unified adoption pins the predicate (`parseConsolidated → sectionsFromMarkdown → sectionDropped === 0`) and the keep-first rule, but not whether the condensed reply replaces or merges `context`. The current code deliberately keeps the first result's context when the condensed reply has none ("a compacted retry may drop the context section").
+- Impact: one implementer adopts condensed memory + first context; another could throw away a valid context or adopt an empty one.
+- Minimal fix boundary: one clause: "adoption takes condensed memory + `condensed.context ?? first.context`（现状不变）".
+
+### F10 — nit — "只有这三种情况之一落空时才走既有…" is still confusing
+- Where: design line 111.
+- Evidence: the opaque row *is* the existing `normalizeMemoryReply`/60/40 path, so it is not a "fall-through" case; the sentence reads as if all three are new paths and the old path is a fourth fallback.
+- Minimal fix boundary: reword to "结构化/可解析两条入口落空时即第三种入口".
+
+### F11 — praise — R6-1 and R6-2 fixes are real and verified
+- R6-1: the pinned algorithm (design lines 116–123) is precise. I implemented it and fuzzed both plausible renderer shapes: **6,000 cases across caps 4,000–200,000, 0 cap violations, worst `len-cap = −11`**. At `cap=4000` an 803-char Index item is cut to 585 (`+3 = 588 = budget`); the naive `clipList` mirror leaves 802 > 588, exactly the regression R6-1 described. The "budget_s < 8" guard plus the `itemCap_s ≤ budget_s−3` clamp make `text.length <= cap` constructive.
+- R6-2: line 130 deletes the unreachable "结构化 = toolCall 可用" branch and unifies on `parseConsolidated → sectionsFromMarkdown → renderMemoryDocument(...).sectionDropped === 0`, with opaque on `!exceedsMemoryCap`; consistent with test line 300.
+
+### F12 — learning — Model-store snapshot handling is now honest
+- Design line 45 records 76→85 / 8→10; my re-probe: commandcode **85** models, **10** `anthropic-messages`, **75** no-`api`, **0** strict; scnet 19/0 strict; `models-store.json` strict-on is exactly `deepseek-flash`, `deepseek-v4-pro`. The design's conclusion (strict off by default; `prefer` + fallback are hard requirements) holds, and the hedge about drift is explicit.
+
+## R6 disposition table
+
+| # | Status | One-line evidence |
+|---|---|---|
+| R6-1 (important) | **ADDRESSED** | Design 116–123 pins `itemCap_s`, greedy whole-entry drops, whole-section drop, and units; fuzz of the pinned algorithm (6,000 cases, two renderer shapes) = 0 cap violations, worst margin −11; `cap=4000` Index 803→585(+3=588). Residual: F3 (surrogate-safe boundary). |
+| R6-2 (important) | **ADDRESSED** | Line 130 deletes the unreachable structured/toolCall branch and unifies structured + fallback-sections on `parseConsolidated → sectionsFromMarkdown → renderMemoryDocument(...).sectionDropped === 0`; opaque keeps `!exceedsMemoryCap`. No contradicting text remains (test line 300 matches). |
+| R6-3 (nit) | **ADDRESSED** | Line 124 pins the composed warning (drop vs item-only); line 125/131/251 remove `neededChars` from the renderer/outcome; test line 291 checks item-only wording gives no `max-memory` number. Residuals: `content_s` fragment + opaque numeric-hint scope (F5). |
+| R6-4 (nit) | **ADDRESSED** | Line 154 adds `semanticEmpty`/`memoryKept` to `LastWriteInfo`, set even when memory is kept, and names `consolidateReply` as the consumer. (`report.ts:294` today, not `:289-292` — trivial drift.) |
+| R6-5 (nit) | **ADDRESSED** | Line 102 says "最后一个非空行" (the stored render ends with `\n`, `document.ts:118-122`), and requires exporting/re-declaring `MEMORY_TRUNCATION_LINE` (`document.ts:13`). |
+| R6-6 (nit) | **ADDRESSED** | Line 149 adds "归一后不含任何字母/数字/表意字符的条目也视为空", covering ZWSP/SHY; probe confirms the whitespace/invisible/punctuation cases. Residual emoji case documented as F8. |
+| R6-7 (residual) | **ADDRESSED (accepted)** | Line 280 (R7) explicitly accepts that clipped artifacts are not self-describing and pins visibility to the once-per-project warning + `errors.log`. |
+| R6-8 (learning) | **ADDRESSED** | Line 45 now says 76→85 / 8→10; my probe today: 85/10/75, 0 strict in commandcode/scnet, exactly two strict models in `models-store.json`; conclusion unchanged. |
+| R6-9 (nit) | **ADDRESSED (one residual)** | Line 305 qualifies the docs path as pi install docs; bare `dropped` replaced by named counts (line 131). The line-111 "三种情况之一落空" confusion survives (F10). |
+
+## 决策 7 verdict: **sound** (with two small gaps that do not change contracts)
+
+Everything the task asked to verify reproduces against the installed pi-ai (0.99.2) and the code:
+
+- **"Only two JSON consumers" is true.** `grep` across the extension: `completeWithMeta` only in `memory/pass.ts`; `completeText` only in `autolearn/pass.ts`; `parseJsonObject` only in `memory/parse.ts` + `autolearn/parse.ts`; `handoff/run.ts` imports only `resolveAuxModel` (`:10`, used at `:32/:40/:75/:322`) and uses pi's built-in summarizer. `grep registerTool extensions/` is empty.
+- **Current autolearn shape is nullable and strict-hostile — both probes reproduce:**
+  - (a) required `anyOf:[{object},{null}]` → `makeStrictJsonSchema(schema, () => false)` throws `UnsupportedStrictJsonSchemaError: object and array unions are unsupported`.
+  - (b) optional `type:"object"` → **NO THROW**, output is `skill: {"anyOf":[{"type":"object",...,"additionalProperties":false},{"type":"null"}]}` with `root.required` forced to `["skill","inspect"]` — an object union sent to the provider, silently violating the strict subset. The design's `:100`/`:104` citations are right (`:100` wraps; `:103` forces required).
+- **Proposed always-object shape passes**: `makeStrictJsonSchema(newAutolearnShape, () => false)` → `NO THROW`; `root.required=["skill","inspect"]`, `skill.required` = all six fields, `additionalProperties:false` at both levels, `"anyOf"` absent. `record_memory` draft likewise passes with no `anyOf`.
+- **Decision rule and admission rules are consistent**: `parseDecision` already maps `skill:null`/missing → `{skill:null, inspect}` (`parse.ts:16-17`) and object → propose (`:20-33`); `collectEvidence` slices to `AUTOLEARN_INSPECT_SESSIONS=4` and only archived ids (`evidence.ts:11,48,105-107`); `rejectionReason`/`shapeRejection` untouched (`candidate.ts:29-58`). The old shape `{"skill":null}` → none is preserved. One intentional behavior delta: a skill object with empty name now maps to none/inspect instead of reaching `rejectionReason("invalid kebab-case name")`; that is inherent to `name:""` = no-skill.
+- **B2 is stated and technically sufficient**: `completeText` discards `stopReason` (`llm.ts:118-124`), the design switches autolearn to `completeWithMeta` (design lines 195, 198, 263) and mandates one no-tools retry; `completeWithMeta` already returns `stopReason`, and `parseStreamingJson` repairs truncated arguments (`json-parse.js:90-107`). Gaps are F1 (tools-rejected fallback inherited by reference) and F2 (parse input), not the length retry itself.
+- **Not scope creep**: folding autolearn in is owner-sanctioned (Q5), stays within "output shape + parse" plus the required B2 truncation retry, and does not touch throttling/candidate lifecycle/admission rules (`autolearn/skill.ts`, `candidate.ts` unchanged; 非目标 line 332). It is justified by the shared `llm.ts` failure contract, which the consolidation work changes anyway.
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` (sandbox, read-only): **13/13**, final line `All 13 tests passed.`
+- Strict-schema probes (`makeStrictJsonSchema` with `() => false`), actual output:
+  - always-object autolearn schema → `NO THROW`; `root.required: ["skill","inspect"]`; `skill.required: ["name","description","body","evidence","candidate","reason"]`; `additionalProperties:false` at both; `any anyOf: false`.
+  - nullable required object → `THROW UnsupportedStrictJsonSchemaError | object and array unions are unsupported`.
+  - optional object → `NO THROW`; `skill` wrapped in `anyOf:[{object...},{null}]`; `root.required: ["skill","inspect"]`.
+  - `record_memory` draft → `NO THROW`; `any anyOf: false`; `context.required` all four.
+  - `resolveJsonSchemaStrictSampling`: `prefer/supports=false → undefined`; `require/supports=false → THROW "strict tools are unsupported"`; `prefer/supports=true → true`; union schema `require/supports=true → THROW "object and array unions are unsupported"`.
+  - One-arg `makeStrictJsonSchema(schema)` also `NO THROW` (design's TypeError claim does not reproduce — F7).
+- Clipping fuzz: `overhead = 76`, `budgets(4000) = 784/1569/981/588`; R6-1 variant (803-char Index item) lengths 676 / 671 ≤ 4000, `itemTruncated=1`; **6,000 fuzz checks, 0 cap violations, worst `len-cap = −11`**; naive `clipList` mirror leaves 802 > 588 (R6-1 premise confirmed).
+- Model store: commandcode 85 / 10 anthropic / 75 no-api / 0 strict; scnet 19 / 0 strict; `models-store.json` strict-on = `deepseek-flash`, `deepseek-v4-pro`.
+- Import probe: `@earendil-works/pi-ai/api/constrained-sampling` from repo CWD → `ERR_MODULE_NOT_FOUND` (use harness alias or `${PI}/node_modules/.../dist/api/constrained-sampling.js`).
+- Citations re-verified: `constrained-sampling.js:107/174/180/188/192`, `openai-completions.js:1288-1289/1331`, `anthropic-messages.js:146/1261`, `bedrock-converse-stream.js:907`, `google-shared.js:333`, `json-parse.js:90`, `types.d.ts:280/510/517/521/532`, `llm.ts:89/103-106/118-124`, `memory/parse.ts:61-74`, `memory/pass.ts:128-150`, `document.ts:13/87/96/118`, `store.ts:76`, `report.ts:73/75/98-133/139/159/294`, `index.ts:145`, `autolearn/pass.ts:92-102`, `autolearn/prompt.ts:34-36`, `prompt.ts:24`, `limits.ts` constants, `config.ts:238`, `call-policy.ts:23`. Minor drift only: `Context.tools` is 536 not 535; `report.ts` consolidateReply now 294 not 289-292.
+
+## Quality bars
+
+- **Over-engineering**: mild — `sections` on `ConsolidateOutcome` is redundant once the guard is in `pass.ts` (F6); `kind` plus counts is defensible. The autolearn always-object shape's empty placeholder fields are the necessary price of strict.
+- **Unclear boundaries**: F1 (autolearn tools-rejected fallback/accounting), F2 (tool-args parse entry), F9 (condense context merge), F3 (truncation boundary).
+- **Unstated assumptions**: renderer layout must match `memorySchemaOverheadChars()`'s 76-char reservation (the assertion/test catches it); "单项上限" wording (F4); `content_s` (F5).
+- **Scope creep**: none beyond the owner-appended decision 7; the only behavior addition beyond "shape + parse" is the B2 no-tools retry, which is required by the shared truncation discipline and explicitly owner-scoped.
+
+## Is the design implementable without further design-level decisions?
+
+**Yes.** The two round-6 design-level gaps are closed and verified (R6-1 algorithm + unit, R6-2 unified adoption), and decision 7 is pinned enough to implement (schema passes strict, decision rule matches existing admission/evidence code, B2 retry is specifiable via `completeWithMeta`). Nothing left open changes contracts or data flow. Still open, all copy/wording or implementation detail:
+
+1. Tool description copy: `record_memory.description` (design 仍开放) and, not listed there, `record_skill.description`.
+2. One sentence pinning autolearn's tools-rejected fallback + single `noteModelFailure` accounting (F1).
+3. `parseDecision`'s tool-argument input form (F2).
+4. Surrogate-safe item truncation (F3); wording fixes F4/F5/F6/F10; test-plan import/arg corrections F7; accepted-residual notes F8/F9.
+
+VERDICT: PASSED

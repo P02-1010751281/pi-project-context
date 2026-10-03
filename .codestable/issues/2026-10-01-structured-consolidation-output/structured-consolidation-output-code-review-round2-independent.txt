@@ -1,0 +1,70 @@
+# Round 2 Independent Review — pi-project-context structured consolidation
+
+Reviewed the uncommitted worktree at `/tmp/pi-context-rev22` (read-only; `git status`/`md5` snapshots unchanged before and after; `git diff --check` clean). All probes ran from `/tmp/probe-r2`.
+
+## 1. Round-1 finding disposition
+
+| # | Disposition | Current-code evidence |
+|---|---|---|
+| **B1** | **PARTIALLY** — the common case is fixed, a data-loss variant remains (blocking, see R2-B1) | Fix present: `memory/sections.ts:156-165` `isHeadingOnlyDocument`; `memory/report.ts:111` `memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= 40)`; `memory/pass.ts:285` gate. Bare/` ```markdown ` skeletons are blocked (unit + e2e test pass). But ` ```md `, ` ```json `, `~~~`, `---`, ZWSP-only lines, preambles and thematic-break lines are not stripped/recognised as empty, so a content-free skeleton still overwrites real memory. E2E wrote `# Project Memory\n\nmd\n# Project Memory\n\n## Project…` and toasted "Project memory and context updated." |
+| **I1** | **ADDRESSED** (reported case); one related false claim remains (R2-I1) | Command reply now keys on `memoryKept` before `clipped`: `report.ts:376-379` (`if (info?.memoryKept && report !== "unchanged") … "Project context updated; project memory was kept unchanged (the reply carried no entries)." + clipped note`). Toast has the `!memoryChanged` first branch at `report.ts:202-204`. Test "the reply says the memory was kept" / "does not claim the memory was updated" passes. |
+| **I2** | **ADDRESSED** | `memory/pass.ts:92-98`: matching call + `sectionsFromToolCall` failure + `completion.text.trim()===""` → throw. `autolearn/pass.ts:115-121`: same with `parseDecision`. Probed: extra members ignored (`sectionsFromToolCall`/`parseDecision`), bad args + non-empty text falls back and writes, tool+text prefers the tool, bad args + empty text fails the command (test 10 passes). |
+| **I3** | **ADDRESSED** | `pass.ts:301-311`: `if (!sections) … "did not produce sections"` / `else if (!oldSections) … "not a plain four-section bullet document"`, with the removed/guard branch only otherwise. E2E tests 4b/11 assert both. |
+| **I4** | **ADDRESSED** | `grep -rn` over `.agents/skills/` finds no `/memory-learn` or `/auto-handoff`; `MEMORY.md:67` and the handoff/context mentions are the rename decision narrative the note says is deliberately kept; `config.ts:19` comment restored. |
+| **N1** | **ADDRESSED** (documented, not guarded) | `sections.ts:113-119` comment now states the reachable contract ("Unreachable while MIN_MEMORY_CHARS is 4000 (the smallest section budget is 588)"); clamp confirmed at `shared/config.ts:238` (`bounded(raw.maxMemoryChars, MIN_MEMORY_CHARS, MAX_MEMORY_CHARS_LIMIT)`). |
+| **N2** | **ADDRESSED** | Both skip diagnostics gated by `if (existing.text.trim())` (`pass.ts:302, 308`); test 12 ("a fresh project logs no guard skip") passes. |
+| **N3** | **PARTIALLY** | `pass.ts:260-266` adds `!condensedEmpty` (`sectionsSemanticallyEmpty` for sections, `isHeadingOnlyDocument` for opaque). Bare-skeleton case fixed, but the same fence/ZWSP variants pass the guard: probe E2E "condense md-skeleton" discarded the first 200-entry result and stored the skeleton. |
+| **N4** | **ADDRESSED** | `config.ts:19` reads `*   - the global handoff settings (\`~/.pi/agent/auto-handoff.json\`)`, matching the code path and docs. |
+| **N5** | **ADDRESSED** | `docs/architecture.md` tree now lists `memory/sections.ts`, `autolearn/schema.ts`, `shared/complete.ts`; `docs/configuration.md` "memory cap" section rewritten with the sectioned/verbatim split, semantic gate, guard and no-numeric-suggestion rule. |
+| **N6** | **ADDRESSED** | `.agents/skills/pi-project-context-structured-tool-output-strict-mode/SKILL.md:12`: `Tool.constrainedSampling = { type: "json_schema", strict: "prefer" }`. |
+| **N7** | **ADDRESSED** in code; the recorded D6 is factually wrong (nit) | `autolearn/schema.ts:45-52` `reason` description names files only, no `:28`. But the note's D6 claims "294 → 288 and the design's 294 was updated": the design still says 294 (`structured-consolidation-output-design.md:282,290,391`), the reason field is 166 chars and the tool description is 294 (both measured) — no 288 anywhere. |
+| **N8** | **ADDRESSED** | `report.ts:38` `memoryCapWarned`, `report.ts:42` `memorySectionCapWarned` are separate sets; the sectioned/opaque branches are also mutually exclusive. |
+
+## 2. New findings (by severity)
+
+**R2-B1 — BLOCKING: `isHeadingOnlyDocument` only strips one exact fence form, so a heading-only reply still overwrites memory.**
+`memory/sections.ts:156-165`:
+```ts
+.replace(/^```(?:markdown)?\s*/i, "")
+.replace(/\s*```\s*$/, "")
+…
+return lines.every((line) => line.startsWith("#") || isMemoryTruncationLine(line));
+```
+It treats every non-`#` line as content, so ` ```md `/` ```json ` info-string fences, `~~~` fences, a `---` frontmatter line, a prose preamble, ZWSP/soft-hyphen-only lines (`"# Project Memory\n\n## Project\n\n## Invariants\n\n## Pitfalls\n\n## Index\n"` prefixed by `"\u200b\n"` → `false`) and thematic breaks all defeat the gate. `report.ts:111` then sets `memoryChanged=true` and `recordMemoryDocument` replaces the file; the toast/reply say "Project memory and context updated." (`report.ts:390`). Probe `bypass-full.mjs`: all of `md-fence`, `json-fence`, `tilde-fence` overwrote; `adversarial.mjs` shows the same for the condense-adoption guard at `pass.ts:260` (first capped result discarded, N3 variants not covered). The existing test only pins ` ```markdown ` (`tests/sections-test.mjs:269`). Fix direction: normalise each line, strip any fence family/info string, and require at least one line that either contains `[\p{L}\p{N}]` or is a `- ` bullet.
+Also note: `isHeadingOnlyDocument("*".repeat(60)) === false`, so a ≥40-char content-free separator is still adoptable/writable — that one is design-sanctioned decision-6 `>=40` for opaque, but the fence/preamble cases are exactly the B1 class the design amendment was meant to close.
+
+**R2-I1 — IMPORTANT: `/memory update` still claims a memory write when the opaque memory was not written.**
+`report.ts:182` sets `memoryKept: outcome.semanticEmpty`, but the write decision is `memoryChanged` (`report.ts:111`). For a short opaque reply (`memoryText.length < 40`, so `memoryChanged=false`) plus a usable context, `report="updated"`, `consolidateReply` takes neither the `memoryKept` branch (`report.ts:376`) nor the clipped branch and returns `"Project memory and context updated."` (`report.ts:390`) — while `MEMORY.md` is byte-identical. Probe `adversarial.mjs` E2E 3: reply `{memory_markdown:"Short note.", context:{…}}` → memory unchanged, command reply `"Project memory and context updated."`; the toast (`report.ts:202`) is correctly "memory was kept unchanged". `memoryKept` should be `!memoryChanged` (or carry the actual write flag) so the reply is truthful for every not-written reason.
+
+**R2-I2 — IMPORTANT (design conformance): the opaque semantic gate is not a recorded deviation.**
+The frozen decision 6 explicitly says "降级·不可解析沿用 `>= 40`" and round 1's fix boundary required a recorded design amendment. The fix table records B1, but the design's "实施期修订" (`design.md:391`) and the D-list still only mention D1–D6; frozen decision 6 still sanctions writing opaque `>=40` replies. The code now diverges (a good change) without the amendment the owner asked for. The same applies to N3's `!condensedEmpty` additive condition. Either record D7 (and update decision 6) or revert the gate to the frozen contract.
+
+**R2-N1 — NIT: the line-start `#` heuristic rejects content-bearing opaque lines.**
+`isHeadingOnlyDocument("#1 rule must hold") === true`, `("# Project Memory uses Postgres") === true`. Fail-safe (existing memory is kept), but on a fresh project no diagnostic is emitted (the "carried no entries" log is gated on `existing.text` at `pass.ts:287-289`), so a real first memory can be discarded silently as "Consolidation ran but produced no new memory or context."
+
+**R2-N2 — NIT: D6 record is internally inconsistent** (see N7 row): note says 294→288; design says 294; actual reason field is 166 and tool description 294. No code impact.
+
+## 3. Tests
+
+`node tests/run-all.mjs` → **All 14 tests passed** (`autolearn`, `aux-model`, `call-policy`, `consolidation`, `context-schema`, `handoff`, `index`, `loadtest`, `memory-budget`, `memory-ops`, `registration`, `sections`, `switches`, `sync`). Sandbox write check afterwards: `git status --porcelain` identical to before, `.agents/memory/{MEMORY,CONTEXT,HANDOFF}.md` md5s unchanged, `git diff --check` clean.
+
+New cases:
+- `tests/sections-test.mjs` — **69 OK** checks in: `strict-ready schemas` (incl. 16+11 union scan, `maxItems`/`$ref`/object-union negative controls, the `() => false` F8 loophole), `entry hygiene`, `renderMemoryDocument` (cap 4000 single 803-char entry, 400-flood, 2000-cap random fuzz), `sectionsFromMarkdown contract` (preamble/unknown/missing section/prose/star/indent/trailing/marker), `sectionsFromToolCall and the semantic gate`, `pickToolCall policy`, `callAux: retry, stickiness and one failure per pass`, `the opaque entry's half of the gate`.
+- `tests/consolidation-test.mjs` — 35 new checks in the `structured output: the tool call, the fallback, and the gate` block (12 grouped scenarios): tool path + render, byte-identical parseable fallback, all-empty reply keeps memory + writes context, regression guard (count/warn/no-block, free-form skip), section-budget visibility with no numeric suggestion, truncation beats toolCall, tools-rejected retry, bad context keeps memory, **heading-only opaque skeleton blocked** (only ` ```markdown ` style), malformed tool call fails, guard-skip when new side opaque, fresh project no skip.
+- `tests/autolearn-test.mjs` — new `D. the decision shape (record_skill)` and `E. the tool path, and the truncation retry` groups (always-object, empty name, legacy null, tool call, truncation retry).
+
+## 4. Adversarial pass (what I ran)
+
+Under `/tmp/probe-r2/`:
+- `adversarial.mjs` — 15 `isHeadingOnlyDocument` inputs (fences, CRLF, indented headings, `#`-in-bullet, marker-only, whitespace, prose) + 4 end-to-end passes through the registered extension: **md-fence skeleton overwrote real memory**, **tilde-fence overwrote**, short-opaque reply produced the false "Project memory and context updated.", **condense md-skeleton discarded the first capped result**. (The leading-blank variant was blocked because `extractText` trims the reply — a probe artifact I initially suspected, then verified.)
+- `bypass-full.mjs` — full after-bytes + reply for `md`/`json`/tilde/leading-newline fences; printed the exact corrupted `MEMORY.md`.
+- `i2-autolearn.mjs` — extra members parse fine; valid tool + extras writes; bad args + text falls back; tool + text prefers tool; `parseDecision` extras/empty-name inspect backtrack intact; dashes/`#1` gate checks.
+- Inline ZWSP/soft-hyphen/BOM/stray-fence/CR-only checks.
+
+## 5. Residual risks / design conformance
+
+- Code matches the recorded D1–D6 semantics in the affected paths (`toolsFallbackApplies`, `toolsAttempted` pre-call, `condensedText.trim() !== ""`, `removed` in `LastWriteInfo` + reply, one `sectionCapSentence`), **except** the new opaque semantic gate (R2-I2), which is a real divergence from frozen decision 6 and is recorded only in the fix table.
+- Accepted/out-of-scope residuals unchanged: opaque `>=40` can still write a long content-free non-heading reply; `cap < 67` renderer branch remains unreachable but not guarded; D1's route reporting a tools rejection as 429/5xx/timeout gets no fallback; strict-actually-on routes remain unverified (disclosed in the note).
+- B1's remaining exposure is model-output-dependent but is the exact silent-data-loss class round 1 blocked; backup/journal recovery exists but the user is told the update succeeded.
+
+VERDICT: CHANGES-REQUESTED

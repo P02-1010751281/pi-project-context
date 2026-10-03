@@ -1,0 +1,32 @@
+You are an independent code reviewer. This is code-review round 3 for the pi-project-context extension, at /tmp/pi-context-rev23. Narrow confirmation pass.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev23.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 2 (transcript in the issue dir: structured-consolidation-output-code-review-round2-independent.txt) returned CHANGES-REQUESTED with R2-B1 (blocking), R2-I1, R2-I2 (important) and R2-N1, R2-N2 (nits). A fix pass landed; the fix table is in implementation-note.md under "代码评审 round 2 的修复". Design decision 6 now carries the D7 amendment.
+
+An independent round could not be started for a while (no model route). During that gap the IMPLEMENTER ran a self-check on `isHeadingOnlyDocument` and it found FOUR more real gaps in the SAME class as R2-B1. Those are also fixed and pinned. The self-check is NOT an independent review and is explicitly disclaimed as such; the point of this round is that you do not trust it either.
+
+YOUR JOB
+1. Disposition each of R2-B1, R2-I1, R2-I2, R2-N1, R2-N2 as ADDRESSED / PARTIALLY / NOT, quoting current lines.
+2. The self-check claims these FOUR gaps are now fixed. Verify each by reading the code AND probing it yourself under /tmp:
+   (a) lone `\r` / CRLF / U+2028 / U+2029 line separators — a skeleton joined by any of them must be refused;
+   (b) 7-or-more `#` pseudo-headings (`####### X`) must be refused, while `#1 rule must hold` must still count as CONTENT;
+   (c) an HTML-comment-only document (`<!-- no changes -->`) must be refused, and an UNCLOSED comment must still count as content (fail-open);
+   (d) bullet-only skeletons (`- ` with no text) must be refused.
+3. Then attack the CURRENT predicate (memory/sections.ts) with your own probes, BOTH directions:
+   - false negative (a body-less document judged as content) => a skeleton overwrites real memory. This is the direction that was under-fixed twice already, so push hard here: mixed fence families, nested/indented fences, info strings with unusual bytes, separators with surrounding whitespace, combinations of the four fixes, a document that is only a fence line, only the marker, only BOM, and anything else you can construct.
+   - false positive (a real memory judged as empty) => a legitimate write is silently refused. Cover: prose, every bullet marker, numbered lists, a bare number, a date, CJK-only, `#1 rule`, a code block with a body, headings plus one prose line, and a memory whose only body line is a URL or a command.
+4. Verify R2-I1: for EVERY reason a memory write can be skipped, does `/memory update`'s reply avoid claiming a memory update? Name the code path for each.
+5. Verify R2-I2: does design decision 6 record the amendment, and does the code match it?
+6. Run `node tests/run-all.mjs` in the sandbox and report the result plus the number of cases in the opaque-gate block of tests/sections-test.mjs.
+7. ADVERSARIAL PASS: assume a production bug is hiding in THIS fix. Falsify the least-tested branch with your own probe and report exactly what you ran.
+8. Any NEW contradiction introduced by these fixes? Is the change ready to commit?
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: disposition table, then new findings by severity (file:line, impact, fix boundary), then the test result, then the adversarial pass, then residual risks. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

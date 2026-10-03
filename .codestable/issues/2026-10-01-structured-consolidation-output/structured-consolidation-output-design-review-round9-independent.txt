@@ -1,0 +1,83 @@
+I verified the rev17 doc against rev16 (doc-only delta; `extensions/project-context` is byte-identical between the two trees), against the extension code, and against installed pi-ai 0.99.2 at `/home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/`.
+
+### Per-finding evidence (F1–F7)
+
+**F1 — ADDRESSED.**
+Current doc:252 — “`pickToolCall(toolCalls, name, text)`：… 一个「结构可用、但 name 不匹配且文本非空」的回复**不得**判错 —— 那正是要保留的 fail-open 文本降级”; test cases added at doc:297 (see F7). The name is now passed the reply text, and both branches are pinned.
+
+**F2 — ADDRESSED.**
+doc:197 — “「有 toolCall 但不可用且文本为空」由共享的 `pickToolCall(…, text)` 统一判为错误（不在两条 pass 各写一遍）”; doc:199 — “**名称匹配由共享的 `pickToolCall` 判**”; doc:198 — “**记账上收**：`autolearn/pass.ts:92-102` 那个自己调 `noteModelSuccess`/`noteModelFailure` 的 wrapper **改为直接走共享的 `callAux`** … pass 不再自己调 `noteModel*`”. The three stale clauses are gone.
+
+**F3 — ADDRESSED.**
+doc:251 — “`callAux(ctx, prompt, { model, maxTokens, tools, scope, projectRoot, state })` … **它同时拥有 `noteModelSuccess` 与「两次都失败才记一次」的 `noteModelFailure`（F3）**：`scope`/`projectRoot` 是记账身份 … pass 只保留自己的副作用（如 `throttle.set`）”. Matches real signatures `noteModelFailure(scope, projectRoot, error)` (`shared/call-policy.ts:72`) and `noteModelSuccess(scope, projectRoot)` (`:95`), and names callAux as the owner of success too.
+
+**F4 — ADDRESSED.**
+doc:249 — “`tools` 进 `Context.tools`（`types.d.ts:535` … `types.d.ts:280-288`）”; doc:266 — “`types.d.ts:280-288`”. Installed pi-ai: `Context` at `types.d.ts:532`, `tools?: Tool[]` at `:535`; `ToolCall` spans `280-288`. The amendment’s wrong `536` / `280-287` / `280-286` are all corrected. (doc:39 still writes `280-284` for the three fields it enumerates — that is the reviewer’s round-8 reference line and a subset of the true span, not a contradiction.)
+
+**F5 — ADDRESSED.**
+doc:251 — “把 `constrainedSampling` **原样透传**（strict 的解析与降级在 pi-ai 适配器里，扩展不自己判 `compat`；F5）、在本 pass **第一次带 `tools` 的调用抛出**时无条件去掉 tools 重试一次（不分类错误字符串，与决策 2 措辞一致；F5）”. Both prongs of the finding (trigger wording, compat ownership) are fixed.
+
+**F6 — ADDRESSED.**
+doc:328 — “F3–F10 与 R6-3..R6-9 均 ADDRESSED” (was “F6-3..R6-9”); exactly the correction round 8 requested.
+
+**F7 — ADDRESSED.**
+doc:297 — “**补 name 不匹配的两种情形（F7）**：① … 文本非空 → **不得**判错 … ② … 文本为空 → **必须**判错（`pickToolCall` 用例，两条 pass 共用一份）”; doc:298 — “**`callAux` 记账（F7）**：… 两次都失败 → `noteModelFailure` **恰好记 1 次**（不是 2 次），且本 pass 后续调用不再带 `tools`（粘性）”.
+
+### 2. F1 detail
+
+Yes, implementable from what is pinned. `completeWithMeta` returns `text` plus all extracted toolCalls including name-mismatched ones (doc:255), so `pickToolCall(toolCalls, name, text)` can be implemented as: return the first name match; else, if any toolCall is present but not usable and `text` is empty, throw; else return undefined so the caller falls back to `parseConsolidated(text)`. The two behaviors are pinned at doc:252/297, and the test cases distinguish precisely the two mismatched-name cases. Note the zero-toolCall case is handled upstream by `completeWithMeta`’s preserved `toolUse`+empty-text throw (doc:255), consistent with the I1 row.
+
+### 3. F3 detail
+
+Satisfiable with the real signatures. `call-policy.ts` exposes `noteModelFailure(scope: string, projectRoot: string, error: unknown)` and `noteModelSuccess(scope: string, projectRoot: string)`. With `scope`/`projectRoot` now in `callAux`’s options (doc:251), callAux can: attempt once with tools (unless `state` is sticky); on throw retry without tools; on success call `noteModelSuccess(scope, projectRoot)` once; only if both attempts threw call `noteModelFailure(scope, projectRoot, error)` once and rethrow. The doc names callAux as owner of `noteModelSuccess` in two places (doc:198, doc:251), and the F7 test row asserts the once-only failure count plus stickiness. Pass-specific side effects (`throttle.set`) remain in the caller, which is compatible with the current wrappers at `memory/pass.ts:83-94` / `autolearn/pass.ts:92-102`.
+
+### 4. Grep for residual per-pass ownership
+
+All `noteModel*` / name-matching / `callAux` / `pickToolCall` occurrences in the doc:
+
+- doc:83 — shared `callAux` is the single implementation (“该兜底与计数只有一份实现”).
+- doc:196 — “这个 wrapper 只有一份实现（`shared/llm.ts` 的 `callAux`），不得在两条 pass 里各写一遍” (the first sentence’s “tools 被拒” is a path label, immediately defined as “带 `tools` 的调用抛出”).
+- doc:197 — unusable+empty-text decision assigned to shared `pickToolCall`.
+- doc:198 — “pass 不再自己调 `noteModel*`” (explicit prohibition; the `autolearn/pass.ts:92-102` mention is the current code being replaced).
+- doc:199 — name matching assigned to shared `pickToolCall`.
+- doc:251, 252, 255 — `callAux`/`pickToolCall` own accounting/name policy.
+- doc:262/268 — pass change lists mention tools/`completeWithMeta`; they assign no name matching or `noteModel*` accounting, and are subsumed by the explicit single-owner clauses at doc:83/250-251.
+- doc:280 (R2) — “代码只取第一个匹配名的 toolCall”: behavioral statement; matching remains `pickToolCall`’s.
+- doc:330 — historical round-8 finding description, not a normative assignment.
+
+No present-tense prescriptive statement still assigns name matching or `noteModel*` accounting to a per-pass module.
+
+### 5. Citations (installed pi-ai 0.99.2)
+
+- `Context` interface: `types.d.ts:532`; `tools?: Tool[]`: `types.d.ts:535` — doc now says `535` (doc:38, doc:249). Correct.
+- `ToolCall` interface: `types.d.ts:280-288` (`type` :281, `id` :282, `name` :283, `arguments` :284) — doc now says `280-288` (doc:249, doc:266). Correct.
+
+The only differing value left in the document is doc:39’s `280-284` for the three-field shape; it covers exactly the fields it quotes and matches round 8’s reference line. Not an error.
+
+### 6. New contradiction / new blocking issue
+
+No. The rev16→rev17 diff is confined to: status front-matter, the three 决策 7 ownership lines, the two 接口改动 bullets (249, 251-252, 255), the doc:266 range, the two F7 test rows, the round-7 `F6-3`→`F3–F10` correction, and the new round-8 row + closing sentence. I checked each new statement against `shared/llm.ts`, `shared/call-policy.ts`, `memory/pass.ts`, `autolearn/pass.ts`, `autolearn/parse.ts`, and installed pi-ai; none is contradicted. The round-8 row claiming “F1–F7 已全部落地” while showing verdict `CHANGES-REQUESTED` is the doc’s standard “round outcome then remediation” record convention and is consistent with the closing line and front-matter. No new blocking/important issue.
+
+### 7. Frozen-ready
+
+Yes. The shared boundary is now fully specified for implementation: `callAux(ctx, prompt, { model, maxTokens, tools, scope, projectRoot, state })` owns the tools call, sticky no-tools retry, and both `noteModelSuccess`/single `noteModelFailure`; `pickToolCall(toolCalls, name, text)` owns name matching and the empty-text error policy; per-pass sticky `state` and `throttle.set` remain local. Both ambiguous interface points from round 8 are resolved with test coverage. The only items under “仍开放” are tool-description copy (explicitly out of scope) and no new design-level decisions remain.
+
+### F1–F7 disposition table
+
+| Finding | Severity | Disposition | Evidence (current doc line) |
+|---|---|---|---|
+| F1 | important | **ADDRESSED** | doc:252 `pickToolCall(toolCalls, name, text)` + “name 不匹配且文本非空 … **不得**判错”; doc:297 case ② empty text → must error |
+| F2 | important | **ADDRESSED** | doc:197 shared `pickToolCall(…, text)`; doc:198 “pass 不再自己调 `noteModel*`”; doc:199 “名称匹配由共享的 `pickToolCall` 判” |
+| F3 | important | **ADDRESSED** | doc:251 options `{ …, scope, projectRoot, state }` + “**同时拥有 `noteModelSuccess` 与 … `noteModelFailure`（F3）**”; signatures `call-policy.ts:72,95` |
+| F4 | nit | **ADDRESSED** | doc:249 `types.d.ts:535` / `280-288`; doc:266 `280-288`; installed 0.99.2 confirms 535 and 280-288 |
+| F5 | nit | **ADDRESSED** | doc:251 “`constrainedSampling` **原样透传**” + “第一次带 `tools` 的调用抛出 … 不分类错误字符串” |
+| F6 | nit | **ADDRESSED** | doc:328 “F3–F10 与 R6-3..R6-9 均 ADDRESSED” (garbled `F6-3` removed) |
+| F7 | suggestion | **ADDRESSED** | doc:297 two mismatched-call cases; doc:298 sticky + “`noteModelFailure` **恰好记 1 次**（不是 2 次）” |
+
+### Explicit answers to items 6 and 7
+
+**6. New contradiction or new blocking/important issue:** None. All rev17 edits are consistent with each other, with 决策 2/3/7, and with the code; no settled finding was re-opened; no scope creep.
+
+**7. Frozen-ready:** Yes. Both shared helpers now have implementable signatures/contracts and direct tests; no further design-level decision is required.
+
+VERDICT: PASSED

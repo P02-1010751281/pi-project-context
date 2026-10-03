@@ -1,0 +1,24 @@
+You are an independent code reviewer. This is code-review round 5 for the pi-project-context extension, at /tmp/pi-context-rev25. Confirmation pass on the round-4 fixes.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev25.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 4 (transcript: structured-consolidation-output-code-review-round4-independent.txt) returned CHANGES-REQUESTED with R4-I1 (important), R4-L1, R4-L2 (low), R4-N1, R4-N2, R4-N3 (nits). All fixed; the table is under "代码评审 round 4（跑通）" in implementation-note.md. Design decision 6/D7 carries the boundary wording.
+
+YOUR JOB
+1. Disposition R4-I1, R4-L1, R4-L2, R4-N1, R4-N2, R4-N3 as ADDRESSED / PARTIALLY / NOT, quoting current lines.
+2. R4-I1: `INVISIBLE_RE = /\p{Cf}/gu` (memory/sections.ts). Verify with your own probes that skeletons prefixed by LRM / RLM / U+202A-202E / U+2061-2064 / U+2066-2069 / U+180E / U+061C are now REFUSED, in BOTH the plain and the condense path. Then check the over-strip direction: can stripping all `Cf` turn a REAL memory into a refusal? Try `Cf` characters inside real prose, inside a URL, inside a path, and as the only content of a line.
+3. R4-L1: the `===` setext rule now tracks fence parity. Verify: a fenced block whose body ends in `===` keeps its body (content); a `===` setext skeleton outside a fence is still refused; nested/unbalanced fences and a fence opened but never closed. Try to construct a document where the parity tracking is wrong.
+4. R4-L2: `TAG_LINE_RE` was narrowed to a tag-name shape. Verify an autolink line is content, a wrapper tag line is structural, and that `<T>` / `<h2>x</h2>` alone are refused (recorded boundary). Look for a NEW bypass this narrowing opened — e.g. a skeleton wrapped in a tag that no longer matches the narrowed matcher.
+5. R4-N1: the e2e now asserts on the toast, and the implementer reports a mutation check (breaking the wording makes it fail). Reproduce that mutation check yourself in a /tmp copy: patch `report.ts` so the parenthetical always says "carried no entries" and confirm `tests/consolidation-test.mjs` FAILS. Report the exact command and result.
+6. Run `node tests/run-all.mjs` in the sandbox; report the result and the check count of the opaque-gate block of tests/sections-test.mjs.
+7. ADVERSARIAL PASS: assume a production bug is hiding in THESE fixes. Pick the least-tested branch — candidates: the fence-parity state interaction with `canonicalLine` (a decorated fence line), `Cf` stripping inside a fence, or the HTML-heading matcher versus a real memory line. Falsify it with your own probe and report exactly what you ran.
+8. Any NEW false refusal or NEW bypass? Any new contradiction? Is the change ready to commit?
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: disposition table, then new findings by severity (file:line, impact, fix boundary), then the test result, then the adversarial pass, then residual risks. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED

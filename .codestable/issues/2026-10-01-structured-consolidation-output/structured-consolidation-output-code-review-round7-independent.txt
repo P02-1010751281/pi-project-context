@@ -1,0 +1,44 @@
+# Round 7 review — pi-project-context (`/tmp/pi-context-rev27`)
+
+## 1. Four fixes — confirmation
+
+| # | Present | Quoted implementation line (extensions/project-context/memory/sections.ts) | Verdict |
+|---|---|---|---|
+| F1 | Yes | L169-176: `const TAG_SPAN_RE = /<(?:[^>"']|"[^"]*"|'[^']*')*>/g;` and `const UNTERMINATED_TAG_RE = /^<\/?[A-Za-z][\w.:-]*$/;` (narrow: name starts `[A-Za-z]`, so `<3 this project` stays content) | CORRECT |
+| F2 | Yes | L250: `else if (fence.char === openFence.char && fence.run.length >= openFence.run.length && fence.info === "") openFence = undefined;` | CORRECT |
+| F3 | Yes | L254: `if (!openFence && index > 0 && /^=+$/.test(raw[index])) structural[index - 1] = true;` (RAW line, `raw` = trimmed originals) | CORRECT |
+| F4 | Yes | L169: `const AUTOLINK_RE = /^<(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/[^<>\s]*|mailto:[^<>\s]*|[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>$/i;` — email alternative added, **not** widened to `scheme:`; comment L165-168 says exactly that | CORRECT |
+
+## 2. Findings
+
+**NIT-1 — the new test for F2's run-length clause is non-discriminating (test-only, not blocking).**
+`tests/sections-test.mjs` `"a 4-backtick block closed by 3"` is `"# Project Memory\n## Project\n````\nreal fact must hold\n===\n```\n"` — the `===` comes *before* the would-be 3-tick closer, so the verdict is the same under any closer rule. I built a mutant with only `run.length >= openFence.run.length` removed (`/tmp/rev7-mutants-v2/preRunLen`) and ran the real sections suite against it: **exit=0, 0 FAILs**. The clause is load-bearing; the discriminating doc is:
+`"# Project Memory\n## Project\n````\n```\nreal fact must hold\n===\n"` → current **CONTENT**, run-length-mutant **REFUSED** (`/tmp/rev7-runlen.mjs`). One-line test fix: put a 3-backtick line as the first body line before `real fact`/`===`. Note the other new cases do pin their fixes (mutants: preF1 2 FAILs, preF2 1 FAIL, preF3 1 FAIL, preF4 2 FAILs).
+
+No IMPORTANT/BLOCKING findings.
+
+## 3. Test result
+
+- `node tests/run-all.mjs` → **All 14 tests passed.**
+- `tests/sections-test.mjs`: **136** OK checks total; opaque-gate section (`=== the opaque entry's half of the gate ===`) **74** checks. The note's "74 / 136" is accurate.
+- Worktree md5s unchanged and `git status -uall` identical before/after review (`sections.ts 08d57c88…`, `sections-test.mjs 9f7be53d…`); probes wrote only under `/tmp`.
+
+## 4. Adversarial pass (exactly what I ran)
+
+- **Probes** `/tmp/rev7-probe.mjs`, `/tmp/rev7-probe2.mjs` (42 + 131 targeted cases): all requested both-direction cases behaved as specified — `<x title="a>b">`/`<memory`/`</memory`/`<ns:memory` skeletons REFUSED; `<3 this project`, `<b>bold text</b>`, `<user@example.com>`, `<MAILTO:x@y.example>` CONTENT; `~~~`-with-```-and-`===`, ```js inside ```, 4-tick-closed-by-3, never-closed-with-real-content all CONTENT; bare setext skeleton and `<ns:memory>` wrapper REFUSED; `<tel:…>`/`<urn:…>` alone REFUSED. No wrapper that still strips dirty was found (text outside spans always survives; malformed `<x <y> z>` stays content = fail-open).
+- **Mutants + differential fuzz** (`/tmp/rev7-diff.mjs`, `/tmp/rev7-direction.mjs`; 120,000 seeded random documents): F1 is monotone toward refusal (curT/preF1 F: 17,461; curF/preF1 T: **0**); F2/F3/F4 produced **zero** "current newly refuses" cases; every newly allowed doc contains a visible non-heading text line. No mutant verified a silent-overwrite reopen.
+- **Adverse find (F2, pre-existing, fail-safe):** a 4-space-indented fence line inside a block is trimmed before matching, so it closes the block per the gate although CommonMark treats it as body; with a following `===` this can refuse a real memory: `"# Project Memory\n## Project\n```\n    ```\nreal fact must hold\n===\n```\n"` → REFUSED under current **and all four mutants**. Refusal direction only, so not a new blocking issue.
+- **Perf probe** (`/tmp/rev7-perf.mjs`, `/tmp/rev7-quad.mjs`): a 200k-char line of `<` takes ~70 s (O(n²)); the quote-aware pattern is ~2.4× the old `<[^>]*>` constant. Same complexity class as pre-F1; upstream reply is token-bounded (`maxTokens` default 8192, adaptive cap 32768), so worst case ≈2 s. Residual, not blocking.
+
+## 5. Residual risks accepted by the owner
+
+1. **Fail-open (documented family):** an info-bearing fence line keeps a block open, so `~~~`+`~~~js`+`Project Memory`+`===` counts as content (matches CommonMark; the full four-heading skeleton is still refused because headings are ATX). A no-whitespace email-shaped tag such as `<x=a@b.c>` is treated as an autolink by F4.
+2. **Fail-safe (recorded):** `<tel:…>`/`<urn:…>` alone, lone `<T>`/`<hN>…</hN>`, prose/`---` setext wrappers, and the 4-space-indented-fence case are refused/let through conservatively; none reaches a real entry.
+3. **Perf:** O(n²) tag-span scan on pathological `<`-runs, token-bound at ~2 s; not addressed here.
+4. **Test:** F2 run-length clause unpinned (NIT-1).
+
+## 6. Verdict rationale
+
+All four round-6 fixes are present, match their stated intent, and pass independent both-direction probes; mutation runs prove the tests fail when F1/F2(info)/F3/F4 are reverted; the full suite is 14/14 and the note's 74/136 counts are exact. The only new observation is a one-line test-coverage nit, and the two behavioral side effects (fence-shield fail-open, indented-closer fail-safe) are pre-existing/documented boundary classes that never reopen the silent-overwrite path.
+
+VERDICT: PASSED

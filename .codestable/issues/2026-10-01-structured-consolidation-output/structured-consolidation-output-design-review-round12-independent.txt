@@ -1,0 +1,28 @@
+## R1 — comparative length claim (doc:282)
+
+Current sentence (doc:282, verbatim):
+
+> 本设计两个工具描述：`record_memory` 413 字符，**长于全部内置工具**（最长 `edit` 326）；`record_skill` 294 字符，与 `edit` 同档但**短于** `edit`。偏长是有意的：它们承载「调用次数 + 代码拥有什么 + 全局安全线」这类**工具级**契约，而非字段级规则（后者已全部迁到 schema 的 `description`）。
+
+- **TRUE for `record_memory`**: 413 > every built-in.
+- **TRUE for `record_skill`**: it is no longer claimed longer than all; "短于 `edit`" is literal truth, and "与 edit 同档" is a qualitative tier statement (294 is the 3rd-longest delivered description, just below edit 326/read 303 and above powershell 254) — not a falsifiable comparative claim.
+- Independent re-measurement of the delivered built-ins via `createAllToolDefinitions` (`/tmp/round12/probe.mjs`, outside the sandbox): **edit 326, read 303, powershell 254, bash 248, grep 221, find 186, ls 184, write 127 → max = edit 326**. The doc's house-rule numbers (doc:280) match exactly (powershell omitted, not contradicted). Max built-in 326 < 413 and > 294. ✅
+
+## R2 — key-set citation range
+
+- The two descriptions measured from the doc text (blockquotes at 288/292): **413 and 294** UTF-16 code units — exactly as labelled. ✅
+- Installed literal: `dist/api/anthropic-messages.js` **1223** (`const … = new Set([`) through **1235** (`]);`), 11 keys at 1224–1234 ending `maxProperties` at 1234. So **1223-1235 is the correct span**; format whitelist 1236–1247 and predicate 1248–1256 (doc:115) are also exact. ✅
+- Grep of the design doc:
+  - `anthropic-messages.js:1223-1233` → **0 occurrences** (the old live citation is gone).
+  - bare `1223-1233` → **1 occurrence, doc:385**, inside the round-11 评审记录 row quoting the old typo being fixed ("我写 1223-1233 截掉两行") — historical narrative, not a citation.
+  - `anthropic-messages.js:1223-1235` → **4 occurrences, doc:115, 284, 383, 385**, all correct. ✅
+
+## Item 4 — new contradictions?
+
+No. The diff (rev19→rev20) touches only the frontmatter status, the two citations, the doc:282 sentence, the round-10 row citation, the new round-11 row, and the freeze note. The round-10 row's "F1–F8 已全部落地" is a historical claim, and the added round-11 row explicitly records the F2 partial finding and the fix, so the sequence is self-consistent; its "改前描述 623/439 长于所有内置件" is still true of the pre-fix text. Remaining "长于" uses (384/385) are historical quotes, not live claims. Status `design-frozen-round11-remediated-pending-round12` and "待 round 12 窄幅确认后冻结" agree. No live statement conflicts with the corrected sentence.
+
+## Item 5 — frozen-ready?
+
+Yes. Both requested items are fixed with correct facts, measurements reproduce exactly, and no new contradiction was introduced.
+
+VERDICT: PASSED

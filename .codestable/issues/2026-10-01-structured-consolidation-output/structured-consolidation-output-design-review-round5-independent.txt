@@ -1,0 +1,112 @@
+# Round-5 Focused Re-Review — Fix-Delta Judgement
+
+Scope verified: design rev4-remediated in `/tmp/pi-context-rev13`; code `extensions/project-context/`; pi-ai under the global install. No file inside the sandbox was written (all probes via `node -e` under `/tmp`). Round-4 delta confirmed by diffing rev12→rev13: only the design changed; `report.ts` etc. are byte-identical.
+
+## Findings
+
+### F5-1 — important (data-loss variant of F4-1) — the new semantic-empty gate is bypassable by a schema-legal reply
+- Where: design 决策 6 lines 133–137, 条目卫生 lines 108/195; schema draft lines 156–159; code `report.ts:73`.
+- Evidence: the schema is `items: {type:"string"}` with no `minLength`, and `makeStrictJsonSchema` only forces `required`/`additionalProperties` (`constrained-sampling.js:101–112`). So `{memory:{project:[""],invariants:[],pitfalls:[],index:[]}}` + a valid context is schema-legal and strict-legal. The gate is phrased as “四个节全空” but never defines 空 after entry normalization; hygiene only covers newlines / `## ` / marker shapes. With `project:[""]` the array is non-empty, the renderer emits headings plus a blank bullet (>40 chars), `report.ts:73` sets `memoryChanged=true`, and `recordMemoryDocument` replaces MEMORY.md. On this repo the old side is unparseable (`## Documentation and review conventions`), so 决策 5 skips the guard silently — the F4-1 wipe shape survives with a slightly odd reply.
+- Impact: “语义空回复绝不写盘” is not airtight; a legal “nothing to say” quirk (`[""]` / `[" "]`) still wipes memory.
+- Minimal fix boundary: define section-emptiness on the *normalized* entries (trim; drop entries that normalize to empty) and compute `semanticEmpty` on that view; add a test with `[""]`/`[" "]`.
+
+### F5-2 — important — F4-5 is not actually fixed: adjacent bullets still split ownership of the name check
+- Where: design lines 190–192.
+- Evidence: line 191 says llm.ts suppresses name-agnostically and returns all extracted `toolCalls`; line 192 (untouched by the delta) says suppression requires “name 匹配 `record_memory` **且** arguments 非 null 对象”, i.e. llm.ts owns the memory-specific name. The rev12→rev13 diff shows only the new bullet was inserted; the old one remains verbatim.
+- Impact: the implementer cannot satisfy both; N9/F4-5 is still unresolved, and “present but unusable” observability depends on which reading wins.
+- Minimal fix boundary: delete the name clause from line 192; suppress in llm.ts on any usable `toolCall` (non-null object args, name-agnostic), return every extracted call (including unusable) so pass.ts can observe, and let pass.ts throw on name-mismatch + empty text.
+
+### F5-3 — important — the renderer is still described with two contracts (F4-3 residual)
+- Where: design line 116 vs lines 193/202 (also line 109).
+- Evidence: line 116 pins `renderMemoryDocument(sections, cap) → { text, sectionDropped, itemTruncated, neededChars }` and says “不再叫裸 `dropped`”; 接口改动 line 193 still says `renderMemoryDocument(sections, cap) → { text, dropped }` and line 202 says “`pass.ts` 把 `dropped` 传到这里作为 cap 事件”. Line 109 also still uses `dropped`.
+- Impact: the doc contradicts itself on the exact contract F4-3 asked to pin; an implementer following 接口改动 misses the carriers and the cap-event distinction.
+- Minimal fix boundary: update lines 193/202 (and the wording at 109) to the pinned shape/field names.
+
+### F5-4 — important — the condense adoption predicate is still undecided (7-decision #5)
+- Where: design lines 112–115.
+- Evidence: triggers are pinned (structured/parsable: `sectionDropped>0`; opaque: `exceedsMemoryCap`), but nothing says what may be adopted after the condense call. Current code adopts only `condensed && !exceedsMemoryCap(condensed.memory, limit)` (`pass.ts:142`); under the section renderer the condensed output is always rendered ≤ cap, so that predicate no longer discriminates, and an unparseable condensed reply can silently switch the write to the opaque legacy path.
+- Impact: implementer must invent the acceptance rule; a wrong choice can replace the first result with a worse or differently-clipped one.
+- Minimal fix boundary: pin it, e.g. adopt iff the condensed reply parses (tool-call / `sectionsFromMarkdown`) and its own `sectionDropped == 0`; if unparseable or still dropping, keep the first result and log/warn per kind.
+
+### F5-5 — important — gated-pass reporting and the fallback placeholder are unpinned
+- Where: design lines 135–136/140; code `report.ts:75`, `:139`, `:159`; `context-doc.ts:84`.
+- Evidence: with `semanticEmpty` forcing `memoryChanged=false` but a usable context, `update` is truthy → `report.ts:139` returns “updated”/“clipped” and `report.ts:159` notifies “Project memory updated: …” (commands reply “Project memory and context updated.”), although memory was deliberately not written. With all-empty + no usable context and no existing CONTEXT.md, `report.ts:75` still builds `fallbackUpdate(ctx)` → a placeholder CONTEXT.md is written and the pass reports “updated”, contradicting line 135’s “整个 pass 报 `unchanged`”.
+- Impact: the new gate state produces false “memory updated” claims, and the stated test “全空 + 无 context → unchanged” can fail on a project without CONTEXT.md.
+- Minimal fix boundary: say whether the gate also suppresses `fallbackUpdate` (or narrow the “unchanged” wording), and specify gate-aware notify/reply wording (“context updated; memory kept”).
+
+### F5-6 — nit — `neededChars` expression lacks a ceiling (F4-4 residual)
+- Where: design line 111.
+- Evidence (probe): O = 76; share 0.15, `content_s=590` → expression = 4009.33. At cap 4009 the budget is `floor((4009-76)*0.15)=589 < 590` (still clips); at 4010 it is 590. `/project-context max-memory` does `Math.round(chars)` (`index.ts:145`), so copying 4009.33 sets 4009 and silently under-delivers. The stated 20000/0.4 case (50076) happens to be integral and correct.
+- Impact: the “minimal cap that stops the clipping” advice can still clip.
+- Minimal fix boundary: state `Math.ceil` (ratio before adding overhead) and the behavior above `MAX_MEMORY_CHARS_LIMIT`, or drop the number and keep the qualitative warning (line 111 already allows this).
+
+### F5-7 — nit — stale/wrong citations
+- Where: design line 132 (`report.ts:84`) — the `update = outcome.result.context ?? …` line is `report.ts:75` (verified in rev12 and rev13); design line 71 (`constrained-sampling.js:180`) — :180 is the `makeStrictJsonSchema` call, while the unsupported-strict throw is :192 (as line 39 correctly says) and the keyword rethrow is :188; line 132 says “实测 66 字符” — the rendered skeleton is 67 raw / 66 trimmed.
+- Impact: readers following the numbers land on unrelated code; line 39 and line 71 contradict each other.
+- Minimal fix boundary: correct the three numbers.
+
+### F5-8 — nit — guard ownership/placement wording
+- Where: design line 138 vs line 121.
+- Evidence: 决策 5 puts the comparison pre-render (naturally in pass.ts, which holds old `loadMemory` and the adopted sections); 决策 6 says “`report.ts` … 跳过回归守卫”. `report.ts` cannot skip a comparison it doesn’t run.
+- Impact: the module boundary for the guard and its suppression is ambiguous.
+- Minimal fix boundary: state that pass.ts skips the guard when `semanticEmpty` (and emits the F4-7 diagnostic), carrying the flags/counts to report.ts only for `memoryChanged` and wording.
+
+### F5-9 — nit — the F4-7 diagnostic has no test and no pinned emitter
+- Where: design line 140; tests lines 232/236.
+- Evidence: the two N1 tests only assert byte-invariance and absence of “移除 N 条”; nothing asserts the plain `errors.log` diagnostic, and the doc doesn’t say whether pass.ts or report.ts writes it.
+- Minimal fix boundary: name the emitter and add a test for gated + non-empty old memory (plain diagnostic, not a warning toast).
+
+### F5-10 — suggestion — prefer the “no numeric advice” branch
+- Design line 111 allows either. Given the share/ceil/clamp interactions (F5-6) and that the cap event + `kind` already carry the cause, dropping the number removes an entire class of mis-advice.
+
+### residual-risk (acknowledged) — strict is effectively off on all in-use routes
+- Design lines 15/72/212. Only two local deepseek models declare `supportsStrictMode` (probe: `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro`); the shipped shape guarantee is function-calling semantics, not grammar. The real-route probe remains required; strict-on and strict-off schema rewrite paths should both be exercised.
+
+### praise
+- F4-1’s rewritten rule is the right shape: memory gate independent of context (lines 133–137), carriers named (line 138), context-only write reachable in the current code shape (`report.ts:75` vs the `if (update)` block). F4-2 carriers, F4-6 (`:146`/`:1261`, verified) and F4-8 (private-regex note) are genuinely fixed; N2–N8/N11 show no regression. The `neededChars` arithmetic in the design’s example checks out exactly (O=76, share 12769, untrimmed 20076).
+
+## F4-x Disposition
+
+| # | Status | One-line evidence |
+|---|---|---|
+| F4-1 | **ADDRESSED** (residual) | 决策 6 lines 133–137 key the memory write on “four sections empty” alone; residual bypass F5-1 and reporting nuance F5-5. |
+| F4-2 | **ADDRESSED** | Line 138 names `sections/semanticEmpty/sectionDropped/itemTruncated/neededChars/kind` and pins gate-before-guard; ownership wording still loose (F5-8). |
+| F4-3 | **PARTIALLY** | Line 116 pins `{text, sectionDropped, itemTruncated, neededChars}` and cap-event vs condense-trigger is consistent (110/113/116), item-only test added (228) — but 接口改动 lines 193/202 still say `{text, dropped}` (F5-3). |
+| F4-4 | **PARTIALLY** | Line 111 formula is correct up to rounding; probe counterexample (share 0.15, content 590 → 4009.33, `max-memory` rounds to 4009 which still clips) (F5-6). |
+| F4-5 | **PARTIALLY** | Line 191 states name-agnostic suppression, but line 192 (unchanged) still requires the `record_memory` name match in llm.ts — direct contradiction (F5-2). |
+| F4-6 | **ADDRESSED** | Line 41 now cites `anthropic-messages.js:146` (default) / `:1261` (use); verified; `:1163` is the toolResult loop. |
+| F4-7 | **ADDRESSED** | Line 140 adds the plain diagnostic when gated over non-empty memory; emitter/test unpinned (F5-9). |
+| F4-8 | **ADDRESSED** | Line 94 acknowledges `document.ts:13` is private and requires export or a pinned redeclaration; which one is left open (nit). |
+
+## The 7 “Remaining Decisions”
+
+| # | Decision | Status | Where |
+|---|---|---|---|
+| 1 | Empty-sections gate independent of context + enforcement point | **RESOLVED** | 决策 6 lines 133–138; residual F5-1/F5-5 |
+| 2 | `ConsolidateOutcome` carrier shape | **RESOLVED** | Line 138 lists all six carriers; `kind` value domain still unspecified and line 202 stale |
+| 3 | Renderer return shape; cap-event vs condense-trigger | **RESOLVED in 决策 4** (116/113), **doc still contradicted** by line 193 | F5-3 |
+| 4 | `neededChars` computation or reworded advice | **RESOLVED** with a rounding nit | Line 111; F5-6 |
+| 5 | Condense adoption predicate | **STILL OPEN** | Lines 112–115; F5-4 |
+| 6 | llm.ts vs pass.ts ownership of the name check | **STILL OPEN** | Lines 191 vs 192; F5-2 |
+| 7 | `record_memory.description` copy | **STILL OPEN** | Line 274 says so explicitly |
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` in the sandbox (read-only): **13/13, “All 13 tests passed.”**
+- Probes (repo untouched; commands under `/tmp`):
+  - Skeleton render: `"# Project Memory\n\n## Project\n\n## Invariants\n\n## Pitfalls\n\n## Index\n"` = 67 raw / 66 trimmed; `trim().length >= 40` → true.
+  - Real schema math: `memorySchemaOverheadChars()` = **76**; `memorySectionBudgets(32000)` = 6384/12769/7981/4788; design example verified (12769, untrimmed 20076, needed 50076; at 50075 budget 19999).
+  - Rounding counterexample: content 590 @ share 0.15 → exact 4009.33; budget at 4009 = 589, at 4010 = 590; `index.ts:145` `Math.round(chars)` → 4009.
+  - `parseStreamingJson('{"memory":{…,"index":["i1","i2')` → `{"memory":{…,"index":["i1","i2"]}}` (B2 premise reproduced).
+  - pi-ai: `anthropic-messages.js:146`/`:1261` confirmed, `:1163` unrelated; `constrained-sampling.js:180` is the `makeStrictJsonSchema` call (throw at 192); root `index.d.ts` does not export `makeStrictJsonSchema`; models-store strict = only the two deepseek models.
+  - Repo `.agents/memory/MEMORY.md` contains `## Documentation and review conventions` → `sectionsFromMarkdown` would return `undefined` under the contract, so this repo’s guard skips (N11 claim holds).
+- Gaps the revised test plan still doesn’t catch: the whitespace-entry gate bypass; gate-aware notice/reply wording; the F4-7 diagnostic; condense adoption; the llm name-check contradiction; `neededChars` rounding; `kind` value domain.
+
+## Quality Bars
+
+- **Over-engineering**: acceptable. `sections` on the outcome is redundant if the guard lives in pass.ts; the six-field carrier could be trimmed to what report.ts consumes.
+- **Unclear boundaries**: guard location (pass vs report), condense adoption predicate, emptiness definition at entry level, `kind` domain, fallbackUpdate suppression.
+- **Unstated assumptions**: `content_s` measured pre- or post-item-truncation; `itemTruncated` unit (count vs chars); emitter of the F4-7 diagnostic.
+- **Scope creep**: none found — S4, configurable CONTEXT cap, CONTEXT read-side migration, vault/encryption/archive upload and command renaming remain excluded; the strict compat config is owner-decided and doesn’t change the pass contract.
+
+VERDICT: CHANGES-REQUESTED

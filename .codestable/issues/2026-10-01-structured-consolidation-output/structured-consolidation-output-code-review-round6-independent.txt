@@ -1,0 +1,76 @@
+## Round 6 confirmation review — pi-project-context structured consolidation (sandbox `/tmp/pi-context-rev26`)
+
+Read-only compliance: all probes were run from a copy under `/tmp/rev26-probe` (`cp -r` of `extensions/` + `tests/`); `git status --porcelain` of the sandbox is byte-identical before/after (`SANDBOX WORKTREE UNCHANGED`), and the reviewed file hashes were recorded: `sections.ts` `5c620317…`, `sections-test.mjs` `e5455199…`, design `ea52f52e…`, note `c938129a…`. No mutation was run inside the sandbox.
+
+---
+
+### 1. Disposition of the round-5 findings
+
+| # | Disposition | Current-code evidence and probe result |
+|---|---|---|
+| **R5-I1** | **ADDRESSED** | `memory/sections.ts:165` `AUTOLINK_RE`; `:175-177` `isTagOnlyLine()` = `line !== "" && !AUTOLINK_RE.test(line) && !CONTENT_RE.test(line.replace(TAG_SPAN_RE, ""))`; wired into `structural` at `:223-225`. Probes (`/tmp/rev26-probe/probes/r6-tags.mjs`, `r6-tags2.mjs`): `<foo_bar>`, `<ns:memory>`, `<my.tag>`, `<_x>`, `<1memory>`, `<记忆>`, `<memory>`, lone `</x>` — all refused when wrapping a skeleton, in plain and condense E2E (`r6-wrappers-e2e.mjs`: memory kept; condense keeps the 4024-char first result, `seen=2`). Reverse clean: `<https://…>`, `<mailto:…>`, `<HTTPS://…>`, `the <h2>Overview</h2> section` are content. Mutation back to the round-4 narrowed name regex → exactly the 6 new wrapper checks FAIL. |
+| **R5-L1** | **ADDRESSED** (for the reported cases) | `sections.ts:222` `const fences = raw.map((line) => FENCE_LINE_RE.exec(line)?.[1]);` (raw, trimmed line — decoration cannot flip parity), `:230-239` `let openFence; … else if (openFence === family) openFence = undefined;`. Probes (`r6-fence.mjs`): `~~~` block containing a ``` line and `===` → content; decorated `> ``` `/`- ``` ` inside a block → content; unclosed ` ``` `/`~~~` blocks → content; nested families → content; `===` setext skeleton outside any block → refused. Mutations: family-blind close → 1 FAIL; canonical-line fence detection → 1 FAIL. Residual wrong-input class remains → F2 below. |
+| **R5-N1** | **ADDRESSED** | All four claimed wordings are present in `structured-consolidation-output-design.md`: tag rule `去掉所有 \`<…>\` 跨度后不再含字母数字` at **:158**; criterion `判据是「去掉结构行之后还剩不剩带字词的行」` at **:158**; `装饰 + ATX 的交互（R4-N3）` at **:159**; `fence 奇偶（R5-L1）` at **:160**. (The lone `<T>`/`<hN>` and punctuation/emoji boundaries are not separately bulleted; they follow from the :158 criterion. The fail-open trio — prose preamble, element-with-text, `---` setext — is explicit at :161.) |
+
+**Convergence judgement.** The switch from enumeration to general rules did converge on the axes it targeted: `\p{Cf}` is the whole class and is complete; tag *names* are no longer enumerated at all (the mutation proof shows the wrapper family stays closed). The fence rule is now family+raw-line aware but is still a family-only approximation of the markdown rule (length/info-string → F2), and one fail-open residual exists on the orthogonal tag-*span* axis (F1, pre-existing). So: not "new edge every round" any more — the remaining edges are the same ones that were already there before the round-5 fix, and the only one with data-loss shape is not caused by it.
+
+---
+
+### 2. New findings
+
+**F1 — LOW (pre-existing; data-loss shape) — `TAG_SPAN_RE` is quote-unaware, so a wrapper with `>` inside an attribute still strips dirty**
+`memory/sections.ts:166` `const TAG_SPAN_RE = /<[^>]*>/g;`. `<x title="a>b">` leaves `b">` after stripping, so `isTagOnlyLine` is false and a body-less skeleton wrapped in it is "content".
+- E2E (`/tmp/rev26-probe/probes/r6-bypass-e2e.mjs`): plain path overwrote `# Project Memory\n\n## Project\n- keep me.` with the 67-byte skeleton and toasted `Project memory and context updated.`; condense path discarded the 4024-char first result and adopted the 67-byte skeleton (`seen=2`).
+- Cross-revision probe (`r6-crossrev.mjs`): same result in rev24 and rev25 — **not introduced by the R5 fix**.
+- Trigger plausibility: `grep` over `.agents/memory` finds **0** tags with `key="value"` attributes from the model; wrappers in the corpus are plain `<memory>`/`<existing-memory>`-style names. Unclosed `<memory` (malformed) is the same class.
+- Fix boundary if the owner wants zero known fail-open markup-only edges: `/<(?:[^>"']|"[^"]*"|'[^']*')*>/g` (quote-aware span). Otherwise this is the same accepted-boundary family as decision 6/D7:161.
+
+**F2 — LOW (pre-existing; fail-safe) — fence parity ignores opener length and info strings**
+`sections.ts:161` `FENCE_LINE_RE` captures only the family; `:231-238` closes on any same-family line.
+- `# Project Memory\n## Project\n```\n```js\nreal fact must hold\n===\n```\n` → `isHeadingOnlyDocument` = `true` (refused) even though the only real body line is inside the block. Same for a 4-backtick opener closed by a 3-backtick line, and the `~~~` variants (`r6-fence.mjs`).
+- Impact: fail-safe false refusal + the false `the reply carried no entries` toast/diagnostic; condense keeps the first result. Pre-existing in rev24/rev25 (cross-revision table).
+- Fix boundary: track `{char, length}` of the opener and close only on same char, run length ≥ opener, no info text (or record the boundary).
+
+**F3 — NIT (pre-existing; fail-safe) — decorated `===` still eats the line above**
+`sections.ts:238` tests the *canonical* line, so `real fact must hold\n- ===\n` (also `> ===`, `1. ===`) marks the real line structural → refused. In markdown those are bullets/quotes, not setext underlines. Fix: test the raw trimmed line (`raw[index]`) for `/^=+$/`. Contrived input; recorded for completeness.
+
+**F4 — LOW (behavior changed by the R5 fix relative to rev25; fail-safe) — `AUTOLINK_RE` shape is narrower than "autolink"**
+`sections.ts:165` admits only `scheme://…` and lowercase `mailto:`. `<user@example.com>`, `<MAILTO:…>`, `<tel:+15551234>`, `<urn:…>` are markup-only → refused. Cross-revision: rev24 `true`, rev25 `false`, rev26 `true` — i.e. the round-5 general rule re-classified these as structural.
+- E2E (`r6-refusal-e2e.mjs`): plain path kept the memory but toasted `…memory was kept unchanged (the reply carried no entries)` for `<img alt="the architecture diagram with the full legend of every module">` — a false statement; condense kept the first result.
+- Fix boundary: add an email-shaped alternative (bare `local@domain`); do **not** broaden to every `scheme:` shape, because CommonMark-style `<ns:memory>` would then be an autolink and content again — re-opening R5-I1. CDATA-with-words and comment-with-words are refused by the same stripping (fail-safe, no fix needed).
+
+---
+
+### 3. Test result
+
+- `cd /tmp/pi-context-rev26 && node tests/run-all.mjs` → **All 14 tests passed** (exit 0). The sandbox worktree was unchanged afterwards.
+- Opaque-gate block of `tests/sections-test.mjs` (`=== the opaque entry's half of the gate ===` … final summary): **65 checks**; whole file **127**. All pass.
+- The round-5 fix added 9 checks to that block (6 wrappers + 1 mailto + 2 fence); 56+9=65 and 118+9=127 match. Observation, not a finding: `implementation-note.md:175` still says `现为 56 条 / 118 条`, which is the round-4 measurement now superseded by these 9 checks.
+- Mutation checks on the copy (non-vacuity): revert `isTagOnlyLine` to `[A-Za-z][A-Za-z0-9-]*` → 6 wrapper FAILs; make the close family-blind → 1 FAIL (the `~~~`/``` `===` test); read fences from canonical lines → 1 FAIL (the decorated-fence test).
+
+---
+
+### 4. Adversarial pass
+
+Least-tested branch picked: **the fence state machine vs a fence with an info string / a run-length mismatch** (the parity code was rewritten this round and the suite only pins family and decoration cases).
+
+- Probe file: `/tmp/rev26-probe/probes/r6-fence.mjs`; command exactly `cd /tmp/rev26-probe && node probes/r6-fence.mjs`.
+- Falsified: `# Project Memory\n## Project\n```\n```js\nreal fact must hold\n===\n```\n` returns `true` (refused) although the real line is inside the block; the inner same-family info-string line is treated as a closer, so `===` then eats the body line. The 4-tick/3-tick variant and the `~~~` variant behave the same. Cross-checked against rev24/rev25: `true` in all three, so pre-existing — reported as F2, not as a round-5 regression.
+- Second branch, `AUTOLINK_RE` shape (`/tmp/rev26-probe/probes/r6-tags2.mjs`): `<user@example.com>`, `<MAILTO:…>`, `<tel:…>`, `<urn:…>`, `<xmpp:…>` are all refused; comments are stripped and CDATA spans are structural, so no bypass was found there. Reported as F4.
+- Bypass branch (`r6-tags2.mjs` + `r6-bypass-e2e.mjs`): `<x title="a>b">` / unclosed `<memory` are the only new bypasses I could construct; both reproduce in rev24/rev25 → F1.
+
+---
+
+### 5. Residual risks the owner accepts
+
+- **Fail-open boundaries.** Prose preamble, element-with-text and `---` setext are explicitly recorded at `design.md:161`; lone `<T>`/`<hN>` and punctuation/emoji-only bodies are fail-*closed* consequences of the :158 criterion (any real memory with one content line passes). These are acceptable to ship: the direction of every one of them is "skip the write", the condense path keeps the first valid result, and any real memory has a body line.
+- **F1** is the one accepted residual with data-loss shape: a markup-only wrapper whose tag has a quoted `>` (or a malformed/unclosed tag) can still overwrite the stored memory on the plain path and be adopted on the condense path. It is pre-existing, not observed in this repo's model output, and a one-line quote-aware `TAG_SPAN_RE` closes it if the owner prefers zero known fail-open edges.
+- **F2/F3/F4** are fail-safe: at worst the write is skipped and/or the toast says `carried no entries` when the reply was markup-only but meaningful. No stored memory can be lost through them.
+
+---
+
+### Verdict rationale
+
+No blocking or important issue: R5-I1, R5-L1 and R5-N1 are all ADDRESSED, the named wrappers are closed in both paths (unit + E2E + mutation-verified), the required fence cases and the four D7 wordings are present, and the full suite is green (14/14; opaque gate 65/127). The general-rules direction did converge where it claimed to; the remaining wrong inputs are pre-existing, fail-safe, and largely orthogonal to the round-5 change. The new findings are LOW/NIT and do not warrant another round; the owner is accepting F1's implausible silent-overwrite edge and F2–F4's false refusals with a misleading diagnostic unless they choose the listed one-line fixes.
+
+VERDICT: PASSED

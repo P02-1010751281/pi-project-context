@@ -1,0 +1,103 @@
+## Findings
+
+**N1 — blocking — A schema-valid all-empty sections reply renders a non-empty document, bypassing the existing empty-reply guard and wiping MEMORY.md.**
+- Where: design 决策 1/3 (structured + fallback·可解析 entries) + 决策 4/F2; `extensions/project-context/memory/report.ts:73`
+- Evidence: `memoryChanged = memoryText.length >= 40` (report.ts:73). `renderMemoryDocument({project:[],invariants:[],pitfalls:[],index:[]})` still emits `# Project Memory` + four `## ` headings (~72 chars), so `memoryChanged` is true and `recordMemoryDocument` replaces the stored memory with a headings-only document. The design validates only shapes (`sectionsFromToolCall`, R5) and only rules on empty *text* with an unusable tool call (F2); grep of the design finds no empty-content rule. The guard (决策 5) warns but explicitly does not block, and skips silently when the old side is not parseable (free-form old memory — this repo's own `MEMORY.md` is such a case, verified below).
+- Impact: one valid-shaped tool reply with empty arrays destroys prior memory (backup exists); on non-parseable old memories the wipe is silent. This contradicts the design's own “丢弃必须可见/不静默丢” goal and regresses the current fail-safe.
+- Minimal fix boundary: add an explicit semantic-empty gate mirroring `>= 40` (all four sections empty and no usable context ⇒ treat as unchanged/error, never write), plus a test case.
+
+**N2 — important — The F1 fix removed the preamble rule the header exemption was supposed to precede; the contract and test plan now disagree.**
+- Where: 决策 3 extraction contract vs 测试计划 I2 (design lines 89–95 vs 209)
+- Evidence: round-2 review quotes the prior contract's “首个节头之前的引言…任一非空即 undefined”; the current bullet list has no such bullet — only header, headings, entries, intra-section non-bullets, unknown sections/trailing, all-four-headings. Test plan still requires “引言 … 必须 undefined”. Probe: with the rule omitted, `Some preamble prose.\n\n## Project…` is silently dropped and the function returns sections; with the reject rule it returns `undefined`.
+- Impact: an implementer following the bullets can silently drop preamble content on the fallback path — exactly the silent-loss class F6/I2 exist to prevent. The design's own header line says “不写明等于静默丢内容”.
+- Minimal fix boundary: re-add one bullet: any non-blank line between the optional header and the first recognized `##` heading ⇒ `undefined`.
+
+**N3 — important — F5's `dropped > 0` trigger leaves the opaque path (降级·不可解析) with no condense gate at all.**
+- Where: 决策 3 table (opaque row) + 决策 4 F5 vs `pass.ts:128`
+- Evidence: the opaque path never calls `renderMemoryDocument`, so it produces no `dropped`; the design replaces the only existing trigger `exceedsMemoryCap(result.memory, cap)` (pass.ts:128) with `dropped > 0`. Nothing states the opaque path keeps the old check.
+- Impact: an over-cap free-form reply (the entry most likely to overflow) loses the one curated condensation and goes straight to the 60/40 clip — the same “silently retired quality loop” F5 was raised for, merely relocated.
+- Minimal fix boundary: state that the opaque path retains `exceedsMemoryCap(result.memory, cap)` as its condense gate (or defines `dropped` for it), and test it.
+
+**N4 — important — The no-tools fallback (F3) and the retry/condense prompts still carry `tools`; the design never makes the fallback sticky, and the condense asks for text JSON while the tool-first prompt asks for a tool call.**
+- Where: 决策 2 last bullet (F3), 决策 3 I3, 决策 4 F5; `pass.ts:83-94` (`call()` wrapper)
+- Evidence: `call()` attaches tools to every invocation; F3 promises exactly one fallback keyed to “本 pass 第一次带 tools 的调用”; I3 says retry/condense keep the `{memory_markdown, context}` text shape but never says tools are dropped. On a tools-rejecting route, a length/parse retry after fallback re-sends tools and fails — and it is no longer the “first” call, so no second fallback. On a tool-honoring route, the condense prompt competes with “优先调用 record_memory”; a toolCall answer leaves `parseConsolidated` without JSON, so the retained condense is effectively dead.
+- Impact: both the fallback and the preserved condense can fail or be inert on the exact paths they target.
+- Minimal fix boundary: state that once the fallback fires all later calls in the pass omit `tools`; and either send retry/condense without `tools` or accept a toolCall as the condensed sections.
+
+**N5 — important — F4 residual: one `dropped` conflates section-budget clipping with per-item truncation, so `neededChars` and the reused wording can still mislead.**
+- Where: 决策 4 (F4 + “被截的项计入同一个 dropped”); `report.ts:111-126,154`; `pass.ts:133`
+- Evidence: `MAX_LIST_ITEM_CHARS` truncation can occur while the untrimmed document is still ≤ cap, so `neededChars` (= untrimmed length) ≤ current cap; yet the design keeps the `raise max-memory ${neededChars}` advice (report.ts:125/154) and the condense prompt still says “Your previous memory_markdown exceeded the ${limit}-character cap … its middle would be dropped” (pass.ts:133) for a `dropped > 0` caused only by an item cut. `lastWrite.capped` is a single boolean but the design requires the 60/40 wording only for the opaque path, with no discriminator defined.
+- Impact: wrong operator guidance and a false-premise condense call exactly on the event B1 makes visible.
+- Minimal fix boundary: return separate section-budget vs item-truncation counts (or a flag), word/advise per cause (cap-raise only for section overflow), and give the report path a discriminator (enum/kind) to keep the old wording opaque-only.
+
+**N6 — nit — F10 still unresolved in the test plan.**
+- Where: 决策 4 (line 106: no marker, assert `text.length <= cap`) vs 测试计划 I4 (line 210: assert `document.length + marker <= cap`)
+- Evidence: the renderer contract has no `marker`; the test-plan assertion references a variable that will not exist.
+- Impact: implementer/verifier confusion; the intended assertion is stated only in 决策 4.
+- Minimal fix boundary: rewrite I4 as `text.length <= cap` plus `dropped > 0`.
+
+**N7 — nit — `sectionsFromMarkdown` treatment of a stored trailing truncation marker is undefined.**
+- Where: 决策 3 contract + 决策 5 old side
+- Evidence: probe — the opaque path's stored `_[memory truncated at 32000 characters: N dropped]_` line is rejected as a non-bullet inside `Index` under the literal contract; the known-FN list attributes the guard skip to “旧侧根本不存在”, not to marker shape.
+- Impact: every previously capped memory is guard-skipped; harmless if intended, but the reason is misdocumented and untested.
+- Minimal fix boundary: state explicitly whether a trailing marker is ignored by the extractor or deliberately makes the document unparseable.
+
+**N8 — nit — Guard diff point relative to the F5 condense adoption is unstated.**
+- Where: 决策 5 (“在渲染器裁剪之前比较本轮 sections”) + 决策 4 F5
+- Evidence: it is not defined whether “本轮 sections” are the first-pass sections or the adopted condensed ones; condense is instructed to “remove the least durable entries”.
+- Impact: intentional condense removals either go unreported or surface as guard “removals”; semantics of the warning become implementation-dependent.
+- Minimal fix boundary: pin the diff to the sections actually adopted for the write (or explicitly to the pre-condense first pass).
+
+**N9 — nit — `shared/llm.ts` is assigned a memory-specific name check.**
+- Where: 接口改动 llm.ts bullet (“name 匹配 `record_memory`”)
+- Evidence: a shared plumbing module would own the memory tool’s name and usability policy; other tool-call callers cannot reuse it.
+- Impact: boundary smell; trivially avoidable.
+- Minimal fix boundary: return the extracted tool call(s) generically (or accept expected names as an argument) and let `pass.ts` decide usability.
+
+**N10 — nit (factual drift) — pi-ai line citations in 现状 no longer match the installed package.**
+- Where: 现状 pi-ai bullets
+- Evidence (current `/home/user/.local/.../pi-ai/dist/api/constrained-sampling.js`, mtime 16:14 today, after the rounds): `makeStrictJsonSchema` starts at 107 (design: 42-110), `resolveJsonSchemaStrictSampling` at 174-195 (design: 163-183), unsupported-strict throw at 192 (design: 180); `anthropic-messages.js` `supportsStrictTools` is at 146 (design: 145). All behavior claims are verified true.
+- Impact: implementers chasing cited lines land in the wrong place; no semantic claim is wrong. Likely a pi-ai package refresh after the rounds.
+- Minimal fix boundary: re-point the three/four citations or pin the reviewed pi-ai version.
+
+**N11 — nit (overclaim) — The backward-compat claim for old 4-section memories is too broad.**
+- Where: 向后兼容 (“旧记忆（已是 4 节 Markdown）…内容不变，仅预算执行方式更精确”)
+- Evidence: the F6 rule makes any four-section document with prose bodies (no `- ` bullets) return `undefined`; probe against the repo's own `.agents/memory/MEMORY.md` rejects it (`## Documentation and review conventions`, etc. — unknown sections). Only bullet-shaped canonical docs reach the parseable path.
+- Impact: the guard will not cover this repo's own current memory shape; “only budget execution is more precise” is false for prose-shaped memories.
+- Minimal fix boundary: qualify the claim and add the guard-skip case to the test plan.
+
+**Praise / learning** — The F1 header mechanism itself is verified workable: synthetic docs parse with and without the header; `normalizeMemoryDocument` re-emits `# Project Memory` from case/space/leading-blank variants. F2's llm-side suppression (usable = name match + non-null object arguments) closes the real `parseConsolidated("") → {memory:""}` hole. F8 is now exact (76/8/68, `provider-composer.js:72`, 0 strict keys). F9 is correct: `./api/*` is exported, `makeStrictJsonSchema` is exported there and not from the root. The strict-ready schema analysis re-verified (deep-equal, second pass OK, prefer/require/$ref semantics). No out-of-scope smuggling found (S4 is share-based clipping only; no CONTEXT cap read-side migration, vault, or renaming).
+
+**Residual-risk** — Route-side `compat.supportsStrict*: true` remains a static capability claim; `prefer` will not retry non-strict if the provider 400s on strict, and paid routes are unavailable so the real probe remains unverified. The design already states both; keep it reversible and never report the probe as passed when the route is unavailable.
+
+## F1–F11 Disposition
+
+| # | Finding | Status | Evidence |
+|---|---|---|---|
+| F1 | header exemption | **ADDRESSED** | 决策 3 bullet 1 (`# Project Memory`, case-insensitive, first non-empty line, same shape as `parseMemoryValue`); probe confirms canonical docs parse and the header is re-emitted. Caveat: the preamble rule it should precede is now missing (N2). |
+| F2 | usable toolCall / empty text | **ADDRESSED** | 接口改动: llm.ts suppresses the throw only for name-match + non-null-object args; pass.ts adds “unusable toolCall + empty text = error”. Probe confirms the hole was real (`parseConsolidated("") → {memory:""}`). Note: pass.ts cannot literally observe “present but unusable” through the proposed return shape; restate as “no usable toolCall + empty text”. |
+| F3 | no-tools retry policy | **ADDRESSED** | 决策 2 last bullet: unconditional once-per-pass fallback on the first tools-enabled failure; `noteModelFailure` only after both fail. Residual: stickiness of the no-tools mode for later calls is unstated (N4). |
+| F4 | cap diagnostics / neededChars | **PARTIALLY ADDRESSED** | 决策 4: renderer returns untrimmed length/neededChars, wording must change, `lastWrite.capped` flagged. Remaining: one `dropped` mixes section overflow and item truncation, advice/condense wording still wrong for item-only cuts, no path discriminator (N5). |
+| F5 | condense fate | **PARTIALLY ADDRESSED** | 决策 4: keep one bounded condense, trigger `dropped > 0`, structured condense keeps `{memory_markdown, context}`. Gaps: opaque path has no trigger after the old check is replaced (N3); tools attachment for retry/condense unstated (N4); guard diff point vs adoption (N8). |
+| F6 | intra-section non-bullet / leading `- ` | **ADDRESSED** | 决策 3 bullets 4 and 7: non-blank non-`- ` inside a section ⇒ `undefined`; tool-call items strip one leading `- `. |
+| F7 | file ownership | **ADDRESSED** | 接口改动: `sections.ts` owns `sectionsFromMarkdown`; `parse.ts` keeps only `parseConsolidated`. |
+| F8 | commandcode api mix | **ADDRESSED** | 现状 corrected; independently verified 76 entries = 8 `anthropic-messages` + 68 inheriting `openai-completions` at `provider-composer.js:72`; 0 strict compat keys. |
+| F9 | strict self-check import path | **ADDRESSED** | 测试计划 names `@earendil-works/pi-ai/api/constrained-sampling`; exports map has `./api/*`, `makeStrictJsonSchema` is exported there and absent from the root; harness must add an alias or use the dist path (design acknowledges). |
+| F10 | marker vs assertion | **PARTIALLY ADDRESSED** | 决策 4 says no marker and `text.length <= cap`; 测试计划 I4 (line 210) still asserts `document.length + marker <= cap` (N6). |
+| F11 | stale “仍开放” | **ADDRESSED** | “仍开放” now lists F1–F7 as settled and the only true open item (`record_memory` description copy). |
+
+## Test And QA Focus
+
+Observed: `node tests/run-all.mjs` → 13 test files, `All 13 tests passed.` (matches the design's 13/13). Sandbox `git status --porcelain -uall` was 11 entries before and after (4 pre-existing modified files + untracked issue/skill dirs); all probes wrote only under `/tmp`.
+
+Probes and actual outputs:
+- pi-ai subpath: `makeStrictJsonSchema(draft)` deep-equal `true`, second pass ok; `prefer` unsupported → `undefined`, supported → `true`; `require` unsupported throws `"strict tools are unsupported"`; `$ref` + `prefer` no throw.
+- `parseStreamingJson('{"memory":{…,"index":["i1","i2')` → `{"memory":{"project":["p1"],"invariants":["i1"],"pitfalls":["x"],"index":["i1","i2"]}}` — B2's premise reproduced.
+- `parseConsolidated("")` → `{"memory":""}`; `"   "` → `{"memory":"   "}` — F2's hole was real.
+- commandcode: 76 models = 8 `anthropic-messages` + 68 inheriting `provider.json` `openai-completions` (`provider-composer.js:72`); 0 strict keys; models-store strict-on = 2 deepseek models; `project-context.json` `provider`/`model` empty.
+- Canonical header: `parseMemoryValue`/`normalizeMemoryDocument` strips `# project memory`, `#Project Memory`, leading blanks, trailing spaces and re-emits the canonical header; a trailing truncation marker is rejected by the current contract; the repo's own `MEMORY.md` is rejected (unknown `## Documentation and review conventions`); synthetic canonical docs parse with and without the header; a preamble is silently dropped when the preamble rule is absent.
+- The revised test plan still does not catch: N1 (empty arrays), N2 (preamble unless added), N3 (opaque condense), N4 (tools on retry/condense), N5 (item-only truncation diagnostics), N7/N8 (marker, condense-vs-guard ordering). The B2 test should mock at the `parseStreamingJson`/stream level as written (“流”), not a plain `complete` object.
+
+Remaining decisions before coding: (1) empty-sections semantics; (2) re-add the preamble rule; (3) opaque-path condense gate; (4) tools attachment for retry/condense + sticky no-tools mode; (5) `dropped` units / diagnostic split and `lastWrite` discriminator; (6) guard diff point vs condense; (7) trailing-marker handling in `sectionsFromMarkdown`.
+
+VERDICT: CHANGES-REQUESTED

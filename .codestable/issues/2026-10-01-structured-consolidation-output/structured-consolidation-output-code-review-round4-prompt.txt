@@ -1,0 +1,31 @@
+You are an independent code reviewer. This is code-review round 4 for the pi-project-context extension, at /tmp/pi-context-rev24. Narrow confirmation pass on the round-3 fixes.
+
+READ-ONLY RULES (mandatory):
+- Do NOT create, edit, delete or move any file inside /tmp/pi-context-rev24.
+- Do NOT run git add/commit/checkout/stash/reset/clean or any mutation.
+- Temporary probes may write only under /tmp, never inside the sandbox.
+
+CONTEXT
+Round 3 (transcript: structured-consolidation-output-code-review-round3-independent.txt) returned CHANGES-REQUESTED with R3-I1 (important, a REGRESSION the round-2 fix introduced), R3-I2 (important, residual boundary + a condense data-loss path), R3-N1 and R3-N2 (nits). All four have fixes; the table is in implementation-note.md under "代码评审 round 3（跑通）". Design decision 6 carries the D7 amendments.
+
+YOUR JOB
+1. Disposition R3-I1, R3-I2, R3-N1, R3-N2 as ADDRESSED / PARTIALLY / NOT, quoting current lines.
+2. R3-I1 (the regression). The fix normalizes line separators BEFORE the structural matchers run. Verify by reading memory/sections.ts AND probing:
+   - a FENCED real memory joined by `\n`, `\r`, `\r\n`, U+2028, U+2029, and by mixed separators, must all count as CONTENT (writes allowed);
+   - an UNCLOSED fence over a real memory must count as content;
+   - the same separators with a heading-only skeleton must all still be REFUSED.
+   Then try to construct a document where the normalization order still matters and gets it wrong.
+3. R3-I2 (decorated skeletons + the condense path). The fix adds `canonicalLine()` (strips zero-width chars, and any run of `>`/bullet/ordered markers) before the ATX test, and widens the structural-line set (fence / thematic break / lone HTML-XML tag / HTML heading / `===` setext underline plus the line it underlines).
+   - Verify each decorated skeleton the round-3 review named is now refused: `- # Project Memory…`, nested `- - # …`, `> # …`, `1. # …`, ZWSP-prefixed, `<memory>`-wrapped, `<h2>…</h2>`, `===` setext.
+   - Verify the OVER-STRIP direction, which is the dangerous one (a real memory judged empty is silently refused): prose, `- /*/+ ` bullets, ordered items, `> quoted fact`, `- #1 rule`, a bare number, a date, CJK-only, a code block with a body, a URL-only line, a path-only line, a line that is only punctuation, and a memory mixing headings with prose. Report any false refusal.
+   - Verify the two RECORDED boundaries are still open by design (do not report them as bugs without saying so): a prose preamble over a skeleton, and a `---` setext skeleton.
+   - E2E: `tests/consolidation-test.mjs` test 15 pins that a DECORATED skeleton condensed reply is not adopted over the first real over-cap result. Confirm it really fails on the pre-fix code path (reason about it or reconstruct) and that the assertion is not vacuous.
+4. R3-N1: `LastWriteInfo.keepReason` now distinguishes "empty" from "short". Verify the command reply for a short opaque reply does NOT say "carried no entries", and that the semantic-empty path still does.
+5. Run `node tests/run-all.mjs` in the sandbox; report the result and how many checks the opaque-gate block of tests/sections-test.mjs runs.
+6. ADVERSARIAL PASS: assume a production bug is hiding in THESE fixes. Pick the least-tested branch — candidates: the `===` setext rule marking the line above it, the `canonicalLine` decoration loop versus a line that is only decoration, or the interaction of the tag/HTML-heading matchers with a real memory. Falsify it with your own probe and report exactly what you ran.
+7. Does the widened stripping create any NEW false refusal or NEW bypass? Any new contradiction? Is the change ready to commit?
+
+OUT OF SCOPE: S4, configurable CONTEXT cap, CONTEXT.md read-side migration, archive vault/encryption, autolearn throttling/admission rules, handoff summary path.
+
+OUTPUT: disposition table, then new findings by severity (file:line, impact, fix boundary), then the test result, then the adversarial pass, then residual risks. End with exactly one line:
+VERDICT: PASSED | CHANGES-REQUESTED | BLOCKED
