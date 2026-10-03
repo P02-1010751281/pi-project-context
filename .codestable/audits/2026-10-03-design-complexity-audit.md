@@ -47,12 +47,18 @@ claim 令牌化、备份同 mtime 的 tie-break。评审记录自己就抓到过
 - 结论：这部分是 **fail-safe 方向**（自愈奇怪路径，不会静默毁数据），拆掉不划算，但应当**冻结**：
   不再往上加病理矩阵，真遇到再修。`lock.ts` 209 行、`pi-project-context-write-lock-hardening` skill 保留。
 
-### 2. `structured-consolidation-output`：核心有据，但一半机制在本机不可达
+### 2. `structured-consolidation-output`：核心有据，但一半机制用不到它的路由上
 
 核心（分节渲染 + 整条丢弃 + 计数）对应的是真实损失（本仓库 `errors.log:54`：32228 vs 32000，中段永久丢失）⇒ 值得。
-但 **strict JSON-schema 那一半在此机器上跑不到**：可达路由全是 `openai-completions` 且
-`compat.supportsStrictMode=false`（设计自己也写了"诚实的限界（I8）"）。它是"为将来/别的 provider 准备"的机制，
+但 **strict JSON-schema 那一半的验证卡在路由上**：`commandcode`（85 个模型）与 `scnet`（1 个）都没声明 `compat`，
+即默认不支持 strict（设计自己也写了"诚实的限界（I8）"）。它是"为将来/别的 provider 准备"的机制，
 外加一份 `pi-project-context-structured-tool-output-strict-mode` skill。
+
+> **2026-10-03 评估更正**：本节原写「**本机不可达**……可达路由**全是** `openai-completions` 且
+> `compat.supportsStrictMode=false`」，实测不成立：核心 provider `deepseek` 的两个模型
+> （`deepseek-flash`、`deepseek-v4-pro`）在 `~/.pi/agent/models-store.json` 里都声明 `supportsStrictMode: true`，
+> 且这两条路由 2026-10-03 探针可用。准确的陈述是「**没用在支持它的路由上**」：
+> 冻结仍可作为**范围**决定，但解除冻结的路径已明确 —— 用 `deepseek/deepseek-flash` 跑一次端到端 strict 验证。
 
 它还留下了 opaque 回退，衍生出 D1/M/N 一族悬案——**其中 D1 的前提是自相矛盾的**
 （"被 extractor 拒收的回复里仍有可识别的四节"），N 则是给一个**无现场证据**的情形加机制。
@@ -79,12 +85,28 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
   切点选择——**未逐条核对**是否有现场依据。建议单独审计一次（判据同上）。
 - `shared/config.ts` 302 行、`handoff/prompt.ts` 199 行的可配置项与提示层未审计。
 
-## 待 owner 拍板的状态变更（本文只建议，不改 status）
+## 状态变更（2026-10-03 评估后决定）
 
-| 项 | 现状 | 建议 | 依据 |
+| 项 | 现状 | 决定 | 依据（经 2026-10-03 实测校正） |
 | --- | --- | --- | --- |
-| **D1**（opaque 路径按节丢整条） | "未做" | **`wontfix`** | 前提自相矛盾（被 extractor 拒收的回复"仍有可识别四节"本就少见），且只改善同一条罕见回落路径 |
+| **D1**（opaque 路径按节丢整条） | "未做" | **`wontfix`** | 原依据（"前提自相矛盾"）**被实测推翻**：被 extractor 拒收的类不是空集（散文正文、尾随散文、多余一节、前置散文、`*` 列表五类形态都仍带 4 个可识别标题）。改用修正后的理由 —— 这类正文多半是散文 ⇒ **没有"整条"可丢**；接近可接受的形态该用归一化而非按节丢弃；且 D2 的副本已经能回退，收益只落在同一条罕见回落路径上 |
 | **N**（任意块粒度丢弃） | 未立项 | **不做** | 无现场证据；它唯一服务的路径（opaque 超 cap）在本仓只出现过 1 次 |
 | **M**（重试改带节目标） | 未做 | **可选小改动**（~10 行） | 有据（`pass.ts:246` 的重试明确要求 opaque 形状），但不阻塞任何事 |
-| strict 清单与 `…-structured-tool-output-strict-mode` skill | 已交付 | **冻结**，不再扩写 | 本机不可达，等真有 strict 路由再说 |
+| strict 清单与 `…-structured-tool-output-strict-mode` skill | 已交付 | **冻结**，不再扩写（**范围**决定，非不可达） | 更正后依据：`commandcode`/`scnet` 确实没声明 compat，但核心 provider `deepseek` 的两个模型都声明 `supportsStrictMode: true` 且本机可达 ⇒ 解除冻结的路径明确：用 `deepseek/deepseek-flash` 跑一次端到端 strict 验证 |
+
+## 评估更正（2026-10-03 实测，写在这里以免旧结论被继承）
+
+1. **D1 的依据不成立**（见上表）。探针：`sectionsFromMarkdown` 要求每个正文行都是顶层 `- ` 项目符号，
+   因此"四个标题都在却仍被拒"有五种形态（散文正文 / 尾随散文 / 多余一节 / 前置散文 / `*` 列表），
+   **每一种都仍带 4 个可识别标题** ⇒ 原写的"自相矛盾"是错的。决定仍是 `wontfix`，理由换成修正版。
+2. **strict 可达性依据不成立**（见上）。准确陈述：不是"跑不到"，而是"没用在支持它的路由上"。
+3. **N 的依据得到证实**：本仓 `errors.log` 里 over-cap 命中**恰好 1 次**（`:54`，32228 vs 32000）
+   ⇒ "无现场证据、只服务一条罕见路径"成立。`N` 维持不做。
+4. **M 的依据得到证实**：`pass.ts:248` 的 condense 重试确实以 `call(condensePrompt, usedInput, false)`
+   （**关闭 tools**）发出、并要求 `memory_markdown` 字符串 ⇒ 重试只会回到 opaque 形状。维持"可选小改动"。
+5. **锁冻结的依据得到证实**：`errors.log` 无 lock/steal/FIFO 记录 ⇒ "无事故记录"成立；
+   且审计自己已把"两个 writer"的动因抽掉（那是同一次调用的两次 append）。
+6. **五条防复发规则的去向**：规则 1/2/4（现场事实编号、新增机制先问依据、一个 issue 一个主题）已写入
+   `.codestable/attention.md`；规则 3（设计 > 代码 ×3 先写最小修复面）与规则 5（轮次预算）
+   已在刷新后的 `.agents/skills/pi-project-context-design-review-round-budget/SKILL.md` 里，不重复落盘。
 | 锁病理矩阵 | 已硬化 | **冻结**，不再加 | 无事故记录；本次审计还抽掉了它的并发动因 |

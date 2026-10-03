@@ -31,6 +31,7 @@ timeout 1500 pi -p --no-session --no-project-context --no-skills --no-prompt-tem
 echo "exit=$? bytes=$(wc -c <"$out") out=$out"
 ```
    Two flag traps, both measured 2026-10-03. **Never** pass `--no-extensions`: it deregisters the providers that extensions register, so a working route reports `Model not found` / `Unknown provider` and the round looks like a provider outage that it is not. Use `--no-project-context` to isolate this extension instead. The short `-m` does not exist on this host — spell out `--model`. A `commandcode` id containing a slash does resolve under `--model` in a fresh `pi -p` (measured); a `--list-models` listing alone is not proof of addressability.
+   **Route is a variable, not a constant.** The model above is the original protocol route and it was `429` (weekly limit) on 2026-10-03; `deepseek/deepseek-v4-pro` served the rounds that day instead. Probe the alternatives (`pi-project-context-headless-route-probe`) before parking a round, and put the serving model in the round's prompt so the transcript records which model judged it.
    Run it in the background if the turn may be interrupted (long reviews have been aborted mid-flight).
 5. Prove zero writes and file the evidence:
 ```bash
@@ -47,3 +48,5 @@ find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 |
 - A review round that returns CHANGES-REQUESTED, then a fix, then a PASSED round does **not** close the loop: the fix itself must be covered by a further round. Measured 2026-10-03 — a PASSED round was followed by six nit fixes, and the next round caught a regression those fixes had introduced (a sentence inserted inside a code span, splitting an axis string).
 - If a review run aborts, check the sandbox `git status` and baseline diff before repeating the launch; do not write transcripts into the live repo until step 5.
 - Name sandboxes per review (e.g. `/tmp/pi-context-rev8`, `/tmp/pc-threshold-review`) so an older round's copy is not reused.
+- **Budget `/tmp`.** A sandbox is ~130 MB of a 16 GB tmpfs, so eight or so stale copies plus the other sessions' scratch dirs fill it: measured 2026-10-03, `rev8…rev36` accumulated until `cp -a` died with `设备上没有空间` and left a half-copied tree. Delete finished rounds' sandboxes (`rm -rf /tmp/pi-context-rev<old>`) before creating a new one, and if a copy dies mid-way discard it and recreate under a **new** number rather than running a round in a tree whose baseline you never took.
+- **A launch-time `429`/`402`/`403` is not a blocked round, it is an unfiled one.** Re-probe and switch route; only a transcript containing a `VERDICT` line counts as a round.
