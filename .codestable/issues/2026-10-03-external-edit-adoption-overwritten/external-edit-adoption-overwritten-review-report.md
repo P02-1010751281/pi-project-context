@@ -15,6 +15,7 @@
 | R3 | 设计 v3（沙箱 HEAD `8907b3a`） | **CHANGES-REQUESTED** | **1 blocking**（B-1）+ 1 important + 12 nit。R2 的 IM-1…IM-5 判「已解决」（契约/类型层面）；B-1 是 v2→v3 重排时**丢掉了 R1 修复边界里明写的那个动作** |
 | R4 | 设计 v4（沙箱 HEAD `06f0903`） | **CHANGES-REQUESTED** | **0 blocking** + 2 important（IM-1 发布侧副作用未以 `written:true` 为门；IM-2 §8 句表缺一格）+ 11 nit。R3 的 B-1/IMPORTANT-1/12 nit 除 N-2 判「部分解决」外全部「已解决」，且 B-1 用 probe 在 7 种编辑形态上验证闭合 |
 | R5 | 设计 v4.1（沙箱 HEAD `2ef637a`） | **CHANGES-REQUESTED** | **0 blocking** + 3 important（class 1 谓词过宽；§9 漏 `:228-230`；T9 断言与设计自相矛盾）+ 12 nit。四时序探针 41 断言无数据丢失/活锁/倒置；no-edit 与今天逐 op/text 及字节一致；R4 的 11 nit 中 10 条真解决 |
+| R6 | revision 6（B 版，134 行，无重跑） | **CHANGES-REQUESTED** | 1 blocking（§2.3 `renderKey` 未定义 + 缺空守卫）+ 3 important（§2.2 落点三种读法、§2.4 拒绝态无法表达 + 跳过清单不全、repro 未传 `basisKey`）+ 6 nit + 1 suggestion。**无一条要求新机制** |
 
 ### R1 发现（按评审分桶）
 
@@ -304,3 +305,76 @@ R4/R5 均无 blocking，且 R5 的探针（四时序 41 断言）确认核心机
 ### R5 处置
 
 → 设计改 **v5**（三态门控 + 12 nit）。R5 建议"§17 定稿后再开 R6"。
+
+## R6 轮次详情（revision 6 / B 版）
+
+- 被审：`external-edit-adoption-overwritten-design.md`（revision 6，"B 版：最小修复面"，134 行）
+- 沙箱：`/tmp/pi-context-rev33`（`cp -a` 自活仓库，HEAD `ae36c10`）；transcript 19717 字节
+- 裁决：**CHANGES-REQUESTED**（1 blocking / 3 important / 6 nit / 1 suggestion）
+- **本轮纪律生效**：每条发现都被要求标注【修正已有机制】或【新增机制】+ 对应 §1 现场事实编号，
+  结果是 **1+3+6 条全部为【修正已有机制】，没有一条要求新机制**——这是审计判据（机制必须由现场证据触发）
+  第一次在评审里被真正执行。
+
+### R6-B-1（blocking，v7 已修）：§2.3 的 `renderKey` 无定义 + 缺空守卫
+
+两种自然读法都坏：**带 `.trim()` 守卫**时 `memoryComparisonKey("") === "# Project Memory\n"`（probe 实测），
+于是"文件起始 key"与"窗口 key"在**全新项目/文件缺失**下永不相等 ⇒ recheck 每次都触发 ⇒ 返回 `written:false` 并把
+空 key append 进 journal；而"只有空 replace 的 journal"会让 `loadMemory` 报 `unreadable:true`
+（`journal.ts:92-93` + `store.ts:96`）⇒ **正常路径自锁**；**不带守卫**时窗口内清空会误拦，直接违反 T6 与 §5 R-3。
+R6 给的修复边界 = v5 step 8 的两段守卫 + **把判定抽成有名字、导出的纯函数**（否则 T6 无法 import）。
+
+### R6-IM-1（important，v7 已修）：§2.2 的落点有三种读法，只有 v5 顺序同时满足 T2/T4
+
+R6 用 probe 逐落点实测：字面"采纳块之后" ⇒ T4 红（种子先行、回复发布、编辑只留历史）；
+字面"函数入口" ⇒ T2 的"编辑进 journal"红；"整个 `if/else` 之后" ⇒ 种子把读侧
+`clipToLineBoundary(raw.trim())` 归一化成 `normalizeMemoryDocument` 形态，**无编辑也判陈旧**
+（legacy / OMP 导入 / 手删 journal 的首次 pass 都踩）。v5 顺序（采纳 → 判据 → 种子）四场景全过。
+
+### R6-IM-2（important，v7 已修）：§2.4 的拒绝态在 §3 接口里表达不出来
+
+`written:false` 只发生在 `memoryChanged===true` 的路径上，而 `report.ts:169-173` 的锁回调把写结果丢掉了：
+不补则 `/memory update` 落回 "…updated."、`lastWrite` 仍带 `capped/sectionsCapped/removed` 假信息。
+R6 给出了完整的"应跳/不应跳"清单（v7 §2.4 表）并指出 `keepReason`（`report.ts:29`）与
+`consolidateReply`（`:399-415`）需要新成员承载该态。
+
+### R6-IM-3（important，v7 已修）：`repro-write-ordering.mjs:44` 两次调用都不传 `basisKey`
+
+按 §2.2 的 `undefined` 守卫，脚本永不触发判据 ⇒ 只把期望翻成"编辑生效"会让回归线**恒假红**。
+必须同时改调用点（传 `{ basisKey: A }`）或改走 report 全链路。
+
+### R6 的 6 条 nit（v7 已逐条处置）
+
+① append 的是规范化键 `nowKey`、`kept` 取 `loadMemory().text`（同 §2.2 口径）；② `readOptional(...) ?? ""` 是死代码
+（`files.ts:10-15` 永不返回 undefined）；③ v5 N-10 的 `publishKey` 排除项要保留；④ §5 残留补四条
+（拒绝分支跳过 rotation/gitignore、cap 变更、rotation 默认 32000、⑥ 中途被杀）；⑤ 行号（外层 `if (renderRaw.trim())`
+闭合于 `:72`，其余无误）；⑥ D2 fix note §4 的 overflow 落盘时机要同步改为"发布成功之后"。
+
+### R6 对 R1/R3 blocking 的复核（v7 采信）
+
+| 前轮 blocking | 判定 |
+| --- | --- |
+| R1-B1（重跑被去重吞掉） | ✅ **闭合（机制消失）**——没有 `rerun` 入口就没有第二次调用 |
+| R1-B2（读取→发布之间的编辑） | ⚠️ 部分：窗口对，但判据不能照抄（见 R6-B-1），v7 §2.3 已重写 |
+| R3-B1（检出却不 append） | ✅ 闭合（§2.3 返回前 append `nowKey`） |
+
+### R6 的实测亮点
+
+核心时序在 v5 落点下 probe 实测工作：journal `[A, B]`、`MEMORY.md` 保留编辑**原始字节**（CRLF 也保留）、
+`fold === kept === loadMemory().text`、回复从不进 journal、`errors.log` 恰两行；
+四个 fixture（普通 / `preserveMarker` / legacy 无 journal / 全新项目）的无编辑路径与真实
+`recordMemoryDocument` 的 op/text 序列 + render **逐字节相同**。
+
+### R6 零写入证明
+
+```
+cd /tmp/pi-context-rev33
+git status --porcelain -uall | sort | diff - /tmp/rev33-baseline-status.txt   → 无差异
+find . -path ./.git -prune -o -path ./.agents/memory -prune -o -type f -print0 \
+  | xargs -0 stat -c '%Y %s %n' | sort | diff - /tmp/rev33-baseline-files.txt → 无差异（345 文件基线）
+md5sum -c /tmp/rev33-live-md5.txt                                             → 活仓库 5/5 未变
+```
+
+### R6 处置
+
+→ 设计改 **revision 7**（折入 B-1 / IM-1 / IM-2 / IM-3 + 3 条 nit 相关的 §3/§4 增补）。均为落点与文本修正，
+代码增量仍约 60–70 行。按协议 revision 7 需再一轮（R7）。

@@ -1,0 +1,64 @@
+你是 pi-project-context 仓库的**独立设计评审（lane A，第 6 轮）**。被审工件 = **设计 revision 6 /「B 版：最小修复面」**（尚未实施，无代码 diff）。工作区 `/tmp/pi-context-rev33`（**先 cd 进去**）。
+
+**背景（同行意见，不是事实）**：前五轮审的是同一 issue 的「完整版」设计 v1–v5（415 行，含"判陈旧后**重跑一轮**"）：
+R1 2 blocking + 8 important；R2 0+5；R3 **1 blocking**；R4 0+2；R5 0+3。owner 随后指出**方案与 30–40 行的修复规模不成比例**，要求按"现场证据实际需要什么"重写。于是产出 B 版（134 行，**取消重跑**），v1–v5 存档为 `...-design-full-v5-archive.md`（**不要照它实施**）。
+
+## 只读规则
+
+- 工作区 `/tmp/pi-context-rev33`；**先 cd 进去**（pi 按 cwd 解析项目根）。
+- **只读**：不得写工作区、不得 `git add/commit/checkout/stash/restore`；临时产物只放 `/tmp`。
+- **鼓励**用真实原语写 probe 实测（`tests/harness.mjs` 的 `loadNamespace`），例如真实调 `recordMemoryDocument` 验证 B 的判据；也允许跑 `node .codestable/issues/2026-10-03-external-edit-adoption-overwritten/repro-write-ordering.mjs`。
+- 活仓库待审文件 md5 在 `/tmp/rev33-live-md5.txt`。
+
+## 要读的
+
+1. `.codestable/attention.md`
+2. **被审工件**：`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`（revision 6 / B 版）
+3. 对照件：同目录 `...-design-full-v5-archive.md`（v5）、`...-report.md`、`...-review-report.md`、`...-design-review-round{1..5}-independent.txt`、`repro-write-ordering.mjs`
+4. 本仓审计：`.codestable/audits/2026-10-03-design-complexity-audit.md`
+5. 源码：`extensions/project-context/memory/{store,journal,pass,report,document,poison,input}.ts`；`extensions/project-context/shared/{lock,gitignore,migrate,files,llm}.ts`
+6. 测试：`tests/{memory-ops-test,consolidation-test,harness}.mjs`
+
+## 本轮的核心判据（先看这条）
+
+owner 立的纪律：**机制必须由现场证据触发**。因此本轮每个发现都要标注它属于哪一类：
+
+- **【修正已有机制】** —— B 已列出的机制（`basisKey` 比较、发布前 recheck、report 跳过发布侧）在写法/位置上不成立或有漏洞；
+- **【新增机制】** —— 要求 B 目前没有的机制。此类**必须**先指出它对应 B §1 的哪条现场事实（F1–F4）；指不出就写进 `residual-risk`，不算重要发现。
+
+不要因为"v5 里有、B 里没有"就把某个机制要回来——取消重跑是 owner 的决定，理由写在 §2.5。
+反过来，**若 B 真的弄丢了 R1/R3 认定的 blocking 修法**，那必须报 blocking。
+
+## 必须做的六件事
+
+**A. 完整性核对（B 是否弄丢了 blocking 修法）**：R1-B1（重跑被 pass 层去重吞掉）、R1-B2（读取→发布之间的编辑字节丢失）、R3-B1（第 8 步检出却不 append 进 journal）在 B 里是否仍闭合？逐条给结论 + 依据（B 的章节 + 源码头文件行号）。B 声称：B1 因取消重跑而**消失**，B2 由 §2.3 recheck 覆盖，R3-B1 由 §2.3 的 append 覆盖——逐条判真伪。
+
+**B. 攻 B 自身**（本轮重点）：
+   - §2.2 的判据：`options.basisKey !== undefined && options.basisKey !== current.text`。验 `current.text` 与 pass 侧 `basisKey` 是否**真能逐字节可比**（`loadMemory` 的裁剪/标记/空 journal/archive/`.pi`/OMP 回退路径是否会在两侧产生不对称）；`limit` 两侧是否一致（`pass.ts:161` 传什么、`report.ts:171` 传什么）。
+   - §2.2 拒绝返回后**状态是否真的自洽**：采纳块（`store.ts:61-71`）在什么条件下不触发？不触发时 journal 末条是什么、`MEMORY.md` 是什么、`foldMemoryJournal` 得到什么？给出"编辑落在模型调用期间"这一核心时序的逐字节结论。
+   - §2.3 recheck 的**位置与判据**：放在 `appendMemoryOp(rendered)` 之前是否真的覆盖 R1-B2 的窗口（`writeAtomic`/rename 之后呢）？`memoryComparisonKey` 是 B 新引入的（未给定义与实现位置）——**这是本轮要判的接口缺口**：它必须与第 2 步的 `renderKey` 用同一套规范化，否则 recheck 会自己误触发或恒不触发。判 B 能否在不改读侧的前提下做到，并指出实现落点。
+   - §2.4 的"跳过发布侧"清单是否**完备**：有没有漏掉某个描述"刚发布了一次 memory"的副作用（这正是 R5 抓到的类型：`neededChars`/`cappedMemory`/`cappedSections` 的下游、`report` 的 `"clipped"` 分支、`:228-230` 的 shortened 行、`memoryCapWarned`/toast、D2 的 overflow 留档、`memoryRemovalWarned`、`lastWrite` 语义、`consolidateReply` 分支）？给出应跳/不应跳的完整清单。
+   - §3 的接口签名（`{ written: true } | { written: false; kept: string }`）在 §2.2 与 §2.3 两个返回点是否**类型可表达**、所有既有消费点（`report.ts:171` 返回值用途、测试）是否都能区分这两种态。
+
+**C. 四时序回归（设计级推演，B 版）**：编辑①早于读取 ②模型调用期间（核心）③发布窗口内（含清空、CRLF、清空再写、与 `rendered` 同键）④无编辑。每种给"第几步触发、最终 journal、最终 `MEMORY.md`、`errors.log`、命令回复"。必须确认两条：**无编辑时逐字节等于今天**；**②的核心场景下编辑保住且回复未发布**。
+
+**D. 测试 T1–T6**：逐条判"能否构造、断言是否可判、是否需要 B 声明不要的 seam"；特别是 T6（recheck 判定函数单测）在"判定未抽成独立函数"时是否可实现；T2 的"没有发布侧日志"是否可断言。另判 `repro-write-ordering.mjs` 期望翻转是否与 B 一致。
+
+**E. 对抗性一轮**：假定 B 仍藏 bug（数据丢失 / 编辑仍未保住 / 正常路径被误判陈旧 / 日志说谎 / 破坏既有合法组合 / 死锁或锁重入）去找它。找不到要说清搜过哪些面。
+
+**F. 文档准确性**：B 引用的行号、常量、函数名、断言方向是否都对（前五轮共抓到 8 处行号偏移）。
+
+## 输出格式（中文；代码/标识符保留原文）
+
+先给 A 节核对表，再按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分桶（每条标注【修正已有机制】或【新增机制】+ 对应 F 编号、`file:line`、影响、修复边界），再给 **Test And QA Focus**，最后**一行**只写：
+
+```
+VERDICT: PASSED
+```
+或 `VERDICT: CHANGES-REQUESTED`（无法审时 `VERDICT: BLOCKED` + 原因）。
+
+## 判定纪律
+
+- 结论必须指到 `file:line` 或具体 probe 输出。
+- 只有以下情况给 `PASSED`：R1/R3 的 blocking 在 B 里确实闭合、B 自身机制（含 §2.3 的 recheck 定义与落点）**可照实现**且无 blocking/important、四时序无倒置、T1–T6 可构造。
+- 若 B 已可实施，把"实施时必须注意但不必再改设计"的点放进 `learning`/`residual-risk`，**不要为凑发现而降级判定**，也不要提出机制类新要求。
