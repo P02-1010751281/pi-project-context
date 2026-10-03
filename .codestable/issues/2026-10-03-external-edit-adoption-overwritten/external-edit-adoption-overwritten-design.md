@@ -3,7 +3,7 @@ doc_type: design
 issue: 2026-10-03-external-edit-adoption-overwritten
 status: draft
 created_at: 2026-10-03
-revision: 2
+revision: 2.1
 related: [external-edit-adoption-overwritten-report.md, external-edit-adoption-overwritten-review-report.md, repro-write-ordering.mjs, ../2026-09-30-auxiliary-call-noise-and-memory-cap/over-cap-reply-persistence-fix-note.md]
 tags: [memory, memory-journal, external-edit-adoption, lost-update, write-ordering, consolidation, design]
 ---
@@ -13,6 +13,8 @@ tags: [memory, memory-journal, external-edit-adoption, lost-update, write-orderi
 问题与证据见 `external-edit-adoption-overwritten-report.md`；v1 的独立评审（R1）两条 blocking 与八条
 important 见 `external-edit-adoption-overwritten-review-report.md`。**v2 是 R1 之后的修订版**：
 重跑入口、陈旧判据位置、发布窗口、副作用归属、调用上界与测试计划全部按评审结论改写。
+**v2.1 是开 R2 之前我自查出的第 7 步缺陷的自纠**（写成比 `effectiveMemoryKey` 会恒触发，见 §6 末段）：
+未经过评审，因此仍需 R2 覆盖（“PASSED 轮不覆盖其后的改动”反过来同样成立——未评审的改动必须进下一轮）。
 
 owner 2026-10-03 定调：**选 C，取最彻底形态**——判为陈旧 → **不发布** → **用采纳后的内容重跑一轮**，
 日志说真话，丢弃的模型工作留档。
@@ -114,17 +116,24 @@ export type MemoryWriteResult =
 | 步 | 动作 |
 | --- | --- |
 | 1 | 读 journal（`entries` / `damaged` / `unreadable`；unreadable 照旧抛） |
-| 2 | `current = effectiveMemoryKey(...)` |
+| 2 | 读 `MEMORY.md` 原始字节 → `renderKey = renderRaw.trim() ? memoryComparisonKey(renderRaw, limit) : ""`；并算 `current = effectiveMemoryKey(...)` |
 | 3 | 若 `basisKey !== undefined && basisKey !== current` → **陈旧**：若 `current` 非空且不是当前 fold，则 `appendMemoryOp("replace", current)`（**INV-1**：外部字节进历史）；发中性日志（§8）；返回 `{written:false, reason:"pass-reply-was-stale", adopted:current}`。**不做后续任何事** |
 | 4 | `entries.length === 0` 的既有种子逻辑（此时已通过第 3 步，等价于旧行为） |
 | 5 | `rendered = normalizeMemoryReply(...)`；`appendMemoryOp("replace", rendered)` |
 | 6 | `rotateMemoryJournalIfNeeded` / `ensureMemoryGitignore` |
-| 7 | **recheck**：重新读 journal 并算 `after = effectiveMemoryKey(...)`；若 `after !== current` → 发布窗口内落了编辑：`appendMemoryOp("replace", after)`（INV-1）+ 中性日志 + 返回 `{written:false, reason:"external-edit-during-publish", adopted:after}`，**不写 `MEMORY.md`** |
+| 7 | **recheck（比 `MEMORY.md` 自己的字节，不是比有效内容）**：重读 `MEMORY.md` → `nowKey`；若 `basisKey !== undefined && nowKey !== renderKey` → 发布窗口内落了编辑：把新字节 `appendMemoryOp("replace", …)`（INV-1）+ 中性日志 + 返回 `{written:false, reason:"external-edit-during-publish", adopted:…}`，**不写 `MEMORY.md`** |
 | 8 | `writeAtomic(MEMORY.md, rendered)`；返回 `{written:true}` |
 
 **为什么 recheck 放在 append(rendered) 之后**：这样第 7 步到 rename 的窗口是**唯一**残留窗口，
 被压到"再读一次 → rename"（本机 μm–ms 级）；放在之前则 append + fsync + rotation + gitignore
 全落在窗口里（R1-B2 的现场量级 69–450 ms 正来自这类序列）。
+
+**为什么第 7 步不能比 `effectiveMemoryKey`（v2 自查修正）**：第 5 步 append `rendered` 之后，fold **就是
+`rendered`**，而 `MEMORY.md` 的 mtime 必然早于刚写完的 journal ⇒ `effectiveMemoryKey` 返回 `rendered`，
+于是 `after !== current`（`rendered ≠ B`）**恒成立**：正常路径也会被判陈旧、整条跳过。判据必须是
+**"要被我覆盖的那个文件本身变了没有"**——即 `MEMORY.md` 的规范化字节前后对比。这也让两种情形都正确：
+编辑早于 pass 读取时 `renderKey` 与 `nowKey` 相同 ⇒ 不触发；编辑落在窗口内 ⇒ 触发。
+第 7 步同样以 `basisKey !== undefined` 为门，legacy 路径行为不变（§12 兼容约束）。
 
 **代价与残留（R1-B2 的答复）**：Node 没有 CAS，窗口**不可能完全关闭**；窗口内落地的编辑会**丢字节**
 （不只是丢生效），因为它的字节只存在于被 rename 覆盖掉的那个文件里。设计把窗口缩到最小并在 §12
@@ -271,6 +280,9 @@ export async function consolidateProjectState(pi, ctx, options?: { force?: boole
   上界重写（I3）、日志归属拆分（I4）、副作用后置（I5）、测试计划重列（I6）、显式 `undefined` 守卫（I7）、
   claim 同步（I8）。
 - **owner 2026-10-03**：发版次序为 设计 → 修 + 测试 + 独立评审 → 与 D2 一起切 `v0.2.1`。
+- **自纠 2026-10-03（v2.1，未评审）**：§6 第 7 步原写“重算 `effectiveMemoryKey` 比 `after !== current`”。
+  第 5 步 append `rendered` 后 fold 即 `rendered`，该式**恒成立** ⇒ 正常路径被判陈旧、永不发布。
+  改为比 `MEMORY.md` **自己的规范化字节**前后差异，并以 `basisKey !== undefined` 为门。
 
 ## 17. 仍开放
 
