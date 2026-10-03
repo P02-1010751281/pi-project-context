@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Feature-switch tests: every feature has an on/off switch in project-context.json,
@@ -119,7 +119,7 @@ try {
 
 	console.log("\n=== handoff switch ===");
 	// Fixed threshold so a synthetic conversation can cross it (auto mode needs real bulk).
-	await pi.commands.get("auto-handoff").handler("0.5", ctx);
+	await pi.commands.get("handoff").handler("0.5", ctx);
 	await command.handler("off handoff", ctx);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
@@ -129,7 +129,7 @@ try {
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
 	check("on: handoff trigger sent", await waitUntil(() => pi.sentMessages.length === 1));
-	check("trigger is the force-auto command", pi.sentMessages[0] === "/auto-handoff force-auto");
+	check("trigger is the force-auto command", pi.sentMessages[0] === "/handoff force-auto");
 
 	console.log("\n=== --no-project-context (one run) ===");
 	const pi2 = makePi({ cwd: tmp, flags: { "no-project-context": true } });
@@ -187,11 +187,11 @@ try {
 	console.log("\n=== a handoff save must not revert another writer's switch ===");
 	// The whole-snapshot writer `saveConfig(projectRoot, config)` (removed in ed2704c) wrote this
 	// module's entire session-start snapshot, and `/project-context off memory` publishes a NEW cached
-	// object, so the next `/auto-handoff` command silently turned the memory switch back on. One
+	// object, so the next `/handoff` command silently turned the memory switch back on. One
 	// process, no crash, no notice.
 	await command.handler("off memory", ctx);
 	check("memory is off before the handoff save", (await readConfig())?.autoConsolidate === false);
-	await pi.commands.get("auto-handoff").handler("lang zh", ctx);
+	await pi.commands.get("handoff").handler("lang zh", ctx);
 	const afterHandoff = await readConfig();
 	check("the memory switch survives a handoff save", afterHandoff?.autoConsolidate === false);
 	check("the handoff key is still persisted", afterHandoff?.handoffLanguage === "zh");
@@ -211,7 +211,7 @@ try {
 		check("the write still landed", (await readConfig())?.autoConsolidate === false);
 	}
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * End-to-end test of the settle/shutdown path in one extension:
@@ -139,7 +139,7 @@ try {
 			check("the retry writes the valid memory", retryMemory.includes("recovered after one transient malformed reply"));
 			check("a recovered retry does not log a failed pass", !retryErrors.includes("consolidation reply was not a usable JSON object"));
 		} finally {
-			await rm(retryTmp, { recursive: true, force: true });
+			await rmTemp(retryTmp);
 		}
 	}
 
@@ -179,7 +179,7 @@ try {
 			check("the retried pass writes the complete memory", memory.includes("recovered after the cap."));
 			check("a recovered truncation is not logged as a failure", !errors.includes("not a usable JSON object") && !errors.includes("output limit"));
 		} finally {
-			await rm(capTmp, { recursive: true, force: true });
+			await rmTemp(capTmp);
 		}
 	}
 
@@ -209,7 +209,7 @@ try {
 			check("a persistent truncation names the output limit", errors.includes("cut off by the model output limit"));
 			check("a persistent truncation leaves MEMORY.md untouched", memory === previous);
 		} finally {
-			await rm(hardTmp, { recursive: true, force: true });
+			await rmTemp(hardTmp);
 		}
 	}
 
@@ -238,7 +238,7 @@ try {
 			const memory = await readFile(path.join(okTmp, ".agents/memory/MEMORY.md"), "utf8");
 			check("a complete JSON that stopped at the cap is written without a retry", calls === 1 && memory.includes("complete at the cap."));
 		} finally {
-			await rm(okTmp, { recursive: true, force: true });
+			await rmTemp(okTmp);
 		}
 	}
 
@@ -270,7 +270,7 @@ try {
 			check("the provider message reaches errors.log", errors.includes("model call error: 402: Insufficient Balance"));
 			check("an empty provider error is not read as a missing context", !errors.includes("carried no context section"));
 		} finally {
-			await rm(errTmp, { recursive: true, force: true });
+			await rmTemp(errTmp);
 		}
 	}
 
@@ -299,7 +299,7 @@ try {
 			check("a non-final stop reason fails the pass without a retry", calls === 1 && memory === previous);
 			check("a non-final stop reason is named in errors.log", errors.includes("model call toolUse without text"));
 		} finally {
-			await rm(pendingTmp, { recursive: true, force: true });
+			await rmTemp(pendingTmp);
 		}
 	}
 
@@ -357,7 +357,7 @@ try {
 			check("the failed pass is logged to errors.log", errors.includes("consolidation reply was not a usable JSON object") && errors.includes('"memory_markdown": 17'));
 			check("a persistent malformed reply gets only one retry", calls === 3);
 		} finally {
-			await rm(jsonTmp, { recursive: true, force: true });
+			await rmTemp(jsonTmp);
 		}
 	}
 
@@ -484,7 +484,7 @@ try {
 			ctx.modelRegistry.complete = async () => ({
 				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- repaired memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 			});
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const repaired = await readFile(healMemory, "utf8");
 			check("the writer replaces the stored reply with markdown", repaired.startsWith("# Project Memory") && repaired.includes("- repaired memory.") && !repaired.includes("memory_markdown"));
 			const repairBackups = (await readdir(path.dirname(healMemory))).filter((name) => name.includes(".memory-backup-"));
@@ -509,8 +509,8 @@ try {
 				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- concurrent repair.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 			});
 			await Promise.all([
-				pi2.commands.get("memory-learn").handler("", ctx2),
-				pi2.commands.get("memory-learn").handler("", ctx2),
+				pi2.commands.get("memory").handler("update", ctx2),
+				pi2.commands.get("memory").handler("update", ctx2),
 			]);
 			const concurrentBackups = (await readdir(path.dirname(healMemory))).filter((name) => name.includes(".memory-backup-"));
 			const concurrentLog = await readFile(path.join(healTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
@@ -536,7 +536,7 @@ try {
 					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- post-race memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 				};
 			};
-			await pi3.commands.get("memory-learn").handler("", ctx3);
+			await pi3.commands.get("memory").handler("update", ctx3);
 			const raceBackups = (await readdir(path.dirname(healMemory))).filter((n) => n.includes(".memory-backup-"));
 			const raceLog = await readFile(path.join(healTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a mid-call writer is backed up", raceBackups.length === 1 && (await readFile(path.join(path.dirname(healMemory), raceBackups[0]), "utf8")) === arrived && raceLog.includes("replaced a stored JSON reply"));
@@ -590,7 +590,7 @@ try {
 			const afterUserFiles = await countBackups();
 			check("pruning leaves user files and directories alone", (await readFile(keepMe, "utf8")) === "user copy" && (await readFile(nestedName, "utf8")) === "user nested" && (await readdir(backupDirectory)).length === 0 && afterUserFiles === 5);
 		} finally {
-			await rm(healTmp, { recursive: true, force: true });
+			await rmTemp(healTmp);
 		}
 	}
 
@@ -697,7 +697,7 @@ try {
 				recovered.text.includes("- recovered from the archive") && !recovered.text.includes("stale pre-pass render") && recovered.source.endsWith(archiveName),
 			);
 		} finally {
-			await rm(journalTmp, { recursive: true, force: true });
+			await rmTemp(journalTmp);
 		}
 	}
 
@@ -717,7 +717,7 @@ try {
 			ctx.modelRegistry.complete = async () => ({
 				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- must not land.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 			});
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const stillDirectory = await readdir(path.join(failureTmp, ".agents/memory/MEMORY.md")).then(() => true).catch(() => false);
 			const failureLog = await readFile(path.join(failureTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("an unreadable memory aborts the write end to end", stillDirectory && failureLog.includes("EISDIR"));
@@ -737,15 +737,15 @@ try {
 				freshCtx.modelRegistry.complete = async () => ({
 					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- first memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 				});
-				await freshPi.commands.get("memory-learn").handler("", freshCtx);
+				await freshPi.commands.get("memory").handler("update", freshCtx);
 				const created = await readFile(path.join(freshTmp, ".agents/memory/MEMORY.md"), "utf8").catch(() => "");
 				const freshBackups = (await readdir(path.join(freshTmp, ".agents/memory"))).filter((name) => name.includes(".memory-backup-"));
 				check("a first write creates the memory without a backup", created.includes("- first memory.") && freshBackups.length === 0);
 			} finally {
-				await rm(freshTmp, { recursive: true, force: true });
+				await rmTemp(freshTmp);
 			}
 		} finally {
-			await rm(failureTmp, { recursive: true, force: true });
+			await rmTemp(failureTmp);
 		}
 	}
 
@@ -775,11 +775,11 @@ try {
 				// A Markdown string is what a model reaches for when the prompt does not name the keys.
 				return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- shaped memory.", context: "## Summary\n- as markdown." }) }] };
 			};
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const shapeLog = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
 			check("an unusable context leaves the previous render in place", (await readFile(shapeContext, "utf8")) === previous);
 			check("an unusable context is written to errors.log", shapeLog.includes("could not be used"));
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const repeated = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
 			check("the pass really ran twice", shapeCalls === 2);
 			check("the shape note is reported once per process", repeated.split("could not be used").length - 1 === 1);
@@ -807,15 +807,15 @@ try {
 				emptyCtx.modelRegistry.complete = async () => ({
 					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- placeholder case.", context: "## Summary\n- nope." }) }],
 				});
-				await emptyPi.commands.get("memory-learn").handler("", emptyCtx);
+				await emptyPi.commands.get("memory").handler("update", emptyCtx);
 				const emptyLog = await readFile(path.join(emptyDir, "errors.log"), "utf8").catch(() => "");
 				const placeholder = await readFile(path.join(emptyDir, "CONTEXT.md"), "utf8").catch(() => "");
 				check("without a previous render the placeholder is written", placeholder.includes("## Summary") && emptyLog.includes("placeholder context was written"));
 			} finally {
-				await rm(emptyTmp, { recursive: true, force: true });
+				await rmTemp(emptyTmp);
 			}
 		} finally {
-			await rm(shapeTmp, { recursive: true, force: true });
+			await rmTemp(shapeTmp);
 		}
 	}
 
@@ -842,7 +842,7 @@ try {
 					sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], `absent-${path.basename(root)}`),
 				});
 				ctx.modelRegistry.complete = async () => ({ content: [{ type: "text", text: reply }] });
-				await pi.commands.get("memory-learn").handler("", ctx);
+				await pi.commands.get("memory").handler("update", ctx);
 				return ctx;
 			};
 
@@ -862,8 +862,8 @@ try {
 			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
 			check("an unclosed reply says so in errors.log", cutLog.includes("carried no context section") && cutLog.includes("never closed"));
 		} finally {
-			await rm(absentTmp, { recursive: true, force: true });
-			await rm(cutTmp, { recursive: true, force: true });
+			await rmTemp(absentTmp);
+			await rmTemp(cutTmp);
 		}
 	}
 
@@ -916,7 +916,7 @@ try {
 			ctx.modelRegistry.complete = async () => ({
 				content: [{ type: "text", text: JSON.stringify({ memory_markdown: grown, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 			});
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const rendered = await readFile(path.join(capDir, "MEMORY.md"), "utf8");
 			const capLog = await readFile(path.join(capDir, "errors.log"), "utf8").catch(() => "");
 			check("the render is capped at the configured limit", rendered.length < 5_400 && rendered.includes("at 5000 characters"));
@@ -926,7 +926,7 @@ try {
 			await pi.commands.get("project-context").handler("status", ctx);
 			check("status names the cap", /at the cap, so both ends were kept/.test(String(ctx.notifications.at(-1)?.[0] ?? "")));
 		} finally {
-			await rm(capTmp, { recursive: true, force: true });
+			await rmTemp(capTmp);
 		}
 	}
 
@@ -1069,13 +1069,13 @@ try {
 					}],
 				};
 			};
-			await pi.commands.get("memory-learn").handler("", ctx);
+			await pi.commands.get("memory").handler("update", ctx);
 			const trace = await readFile(path.join(budgetTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a headless clip still leaves a trace", trace.includes("shortened"));
 			const clipBackups = (await readdir(path.join(budgetTmp, ".agents/memory"))).filter((name) => name.includes(".memory-backup-"));
 			check("a clipped rewrite keeps a backup", clipBackups.length === 1 && (await readFile(path.join(budgetTmp, ".agents/memory", clipBackups[0]), "utf8")) === big);
 		} finally {
-			await rm(budgetTmp, { recursive: true, force: true });
+			await rmTemp(budgetTmp);
 		}
 	}
 
@@ -1123,7 +1123,7 @@ try {
 			await mkdir(path.join(fixTmp, ".pi/MEMORY.md"), { recursive: true });
 			const legacyUnreadable = await loadMemory(fixTmp);
 			check("an unreadable legacy source is flagged", legacyUnreadable.unreadable === true && legacyUnreadable.source.includes(".pi"));
-			await rm(path.join(fixTmp, ".pi/MEMORY.md"), { recursive: true, force: true });
+			await rmTemp(path.join(fixTmp, ".pi/MEMORY.md"));
 
 			// Token rate charges every non-ASCII code point and the escape cost.
 			check("non-CJK scripts are charged a full token", replyTokenRate("привет") === 1);
@@ -1494,11 +1494,319 @@ try {
 			const unreadable = await loadMemory(fixTmp);
 			check("an unreadable memory is flagged", unreadable.unreadable === true && unreadable.text === "");
 		} finally {
-			await rm(fixTmp, { recursive: true, force: true });
+			await rmTemp(fixTmp);
+		}
+	}
+
+	console.log("\n=== structured output: the tool call, the fallback, and the gate ===");
+	{
+		const SECTIONS = { project: ["Structured project line"], invariants: ["Structured invariant"], pitfalls: [], index: ["docs/ — 索引"] };
+		const CONTEXT = { title: "structured", summary: "summary text", key_points: ["kp"], open_tasks: ["ot"] };
+		const memoryFile = (root) => path.join(root, ".agents/memory/MEMORY.md");
+		const errorLog = (root) => path.join(root, ".agents/memory/errors.log");
+
+		/** Register the extension over a fresh temp project whose model replies as `reply` says. */
+		const project = async (name, config = {}) => {
+			const root = await mkdtemp(path.join(os.tmpdir(), `pi-${name}-`));
+			await mkdir(path.join(root, ".agents/memory"), { recursive: true });
+			await writeFile(path.join(root, ".agents/memory/project-context.json"), `${JSON.stringify({ autoConsolidate: true, ...config })}\n`);
+			const pi = makePi({ cwd: root });
+			await (await loadDefault(`${PC}/index.ts`))(pi);
+			return { root, pi };
+		};
+		/** One pass whose model answers with `reply(attempt, context)`. */
+		const pass = async ({ root, pi }, reply) => {
+			const ctx = makeCtx(root, {
+				model: { provider: "test", id: "structured", maxTokens: 32768 },
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "do the thing", "2026-09-12T10:00:00.000Z")], "structured-session"),
+			});
+			const seen = [];
+			ctx.modelRegistry.complete = async (_model, context, options) => {
+				seen.push({ tools: context.tools, options });
+				return reply(seen.length, context);
+			};
+			// The command handler notifies and returns nothing, so the reply text IS the toast; asserting on
+			// a returned value would be vacuous.
+			await pi.commands.get("memory").handler("update", ctx);
+			return { ctx, seen, toasts: ctx.notifications.map(([message]) => message) };
+		};
+		const toolReply = (args, stopReason) => ({ content: [{ type: "toolCall", name: "record_memory", arguments: args }], stopReason: stopReason ?? "toolUse" });
+
+		// 1. The tool call is the preferred entry, and it is actually offered to the route.
+		{
+			const handle = await project("structured-ok");
+			try {
+				const { seen } = await pass(handle, () => toolReply({ memory: SECTIONS, context: CONTEXT }));
+				const written = await readFile(memoryFile(handle.root), "utf8");
+				check("the tool path renders the four fixed sections in order", /## Project\n- Structured project line\n\n## Invariants\n- Structured invariant\n\n## Pitfalls\n\n## Index\n- docs\/ — 索引/.test(written));
+				check("the tool path asks the model for the tool", seen[0].tools?.[0]?.name === "record_memory");
+				check("the tool path does not retry on success", seen.length === 1);
+				check("the context section is written from the same reply", (await readFile(path.join(handle.root, ".agents/memory/CONTEXT.md"), "utf8")).includes("summary text"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 2. The parseable fallback must land byte-identical to the structured entry.
+		{
+			const sectionsDoc = "# Project Memory\n\n## Project\n- Structured project line\n\n## Invariants\n- Structured invariant\n\n## Pitfalls\n\n## Index\n- docs/ — 索引";
+			const structured = await project("structured-byte-a");
+			let structuredBytes = "";
+			try {
+				await pass(structured, () => toolReply({ memory: SECTIONS, context: CONTEXT }));
+				structuredBytes = await readFile(memoryFile(structured.root), "utf8");
+			} finally {
+				await rmTemp(structured.root);
+			}
+			const fallback = await project("structured-byte-b");
+			try {
+				await pass(fallback, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: sectionsDoc, context: CONTEXT }) }], stopReason: "stop" }));
+				const fallbackBytes = await readFile(memoryFile(fallback.root), "utf8");
+				check("the parseable fallback renders byte-identical to the tool path", fallbackBytes === structuredBytes);
+			} finally {
+				await rmTemp(fallback.root);
+			}
+		}
+
+		// 3. Four empty sections are not a change, whatever the context does.
+		{
+			const handle = await project("structured-empty");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n";
+				await writeFile(memoryFile(handle.root), before);
+				const { toasts } = await pass(handle, () => toolReply({ memory: { project: [""], invariants: [" "], pitfalls: ["\u200b"], index: ["##"] }, context: CONTEXT }));
+				check("an all-empty reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("the same pass still writes the context", (await readFile(path.join(handle.root, ".agents/memory/CONTEXT.md"), "utf8")).includes("summary text"));
+				check("the reply does not claim the memory was updated", !toasts.some((message) => message.includes("Project memory updated")));
+				check("the reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
+				check("no removal warning is raised for an unwritten memory", !toasts.some((message) => message.includes("no longer carries")));
+				check("the gate leaves an ordinary diagnostic", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 4. The regression guard reports what the new memory no longer says.
+		{
+			const handle = await project("structured-guard");
+			try {
+				await writeFile(
+					memoryFile(handle.root),
+					"# Project Memory\n\n## Project\n- p.\n\n## Invariants\n- keep this invariant\n- drop this invariant\n\n## Pitfalls\n- keep this pitfall\n- drop this pitfall\n\n## Index\n- i\n",
+				);
+				const { toasts } = await pass(handle, () =>
+					toolReply({ memory: { project: ["p"], invariants: ["keep this invariant"], pitfalls: ["keep this pitfall"], index: ["i"] }, context: CONTEXT }),
+				);
+				check("the guard counts the vanished Invariants/Pitfalls entries", (await readFile(errorLog(handle.root), "utf8")).includes("memory regression: 2"));
+				check("the guard warns the user by name", toasts.some((message) => message.includes("no longer carries 2 Invariants/Pitfalls")));
+				check("the guard does not block the write", (await readFile(memoryFile(handle.root), "utf8")).includes("keep this invariant"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 4b. A free-form stored memory has nothing to compare, so the guard stays quiet.
+		{
+			const handle = await project("structured-guard-free");
+			try {
+				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\nProse, not bullets.\n\n## Invariants\n- a\n\n## Pitfalls\n- b\n\n## Index\n- c\n");
+				const { toasts } = await pass(handle, () => toolReply({ memory: SECTIONS, context: CONTEXT }));
+				check("the guard is skipped for a free-form memory", (await readFile(errorLog(handle.root), "utf8")).includes("guard skipped"));
+				check("no removal warning is raised for a free-form memory", !toasts.some((message) => message.includes("no longer carries")));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 5. A section over its budget is visible through the write path, with no numeric suggestion.
+		{
+			const handle = await project("structured-cap", { maxMemoryChars: 4000 });
+			try {
+				const flood = Array.from({ length: 200 }, (_, index) => `entry number ${index}`);
+				// The condensation reply carries no text (a tool call again), so it cannot be adopted and the
+				// first, capped result stands: that is the case the write path has to make visible.
+				const { toasts } = await pass(handle, () => toolReply({ memory: { project: flood, invariants: [], pitfalls: [], index: [] }, context: CONTEXT }));
+				const written = await readFile(memoryFile(handle.root), "utf8");
+				const log = await readFile(errorLog(handle.root), "utf8");
+				check("the render honours the cap", written.length <= 4000);
+				check("the cap event reaches errors.log", log.includes("exceeded a section budget"));
+				check("the cap event is announced to the user", toasts.some((message) => message.includes("exceeded its section budget")));
+				check("the section path suggests no max-memory value", !toasts.some((message) => message.includes("max-memory")) && !log.includes("raise it with"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 6. "length" wins over "we got a tool call": pi-ai repairs a truncated arguments string
+		// into a shape-valid object, so accepting it would store a half-written memory.
+		{
+			const handle = await project("structured-truncated");
+			try {
+				const truncated = toolReply({ memory: { project: ["half written"], invariants: [], pitfalls: [], index: [] }, context: CONTEXT }, "length");
+				const sectionsDoc = "# Project Memory\n\n## Project\n- Structured project line\n\n## Invariants\n- Structured invariant\n\n## Pitfalls\n\n## Index\n- docs/ — 索引";
+				// The retry never carries tools, so it has to answer in the text shape.
+				const { seen } = await pass(handle, (attempt) =>
+					attempt === 1 ? truncated : { content: [{ type: "text", text: JSON.stringify({ memory_markdown: sectionsDoc, context: CONTEXT }) }], stopReason: "stop" },
+				);
+				check("a truncated tool call is retried", seen.length === 2);
+				check("the retry does not carry tools", seen[1].tools === undefined);
+				const written = await readFile(memoryFile(handle.root), "utf8");
+				check("the truncated contents are not written", !written.includes("half written") && written.includes("Structured invariant"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 7. A route that rejects `tools` falls back to the text entry and stays usable.
+		{
+			const handle = await project("structured-tools-rejected");
+			try {
+				const sectionsDoc = "# Project Memory\n\n## Project\n- Structured project line\n\n## Invariants\n- Structured invariant\n\n## Pitfalls\n\n## Index\n- docs/ — 索引";
+				const { seen } = await pass(handle, (attempt) => {
+					if (attempt === 1) throw new Error("tools are not supported by this endpoint");
+					return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: sectionsDoc, context: CONTEXT }) }], stopReason: "stop" };
+				});
+				check("a rejected tools call is retried without tools", seen.length === 2 && seen[1].tools === undefined);
+				check("the fallback still writes the rendered sections", (await readFile(memoryFile(handle.root), "utf8")).includes("Structured invariant"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 8. memory and context are validated apart: a broken context must not cost a good memory.
+		{
+			const handle = await project("structured-context-bad");
+			try {
+				await pass(handle, () => toolReply({ memory: SECTIONS, context: { summary: 42 } }));
+				check("a valid memory survives an unusable context member", (await readFile(memoryFile(handle.root), "utf8")).includes("Structured invariant"));
+				check("the unusable context is reported", (await readFile(errorLog(handle.root), "utf8")).includes("could not be used"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 9. A heading-only reply on the opaque path must not replace a real memory with a skeleton.
+		{
+			const handle = await project("structured-skeleton");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- keep this too\n\n## Pitfalls\n\n## Index\n";
+				await writeFile(memoryFile(handle.root), before);
+				// A missing `## Index` keeps this off the section path; every line is a heading, so it carries
+				// nothing and must not be written.
+				const { toasts } = await pass(handle, () => ({
+					content: [{ type: "text", text: "# Project Memory\n\n## Project\n\n## Invariants\n\n## Pitfalls\n" }],
+					stopReason: "stop",
+				}));
+				check("a heading-only opaque reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("the skeleton is reported, not silently accepted", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
+				check("the skeleton does not claim an update", !toasts.some((message) => message.includes("Project memory updated")));
+				check("the semantic-empty toast does say the reply carried no entries", toasts.some((message) => message.includes("carried no entries")));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 10. A matched tool call with unreadable arguments and no text is an error, not an empty memory.
+		{
+			const handle = await project("structured-bad-tool-args");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n";
+				await writeFile(memoryFile(handle.root), before);
+				// `memory` is missing `index`, so the shape check fails; with no text there is nothing to fall
+				// back to, and "" would otherwise read as an empty-but-successful reply.
+				const { toasts } = await pass(handle, () => toolReply({ memory: { project: [], invariants: [], pitfalls: [] }, context: CONTEXT }));
+				check("a malformed tool call leaves MEMORY.md untouched", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("a malformed tool call is reported as a failure", (await readFile(errorLog(handle.root), "utf8")).includes("unusable arguments and no text"));
+				check("a malformed tool call is not reported as success", toasts.some((message) => message.includes("failed")));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 11. The guard says it was skipped when the new reply is opaque rather than silent.
+		{
+			const handle = await project("structured-guard-opaque");
+			try {
+				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- p.\n\n## Invariants\n- an invariant\n\n## Pitfalls\n\n## Index\n- i\n");
+				const prose = "# Project Memory\n\nProject prose with no bullets at all, long enough to pass the length rule on its own.";
+				await pass(handle, () => ({ content: [{ type: "text", text: prose }], stopReason: "stop" }));
+				check("the guard reports its skip when the new reply is opaque", (await readFile(errorLog(handle.root), "utf8")).includes("did not produce sections"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 12. A fresh project has nothing to guard, so it must not log a skip on every pass.
+		{
+			const handle = await project("structured-guard-fresh");
+			try {
+				await pass(handle, () => ({ content: [{ type: "text", text: "# Project Memory\n\nFresh prose that is long enough to be written." }], stopReason: "stop" }));
+				check("a fresh project logs no guard skip", !(await readFile(errorLog(handle.root), "utf8").catch(() => "")).includes("guard skipped"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 13. The other fence families are the same skeleton; they must be blocked too.
+		{
+			for (const [label, text] of [
+				["an ```md fence", "```md\n# Project Memory\n\n## Project\n\n## Invariants\n\n## Pitfalls\n```"],
+				["a ~~~ fence", "~~~\n# Project Memory\n\n## Project\n\n## Invariants\n~~~"],
+				["a frontmatter delimiter", "---\n# Project Memory\n\n## Project\n\n## Invariants\n"],
+			]) {
+				const handle = await project(`structured-skeleton-${label.replace(/\W+/g, "")}`);
+				try {
+					const before = "# Project Memory\n\n## Project\n- keep me.\n";
+					await writeFile(memoryFile(handle.root), before);
+					await pass(handle, () => ({ content: [{ type: "text", text }], stopReason: "stop" }));
+					check(`${label} leaves MEMORY.md byte-identical`, (await readFile(memoryFile(handle.root), "utf8")) === before);
+				} finally {
+					await rmTemp(handle.root);
+				}
+			}
+		}
+
+		// 14. A reply too short to be a change must not claim a write either — and must not claim the
+		// wrong reason: a short reply did carry text, so "carried no entries" would be false.
+		{
+			const handle = await project("structured-short-opaque");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n";
+				await writeFile(memoryFile(handle.root), before);
+				const { toasts } = await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: "Short note.", context: CONTEXT }) }], stopReason: "stop" }));
+				check("a too-short reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("a too-short reply does not claim a memory update", !toasts.some((message) => message.includes("Project memory and context updated")));
+				check("a too-short reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
+				// The reply DID carry text, so the semantic-empty wording would be a false cause. Assert on the
+				// toast, which is where the reply lands: the handler returns nothing.
+				check("the short-reply toast names the real reason, not emptiness", toasts.some((message) => message.includes("too short to be a change")) && !toasts.some((message) => message.includes("carried no entries")));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		// 15. A condensation reply that is a DECORATED skeleton must not be adopted over the first,
+		// real result: adopting it stored 91 bytes of headings and dropped everything the model wrote.
+		{
+			const handle = await project("structured-condense-decorated", { maxMemoryChars: 4000 });
+			try {
+				const real = `# Memory\n\n${Array.from({ length: 200 }, (_, index) => `- durable fact number ${index} that takes up room\n`).join("")}`;
+				const decoratedSkeleton = "- # Project Memory\n- ## Project\n- ## Invariants\n- ## Pitfalls\n- ## Index\n";
+				const { seen } = await pass(handle, (attempt) => ({
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: attempt === 1 ? real : decoratedSkeleton, context: CONTEXT }) }],
+					stopReason: "stop",
+				}));
+				const written = await readFile(memoryFile(handle.root), "utf8");
+				check("the over-cap first result really triggered the condensation call", seen.length === 2);
+				check("a decorated skeleton is not adopted as the condensed memory", !/^-\s*#\s*Project Memory/m.test(written));
+				check("the first result's content is what stands", written.includes("durable fact number"));
+			} finally {
+				await rmTemp(handle.root);
+			}
 		}
 	}
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

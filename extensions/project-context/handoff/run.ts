@@ -7,6 +7,7 @@ import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, setFeature } from "../shared/config.ts";
+import { completeValues, completeVerbs } from "../shared/complete.ts";
 import { resolveAuxModel } from "../shared/llm.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
@@ -63,7 +64,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 	const trigger = args.trim();
 	const force = trigger === "force" || trigger === "force-auto";
 	// "force-auto" marks the scheduled agent_settled trigger; only it applies the
-	// pending-question guard, so /auto-handoff now keeps the configured mode.
+	// pending-question guard, so /handoff now keeps the configured mode.
 	const autoTriggered = trigger === "force-auto";
 	try {
 		if (!ctx.isIdle()) {
@@ -141,7 +142,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		if (!force && olderTokens < MIN_SUMMARIZE_TOKENS) return;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
-		// /auto-handoff keeps the configured mode. "skip" leaves the session as-is
+		// /handoff keeps the configured mode. "skip" leaves the session as-is
 		// until the user answers; "draft" is applied further below.
 		const pendingQuestion = findPendingQuestion(allEntries);
 		const guardApplies = autoTriggered && pendingQuestion !== undefined;
@@ -327,7 +328,7 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	setTimeout(() => {
 		try {
 			// Extension commands execute immediately and get the command context needed for newSession().
-			pi.sendUserMessage("/auto-handoff force-auto", { expandPromptTemplates: true });
+			pi.sendUserMessage("/handoff force-auto", { expandPromptTemplates: true });
 		} catch (error) {
 			setHandoffInFlight(false);
 			notify(ctx, `Auto handoff trigger failed: ${errorText(error)}`, "error");
@@ -370,8 +371,17 @@ export function registerHandoff(pi: ExtensionAPI): void {
 		maybeTrigger(pi, ctx);
 	});
 
-	pi.registerCommand("auto-handoff", {
+	pi.registerCommand("handoff", {
 		description: "Fresh session when context hits the threshold (status|on|off|auto|<ratio>|target|keep|thinking|send|draft|guard|lang|now)",
+		getArgumentCompletions: (prefix) => {
+			const verbs = completeVerbs(prefix, HANDOFF_VERBS);
+			if (verbs) return verbs;
+			for (const { head, values } of HANDOFF_VALUE_COMPLETIONS) {
+				const items = completeValues(prefix, head, values);
+				if (items) return items;
+			}
+			return null;
+		},
 		handler: async (args, ctx) => {
 			if (!getConfigRoot()) await syncConfig(await getProjectRoot(pi, ctx.cwd).catch(() => undefined));
 			const arg = args.trim().toLowerCase();
@@ -386,7 +396,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				} else {
 					const tokens = parseTokenCount(value ?? "");
 					if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
-						notify(ctx, "Usage: /auto-handoff keep <tokens|off> (e.g. keep 20k)", "warning");
+						notify(ctx, "Usage: /handoff keep <tokens|off> (e.g. keep 20k)", "warning");
 						return;
 					}
 					config.handoffKeepTokens = tokens;
@@ -403,7 +413,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			if (head === "target") {
 				const tokens = parseTokenCount(value ?? "");
 				if (tokens === undefined || tokens < MIN_SUMMARIZE_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
-					notify(ctx, "Usage: /auto-handoff target <tokens> (e.g. target 64k)", "warning");
+					notify(ctx, "Usage: /handoff target <tokens> (e.g. target 64k)", "warning");
 					return;
 				}
 				config.handoffTargetTokens = tokens;
@@ -413,7 +423,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "thinking") {
 				if (value !== "off" && value !== "session") {
-					notify(ctx, "Usage: /auto-handoff thinking off|session", "warning");
+					notify(ctx, "Usage: /handoff thinking off|session", "warning");
 					return;
 				}
 				config.handoffSummaryThinking = value;
@@ -430,7 +440,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				config.handoffAdaptive = true;
 				await saveConfig();
 				if (value) {
-					notify(ctx, "Adaptive mode takes no ratio; use /auto-handoff 0.6 for a fixed share.", "warning");
+					notify(ctx, "Adaptive mode takes no ratio; use /handoff 0.6 for a fixed share.", "warning");
 				}
 				notify(ctx, statusText(ctx));
 				return;
@@ -450,7 +460,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "guard") {
 				if (value !== "wait" && value !== "draft" && value !== "send" && value !== "skip") {
-					notify(ctx, "Usage: /auto-handoff guard wait|draft|send|skip", "warning");
+					notify(ctx, "Usage: /handoff guard wait|draft|send|skip", "warning");
 					return;
 				}
 				config.handoffGuard = value;
@@ -469,7 +479,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			}
 			if (head === "lang" || head === "language") {
 				if (value !== "auto" && value !== "zh" && value !== "en") {
-					notify(ctx, "Usage: /auto-handoff lang auto|zh|en", "warning");
+					notify(ctx, "Usage: /handoff lang auto|zh|en", "warning");
 					return;
 				}
 				config.handoffLanguage = value;
@@ -498,7 +508,31 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
 				return;
 			}
-			notify(ctx, `Unknown option "${arg}". Usage: /auto-handoff [on|off|auto|<ratio>|target <tokens>|keep <tokens>|thinking off|session|send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now|status]`, "warning");
+			notify(ctx, `Unknown option "${arg}". Usage: /handoff [on|off|auto|<ratio>|target <tokens>|keep <tokens>|thinking off|session|send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now|status]`, "warning");
 		},
 	});
 }
+
+/** Verbs the `handoff` command accepts, for argument completion (mirrors the handler's branches). */
+const HANDOFF_VERBS = [
+	{ value: "status" },
+	{ value: "on" },
+	{ value: "off" },
+	{ value: "auto", description: "adaptive threshold (the default)" },
+	{ value: "keep", description: "recent tokens carried over verbatim" },
+	{ value: "target", description: "summary target tokens before caps" },
+	{ value: "thinking", description: "thinking level for the summary" },
+	{ value: "send" },
+	{ value: "draft" },
+	{ value: "guard", description: "what to do while a question is pending" },
+	{ value: "lang", description: "handoff scaffolding language" },
+	{ value: "now", description: "hand off immediately" },
+];
+
+/** Second-argument completions, keyed by the verb that takes them. */
+const HANDOFF_VALUE_COMPLETIONS = [
+	{ head: "keep", values: [{ value: "off", description: "carry no recent messages" }] },
+	{ head: "thinking", values: [{ value: "off" }, { value: "session" }] },
+	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },
+	{ head: "lang", values: [{ value: "auto" }, { value: "zh" }, { value: "en" }] },
+];

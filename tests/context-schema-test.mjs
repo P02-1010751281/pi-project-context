@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp } from "./harness.mjs";
 
 /**
  * The CONTEXT.md fixed schema (S2): the section table, the per-section budgets derived from
@@ -186,7 +186,7 @@ try {
 			content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- a fact.\n", context: { title: "big", summary, key_points: longItems, open_tasks: longItems } }) }],
 		});
 		ctx.modelRegistry.complete = async () => reply(longSummary);
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		const contextFile = path.join(tmp, ".agents/memory/CONTEXT.md");
 		const written = await readFile(contextFile, "utf8");
 		const errors = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
@@ -197,7 +197,7 @@ try {
 		// A materially different clip makes the second line distinguishable, so this pins the once-per-project Set
 		// rather than logError's own same-headline dedupe.
 		ctx.modelRegistry.complete = async () => reply("s".repeat(15_000));
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		const writtenAgain = await readFile(contextFile, "utf8");
 		const secondCount = markerCount(writtenAgain);
 		const errorsAgain = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
@@ -206,7 +206,7 @@ try {
 		check("a second truncated pass does not log again", loggedAgain.length === 1 && loggedAgain[0] === logged[0]);
 	}
 } finally {
-	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
+	for (const dir of tmpDirs) await rmTemp(dir);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

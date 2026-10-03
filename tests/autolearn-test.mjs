@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Autolearn tests against a temp project with synthetic archived sessions:
@@ -219,10 +219,66 @@ try {
 		await runHandlers(pi2, "agent_settled", ctx2);
 		check("archived session opens the same gate", await waitUntil(() => emptyProjectCalls > 0, 1_500));
 	} finally {
-		await rm(tmp2, { recursive: true, force: true });
+		await rmTemp(tmp2);
+	}
+	console.log("\n=== D. the decision shape (record_skill) ===");
+	{
+		const { parseDecision } = await loadNamespace(`${PC}/autolearn/parse.ts`);
+		const empty = { name: "", description: "", body: "", evidence: [], candidate: false, reason: "" };
+		check("an always-object reply with a name proposes a skill", parseDecision({ skill: { ...empty, name: "n", description: "d", body: "b", evidence: ["sess-a"] }, inspect: [] })?.skill?.name === "n");
+		// "" is the sentinel for "nothing to propose": the shape has no null and no object union.
+		const none = parseDecision({ skill: empty, inspect: [] });
+		check("an empty name means no skill", none !== undefined && none.skill === null);
+		const wants = parseDecision({ skill: empty, inspect: ["sess-a", "sess-b"] });
+		check("an empty name with an inspect list asks for evidence", wants !== undefined && wants.skill === null && wants.inspect.length === 2);
+		// A model answering the old shape out of habit still works.
+		check("the legacy null skill is still accepted", parseDecision({ skill: null, inspect: [] })?.skill === null);
+		check("the legacy missing skill is still accepted", parseDecision({ inspect: ["sess-a"] })?.skill === null);
+		// The tool path hands over an already-parsed object; the text path hands over a string.
+		check("an object is accepted directly", parseDecision({ skill: { ...empty, name: "x" }, inspect: [] })?.skill?.name === "x");
+		check("text JSON is still parsed", parseDecision('{"skill": {"name": "t", "description": "d", "body": "b"}}')?.skill?.name === "t");
+		// A proposal whose required fields are missing is a shape failure, not an empty proposal.
+		check("a proposal without a body is rejected", parseDecision({ skill: { name: "x", description: "d" }, inspect: [] }) === undefined);
+	}
+
+	console.log("\n=== E. the tool path, and the truncation retry ===");
+	{
+		const skillFile = (name) => path.join(tmp, ".agents/skills", name, "SKILL.md");
+		const original = ctx.modelRegistry.complete;
+		let calls = [];
+		const toolCall = (name, stopReason) => ({
+			content: [{ type: "toolCall", name: "record_skill", arguments: { skill: { name, description: "tool skill", body, evidence: ["sess-a", "sess-b"], candidate: false, reason: "" }, inspect: [] } }],
+			stopReason: stopReason ?? "toolUse",
+		});
+
+		try {
+			calls = [];
+			ctx.modelRegistry.complete = async (_model, context) => {
+				calls.push({ tools: context.tools });
+				return toolCall("gamma-tooled");
+			};
+			await command.handler("", ctx);
+			check("a record_skill tool call proposes a skill", await exists(skillFile("gamma-tooled")));
+			check("the tool is offered to the route", calls[0].tools?.[0]?.name === "record_skill");
+
+			// A truncated skill body must never be stored as if it were complete: pi-ai repairs the
+			// truncated arguments into a shape-valid object, so "there is a tool call" proves nothing.
+			calls = [];
+			ctx.modelRegistry.complete = async (_model, context) => {
+				calls.push({ tools: context.tools });
+				if (calls.length === 1) return toolCall("truncated-skill", "length");
+				return { content: [{ type: "text", text: JSON.stringify({ skill: { name: "", description: "", body: "", evidence: [], candidate: false, reason: "" }, inspect: [] }) }], stopReason: "stop" };
+			};
+			await command.handler("", ctx);
+			check("a truncated tool call is retried exactly once", calls.length === 2);
+			check("the retry carries no tools", calls[1].tools === undefined);
+			check("the truncated skill is not written", !(await exists(skillFile("truncated-skill"))));
+		} finally {
+			ctx.modelRegistry.complete = original;
+		}
 	}
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

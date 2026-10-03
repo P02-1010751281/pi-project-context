@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled } from "../shared/config.ts";
+import { completeVerbs } from "../shared/complete.ts";
 import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionIndexLockTarget, sessionTitle } from "./session-index.ts";
 import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
@@ -139,6 +140,8 @@ export function registerArchive(pi: ExtensionAPI): void {
 
 	pi.registerCommand("session-log", {
 		description: "Write the current session log, or backfill ended sessions (import <path…>)",
+		getArgumentCompletions: (prefix) =>
+			completeVerbs(prefix, [{ value: "import", description: "backfill archives from session files or directories" }]),
 		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const value = (args ?? "").trim();
@@ -167,6 +170,8 @@ export function registerArchive(pi: ExtensionAPI): void {
 
 	pi.registerCommand("context", {
 		description: "Show the project context and session log locations",
+		// Takes no arguments; an explicit null keeps the menu from offering anything.
+		getArgumentCompletions: () => null,
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			notify(ctx, `Project context: ${contextFile(projectRoot)}\nSession index: ${sessionIndexFile(projectRoot)}\nSession logs: ${logsDir(projectRoot)}`);

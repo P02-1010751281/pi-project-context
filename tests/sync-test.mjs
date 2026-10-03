@@ -1,7 +1,7 @@
 import { appendFile, mkdtemp, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers } from "./harness.mjs";
 
 /**
  * Regression tests for the behaviors synced from dsh-project-context:
@@ -45,7 +45,7 @@ console.log("=== errors.log is bounded ===");
 	await logError(tmp, "detail", big);
 	const capped = await readFile(file, "utf8");
 	check("single record truncated", capped.includes("[...detail truncated...]"));
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== writeAtomic temp hygiene ===");
@@ -57,7 +57,7 @@ console.log("\n=== writeAtomic temp hygiene ===");
 	const leftovers = (await import("node:fs/promises")).readdir(path.join(tmp, "nested")).then((entries) => entries.filter((name) => name.endsWith(".tmp")));
 	check("one call wins cleanly", content === "alpha" || content === "beta");
 	check("no temp files left", (await leftovers).length === 0);
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== migration keeps an unmergeable legacy path ===");
@@ -73,7 +73,7 @@ console.log("\n=== migration keeps an unmergeable legacy path ===");
 	check("conflict reported", result.conflicts.includes(".agents/memory/MEMORY.md"));
 	check("legacy side left in place", await exists(path.join(tmp, ".pi/MEMORY.md/inside.md")));
 	check("new side left in place", (await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8")) === "current");
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== migration keeps a divergent legacy skill directory, and names a superseded file ===");
@@ -96,7 +96,7 @@ console.log("\n=== migration keeps a divergent legacy skill directory, and names
 	check("the legacy-only sibling survives", await exists(path.join(tmp, ".pi/skills/release-checklist/reference.md")));
 	check("the kept legacy directory is reported", result.conflicts.includes(".agents/skills/release-checklist"));
 	check("the live skill is untouched", (await readFile(path.join(tmp, ".agents/skills/release-checklist/SKILL.md"), "utf8")) === live);
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 
 	// The other outcome: a colliding file whose legacy copy is older. The bytes are dropped, and the
 	// migration must not call that "moved".
@@ -110,7 +110,7 @@ console.log("\n=== migration keeps a divergent legacy skill directory, and names
 	const superseded = await migrateProjectState(older);
 	check("a newer destination is reported as superseded, not moved", superseded.moved.length === 0 && superseded.superseded.includes(".agents/memory/MEMORY.md"));
 	check("the discarded legacy file is gone", !(await exists(path.join(older, ".pi/MEMORY.md"))));
-	await rm(older, { recursive: true, force: true });
+	await rmTemp(older);
 }
 
 console.log("\n=== migration honors maxMemoryChars ===");
@@ -131,8 +131,8 @@ console.log("\n=== migration honors maxMemoryChars ===");
 		check("legacy OMP import uses the project's memory cap", migrated.includes("at 5000 characters") && migrated.length < 5_500);
 		check("legacy OMP import enters the journal", (await readFile(path.join(tmp, ".agents/memory/memory.jsonl"), "utf8")).includes('"replace"'));
 	} finally {
-		await rm(tmp, { recursive: true, force: true });
-		await rm(legacy, { recursive: true, force: true });
+		await rmTemp(tmp);
+		await rmTemp(legacy);
 	}
 }
 
@@ -147,7 +147,7 @@ console.log("\n=== session-logs gets a .gitignore ===");
 	await runHandlers(pi, "session_shutdown", ctx);
 	const ignore = await readFile(path.join(tmp, ".agents/memory/session-logs/.gitignore"), "utf8").catch(() => "");
 	check("ignore file written", ignore.includes("*"));
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== CONTEXT.md caps the list sections ===");
@@ -202,7 +202,7 @@ console.log("\n=== consolidation throttle is session-local ===");
 	} finally {
 		Date.now = realNow;
 	}
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== session.jsonl appends incrementally ===");
@@ -243,7 +243,7 @@ console.log("\n=== session.jsonl appends incrementally ===");
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
 	const rebuilt = await readFile(artifacts, "utf8");
 	check("external rewrite rebuilds", rebuilt.includes('"m3"') && !rebuilt.includes('"m1"'));
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== session.jsonl handles a partial line and a growing rewrite ===");
@@ -290,7 +290,7 @@ console.log("\n=== session.jsonl handles a partial line and a growing rewrite ==
 	await rename(replacement, source);
 	await writeSessionArtifacts(tmp, ctx, { markdown: false });
 	check("an inode-changing replacement rebuilds", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== overlapping writes for one session are serialized ===");
@@ -318,7 +318,7 @@ console.log("\n=== overlapping writes for one session are serialized ===");
 		writeSessionArtifacts(tmp, ctx, { markdown: false }),
 	]);
 	check("overlapping writes do not duplicate the tail", (await readFile(artifacts, "utf8")) === (await readFile(source, "utf8")));
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== session.jsonl does not duplicate under a concurrent writer ===");
@@ -362,7 +362,7 @@ console.log("\n=== session.jsonl does not duplicate under a concurrent writer ==
 	check("archive matches the source after concurrent appends", archive === finalSource);
 	const ids = archive.split("\n").filter(Boolean).map((entry) => JSON.parse(entry).id);
 	check("no entry is duplicated by the append cursor", ids.length === new Set(ids).size);
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log("\n=== archive backfill import ===");
@@ -397,7 +397,7 @@ console.log("\n=== archive backfill import ===");
 	check("directory expands to both files", targets.length === 2);
 	const outcomes = await importArchiveFiles(targets, { projectRoot: tmp });
 	check("bulk import creates one and skips one", outcomes.filter((o) => o.status === "created").length === 1 && outcomes.filter((o) => o.status === "skipped").length === 1);
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

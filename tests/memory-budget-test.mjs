@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp } from "./harness.mjs";
 
 /**
  * The memory character budget: the reply is told the real cap (M1), an overflowing reply gets one
@@ -123,7 +123,7 @@ try {
 				}],
 			};
 		};
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		const written = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
 		const writtenContext = await readFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "utf8").catch(() => "");
 		check("the first reply overflowed and the condensation ran", prompts.length === 2 && prompts[1].includes(`exceeded the ${cap}-character cap`));
@@ -149,7 +149,7 @@ try {
 			if (prompt.includes(`exceeded the ${cap}-character cap`)) throw new Error("model call error: Connection error.");
 			return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: big, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }] };
 		};
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		const stored = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
 		const errors = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 		check("the condensation was attempted and failed", calls === 2);
@@ -173,7 +173,7 @@ try {
 				text: JSON.stringify({ memory_markdown: copiedMarker, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }),
 			}],
 		});
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		const errors = await readFile(path.join(tmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 		check("no cap warning is logged for a copied marker", !errors.includes("exceeded maxMemoryChars"));
 		// The reply is a fresh write, so the marker it copied describes an older clip and must not be
@@ -185,7 +185,7 @@ try {
 		check("the memory command does not claim the cap was hit", !String(ctx.notifications.at(-1)?.[0] ?? "").includes("at the cap"));
 	}
 } finally {
-	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
+	for (const dir of tmpDirs) await rmTemp(dir);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

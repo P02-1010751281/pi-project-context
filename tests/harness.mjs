@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +56,90 @@ export async function loadDefault(file, aliases) {
 export async function loadNamespace(file, aliases) {
 	const jiti = await loadJiti(aliases);
 	return jiti.import(file);
+}
+
+/**
+ * Load several modules through ONE jiti instance so they share a module registry.
+ *
+ * `loadNamespace` builds a fresh loader per call (`moduleCache: false`), so two calls give two
+ * independent copies: a test that wants to observe module-level state from another module (the
+ * failure policy behind `callAux`, say) has to load both together.
+ */
+export async function loadShared(files) {
+	// Its own loader with the module cache ON: `loadJiti` deliberately disables it so each test file
+	// starts clean, but that also means two `loadNamespace` calls never share module state.
+	if (!jitiModule) jitiModule = await import(`${PI}/node_modules/jiti/lib/jiti-static.mjs`);
+	const jiti = jitiModule.createJiti(loaderUrl, { alias });
+	const loaded = [];
+	for (const file of files) loaded.push(await jiti.import(file));
+	return loaded;
+}
+
+/**
+ * Assert a tool schema survives pi-ai's strict JSON-schema conversion.
+ *
+ * `makeStrictJsonSchema(schema, () => false)` alone is NOT enough: that callback *is* the
+ * provider-specific check, so passing an always-false one disables exactly the keywords a provider
+ * would refuse (Anthropic rejects `maxItems`, which pi-ai's own base table allows). This asserts the
+ * strict-ready checklist on the union of both tables, which is what makes the check non-vacuous.
+ *
+ * Throws on the first violation, so a test can simply await it.
+ */
+export async function assertStrictReady(schema) {
+	const dist = `${PI}/node_modules/@earendil-works/pi-ai/dist`;
+	const sampling = await import(`${dist}/api/constrained-sampling.js`);
+	// The base-table verdict, including the nested object/array-union rule.
+	sampling.makeStrictJsonSchema(schema);
+
+	const readTable = (file, name) => {
+		const source = readFileSync(file, "utf8");
+		const match = new RegExp(`${name}[^=]*=\\s*(?:new Set\\()?\\[([\\s\\S]*?)\\]`).exec(source);
+		if (!match) throw new Error(`cannot read ${name} from ${file}`);
+		return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+	};
+	const base = readTable(`${dist}/api/constrained-sampling.js`, "UNSUPPORTED_STRICT_SCHEMA_KEYS");
+	const anthropic = readTable(`${dist}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS");
+	const formats = readTable(`${dist}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_STRING_FORMATS");
+	// Pin the sizes: if pi-ai's tables change, these tests must be re-read, not silently weakened.
+	if (base.length !== 16) throw new Error(`pi-ai base unsupported-key table changed size: ${base.length}`);
+	if (anthropic.length !== 11) throw new Error(`Anthropic unsupported-key table changed size: ${anthropic.length}`);
+
+	const forbidden = new Set([...base, ...anthropic]);
+	const problems = [];
+	const walk = (node, path) => {
+		if (Array.isArray(node)) {
+			node.forEach((item, index) => walk(item, `${path}[${index}]`));
+			return;
+		}
+		if (typeof node !== "object" || node === null) return;
+		for (const [key, value] of Object.entries(node)) {
+			if (key === "required") continue;
+			if (forbidden.has(key)) problems.push(`${path} uses the unsupported keyword ${key}`);
+			if (key === "minItems" && value !== 0 && value !== 1) problems.push(`${path} uses minItems ${value} (only 0 and 1 are accepted)`);
+			if (key === "format" && !formats.includes(value)) problems.push(`${path} uses the unsupported format ${value}`);
+			walk(value, `${path}.${key}`);
+		}
+		if (node.type === "object") {
+			if (node.additionalProperties !== false) problems.push(`${path} must set additionalProperties: false`);
+			const missing = Object.keys(node.properties ?? {}).filter((key) => !(node.required ?? []).includes(key));
+			if (missing.length > 0) problems.push(`${path} does not require ${missing.join(", ")}`);
+		}
+	};
+	walk(schema, "root");
+	if (problems.length > 0) throw new Error(`schema is not strict-ready: ${problems.join("; ")}`);
+}
+
+/**
+ * Remove a test's temp directory.
+ *
+ * The extension starts work it does not await (`agent_settled` consolidation, the session-log
+ * archive's write chain), so a writer can still be inside the directory while a test tears it
+ * down. `fs.rm`'s recursive walk lists a directory and then removes it, so a file that lands in
+ * between makes `rmdir` fail with ENOTEMPTY — and `maxRetries` defaults to 0, turning a harmless
+ * teardown race into a spurious red test.
+ */
+export async function rmTemp(target) {
+	await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 }
 
 /** Poll until a condition holds (bounded); waits in this suite never sleep a fixed slice.

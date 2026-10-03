@@ -26,10 +26,40 @@ for (const [name, file] of [
 		const registrations = [...pi.handlers.keys()].map((event) => `on:${event}`).concat([...pi.commands.keys()].map((command) => `cmd:${command}`));
 		console.log(`OK   ${name}: ${registrations.join(", ")}`);
 		if (name === "project-context") {
-			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:memory-learn", "cmd:context-update", "cmd:session-log", "cmd:context", "cmd:autolearn", "cmd:auto-handoff"];
+			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:session-log", "cmd:context", "cmd:autolearn", "cmd:handoff"];
 			const missing = expected.filter((item) => !registrations.includes(item));
 			if (missing.length > 0) {
 				console.log(`FAIL missing registrations: ${missing.join(", ")}`);
+				failures += 1;
+			}
+			// The naming consolidation deleted these outright: no alias, no transition period.
+			const removed = ["cmd:memory-learn", "cmd:context-update", "cmd:auto-handoff"].filter((item) => registrations.includes(item));
+			if (removed.length > 0) {
+				console.log(`FAIL commands that should be gone are still registered: ${removed.join(", ")}`);
+				failures += 1;
+			}
+			// Every surviving command answers Tab completion; none of them did before the rename.
+			const withoutCompletion = [...pi.commands.entries()]
+				.filter(([, options]) => typeof options.getArgumentCompletions !== "function")
+				.map(([name]) => name);
+			if (withoutCompletion.length > 0) {
+				console.log(`FAIL commands without argument completion: ${withoutCompletion.join(", ")}`);
+				failures += 1;
+			}
+			// Completion is filtering, not enumeration: the prefix narrows the list and a verb that takes
+			// no second argument must not offer one.
+			const memoryVerbs = await pi.commands.get("memory").getArgumentCompletions("u");
+			if (!(memoryVerbs ?? []).some((item) => item.value === "update")) {
+				console.log("FAIL /memory does not complete 'update'");
+				failures += 1;
+			}
+			const guardValues = await pi.commands.get("handoff").getArgumentCompletions("guard " + "");
+			if (!(guardValues ?? []).some((item) => item.value === "wait")) {
+				console.log("FAIL /handoff does not complete the guard values");
+				failures += 1;
+			}
+			if ((await pi.commands.get("context").getArgumentCompletions("")) !== null) {
+				console.log("FAIL /context takes no arguments but offers completions");
 				failures += 1;
 			}
 		}

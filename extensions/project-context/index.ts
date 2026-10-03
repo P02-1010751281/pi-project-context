@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { registerArchive } from "./archive/archive.ts";
 import { registerAutolearn } from "./autolearn/pass.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
+import { completeValues, completeVerbs } from "./shared/complete.ts";
 import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "./shared/limits.ts";
 import { memoryCapUnsatisfiable, memoryReplyTokens } from "./shared/output-budget.ts";
 import { registerConsolidation } from "./memory/report.ts";
@@ -105,6 +106,15 @@ export default function projectContext(pi: ExtensionAPI): void {
 
 	pi.registerCommand("project-context", {
 		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default | max-memory <n>|default",
+		getArgumentCompletions: (prefix) => {
+			const verbs = completeVerbs(prefix, PROJECT_CONTEXT_VERBS);
+			if (verbs) return verbs;
+			for (const { head, values } of PROJECT_CONTEXT_VALUE_COMPLETIONS) {
+				const items = completeValues(prefix, head, values);
+				if (items) return items;
+			}
+			return null;
+		},
 		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
@@ -206,3 +216,22 @@ export default function projectContext(pi: ExtensionAPI): void {
 		},
 	});
 }
+
+/** Verbs the `project-context` command accepts, for argument completion (mirrors the handler). */
+const PROJECT_CONTEXT_VERBS = [
+	{ value: "status" },
+	{ value: "on", description: "enable automatic behavior for a feature" },
+	{ value: "off", description: "disable a feature" },
+	{ value: "model", description: "auxiliary model route" },
+	{ value: "max-tokens", description: "output budget for auxiliary calls" },
+	{ value: "max-memory", description: "MEMORY.md character cap" },
+];
+
+/** Second-argument completions, keyed by the verb that takes them. */
+const PROJECT_CONTEXT_VALUE_COMPLETIONS = [
+	{ head: "on", values: [...FEATURE_NAMES.map((name) => ({ value: name })), { value: "all" }] },
+	{ head: "off", values: [...FEATURE_NAMES.map((name) => ({ value: name })), { value: "all" }] },
+	{ head: "model", values: [{ value: "off", description: "use the session model" }, { value: "session" }] },
+	{ head: "max-tokens", values: [{ value: "default" }] },
+	{ head: "max-memory", values: [{ value: "default" }] },
+];

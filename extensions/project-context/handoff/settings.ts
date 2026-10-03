@@ -73,7 +73,7 @@ export async function saveConfig(): Promise<void> {
 	};
 	try {
 		// Adopt the merged result **in place**. Reassigning this exported `let` did not reach the
-		// command handler under the host's module interop — measured: after `/auto-handoff lang zh`
+		// command handler under the host's module interop — measured: after `/handoff lang zh`
 		// every later command persisted `zh` again, because `run.ts` was still mutating the previous
 		// object while this module read the new one. This is the same reason the split exposes
 		// `setFlagEnabled`/`setConfigRoot` instead of reassigning.

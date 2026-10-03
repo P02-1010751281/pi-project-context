@@ -4,15 +4,32 @@
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig } from "../shared/config.ts";
-import { modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
-import { type CompletionOutcome, completeWithMeta, resolveAuxModel } from "../shared/llm.ts";
+import { modelBlocked } from "../shared/call-policy.ts";
+import { type AuxCallState, type CompletionOutcome, callAux, pickToolCall, resolveAuxModel } from "../shared/llm.ts";
 import { MAX_CONTEXT_CHARS, contextFile, errorText, exceedsMemoryCap, getProjectRoot, loadMemory, logError, notify, readOptional } from "../shared/project-state.ts";
 import { type MemoryInput, fitMemoryInput } from "./input.ts";
-import { type ConsolidatedResult, parseConsolidated } from "./parse.ts";
+import { type ConsolidatedResult, parseConsolidated, parseContext } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
 import { conversationText, userTurnCount } from "../shared/conversation.ts";
 import { RETRY_OUTPUT_HEADROOM_TOKENS } from "../shared/output-budget.ts";
 import { replyHead } from "../shared/text.ts";
+import {
+	type MemoryRender,
+	type MemorySections,
+	RECORD_MEMORY_TOOL,
+	normalizeMemoryEntry,
+	renderMemoryDocument,
+	sectionsFromMarkdown,
+	sectionsFromToolCall,
+	sectionsSemanticallyEmpty,
+	isHeadingOnlyDocument,
+} from "./sections.ts";
+
+/** Which entry produced the memory this pass would write; the report words its notices per entry. */
+export type ConsolidateKind = "structured" | "fallback-sections" | "fallback-opaque";
+
+/** Entries the new memory no longer carries, for the regression guard's report. */
+export type RemovedEntries = { count: number; samples: string[] };
 
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
 export type ConsolidateOutcome = {
@@ -20,9 +37,24 @@ export type ConsolidateOutcome = {
 	version: number;
 	/** The prompt could not carry the whole memory inside the model's output budget. */
 	clipped: boolean;
+	/** Which entry the memory came from. */
+	kind: ConsolidateKind;
+	/** No section held an entry worth storing, so the memory must not be written at all. */
+	semanticEmpty: boolean;
+	/** Sections that lost at least one entry to their budget. */
+	sectionDropped: number;
+	/** Entries dropped because their section's budget was full. */
+	droppedItems: number;
+	/** Entries clipped to their section's per-item cap. */
+	itemTruncated: number;
+	/** Invariants/Pitfalls entries the previous memory had and this one does not. */
+	removed?: RemovedEntries;
 };
 
 type PassState = { session: string; turns: number; at: number };
+
+/** A reply read into the shape this pass writes: the sections when it had them, plus the context. */
+type ResolvedReply = { kind: ConsolidateKind; sections?: MemorySections; result: ConsolidatedResult };
 
 let nextVersion = 0;
 
@@ -31,6 +63,68 @@ let activeConsolidation: Promise<ConsolidateOutcome | undefined> | undefined;
 const throttle = new Map<string, PassState>();
 
 const lastOutcome = new Map<string, { version: number; at: number; outcome: ConsolidateOutcome }>();
+
+/**
+ * Read one reply.
+ *
+ * The tool call is the preferred entry. When the model answers with text instead — because it chose
+ * not to call the tool, or because the route dropped `tools` — the same sections are recovered from
+ * the Markdown, so both entries render through one renderer and one set of budgets.
+ *
+ * `allowTools` is false for the retry and condensation prompts, which deliberately carry no tool.
+ */
+function resolveReply(completion: CompletionOutcome, allowTools: boolean): ResolvedReply | undefined {
+	if (allowTools) {
+		// Throws when the reply called some other tool and carried no text: there is nothing to fall
+		// back to, and returning undefined would feed "" to the parser and read as a silent success.
+		const args = pickToolCall(completion.toolCalls, RECORD_MEMORY_TOOL.name, completion.text);
+		if (args !== undefined) {
+			const sections = sectionsFromToolCall(args);
+			if (sections) {
+				const record = args as Record<string, unknown>;
+				// memory and context are validated apart: a broken context must not cost a good memory.
+				const context = parseContext(record.context);
+				const contextUnusable = context === undefined && record.context !== undefined && record.context !== null;
+				return {
+					kind: "structured",
+					sections,
+					result: { memory: "", context, ...(contextUnusable ? { contextUnusable: true } : {}) },
+				};
+			}
+			// The expected tool was called with arguments this pass cannot read. With text to fall back to
+			// the text path still applies; with nothing to parse it is an error, not an empty memory.
+			if (completion.text.trim() === "") {
+				throw new Error(`the ${RECORD_MEMORY_TOOL.name} call carried unusable arguments and no text`);
+			}
+		}
+	}
+	const parsed = parseConsolidated(completion.text);
+	if (!parsed) return undefined;
+	const sections = sectionsFromMarkdown(parsed.memory);
+	if (sections) return { kind: "fallback-sections", sections, result: parsed };
+	return { kind: "fallback-opaque", result: parsed };
+}
+
+/** The final memory text for a resolved reply: the renderer's output when there are sections. */
+function memoryTextFor(resolved: ResolvedReply, render: MemoryRender | undefined): string {
+	return render ? render.text : resolved.result.memory;
+}
+
+/**
+ * What the new memory no longer says, per durable section.
+ *
+ * `Project` and `Index` are deliberately excluded: they are meant to be rewritten every pass, and
+ * reporting them would bury the signal. This cannot judge whether a removal was *right* — only that
+ * it happened — so it reports and never blocks.
+ */
+function removedSectionEntries(before: MemorySections, after: MemorySections): RemovedEntries {
+	const gone = (key: "invariants" | "pitfalls"): string[] => {
+		const kept = new Set(after[key].map((entry) => normalizeMemoryEntry(entry)));
+		return before[key].map((entry) => normalizeMemoryEntry(entry)).filter((entry) => entry !== "" && !kept.has(entry));
+	};
+	const removed = [...gone("invariants"), ...gone("pitfalls")];
+	return { count: removed.length, samples: removed.slice(0, 3) };
+}
 
 export async function consolidateProjectState(
 	pi: ExtensionAPI,
@@ -79,24 +173,35 @@ export async function consolidateProjectState(
 		const budget = { maxMemoryChars: config.maxMemoryChars, currentChars: existing.text.length };
 		const promptFor = (input: MemoryInput): string => buildPrompt(projectRoot, input, conversation, budget);
 
-		// Record a failed attempt so a persistent failure backs off instead of retrying on every settle.
-		const call = async (input: MemoryInput, promptOverride?: string): Promise<CompletionOutcome> => {
+		// The pass-scoped sticky no-tools switch lives here; `callAux` owns the fallback itself and
+		// records success/failure, so a `tools` rejection burns one failure slot, not two.
+		const auxState: AuxCallState = {};
+		const call = async (prompt: string, input: MemoryInput, withTools: boolean): Promise<CompletionOutcome> => {
 			try {
-				const completion = await completeWithMeta(ctx, promptOverride ?? promptFor(input), { model: auxModel, maxTokens: input.maxTokens });
-				// The route answered: any earlier outage is over and the next failure starts a new episode.
-				noteModelSuccess("memory", projectRoot);
-				return completion;
+				return await callAux(ctx, prompt, {
+					model: auxModel,
+					maxTokens: input.maxTokens,
+					tools: withTools ? [RECORD_MEMORY_TOOL] : undefined,
+					scope: "memory",
+					projectRoot,
+					state: auxState,
+				});
 			} catch (error) {
+				// Record the failed attempt so a persistent failure backs off instead of retrying every settle.
 				throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
-				noteModelFailure("memory", projectRoot, error);
 				throw error;
 			}
 		};
 
 		let usedInput = fitted;
-		let completion = await call(usedInput);
-		let result = parseConsolidated(completion.text);
-		if (!result) {
+		let completion = await call(promptFor(usedInput), usedInput, true);
+		// A truncated tool call is never accepted: pi-ai repairs a truncated arguments string into a
+		// shape-valid object, so "there is a tool call" is not evidence that its contents arrived. A
+		// *text* reply that stopped at the cap is a different case and keeps the old behaviour below —
+		// the JSON parsed to the end, so nothing was lost.
+		const truncatedToolCall = completion.stopReason === "length" && (completion.toolCalls?.length ?? 0) > 0;
+		let resolved = truncatedToolCall ? undefined : resolveReply(completion, true);
+		if (!resolved) {
 			// Providers occasionally return a transient fence/prose/truncated-shape response even when
 			// the same request can complete on the next call. A reply cut off at the output cap is retried
 			// with extra headroom: the request cap grows when the model allows it, and when the cap is
@@ -111,50 +216,121 @@ export async function consolidateProjectState(
 				? "Your previous response was cut off by the output limit. Retry this same consolidation now; condense the memory and context so the complete JSON object fits in this response."
 				: "Your previous response was not a usable JSON object. Retry this same consolidation now.";
 			const retryPrompt = `${promptFor(usedInput)}\n\n${reminder} Return exactly one complete JSON object with string memory_markdown and object context (summary string, title string, key_points array, open_tasks array); no prose, Markdown fence, ellipsis, or unfinished value.`;
-			completion = await call(usedInput, retryPrompt);
-			result = parseConsolidated(completion.text);
+			// Deliberately without the tool: this prompt asks for the text shape, and a tool call here
+			// could not be parsed anyway.
+			completion = await call(retryPrompt, usedInput, false);
+			resolved = resolveReply(completion, false);
 		}
-		if (!result && completion.stopReason === "length") {
+		if (!resolved && completion.stopReason === "length") {
 			// Two attempts both hit the cap: name the real cause instead of the generic parse message.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 			const reasoningNote = completion.reasoningTokens > 0 ? `, ${completion.reasoningTokens} spent on hidden reasoning` : "";
 			throw new Error(`consolidation reply was cut off by the model output limit (${usedInput.maxTokens} tokens requested${reasoningNote}); raise maxOutputTokens or trim MEMORY.md\n${replyHead(completion.text)}`);
 		}
-		if (!result) {
+		if (!resolved) {
 			// Back off like any other failed pass, but never store the raw JSON as memory.
 			throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(completion.text)}`);
 		}
-		if (exceedsMemoryCap(result.memory, config.maxMemoryChars)) {
-			// The reply overflows the render cap, so the write path would drop its middle on a line
-			// boundary. One bounded condensation attempt turns that silent loss into a curated shrink;
-			// if it fails or still overflows, keep the first result and let the cap warning speak.
+		let render = resolved.sections ? renderMemoryDocument(resolved.sections, config.maxMemoryChars) : undefined;
+		// The same quality loop the whole-document cap used to drive. The renderer guarantees the text
+		// fits the cap, so the old `exceedsMemoryCap` gate is always false here: what is left to react
+		// to is a section that had to give up entries. The opaque entry has no section counts, so it
+		// keeps the cap test — otherwise the path most likely to overflow would lose the loop entirely.
+		const needsCondense = render ? render.sectionDropped > 0 : exceedsMemoryCap(resolved.result.memory, config.maxMemoryChars);
+		if (needsCondense) {
+			// One bounded condensation attempt turns a silent loss into a curated shrink; if it fails or
+			// still does not fit, keep the first result and let the cap report speak.
 			const limit = config.maxMemoryChars;
 			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown exceeded the ${limit}-character cap, so its middle would be dropped. Retry this same consolidation and rewrite memory_markdown to fit at or under ${limit} characters: keep every durable fact, merge duplicates, and remove the least durable entries. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
-			let condensed: ConsolidatedResult | undefined;
+			let condensed: ResolvedReply | undefined;
 			try {
-				condensed = parseConsolidated((await call(usedInput, condensePrompt)).text);
+				condensed = resolveReply(await call(condensePrompt, usedInput, false), false);
 			} catch (error) {
-				// A failed condensation must not discard the valid first result (which the cap warning still
-				// reports); `call` already recorded the failure, so only leave a diagnostic here.
-				await logError(projectRoot, "memory", new Error(`condensation retry failed; keeping the over-cap reply so its cap warning speaks: ${errorText(error)}`));
+				// A failed condensation must not discard the valid first result (which the cap report still
+				// speaks for); `call` already recorded the failure, so only leave a diagnostic here.
+				await logError(projectRoot, "memory", new Error(`condensation retry failed; keeping the over-cap reply so its cap report speaks: ${errorText(error)}`));
 			}
-			if (condensed && !exceedsMemoryCap(condensed.memory, limit)) {
+			const condensedRender = condensed?.sections ? renderMemoryDocument(condensed.sections, limit) : undefined;
+			const condensedText = condensed ? memoryTextFor(condensed, condensedRender) : "";
+			// Whole-entry drops are the thing being condensed away; an entry merely clipped to its
+			// section's per-item cap is a bounded line, not a loss, so it does not block adoption.
+			// An empty reply — or one that condensed into a bare heading skeleton — is never adopted: it
+			// would throw away the first result to store nothing.
+			const condensedEmpty = condensed?.sections ? sectionsSemanticallyEmpty(condensed.sections) : isHeadingOnlyDocument(condensedText);
+			const adopt =
+				condensed !== undefined &&
+				condensedText.trim() !== "" &&
+				!condensedEmpty &&
+				(condensedRender ? condensedRender.sectionDropped === 0 : !exceedsMemoryCap(condensedText, limit));
+			if (condensed && adopt) {
 				// Adopt only the condensed memory: a compacted retry may drop the context section, and the
 				// first reply's context is real work that would otherwise be thrown away.
-				result = {
-					...result,
-					memory: condensed.memory,
-					context: condensed.context ?? result.context,
-					contextUnusable: condensed.context ? condensed.contextUnusable : result.contextUnusable,
+				resolved = {
+					kind: condensed.kind,
+					sections: condensed.sections,
+					result: {
+						...condensed.result,
+						context: condensed.result.context ?? resolved.result.context,
+						contextUnusable: condensed.result.context ? condensed.result.contextUnusable : resolved.result.contextUnusable,
+					},
 				};
+				render = condensedRender;
+			}
+		}
+
+		const sections = resolved.sections;
+		// The opaque entry has no sections, so its half of the gate is "is this a document at all": a
+		// reply that is nothing but headings would otherwise replace a real memory with a skeleton.
+		const semanticEmpty = sections ? sectionsSemanticallyEmpty(sections) : isHeadingOnlyDocument(resolved.result.memory);
+		if (semanticEmpty) {
+			// A reply with no entries at all renders as a bare four-heading skeleton, and an opaque reply
+			// that is only headings is the same thing with the headings lost. Writing either would replace
+			// a real memory with nothing, so the write is skipped outright — and because that is a silent
+			// no-op from the outside, it always leaves a diagnostic.
+			if (existing.text.trim()) {
+				await logError(projectRoot, "memory", "the consolidation reply carried no entries; the stored memory was kept unchanged");
+			}
+		}
+		// The guard runs on the sections this pass would actually write and on the stored memory, both
+		// before any clipping, so a clipped entry is not counted as a removal.
+		let removed: RemovedEntries | undefined;
+		if (!semanticEmpty) {
+			const oldSections = sectionsFromMarkdown(existing.text);
+			if (!sections) {
+				// This pass answered on the opaque entry, so there is no new side to diff. Only worth saying
+				// when something is actually stored; a fresh project has nothing to compare.
+				if (existing.text.trim()) {
+					await logError(projectRoot, "memory", "memory regression guard skipped: this pass did not produce sections");
+				}
+			} else if (!oldSections) {
+				// A free-form or opaque stored memory has nothing to compare against; saying "N entries
+				// were removed" there would be a wholesale false alarm.
+				if (existing.text.trim()) {
+					await logError(projectRoot, "memory", "memory regression guard skipped: the stored memory is not a plain four-section bullet document");
+				}
+			} else {
+				removed = removedSectionEntries(oldSections, sections);
+				if (removed.count > 0) {
+					await logError(projectRoot, "memory", `memory regression: ${removed.count} Invariants/Pitfalls entry(ies) are no longer present, e.g. ${removed.samples.join(" | ")}`);
+				}
 			}
 		}
 		const version = (nextVersion += 1);
 		throttle.set(projectRoot, { session: sessionId, turns, at: Date.now() });
 		// `clipped` describes the prompt the writing reply actually saw: a truncated retry may have
 		// sent less content than the first attempt, and the callers report that as a lossy rewrite.
-		const outcome: ConsolidateOutcome = { result, version, clipped: usedInput.clipped };
+		const outcome: ConsolidateOutcome = {
+			result: { ...resolved.result, memory: memoryTextFor(resolved, render) },
+			version,
+			clipped: usedInput.clipped,
+			kind: resolved.kind,
+			semanticEmpty,
+			sectionDropped: render?.sectionDropped ?? 0,
+			droppedItems: render?.droppedItems ?? 0,
+			itemTruncated: render?.itemTruncated ?? 0,
+			...(removed ? { removed } : {}),
+		};
 		lastOutcome.set(projectRoot, { version, at: Date.now(), outcome });
 		return outcome;
 	})().finally(() => {

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers } from "./harness.mjs";
 
 /**
  * Archive-layer index tests:
@@ -107,7 +107,7 @@ try {
 	const indexDoc = renderIndexDocument(again, "- [cur-sess](cur-sess/session.md) — 2026-09-12 — Index test session");
 	check("INDEX.md keeps one line per session", indexDoc.split("\n").filter((line) => line.includes("[cur-sess]")).length === 1);
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

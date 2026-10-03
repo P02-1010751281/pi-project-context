@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Auxiliary-call failure policy: classification, the per-project cooldown, and the wiring that
@@ -189,7 +189,7 @@ try {
 		check("the disabled automatic pass stops calling the model", calls === 5);
 		// An explicit pass is never parked; make it succeed so the episode is cleared.
 		ok = true;
-		await pi.commands.get("memory-learn").handler("", ctx);
+		await pi.commands.get("memory").handler("update", ctx);
 		check("the explicit pass still calls the model", calls === 6);
 		// Automatic passes must work again, which only happens if the success cleared the disable.
 		ok = false;
@@ -201,7 +201,7 @@ try {
 	}
 } finally {
 	Date.now = realNow;
-	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
+	for (const dir of tmpDirs) await rmTemp(dir);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

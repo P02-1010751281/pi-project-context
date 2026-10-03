@@ -22,7 +22,11 @@ export type ConsolidatedResult = {
 	recovered?: boolean;
 };
 
-function parseContext(value: unknown): ContextUpdate | undefined {
+/**
+ * Validate the `context` member. Undefined means the member is unusable, and the caller keeps the
+ * stored CONTEXT.md rather than writing a half-empty one.
+ */
+export function parseContext(value: unknown): ContextUpdate | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const context = value as Partial<ContextUpdate>;
 	if (typeof context.summary !== "string") return undefined;

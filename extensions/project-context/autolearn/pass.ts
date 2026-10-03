@@ -5,15 +5,17 @@
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getConfig, runIsDisabled, setFeature, updateConfig } from "../shared/config.ts";
-import { modelAutoDisabled, modelBlocked, noteModelFailure, noteModelSuccess } from "../shared/call-policy.ts";
+import { completeVerbs } from "../shared/complete.ts";
+import { modelAutoDisabled, modelBlocked } from "../shared/call-policy.ts";
 import { REPLY_OUTPUT_MARGIN_TOKENS, adaptiveOutputTokens, reasoningReserveTokens } from "../shared/output-budget.ts";
-import { completeText, resolveAuxModel } from "../shared/llm.ts";
+import { type AuxCallState, type CompletionOutcome, callAux, pickToolCall, resolveAuxModel } from "../shared/llm.ts";
 import { MAX_SKILL_BODY_CHARS, contextFile, errorText, fileMtimeMs, getProjectRoot, globalSkillsDir, loadMemory, logError, memoryFile, notify, readOptional, sessionIndexFile, skillsDir, writeAtomic } from "../shared/project-state.ts";
 import { approveCandidate, candidateFile, candidateNames, rejectCandidate, rejectionReason } from "./candidate.ts";
 import { AUTOLEARN_CONTEXT_CHARS, AUTOLEARN_INDEX_LINES, AUTOLEARN_MEMORY_CHARS, archivedSessionIds, collectEvidence, countUserTurns, indexedSessions, parseSessionIndex } from "./evidence.ts";
 import { collectSkills } from "./inventory.ts";
-import { parseDecision } from "./parse.ts";
+import { parseDecision, type Decision } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
+import { RECORD_SKILL_TOOL } from "./schema.ts";
 import { skillDocument } from "./skill.ts";
 
 export function registerAutolearn(pi: ExtensionAPI): void {
@@ -89,20 +91,55 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			// (the classifier maps "permission denied" to auth and a lock timeout to transient).
 			// Captured as a const so the closure keeps the resolved root (a captured `let` is not narrowed).
 			const passRoot = projectRoot;
-			const call = async (prompt: string): Promise<string> => {
-				try {
-					const text = await completeText(ctx, prompt, { model: auxModel, maxTokens });
-					// The route answered: any earlier outage is over and the next failure starts a new episode.
-					noteModelSuccess("autolearn", passRoot);
-					return text;
-				} catch (error) {
-					noteModelFailure("autolearn", passRoot, error);
-					throw error;
+			// `callAux` owns the sticky tools fallback and the success/failure accounting, so one `tools`
+			// rejection spends one failure slot rather than two — autolearn worked on tool-less routes
+			// before this change and has to keep working there.
+			const auxState: AuxCallState = {};
+			const call = (prompt: string, withTools: boolean): Promise<CompletionOutcome> =>
+				callAux(ctx, prompt, {
+					model: auxModel,
+					maxTokens,
+					tools: withTools ? [RECORD_SKILL_TOOL] : undefined,
+					scope: "autolearn",
+					projectRoot: passRoot,
+					state: auxState,
+				});
+
+			/** Read one reply: the tool call first, the text JSON shape second. */
+			const decideFrom = (completion: CompletionOutcome, allowTools: boolean): Decision | undefined => {
+				if (allowTools) {
+					// Throws when the reply called another tool and carried no text: that is an error, not a
+					// decision, and returning undefined would hide it behind "the model returned nothing".
+					const args = pickToolCall(completion.toolCalls, RECORD_SKILL_TOOL.name, completion.text);
+					if (args !== undefined) {
+						const fromTool = parseDecision(args);
+						if (fromTool) return fromTool;
+						// The expected tool was called with arguments this pass cannot read and left no text: an
+						// error, not "the model returned nothing".
+						if (completion.text.trim() === "") {
+							throw new Error(`the ${RECORD_SKILL_TOOL.name} call carried unusable arguments and no text`);
+						}
+					}
 				}
+				return parseDecision(completion.text);
+			};
+
+			/**
+			 * One decision attempt. A reply cut off at the output cap is never accepted, even when it carries a
+			 * tool call: pi-ai repairs a truncated arguments string into a shape-valid object, so a repaired
+			 * call would store a half-written skill body as if it were complete. One text-only retry.
+			 */
+			const ask = async (prompt: string): Promise<Decision | undefined> => {
+				const completion = await call(prompt, true);
+				if (completion.stopReason === "length") {
+					const retryPrompt = `${prompt}\n\nYour previous response was cut off by the output limit. Retry this same decision now; condense the skill body so the complete JSON object fits in this response. Return exactly one complete JSON object; no prose, Markdown fence, ellipsis, or unfinished value.`;
+					return decideFrom(await call(retryPrompt, false), false);
+				}
+				return decideFrom(completion, true);
 			};
 
 			// First look: consolidated artifacts + session index decide whether there is something to learn.
-			let decision = parseDecision(await call(buildPrompt(projectRoot, memory, context, skills, sessions)));
+			let decision = await ask(buildPrompt(projectRoot, memory, context, skills, sessions));
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
 			if (!decision) {
@@ -113,7 +150,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			// Backtrack: fetch the raw evidence the first look asked for, then decide.
 			if (!decision.skill && decision.inspect.length > 0) {
 				const evidence = await collectEvidence(projectRoot, decision.inspect);
-				decision = parseDecision(await call(buildPrompt(projectRoot, memory, context, skills, sessions, { evidence })));
+				decision = await ask(buildPrompt(projectRoot, memory, context, skills, sessions, { evidence }));
 				if (!decision) {
 					if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");
 					return;
@@ -173,6 +210,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 
 	pi.registerCommand("autolearn", {
 		description: "Learn a project skill now; also: list | approve <name> | reject <name> | on | off",
+		getArgumentCompletions: (prefix) => completeVerbs(prefix, AUTOLEARN_VERBS),
 		handler: async (args, ctx) => {
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
 			const verb = (parts[0] ?? "").toLowerCase();
@@ -202,3 +240,12 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 		},
 	});
 }
+
+/** Verbs the `autolearn` command accepts, for argument completion (mirrors the handler's branches). */
+const AUTOLEARN_VERBS = [
+	{ value: "list", description: "show stored skill candidates" },
+	{ value: "approve", description: "promote a candidate to a project skill" },
+	{ value: "reject", description: "delete a stored candidate" },
+	{ value: "on" },
+	{ value: "off" },
+];

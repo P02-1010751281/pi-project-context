@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { EXT, PI } from "./harness.mjs";
+import { EXT, PI, rmTemp } from "./harness.mjs";
 
 /**
  * Load every extension in this repository through pi's real extension loader and
@@ -31,5 +31,5 @@ try {
 		process.exitCode = 1;
 	}
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }

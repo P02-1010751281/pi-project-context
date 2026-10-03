@@ -5,6 +5,7 @@
 import { MAX_SKILL_BODY_CHARS } from "../shared/project-state.ts";
 import { type Evidence, type IndexEntry } from "./evidence.ts";
 import { inventoryText } from "./inventory.ts";
+import { RECORD_SKILL_TOOL } from "./schema.ts";
 import { MAX_SKILL_DESCRIPTION_CHARS, MIN_SKILL_BODY_CHARS, type SkillInfo } from "./skill.ts";
 
 export function buildPrompt(
@@ -30,13 +31,13 @@ export function buildPrompt(
 			? "Follow-up: raw excerpts for the requested sessions are attached. Decide now; do not request more evidence."
 			: 'First look: if the consolidated knowledge already proves a reusable workflow, propose it directly; if you need raw detail or more evidence, request up to 4 session ids from the index in "inspect".',
 		"",
-		"Return exactly one JSON object, without a Markdown code fence:",
-		'{"skill": null}',
-		'{"skill": null, "inspect": ["<session-id>", "<session-id>"], "reason": "why these"}',
-		`{"skill": {"name": "lowercase-kebab-case", "description": "one line, at most ${MAX_SKILL_DESCRIPTION_CHARS} chars", "body": "concise Markdown procedure", "evidence": ["<session-id>"], "candidate": false, "reason": "why reusable"}}`,
+		`Prefer calling the ${RECORD_SKILL_TOOL.name} tool exactly once with the object below; if you cannot call it, return that JSON object instead, without a Markdown code fence. \`skill\` is always an object; \`skill.name: ""\` means "nothing to propose" and the other skill fields are then ignored:`,
+		'{"skill": {"name": "", "description": "", "body": "", "evidence": [], "candidate": false, "reason": ""}, "inspect": []}',
+		`{"skill": {"name": "lowercase-kebab-case", "description": "one line, at most ${MAX_SKILL_DESCRIPTION_CHARS} chars", "body": "concise Markdown procedure", "evidence": ["<session-id>"], "candidate": false, "reason": "why reusable"}, "inspect": []}`,
+		'{"skill": {"name": "", "description": "", "body": "", "evidence": [], "candidate": false, "reason": ""}, "inspect": ["<session-id>", "<session-id>"]}',
 		"",
 		"Rules:",
-		'- At most one skill per run. When in doubt return {"skill": null}.',
+		"- At most one skill per run. When in doubt, use an empty name.",
 		"- name must be new; never reuse a name from the existing-skill inventory.",
 		`- body: concise Markdown of ${MIN_SKILL_BODY_CHARS}–${MAX_SKILL_BODY_CHARS} characters, with when-to-use and exact commands or paths.`,
 		"- candidate=false needs at least two distinct verified session ids; candidate=true is stored for the user to confirm and needs at least one.",

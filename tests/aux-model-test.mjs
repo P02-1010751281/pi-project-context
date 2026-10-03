@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp } from "./harness.mjs";
 
 /**
  * Auxiliary-call routing: `provider`/`model` replaces the session model for the JSON passes,
@@ -106,13 +106,13 @@ try {
 			};
 		},
 	};
-	await pi.commands.get("memory-learn").handler("", commandCtx);
+	await pi.commands.get("memory").handler("update", commandCtx);
 	const memory = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8").catch(() => "");
 	check("the pass used the routed model", call?.model === auxModel);
 	check("the pass used the configured cap", call?.maxTokens === 2048);
 	check("the pass wrote the memory", memory.includes("- routed auxiliary model memory."));
 } finally {
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);

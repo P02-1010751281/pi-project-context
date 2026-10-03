@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
@@ -290,13 +290,13 @@ try {
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 
-	console.log("\n=== /auto-handoff lang ===");
+	console.log("\n=== /handoff lang ===");
 	await writeFile(configPath, JSON.stringify({}));
 	const pi = makePi({ cwd: tmp });
 	await (await loadDefault(`${PC}/index.ts`))(pi);
 	const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([], "handoff-lang") });
 	await runHandlers(pi, "session_start", ctx);
-	const command = pi.commands.get("auto-handoff");
+	const command = pi.commands.get("handoff");
 	check("command registered", command !== undefined);
 	await command.handler("lang zh", ctx);
 	check("lang zh persists", (await readConfig())?.handoffLanguage === "zh");
@@ -314,14 +314,14 @@ try {
 	await command.handler("status", ctx);
 	check("status reports the language", String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto"));
 
-	console.log("\n=== /auto-handoff now (nothing to hand off) ===");
+	console.log("\n=== /handoff now (nothing to hand off) ===");
 	// A no-op handoff must explain itself: both bail-outs used to return without any notify.
 	await writeFile(configPath, JSON.stringify({ handoffKeepTokens: 50 }));
 	const quiet = makePi({ cwd: tmp });
 	await (await loadDefault(`${PC}/index.ts`))(quiet);
 	const emptyCtx = makeCtx(tmp, { sessionManager: makeSessionManager([], "handoff-empty") });
 	await runHandlers(quiet, "session_start", emptyCtx);
-	await quiet.commands.get("auto-handoff").handler("now", emptyCtx);
+	await quiet.commands.get("handoff").handler("now", emptyCtx);
 	check(
 		"an empty session reports the skip",
 		String(emptyCtx.notifications.at(-1)?.[0] ?? "").includes("no messages yet") &&
@@ -337,7 +337,7 @@ try {
 	);
 	const shortCtx = makeCtx(tmp, { sessionManager: short });
 	await runHandlers(quiet, "session_start", shortCtx);
-	await quiet.commands.get("auto-handoff").handler("now", shortCtx);
+	await quiet.commands.get("handoff").handler("now", shortCtx);
 	check(
 		"a session inside the keep window reports the skip",
 		String(shortCtx.notifications.at(-1)?.[0] ?? "").includes("nothing older than the recent window") &&
@@ -366,11 +366,11 @@ try {
 	});
 	await runHandlers(auto, "session_start", autoCtx);
 	await runHandlers(auto, "agent_settled", autoCtx);
-	await waitUntil(() => auto.sentMessages.includes("/auto-handoff force-auto"));
-	check("the threshold triggers the scheduled handoff", auto.sentMessages.includes("/auto-handoff force-auto"));
+	await waitUntil(() => auto.sentMessages.includes("/handoff force-auto"));
+	check("the threshold triggers the scheduled handoff", auto.sentMessages.includes("/handoff force-auto"));
 	// The mock has no newSession, so the manual command fails; it must still release the trigger and
 	// not stack another one on the next settle.
-	await auto.commands.get("auto-handoff").handler("force-auto", autoCtx);
+	await auto.commands.get("handoff").handler("force-auto", autoCtx);
 	await runHandlers(auto, "agent_settled", autoCtx);
 	// Negative assertion: a pending setTimeout(0) trigger runs before this timer, so one flush is enough.
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -450,7 +450,7 @@ try {
 			getContextUsage: () => ({ tokens: 24_000, percent: 2.4, contextWindow: 1_000_000 }),
 		});
 		await runHandlers(targetPi, "session_start", targetCtx);
-		await targetPi.commands.get("auto-handoff").handler("status", targetCtx);
+		await targetPi.commands.get("handoff").handler("status", targetCtx);
 		const targetReceipt = String(targetCtx.notifications.at(-1)?.[0] ?? "");
 		check("a raised target cannot lift the trigger above the knee", targetReceipt.includes("auto 157k (16%)"));
 		check(
@@ -459,7 +459,7 @@ try {
 		);
 		check("the warning names the guardrail that bound it", /quality knee allows 157k/.test(targetReceipt));
 	} finally {
-		await rm(targetTmp, { recursive: true, force: true });
+		await rmTemp(targetTmp);
 	}
 	// The dropped prefix is the summary call's input and pi does not clip it to a model window.
 	const smallAux = handoff.resolveThreshold(
@@ -533,7 +533,7 @@ try {
 		"the two refusals do not render as the same sentence",
 		smallReceipt !== tierReceipt && /window too small/.test(smallReceipt),
 	);
-	// `handoffThresholdRatio` belongs to fixed mode, and `/auto-handoff auto` takes no parameters.
+	// `handoffThresholdRatio` belongs to fixed mode, and `/handoff auto` takes no parameters.
 	const fixedTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-fixed-"));
 	try {
 		await mkdir(path.join(fixedTmp, ".agents/memory"), { recursive: true });
@@ -549,9 +549,9 @@ try {
 			getContextUsage: () => ({ tokens: 24_000, percent: 2.4, contextWindow: 1_000_000 }),
 		});
 		await runHandlers(fixedPi, "session_start", fixedCtx);
-		await fixedPi.commands.get("auto-handoff").handler("status", fixedCtx);
+		await fixedPi.commands.get("handoff").handler("status", fixedCtx);
 		check("fixed mode uses the configured window share", String(fixedCtx.notifications.at(-1)?.[0] ?? "").includes("60% of window"));
-		await fixedPi.commands.get("auto-handoff").handler("auto 0.7", fixedCtx);
+		await fixedPi.commands.get("handoff").handler("auto 0.7", fixedCtx);
 		check(
 			"adaptive mode rejects a ratio argument",
 			fixedCtx.notifications.some((entry) => String(entry?.[0] ?? "").includes("takes no ratio")),
@@ -562,7 +562,7 @@ try {
 			persisted.handoffAdaptive === true && persisted.handoffThresholdRatio === 0.6,
 		);
 	} finally {
-		await rm(fixedTmp, { recursive: true, force: true });
+		await rmTemp(fixedTmp);
 	}
 	const usableTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-usable-"));
 	try {
@@ -575,7 +575,7 @@ try {
 			getContextUsage: () => ({ tokens: 1, percent: 0, contextWindow: 64_000 }),
 		});
 		await runHandlers(usablePi, "session_start", usableCtx);
-		await usablePi.commands.get("auto-handoff").handler("status", usableCtx);
+		await usablePi.commands.get("handoff").handler("status", usableCtx);
 		// The usable window is one of the two adaptive terms, not a cap bolted on afterwards, so the
 		// receipt reports the value without a "capped by" suffix. The number is unchanged: the old target
 		// lift pushed it to 84k and the usable window then capped it back to the same 43.6k.
@@ -584,7 +584,7 @@ try {
 		check("the usable window is not reported as a bolt-on cap", !usableReceipt.includes("capped by"));
 		check("status reports the effective summarize amount under the guardrail", usableReceipt.includes("summarize 23.6k"));
 	} finally {
-		await rm(usableTmp, { recursive: true, force: true });
+		await rmTemp(usableTmp);
 	}
 
 	console.log("\n=== auto trigger: the knee and the floor stop an early handoff ===");
@@ -620,8 +620,8 @@ try {
 	});
 	await runHandlers(floorQuietPi, "session_start", loudCtx);
 	await runHandlers(floorQuietPi, "agent_settled", loudCtx);
-	await waitUntil(() => floorQuietPi.sentMessages.includes("/auto-handoff force-auto"));
-	check("a session above the floor does hand off", floorQuietPi.sentMessages.includes("/auto-handoff force-auto"));
+	await waitUntil(() => floorQuietPi.sentMessages.includes("/handoff force-auto"));
+	check("a session above the floor does hand off", floorQuietPi.sentMessages.includes("/handoff force-auto"));
 
 	console.log("\n=== replay block shape (mid-turn cut) ===");
 	// The keep-budget cut can land inside a turn, so the slice opens on an assistant message, which
@@ -749,7 +749,7 @@ try {
 	});
 	pinCtx.newSession = captureNewSession(captured);
 	await runHandlers(pinPi, "session_start", pinCtx);
-	await pinPi.commands.get("auto-handoff").handler("now", pinCtx);
+	await pinPi.commands.get("handoff").handler("now", pinCtx);
 
 	check("the forced handoff switches sessions", captured.replay.length > 0 && captured.prompt !== undefined);
 	check(
@@ -803,7 +803,7 @@ try {
 	orphanCtx.newSession = captureNewSession(orphanCaptured);
 	const stubsBefore = stubCalls.length;
 	await runHandlers(pinPi, "session_start", orphanCtx);
-	await pinPi.commands.get("auto-handoff").handler("now", orphanCtx);
+	await pinPi.commands.get("handoff").handler("now", orphanCtx);
 	check("the orphan scenario still hands off", orphanCaptured.prompt !== undefined);
 	check("the orphan result reaches the summary", stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("ORPHAN_SECRET")));
 	check("the orphan cut keeps only the tail of the turn", !stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("继续改")));
@@ -887,7 +887,7 @@ try {
 		return { cancelled: false };
 	};
 	await runHandlers(pinPi, "session_start", settingsCtx);
-	await pinPi.commands.get("auto-handoff").handler("now", settingsCtx);
+	await pinPi.commands.get("handoff").handler("now", settingsCtx);
 
 	const markerFile = settings.handoffSettingsFile(tmp);
 	const markerExists = () => readFile(markerFile, "utf8").then(() => true).catch(() => false);
@@ -1019,7 +1019,7 @@ try {
 		modelRegistry: pinCtx.modelRegistry,
 	});
 	cancelCtx.newSession = async () => ({ cancelled: true });
-	await pinPi.commands.get("auto-handoff").handler("now", cancelCtx);
+	await pinPi.commands.get("handoff").handler("now", cancelCtx);
 	check("a cancelled handoff clears its stage", !(await markerExists()));
 	check("a cancelled handoff keeps the session", cancelCtx.notifications.some(([message]) => message.includes("cancelled by another extension")));
 
@@ -1032,7 +1032,7 @@ try {
 	throwCtx.newSession = async () => {
 		throw new Error("switch exploded");
 	};
-	await pinPi.commands.get("auto-handoff").handler("now", throwCtx);
+	await pinPi.commands.get("handoff").handler("now", throwCtx);
 	check("a failed switch clears its stage", !(await markerExists()));
 	check(
 		"a failed switch is reported to the user",
@@ -1040,7 +1040,7 @@ try {
 	);
 } finally {
 	delete globalThis.__handoffStub;
-	await rm(tmp, { recursive: true, force: true });
+	await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nhandoff: all checks passed." : `\nhandoff: ${failures} check(s) failed.`);

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * Memory operations: error-log noise folding (B4), head+tail fallback clipping (M3), cap
@@ -209,7 +209,7 @@ try {
 		}
 	}
 } finally {
-	for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
+	for (const dir of tmpDirs) await rmTemp(dir);
 	Date.now = realNow;
 }
 
