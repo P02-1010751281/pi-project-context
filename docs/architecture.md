@@ -59,6 +59,17 @@ session.jsonl ──► session.md ──► INDEX.md
   超限时 cap 还会再裁一次（现场证据见审计补审三 §7，不在本文展开）。
 - journal 损坏行会记录并跳过；整份 journal 没有可用记录时 fail closed，不静默回退旧 render。
 
+## 技能沉淀与来源
+
+- 沉淀每项目一次，从记忆/上下文/会话索引（必要时再取原始片段）产出一个技能：`candidate=false` 直接写
+  `.agents/skills/<name>/SKILL.md`，`candidate=true` 先落 `.agents/memory/skill-candidates/<name>.md`，由 `/autolearn approve` 确认。
+- `.agents/skills/` 里住着三类技能：手写的、旧布局导入的（`shared/migrate.ts`）、本管线写出的。只有第三类可被后续 pass
+  **同名覆盖**，判定依据是文档正文里的来源标记 `<!-- autolearn-generated: … -->`（写在 body 而不是 frontmatter：
+  pi 启动只注入 name/description/path，未知 frontmatter 键行为未定义）。
+- 标记跟着文件生灭，所以范围是**结构保证**：技能删掉后名字若被手写技能占用，对方不带标记，就不会被当成可覆盖的目标。
+- 覆盖前，被标记技能的正文整篇进入 `<learned-skill-bodies>`（放不下就整篇不放），所以覆盖是**合并**而不是盲写：
+  规则要求保留仍然成立的步骤，合并不了就什么都不提。新技能通知 `Learned project skill:`，覆盖通知 `Updated project skill:`。
+
 ## 记忆写入与恢复
 
 - 写入顺序在 `MEMORY.md.lock` 内完成：追加 journal、必要时轮换、备份、原子替换 render。
@@ -117,12 +128,12 @@ extensions/project-context/
 ├── autolearn/              # ③ 沉淀（1 次 LLM，≥6h）
 │   ├── pass.ts             #    pass 与注册：节流蒸馏
 │   ├── prompt.ts           #    清单 + 索引 + 取证，固定规则
-│   ├── inventory.ts        #    技能清单
+│   ├── inventory.ts        #    技能清单、已学技能正文（仅带标记的项目技能）
 │   ├── evidence.ts         #    会话索引、历史会话与取证文本预算
 │   ├── candidate.ts        #    候选文件、准入规则、approve/reject
 │   ├── parse.ts            #    回复 → 提案
 │   ├── schema.ts           #    `record_skill` 工具 schema（always-object 决策形状）
-│   └── skill.ts            #    技能形状、SKILL.md 渲染、安全校验
+│   └── skill.ts            #    技能形状、SKILL.md 渲染（含来源标记）、安全校验
 ├── handoff/                # ④ 交接（1 次 LLM）
 │   ├── run.ts              #    交接事务、自动触发、命令注册
 │   ├── threshold.ts        #    阈值：膝曲线与窗口末点两项、两个 cap、拒绝原因与护栏覆盖回执

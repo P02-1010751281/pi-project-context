@@ -3,6 +3,18 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.3.1 — 2026-10-05
+
+### 变更
+
+- autolearn 可以**取代自己生成的技能**（此前只能新增）。它写出的 `SKILL.md` 带一行来源标记
+  （`<!-- autolearn-generated: … -->`）在**正文**而不是 frontmatter：pi 启动只注入 name/description/path，未知 frontmatter 键行为未定义。
+- 标记就是范围判据：只有带标记的 **project** 技能允许同名覆盖；手写、旧布局导入（`shared/migrate.ts`）、global 技能一律照旧拒绝。
+  标记跟着文件生灭，所以「只动 autolearn 生成的」是结构保证 —— 技能删掉后名字被手写占用，对方不带标记就不会被覆盖。
+- 提示词新增 `<learned-skill-bodies>`：被标记技能的正文**整篇**注入（放不下就整篇不放），于是同名覆盖是**合并**而不是盲写；
+  规则要求保留仍然成立的步骤，合并不了就不提案。候选路径同样受此约束：不得为手写名字落候选文件。
+- 通知区分新增与覆盖：`Learned project skill:` / `Updated project skill:`（`/autolearn approve` 同理）。
+
 ## v0.3.0 — 2026-10-04
 
 ### 变更（破坏性命令面）
