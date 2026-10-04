@@ -9,7 +9,7 @@ decides: 命令面按层归位的完整契约；五问已答；兼容链一次�
 supersedes: revision 6 的待决项与「兼容链只立规则、v0.4.0 再退」的暂缓结论（owner 要求一步到位）
 ---
 
-# 命令面收束设计（revision 6：定稿候选）
+# 命令面收束设计（revision 7，design-frozen）
 
 ## 0. owner 已答
 
@@ -65,7 +65,7 @@ owner 判定精细化调用的理由不充分 ⇒ 维持单条 dedicated 辅助�
 - **测试改动为零**：全仓无任何测试调用 `target`/`keep` 动词。
 - 备选：只改一个（`budget summary` + `budget keep`）；或 `verbatim` 代 `recent`（更准但更术语）。
 
-## 2. 完整命令面（终态，⚠ 标记二级词待定）
+## 2. 完整命令面（终态）
 
 | # | 命令 | 层 | 动词 / 参数 | 取值 | 效果 | 相对今天 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -80,8 +80,8 @@ owner 判定精细化调用的理由不充分 ⇒ 维持单条 dedicated 辅助�
 | 9 | `/handoff` | L3 | 裸 / `status` | — | 只读一行 | 不变 |
 | 10 | | | `on\|off` | — | `handoffEnabled` | 不变 |
 | 11 | | | `threshold auto\|num` | `0.4` / `40%` / `40` | `handoffAdaptive` + `handoffThresholdRatio` | **合并** `auto` + **硬切**裸比例 |
-| 12 | | | `budget summary <n>` ⚠ | token 数 | `handoffTargetTokens` | 原 `target <n>` |
-| 13 | | | `budget recent <n\|off>` ⚠ | token 数 / `off` | `handoffKeepTokens` | 原 `keep <n\|off>` |
+| 12 | | | `budget summary <n>` | token 数 | `handoffTargetTokens` | 原 `target <n>` |
+| 13 | | | `budget recent <n\|off>` | token 数 / `off` | `handoffKeepTokens` | 原 `keep <n\|off>` |
 | 14 | | | `thinking <off\|session\|level>` | 补全列 `off` `session` | `handoffSummaryThinking` | 不变 |
 | 15 | | | `mode <send\|draft>` | 二选一 | `handoffMode` | 原两个裸词 `send`/`draft` |
 | 16 | | | `guard <wait\|draft\|send\|skip>` | 四选一 | `handoffGuard` | 不变 |
