@@ -8,3 +8,4 @@ memory.jsonl
 memory-log-*.jsonl
 memory.jsonl.*.tmp
 handoff-session-settings.json
+memory-overflow-*.md
