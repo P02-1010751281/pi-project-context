@@ -54,6 +54,7 @@ session.jsonl ──► session.md ──► INDEX.md
 - **memory** 是跨会话仍成立的事实、决策和偏好，写入门槛较高；`memory.jsonl` 是唯一权威，`MEMORY.md` 可重建。
 - **context** 是当前项目的摘要、关键点和 open tasks，整体重写；不确定的内容先放 context，后续仍成立再晋升 memory。
 - `MEMORY.md` 的外部编辑只有在内容不同且 render 比 journal 更新时才被采信，下一次写入会先进入 journal。
+- 但**手工并回不是持久的**：render 由扩展自身记忆状态 + 模型回复生成（输入是 prompt 时点的有效内容），并回若发生在 prompt 之后、或被模型省略，下一次 render 就不带它；超限时还会被 cap 再裁一次（现场：UniField 并回后不到一天再次丢失整块，见审计补审三 §7）。
 - journal 损坏行会记录并跳过；整份 journal 没有可用记录时 fail closed，不静默回退旧 render。
 
 ## 记忆写入与恢复

@@ -67,6 +67,8 @@ _[memory truncated at N characters: M dropped]_
 
 marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/project-context max-memory` 建议 —— 这条路径下数字是准的）。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
+cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁一次。已进 journal 的内容才有机会留下 ⇒ **手工并回 `MEMORY.md` 不算持久化**（要持久就抬高 `maxMemoryChars` 或让内容进 consolidation 输出）。
+
 `MEMORY.md` 的顶层结构收敛到固定的 4 节：`Project` 20% / `Invariants` 40% / `Pitfalls` 25% / `Index` 15%（份额与每节说明定义在 `memory/schema.ts`）。consolidation prompt 先扣掉固定开销（`# Project Memory` 标题 + 4 个 `##` 节标题及其空行）再按 `maxMemoryChars` 算出每节字符预算，保证“逐节刚好填满”也不会超 cap；并要求长解释指针化到版本化 `docs/`（只指向**已存在且确实承载该细节**的路径，不虚构）。**四节归一后全空 = 不写 memory**（模型只回一堆标题时绝不拿骨架覆盖真记忆；此时仍会更新 context，并在回复里说明 memory 未变）。**记忆回归守卫**在裁剪前比较新旧 sections，报告 Invariants/Pitfalls 里消失的条目（只报、不拦，`Project`/`Index` 太易变不报）；任一侧无法解析成 sections 则跳过并只记一条诊断。按节优先序丢（S4）与符合度可见性仍待后续。
 
 `CONTEXT.md` 同样收敛到固定的 3 节：`Summary` 40%（另受 `MAX_SUMMARY_CHARS=6000` 约束，散文摘要保持短小）/ `Key points` 35% / `Open tasks` 25%，定义在 `memory/context-schema.ts`。consolidation prompt 与渲染器共用同一张表：先扣掉固定开销（`# Project Context`、`Last updated` 行、3 个节标题及空行、最坏情况的尾部 `<!-- latest-session-title -->`，以及截断标记的预留）再按份额给出每节字符预算；渲染器按同一预算裁剪（列表按 `MAX_LIST_ITEM_CHARS=800` 截单项、按 `MAX_LIST_ENTRIES=50` 截条目，再丢尾项；`dropped` 以归一化但未 trim 的完整渲染为基准，因此单项截断与条目上限的损失也计入标记），任一小节被裁就在文末追加严格标记 `_[context truncated: N characters dropped]_`，并在每项目每进程写一次 `errors.log`。这是与 `MEMORY.md` 同级的收敛目标：已有自由结构的 CONTEXT.md 照常读、注入。

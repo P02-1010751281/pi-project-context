@@ -145,7 +145,7 @@ handoff its model and thinking level」），不是现场事故。按判据 1 �
 | memory | `store.ts` (204) | 已过两轮独立代码评审（含四向变异矩阵） | 有据（评审） |
 | memory | `migrate.ts`→`shared/` | 见 D4 | **可退役窗口** |
 | shared | `llm.ts` (275) | 失败契约（provider 失败抛错）+ tools 粘性降级，`callAux` 有专项测试 | 有据 |
-| shared | `lock.ts` (209) | **现场**：22 个陈旧 `.lock`（D7）+ write-lock-hardening skill | 有据（现场） |
+| shared | `lock.ts` (209) | ~~**现场**：22 个陈旧 `.lock`（D7）~~ **已更正**：那些锁属 Codex 移植（补审三 §2）⇒ 依据是**代码级**（陈旧窃取 + inode 绑定 + 持有者自删）+ write-lock-hardening skill | 有据（代码级；现场依据已撤回） |
 | shared | `config.ts` (302) | 补审一 §2.1/§2.2：旋钮面与 legacy 链 | 有据 + **可退役** |
 | shared | `files.ts` (147) | 原子写 / 合并回滚 / 临时物清理（`errors.log` 里无残留 tmp） | 有据 |
 | shared | `error-log.ts` (116) | 现场 1,563 行日志 + 2 次轮转；去重窗口 10 分钟 | 有据（现场） |
@@ -187,5 +187,5 @@ handoff its model and thinking level」），不是现场事故。按判据 1 �
   `handoff.ts`、`handoff/text.ts`、`shared/llm.ts`、`shared/lock.ts`、`shared/files.ts`、`shared/error-log.ts`、
   `shared/call-policy.ts`、`shared/output-budget.ts`）**逐行读过**。
 - 净发现：**2 条可删/可退役**（D2 死导出 8 行；D4 legacy 迁移每会话成本）、**2 条残留**（D3 竞态分支；journal 轮转无现场）、
-  **1 条卫生问题**（22 个陈旧 `.lock` 无人回收）、**1 条误判更正**（D1）。
+  **1 条卫生问题**（陈旧 `.lock` 无人回收 —— 实测 19 个、归属 Codex 移植、已于 2026-10-04 清扫）、**1 条误判更正**（D1）。
 - 没有发现新的「机制已死」模块：56/58 有内部引用，唯一两个无引用的是入口 `index.ts` 与测试 barrel `handoff.ts`。

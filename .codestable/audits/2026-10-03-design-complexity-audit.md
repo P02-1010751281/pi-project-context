@@ -93,7 +93,7 @@ v1→v5 的膨胀路径可精确归因：**"判陈旧后重跑一轮"这一个�
 > **2026-10-04 补审二完成**：主审计未名的其余模块（58/58 全量）已在
 > `2026-10-04-design-complexity-audit-addendum-2-module-inventory.md` 里过完。新增结论：
 > `memory/journal.ts::newestMemoryArchiveSync` 是 8 行死导出；legacy 迁移每次 `session_start` 都跑但 0/9 现场；
-> CipherCat 留下 22 个陈旧 `.lock`（证明锁的陈旧窃取路径有现场依据）；现场日志里 `[memory]` 369 条，
+> ~~CipherCat 留下 22 个陈旧 `.lock`（证明锁的陈旧窃取路径有现场依据）~~ **← 已更正（2026-10-04，补审三 §2）**：实测共 **19 个**（CipherCat 15 / codex-project-context 3 / 本仓 1），全部是 Codex 移植 `contextctl.py:317` 的 `fcntl.flock` 文件（`O_CREAT` 后从不 unlink）⇒ **不能**作为 `lock.ts` 的现场依据，`lock.ts` 依据回到代码级；19 个已于 2026-10-04 清扫。现场日志里 `[memory]` 369 条，
 > 其中 216 条正是「外部编辑采纳」，36 条「无 context 节」、8 条 cap 丢尾、7 条不可解析回复。
 
 - ~~`handoff/run.ts`（**538 行，全仓最大模块**）的机制——`language auto/zh/en`、replay 过滤、staged settings、
