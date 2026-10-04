@@ -70,6 +70,7 @@
 - UniField's memory layer has also been eroded by pi's own re-projection of that file (130 lines to 87 lines, 106 lines dropped), so on that repo pi is the main eroder, not an external writer.
 - Sessions archived from pi diverge from their source: of 306 comparable sessions 239 archives are prefixes and 67 are not, most of the 67 being larger, so a sampled archive held a context_edit entry the source no longer had while the source's next entry still cited it as parentId.
 - All 55 [autolearn] errors.log entries are auxiliary-call failures (connection, balance, usage limits, timeouts, one stale extension ctx) and none is a mechanism error, so the two degradation branches it describes have zero hits and the second-level "disabled for this session" notice is a never-reached residual.
+- A pi re-render is produced from the extension's own memory state plus the model reply, not from the current bytes of MEMORY.md, so a host-side merge-back is not durable: UniField lost the S1/S2/S3 block and its section 37.123 readings again within a day of 84fe9a9 being committed, and that render came out over the repo's own maxMemoryChars (42,006 > 36000) where the cap path clips the tail.
 
 ## Index
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
