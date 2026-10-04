@@ -15,17 +15,15 @@ The owner asks which slash commands overlap, should be merged or retired, or you
 
 ## 2. Keep the status rendering shared
 
-Memory status was formatted twice and had drifted; that was fixed in v0.2.2. `memoryStatusMessage()` in
-`extensions/project-context/memory/status.ts` is now the single wording, called by `/project-context status`
-(prefix `Memory: `) and `/memory` (prefix `Project memory: `), with `memoryStatusLevel()` choosing the
-`warning`/`info` level. The guard is the branch-equality block in `tests/memory-ops-test.mjs`: it drives
-both commands over six fixtures (normal, empty, at the cap, poisoned, journal unreadable, file unreadable)
-and asserts the bodies are byte-identical. Re-inlining a branch into either command turns that red, so
-change the shared formatter and re-run the test rather than adding a second copy.
-
-This is an `extensions/` change: it needs a new tag, pin bump and pi restart (see the release/pin skill),
-and the full suite must stay green. The end-to-end pin is a mutation check — make one entry point print a
-different body and confirm exactly those equality assertions fail.
+Memory status was formatted twice and had drifted (the umbrella line lacked the journal-unreadable branch);
+v0.2.2 moved the wording into `memory/status.ts::memoryStatusMessage()` — plus `memoryStatusLevel()` for
+`warning`/`info` — called by `/project-context status` (prefix `Memory: `) and `/memory` (prefix
+`Project memory: `). The guard is the branch-equality block in `tests/memory-ops-test.mjs`: six fixtures
+(normal, empty, at the cap, poisoned, journal unreadable, file unreadable) with both bodies byte-identical.
+Re-inlining a branch into either command turns that red, so change the shared formatter and re-run the test
+rather than adding a second copy; the end-to-end pin is a single-sided mutation (make only one entry point
+print a different body and confirm exactly the equality assertions fail). Full procedure: the
+`status-renderer-dedup` skill.
 
 ## 3. Classify the rest as design, not defects
 
@@ -41,6 +39,6 @@ Search cost gotcha: a Projects-wide `find | grep` across all session-logs timed 
 
 ## 5. Close out
 
-- Code dedup under `extensions/` -> new tag, `~/.pi` pin bump, pi restart (see the release/pin skill); run `node tests/run-all.mjs`, keep it 15/15.
+- Code dedup under `extensions/` -> new tag, `~/.pi` pin bump, pi restart (see the release/pin skill); run `node tests/run-all.mjs` and keep the suite green.
 - Docs-only "entry point relationship" paragraph (umbrella is the canonical toggle place, `/context` is a cheap path lookup) needs no tag.
 - Surface convergence (folding `on|off` verbs or `/context` into the umbrella) is destructive with no usage evidence: open an issue and leave the decision with the owner, do not implement.
