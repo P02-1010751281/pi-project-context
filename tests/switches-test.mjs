@@ -105,7 +105,7 @@ try {
 	// (CONTEXT.md only moves when a pass returns one).
 	const afterPass = await status();
 	check("status names the memory source", /Memory: .*memory\.jsonl \(\d+ chars, \d+% of the \d+-char cap\)/.test(afterPass));
-	check("status dates the context render", /Context: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(afterPass));
+	check("status dates the context render", /Context file: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(afterPass));
 
 	console.log("\n=== autolearn switch ===");
 	// The switch has been off since before the first settle, and its other gates (new material, an

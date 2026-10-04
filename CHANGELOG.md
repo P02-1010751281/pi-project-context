@@ -3,6 +3,16 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.2.3 — 2026-10-04
+
+### 修复
+
+- 渲染边界：consolidation 提示词加一条规则——只写本项目自身的持久事实，绝不把其他仓的状态或测量值（提交距离、文件大小、研究数值、键数）搬进
+  memory 或 context；点名他仓仅限于记录「谁拥有哪个未决项」。同时在 `<recent-conversation>` 块内首行加一句同义说明，
+  因为异仓文本正是从那个块进入提示词的（三轮渲染把兄弟仓数值写回来的现场事实）。
+- 命令措辞「一个事实一个名字」：伞形首行 `Project context:` → `Features:`；context 文件那一行在 `/project-context status` 与 `/context`
+  里统一叫 `Context file:`。旧版同一个 `CONTEXT.md` 在两处分别叫 `Context:` 和 `Project context:`，而 `Project context:` 在伞形里指的是另一回事。
+
 ## v0.2.2 — 2026-10-04
 
 ### 修复

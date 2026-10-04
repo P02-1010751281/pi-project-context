@@ -174,7 +174,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 		getArgumentCompletions: () => null,
 		handler: async (_args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			notify(ctx, `Project context: ${contextFile(projectRoot)}\nSession index: ${sessionIndexFile(projectRoot)}\nSession logs: ${logsDir(projectRoot)}`);
+			notify(ctx, `Context file: ${contextFile(projectRoot)}\nSession index: ${sessionIndexFile(projectRoot)}\nSession logs: ${logsDir(projectRoot)}`);
 		},
 	});
 }

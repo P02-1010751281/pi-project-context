@@ -796,7 +796,7 @@ try {
 			await pi.commands.get("project-context").handler("status", ctx);
 			const statusText = String(ctx.notifications.at(-1)?.[0] ?? "");
 			check("status names the memory source", /Memory: .*memory\.jsonl \(\d+ chars, \d+% of the \d+-char cap\)/.test(statusText));
-			check("status dates the context render", /Context: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(statusText));
+			check("status dates the context render", /Context file: .*CONTEXT\.md — updated \d{4}-\d{2}-\d{2}T[\d:]+Z \(.+ ago\)/.test(statusText));
 			// The schema drift started in the prompt: it described the context in prose only.
 			check("the prompt names the context keys", shapePrompt.includes("key_points") && shapePrompt.includes("open_tasks") && shapePrompt.includes("memory_markdown"));
 

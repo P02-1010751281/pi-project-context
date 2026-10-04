@@ -112,11 +112,11 @@ export default function projectContext(pi: ExtensionAPI): void {
 			if (!verb || verb === "status") {
 				const config = await getConfig(projectRoot);
 				const lines = [
-					`Project context: ${featuresText(config)}`,
+					`Features: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
 					`Memory: ${memoryStatusMessage(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
-					`Context: ${await contextStatusLine(projectRoot)}`,
+					`Context file: ${await contextStatusLine(projectRoot)}`,
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
 				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
@@ -201,7 +201,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 			}
 			for (const name of names) await setFeature(projectRoot, name, verb === "on");
 			const config = await getConfig(projectRoot);
-			notify(ctx, `Project context: ${featuresText(config)}`);
+			notify(ctx, `Features: ${featuresText(config)}`);
 		},
 	});
 }
