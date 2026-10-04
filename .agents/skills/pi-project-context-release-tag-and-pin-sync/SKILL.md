@@ -3,6 +3,8 @@ name: pi-project-context-release-tag-and-pin-sync
 description: "Cut or re-point a pi-project-context release: annotated tag, dual-remote push, pi-config pin bump, installed-clone verification."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # When to use
 After a change set is complete (full `node tests/run-all.mjs` green, `git diff --check` clean, review closed) and you are releasing vX.Y.Z; when re-pointing an existing tag on explicit owner instruction; or when confirming that an installed version matches its tag.
 

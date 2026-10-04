@@ -3,6 +3,8 @@ name: pi-project-context-headless-runs
 description: "Run headless pi against this extension: probe model routes for review or helper runs, and validate handoff end-to-end over RPC."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Headless pi runs (pi-project-context)
 
 ## When to use

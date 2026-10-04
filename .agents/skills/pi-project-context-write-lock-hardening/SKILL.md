@@ -3,6 +3,8 @@ name: pi-project-context-write-lock-hardening
 description: "Harden or triage the cross-process write lock and claim path (lock.ts, project-state.ts). Use when a lock or steal path is suspect."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 Use when a pi-project-context memory write or consolidation hangs (the 5s lock timeout), when `.agents/memory/MEMORY.md.lock` or a claim path may be a non-regular file (directory, FIFO, symlink, dangling symlink), or when changing lock/claim/backup logic in `extensions/project-context/shared/project-state.ts`.
 

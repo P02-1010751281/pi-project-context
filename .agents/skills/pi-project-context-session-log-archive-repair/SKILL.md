@@ -3,6 +3,8 @@ name: pi-project-context-session-log-archive-repair
 description: "Audit and repair duplicated/truncated pi-project-context session-log archives, and harden archive/session-log.ts append/rebuild logic."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 
 Use when a consumer project's `.agents/memory/session-logs/<session-id>/session.jsonl` shows adjacent duplicate JSON records that are absent from the harness session source, or when `/session-log` output looks duplicated/truncated.

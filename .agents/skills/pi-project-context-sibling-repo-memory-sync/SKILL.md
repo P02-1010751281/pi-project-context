@@ -3,6 +3,8 @@ name: pi-project-context-sibling-repo-memory-sync
 description: "Reconcile a consuming repo's .agents/memory with HEAD: back up first, char-not-byte checks, restore-vs-merge, stale locks, errors.log. Use for sibling repos."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 
 After pi-project-context is upgraded, or after a poison/truncation episode, when a consuming repo next to this one still holds `.agents/memory/` written by an older version and its `MEMORY.md`/`CONTEXT.md` need reconciling or cleanup. Also use when asked "记忆/项目上下文需要同步吗？" for repos other than the extension repo itself, and when such a repo's render has **diverged** — worktree vs `HEAD` vs a protected `/tmp` backup, worktree dirty (` M`), the repo's own guard test failing — which this skill covers as the restore-vs-merge call in section 3.

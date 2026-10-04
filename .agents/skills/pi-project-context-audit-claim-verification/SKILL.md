@@ -3,6 +3,8 @@ name: pi-project-context-audit-claim-verification
 description: "Audit pi-project-context and record findings: apply the field-evidence rule, probe knob/config usage, verify claims against tests and call sites, deliver an addendum."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # When to use
 
 When asked to audit pi-project-context for complexity (unused knobs, duplicated paths, legacy compatibility layers, dead code), to close the "unaudited" list of an existing `.codestable/audits/` document, or to decide keep / retire / residual for a mechanism someone proposes to add or delete. Also use it **before promoting any finding** into `.codestable/audits/*.md`, a design/fix note's `status:` field, or `.agents/memory/MEMORY.md`, and before repeating someone else's residual. Four false claims in this repo came from skipping that verification: an "untested" residual (D1), an unattributed-then-misattributed stale-`.lock` artifact (D7), a "not produced by the other project" corollary, and a byte-vs-character over-cap premise that fed a wrong config recommendation.

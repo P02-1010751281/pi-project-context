@@ -3,6 +3,8 @@ name: pi-project-context-consolidation-prompt-rule
 description: "Change a consolidation rule in memory/prompt.ts: placement, prompt-content assertions with mutation, render-based acceptance. Use for cross-repo boundary leaks."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Consolidation prompt rules (extensions/project-context/memory/prompt.ts)
 
 **When to use** — you need to add or change a rule sentence in `buildPrompt()`, e.g. blocking another repo's state or measurements from re-entering this repo's `MEMORY.md`/`CONTEXT.md`, or the same class of rule in the autolearn prompt (`autolearn/prompt.ts` asks for shapes, not measurements, and for one short description line).

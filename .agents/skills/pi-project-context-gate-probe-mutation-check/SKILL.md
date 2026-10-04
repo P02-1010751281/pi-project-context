@@ -3,6 +3,8 @@ name: pi-project-context-gate-probe-mutation-check
 description: "Make each autolearn/gate test probe pin exactly one guard, then prove it with a mutation matrix plus a positive control."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Gate-probe mutation check (pi-project-context)
 
 ## When to use

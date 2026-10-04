@@ -3,6 +3,8 @@ name: pi-project-context-command-surface-audit
 description: "Audit this project's command surface, or retire/rename/relocate a verb: registrations vs docs, shared renderers, what the cut costs, line-level pins."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 
 The owner asks which slash commands overlap, should be merged or retired; you just changed a command name, verb or flag; or you are

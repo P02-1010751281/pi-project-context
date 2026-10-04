@@ -3,6 +3,8 @@ name: pi-project-context-memory-recovery
 description: "Diagnose and repair .agents/memory: stale old-code writer, truncation vs poison, which path clipped it, dropped tails, backups, tests. Use when MEMORY.md lost content."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 
 `MEMORY.md` looks like a raw model reply (JSON envelope, `memory_markdown` key, fences), ends mid-word/mid-sentence (e.g. `…buildTreePre~`) or silently drops trailing bullets, pi warns like `consolidation reply was not a usable JSON object`, `/memory` reports poison/damage, or a sibling project that installs this extension has suspect memory. Use for repair/verification, not for normal consolidation tuning.

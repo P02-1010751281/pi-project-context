@@ -3,6 +3,8 @@ name: pi-project-context-status-renderer-dedup
 description: "Unify duplicated status wording across pi-project-context command entry points into one shared renderer, pinned by cross-entry equality and single-sided mutation."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Unify duplicated status wording across command entry points
 
 ## When to use

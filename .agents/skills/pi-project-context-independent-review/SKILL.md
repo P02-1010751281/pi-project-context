@@ -3,6 +3,8 @@ name: pi-project-context-independent-review
 description: "Run independent review rounds for this repo: frozen revision in a byte-identical /tmp sandbox, read-only with zero-write proof, budgeted and closed with a stop rule."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Independent review rounds (pi-project-context)
 
 **When to use**: an independent (lane A) review of uncommitted changes or of a frozen design revision in this repo is required — any CodeStable review round recorded under `.codestable/issues/<date>-<slug>/` — and the reviewer must not write to the working tree; or you are running per-round reviews of a design doc and need to keep the rounds finite, classify what a round found, and know when the next round stops paying. The owner expects a real second `pi` process for this, not a self-review downgrade. Applies to the current external-edit issue family (`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/`) and to any future design-heavy issue.

@@ -3,6 +3,8 @@ name: pi-project-context-curated-surface-hygiene
 description: "End-of-pass hygiene sweep over the curated surface (MEMORY/CONTEXT/docs/CHANGELOG/skills): consumer-repo state, dead pointers, stale counts, doc re-wraps, skill merges."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # Curated-surface hygiene for pi-project-context
 
 Use after any pass that touched `docs/`, `CHANGELOG.md`, `.agents/memory/MEMORY.md`,

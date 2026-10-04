@@ -3,6 +3,8 @@ name: pi-project-context-auxiliary-alert-storm-triage
 description: "Triage repeating pi-project-context toasts and a fast-growing errors.log, then verify the fix. Use during alert storms."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 A project consuming pi-project-context starts toasting repeatedly ("hit the cap", quota/auth/transient toasts) or its `.agents/memory/errors.log` grows to hundreds of lines / ~100 KB. Usual root cause: auxiliary consolidation/autolearn model calls failing on every `agent_settled` (retry storm), or a copied `_[memory truncated …]_` marker faking a cap event on a short reply. For pure memory-dir repair (poisoned JSON, dropped tails) use `pi-project-context-memory-recovery` instead.
 

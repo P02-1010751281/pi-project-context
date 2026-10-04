@@ -3,6 +3,8 @@ name: pi-project-context-structured-tool-output-strict-mode
 description: "Wire strict JSON-schema structured output into pi-project-context auxiliary LLM calls, with the pi-ai strict-mode gotchas and a schema checklist."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 # When to use
 Adding or changing structured output for pi-project-context auxiliary calls (e.g. the `record_memory` consolidation tool), or turning on real strict-mode sampling for a route.
 

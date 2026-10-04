@@ -3,6 +3,8 @@ name: pi-project-context-adaptive-handoff-threshold-review
 description: "Derive, test, and independently review adaptive handoff thresholds and their diagnostic caps in pi-project-context."
 ---
 
+<!-- autolearn-generated: this skill may be superseded by a later autolearn pass -->
+
 ## When to use
 Use when changing adaptive handoff thresholds, budget formulas, summarizer limits, pricing-tier caps, or `/handoff status` diagnostics.
 
