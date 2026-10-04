@@ -5,6 +5,7 @@
 - [架构与数据模型](architecture.md)：数据流、`.agents/` 布局、memory/context 语义、失败恢复、源码模块。
 - [配置与命令](configuration.md)：完整配置示例、字段说明、命令、flags、兼容迁移。
 - [handoff 预算与恢复](handoff.md)：自适应阈值公式、LaTeX 推导、cap 诊断、replay、语言与模型恢复。
+- [变更记录](../CHANGELOG.md)：按版本记录行为变化（`feat` / `fix`）；文档与审计提交不入表。
 
 ## 验证入口
 
@@ -19,7 +20,8 @@ git diff --check
 .agents/skills/pi-project-context-headless-rpc-handoff-validation/SKILL.md
 ```
 
-该验证必须使用 throwaway sandbox，检查 `HANDOFF.md`、`MEMORY.md`、`memory.jsonl`、backup、`CONTEXT.md`、`errors.log` 和 session JSONL；provider 的 402/429/credits 错误只能记录为环境阻塞，不能算 handoff 通过。
+该验证必须使用 throwaway sandbox，检查 `HANDOFF.md`、`MEMORY.md`、`memory.jsonl`、backup、`CONTEXT.md`、`errors.log` 和 session JSONL；
+provider 的 402/429/credits 错误只能记录为环境阻塞，不能算 handoff 通过。
 
 ## 发布前检查
 

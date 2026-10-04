@@ -8,11 +8,13 @@
 pi install git:github.com/P02-1010751281/pi-project-context
 ```
 
-本包没有 `package.json`：pi 按约定发现 `extensions/` 入口，git 安装不需要 npm，也没有运行时依赖。不要加回 `package.json`；含 manifest 的 git 包在安装/checkout 对齐时可能执行 `npm install`，未装 npm 的机器会让 pi 启动失败。
+本包没有 `package.json`：pi 按约定发现 `extensions/` 入口，git 安装不需要 npm，也没有运行时依赖。不要加回 `package.json`；含 manifest 的 git 包在安装/checkout 对齐时可能执行 `npm install`，
+未装 npm 的机器会让 pi 启动失败。
 
 升级：仓库侧打新 tag，再执行 `pi install <source>@<new-ref>`。`pi update --extensions` 只对齐已经 pin 的 ref。
 
-**不要再往 `~/.pi/agent/extensions` 部署副本。** pi 会同时加载两份实例，各自注册同名命令，导致命令改名为 `auto-handoff:1`/`:2`、斜杠命令失效、hooks 双跑。若残留旧的镜像目录（`project-context`、`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`），删除后再 `/reload`。
+**不要再往 `~/.pi/agent/extensions` 部署副本。** pi 会同时加载两份实例，各自注册同名命令，导致命令改名为 `auto-handoff:1`/`:2`、斜杠命令失效、hooks 双跑。若残留旧的镜像目录（`project-context`、
+`session-context`、`memory`、`autolearn`、`auto-handoff`、`_shared`），删除后再 `/reload`。
 
 ## 功能概览
 
@@ -61,7 +63,8 @@ node tests/run-all.mjs
 git diff --check
 ```
 
-涉及 handoff、memory 写入或 compaction prompt 时，按 `.agents/skills/pi-project-context-headless-rpc-handoff-validation/SKILL.md` 使用 throwaway sandbox 做真实 RPC 验证；provider 的 402/429/credits 错误只能记录为环境阻塞，不能算 handoff 通过。
+涉及 handoff、memory 写入或 compaction prompt 时，按 `.agents/skills/pi-project-context-headless-rpc-handoff-validation/SKILL.md` 使用 throwaway sandbox 做真实 RPC 验证；
+provider 的 402/429/credits 错误只能记录为环境阻塞，不能算 handoff 通过。
 
 ## 许可证
 

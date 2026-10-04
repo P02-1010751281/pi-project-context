@@ -54,14 +54,18 @@ session.jsonl ──► session.md ──► INDEX.md
 - **memory** 是跨会话仍成立的事实、决策和偏好，写入门槛较高；`memory.jsonl` 是唯一权威，`MEMORY.md` 可重建。
 - **context** 是当前项目的摘要、关键点和 open tasks，整体重写；不确定的内容先放 context，后续仍成立再晋升 memory。
 - `MEMORY.md` 的外部编辑只有在内容不同且 render 比 journal 更新时才被采信，下一次写入会先进入 journal。
-- 但**手工并回不是持久的**：render 由扩展自身记忆状态 + 模型回复生成（输入是 prompt 时点的有效内容），并回若发生在 prompt 之后、或被模型省略，下一次 render 就不带它；超限时还会被 cap 再裁一次（现场：UniField 并回后不到一天再次丢失整块，见审计补审三 §7）。
+- 反向不成立：render 由扩展自身记忆状态 + 模型回复生成，不读文件的当前字节。
+  输入是 prompt 时点的有效内容 ⇒ 并回若发生在 prompt 之后、或被模型省略，下一次 render 就不带它。
+  超限时 cap 还会再裁一次（现场证据见审计补审三 §7，不在本文展开）。
 - journal 损坏行会记录并跳过；整份 journal 没有可用记录时 fail closed，不静默回退旧 render。
 
 ## 记忆写入与恢复
 
 - 写入顺序在 `MEMORY.md.lock` 内完成：追加 journal、必要时轮换、备份、原子替换 render。
 - 跨进程锁有 stale-lock recovery，释放时校验唯一 token，避免误删别的进程的锁。
-- `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时保留头尾、按整行丢弃中段并追加 marker；marker 自身不计入正文预算。cap 高到输出上限上界估算装不下时（`memoryReplyTokens` > `max(maxTokens, maxOutputTokens)`）在 `status` 和配置时点名。
+- `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时保留头尾、按整行丢弃中段并追加 marker；marker 自身不计入正文预算。
+  cap 高到输出上限上界估算装不下时（`memoryReplyTokens` > `max(maxTokens, maxOutputTokens)`）
+  在 `status` 和配置时点名。
 - 限制由调用方显式传给 normalize、fold、comparison、load、write 和 legacy migration；没有进程级全局 cap，因此多项目不会串味。
 - OMP/旧布局在 `session_start` 迁移时使用当前项目的 `maxMemoryChars`，不会退回默认值。
 - 旧的 poisoned memory 只在内存中解码；下一次正常覆盖前才备份和修复，不在读取阶段产生副作用。
@@ -82,7 +86,8 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 
 ## 旧数据迁移
 
-支持 `<project>/.pi/` 旧布局、`.agents/memory/skills` 中间布局、旧 session index、OMP encoded-project memory，以及 `/session-log import` 的历史 session。文件/目录类型冲突时两侧保留并通知；失败的迁移留待后续 session 重试。
+支持 `<project>/.pi/` 旧布局、`.agents/memory/skills` 中间布局、旧 session index、OMP encoded-project memory，以及 `/session-log import` 的历史 session。
+文件/目录类型冲突时两侧保留并通知；失败的迁移留待后续 session 重试。
 
 ## 源码模块
 
