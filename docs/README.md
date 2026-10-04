@@ -28,9 +28,10 @@ git diff --check
 3. 有额度时完成真实 headless RPC，并保留 sandbox 证据。
 4. owner 明确批准后再 commit、tag、push、安装新版本并校验安装副本。
 
-问题级的详细证据、变异矩阵和复审转录保存在：
+问题级的详细证据、变异矩阵和复审转录按日期保存在（目录名即时间线，最新 = 当前轮）：
 
 ```text
-.codestable/issues/2026-09-19-handoff-adaptive-threshold-semantics/   # 当前：自适应阈值语义
-.codestable/issues/2026-09-18-memory-cap-and-adaptive-threshold/     # 上一轮：memory 上限与自适应阈值
+.codestable/issues/<日期>-<主题>/     # 该 issue 的设计、fix note、复审报告与转录
+.codestable/audits/                    # 设计复杂度审计主文与补审
+.codestable/attention.md               # CodeStable 子技能必读的项目注意事项
 ```
