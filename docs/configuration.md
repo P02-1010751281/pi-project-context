@@ -110,6 +110,13 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 auto 忽略 ratio；要比例请用裸 `/handoff 0.6`）。`/handoff` 写入时只提交自己拥有的 handoff 键，因此不会覆盖 `/project-context off memory` 之类的开关、
 另一个实例的改动或手改的字段。
 
+**入口关系**：`/project-context` 是设置与开关的权威入口——四个特性（`archive`、`memory`、`autolearn`、`handoff`）的 `on|off` 写同一批配置键，
+`/handoff on|off` 与 `/autolearn on|off` 只是同一开关的快捷入口；`memory`、`archive` 没有自己的 `on|off`，只能走伞形。`/project-context status` 是一屏总览
+（特性、辅助调用、配置路径、memory 与 context 状态行），`/context` 只打三条路径（context 文件、session index、session logs）——它**不是** status 的子集，
+那三条路径在 status 里没有。`/memory`、`/session-log`、无参 `/autolearn`、`/handoff now` 各自负责本功能的动作。
+命令面**有意不收束**：把特性级 `on|off` 或 `/context` 折进伞形属于破坏性用户面变更，而本机无法度量命令使用（pi 的 `session.jsonl`
+只存展开后的消息，没有字面 `/cmd`），所以保留现有入口，等有使用证据再谈。
+
 ## flags
 
 ```text
