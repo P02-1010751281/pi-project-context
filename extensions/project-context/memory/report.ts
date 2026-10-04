@@ -8,10 +8,11 @@ import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from 
 import { getConfig, runIsDisabled } from "../shared/config.ts";
 import { completeVerbs } from "../shared/complete.ts";
 import { MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
-import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, isMemoryTruncated, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, memorySizeLabel, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
+import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
+import { memoryStatusLevel, memoryStatusMessage } from "./status.ts";
 
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = {
@@ -374,16 +375,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const { maxMemoryChars } = await getConfig(projectRoot);
 			const memory = await loadMemory(projectRoot, maxMemoryChars);
-			const chars = memoryDocumentChars(memory.text);
-			const size = memorySizeLabel(chars, maxMemoryChars);
-			if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
-				notify(ctx, `Memory journal exists but has no usable record: ${memory.source}. Delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log).`, "warning");
-			} else if (memory.unreadable) notify(ctx, `Project memory exists but cannot be read: ${memory.source}; check its permissions (see .agents/memory/errors.log).`, "warning");
-			else if (!memory.text) notify(ctx, `No project memory yet: ${memory.source}`);
-			else if (memory.damaged) notify(ctx, `Project memory: ${memory.source} (${size}; ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log).`, "warning");
-			else if (memory.poisoned) notify(ctx, `Project memory: ${memory.source} (${size}; stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown).`, "warning");
-			else if (isMemoryTruncated(memory.text)) notify(ctx, `Project memory: ${memory.source} (${size}) — at the cap, so both ends were kept and the middle dropped; raise it with /project-context max-memory <n>.`, "warning");
-			else notify(ctx, `Project memory: ${memory.source} (${size})`);
+			notify(ctx, `Project memory: ${memoryStatusMessage(memory, maxMemoryChars)}`, memoryStatusLevel(memory));
 		},
 	});
 }

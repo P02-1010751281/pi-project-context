@@ -171,6 +171,58 @@ try {
 		check("an empty memory reports empty", String(ctx.notifications.at(-1)?.[0] ?? "").includes("(empty)"));
 	}
 
+	console.log("\n=== M4: /memory and /project-context status share one memory-status wording ===");
+	{
+		// The two entry points used to render the status separately and had drifted; this pins the
+		// shared body for every branch, including the journal-unreadable case the umbrella lacked.
+		const both = async (tmp) => {
+			const pi = makePi({ cwd: tmp });
+			await (await loadDefault(`${PC}/index.ts`))(pi);
+			const ctx = makeCtx(tmp);
+			await pi.commands.get("memory").handler("", ctx);
+			const notified = ctx.notifications.at(-1) ?? [];
+			await pi.commands.get("project-context").handler("status", ctx);
+			const status = String(ctx.notifications.at(-1)?.[0] ?? "");
+			const line = status.split("\n").find((entry) => entry.startsWith("Memory: ")) ?? "";
+			return { fromCommand: String(notified[0] ?? ""), level: notified[1], statusBody: line.slice("Memory: ".length) };
+		};
+		const cases = [];
+		cases.push(["normal", await makeProject(), /of the 32000-char cap/, "info"]);
+		{
+			const tmp = await makeProject();
+			await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), "");
+			cases.push(["empty", tmp, /\(empty\)/, "info"]);
+		}
+		{
+			const tmp = await makeProject();
+			await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- fact.\n_[memory truncated at 4000 characters: 12 dropped]_\n");
+			cases.push(["at the cap", tmp, /both ends were kept and the middle dropped/, "warning"]);
+		}
+		{
+			const tmp = await makeProject();
+			await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), '# Project Memory\n\n{\n  "memory_markdown": "# Project Memory\\n\\n## Project\\n- decoded fact.\\n"\n}\n');
+			cases.push(["poisoned", tmp, /stored as raw JSON/, "warning"]);
+		}
+		{
+			const tmp = await makeProject();
+			await rm(path.join(tmp, ".agents/memory/MEMORY.md"));
+			await writeFile(path.join(tmp, ".agents/memory/memory.jsonl"), "not a journal record\n");
+			cases.push(["journal unreadable", tmp, /no usable record/, "warning"]);
+		}
+		{
+			const tmp = await makeProject();
+			await rm(path.join(tmp, ".agents/memory/MEMORY.md"));
+			await mkdir(path.join(tmp, ".agents/memory/MEMORY.md"));
+			cases.push(["file unreadable", tmp, /cannot be read/, "warning"]);
+		}
+		for (const [label, tmp, expected, level] of cases) {
+			const { fromCommand, statusBody, level: notified } = await both(tmp);
+			check(`${label}: both entry points print the same body`, fromCommand === `Project memory: ${statusBody}`);
+			check(`${label}: the shared body reports it`, expected.test(statusBody));
+			check(`${label}: /memory warns with level ${level}`, notified === level);
+		}
+	}
+
 	console.log("\n=== M4: the cap suggestion is a value the command accepts ===");
 	{
 		const tmp = await makeProject({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });

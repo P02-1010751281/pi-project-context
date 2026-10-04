@@ -7,9 +7,10 @@ import { completeValues, completeVerbs } from "./shared/complete.ts";
 import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "./shared/limits.ts";
 import { memoryCapUnsatisfiable, memoryReplyTokens } from "./shared/output-budget.ts";
 import { registerConsolidation } from "./memory/report.ts";
+import { memoryStatusMessage } from "./memory/status.ts";
 import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
-import { contextFile, getProjectRoot, isMemoryTruncated, loadMemory, memoryDocumentChars, memorySizeLabel, notify, type LoadedMemory } from "./shared/project-state.ts";
+import { contextFile, getProjectRoot, loadMemory, notify } from "./shared/project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.
@@ -72,18 +73,6 @@ export default function projectContext(pi: ExtensionAPI): void {
 		return `${config.maxMemoryChars} chars needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${ceiling}`;
 	}
 
-	/** What the memory injection currently uses, including how it is stored (the fix for the old bug). */
-	function memoryStatusLine(memory: LoadedMemory, cap: number): string {
-		const chars = memoryDocumentChars(memory.text);
-		const size = memorySizeLabel(chars, cap);
-		if (memory.unreadable) return `${memory.source} — exists but cannot be read; see .agents/memory/errors.log`;
-		if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it`;
-		if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
-		// A capped document ends with its own marker; surface it here too, next to the knob that lifts it.
-		if (isMemoryTruncated(memory.text)) return `${memory.source} (${size}) — at the cap, so both ends were kept and the middle dropped; raise it with /project-context max-memory <n>`;
-		return `${memory.source} (${size})`;
-	}
-
 	/** CONTEXT.md is only rewritten when a pass returns one, so its age is the useful signal here. */
 	async function contextStatusLine(projectRoot: string): Promise<string> {
 		const file = contextFile(projectRoot);
@@ -126,7 +115,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Project context: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
-					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
+					`Memory: ${memoryStatusMessage(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
 					`Context: ${await contextStatusLine(projectRoot)}`,
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.

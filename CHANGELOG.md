@@ -3,10 +3,12 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
-## Unreleased
+## v0.2.2 — 2026-10-04
 
 ### 修复
 
+- memory 状态行单一化：`/project-context status` 与 `/memory` 改由同一个 `memoryStatusMessage()` 渲染，两套措辞合一。
+  伞形状态行因此补齐了「journal 存在但无可用记录」的恢复提示（原先只有 `/memory` 有），`/memory` 的无参输出随共享文案统一。
 - 测试：适配 pi 1.0.2 的 managed 安装树（读 `install/current-version`，依赖沿 `node_modules` 向上查找）。
   仅 `tests/`，运行时代码未变。
 
@@ -15,6 +17,7 @@
 - 锁归属更正扩散到主审计横幅与补审二模块表（19 个 `.lock` 属 Codex 移植，不是 `lock.ts` 的现场依据）。
 - `docs/architecture.md`、`docs/configuration.md` 补两条语义：手工并回 `MEMORY.md` 不持久；cap 每次写入都生效。
 - 全部文档按句读换行（无 >160 字符的行）；`docs/README.md` 索引不再钉死「当前 issue」。
+- `docs/configuration.md` 补「入口关系」一段：伞形是权威开关入口，`/context` 不是 status 的子集，命令面有意不收束（无使用证据）。
 
 ## v0.2.1 — 2026-10-03
 
