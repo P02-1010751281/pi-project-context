@@ -9,7 +9,7 @@
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { assertStrictReady, loadNamespace, loadShared, makeCtx, PC, rmTemp } from "./harness.mjs";
+import { assertStrictReady, loadNamespace, loadShared, makeCtx, PC, PI_AI_DIST, rmTemp } from "./harness.mjs";
 
 let failures = 0;
 function check(label, value) {
@@ -23,8 +23,7 @@ const autolearnSchema = await loadNamespace(`${PC}/autolearn/schema.ts`);
 // Loaded together so the policy the test observes IS the one `callAux` records into.
 const [llm, policy] = await loadShared([`${PC}/shared/llm.ts`, `${PC}/shared/call-policy.ts`]);
 
-const dist = `${process.env.PI_PKG ?? "/home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent"}/node_modules/@earendil-works/pi-ai/dist`;
-const { makeStrictJsonSchema } = await import(`${dist}/api/constrained-sampling.js`);
+const { makeStrictJsonSchema } = await import(`${PI_AI_DIST}/api/constrained-sampling.js`);
 
 console.log("=== strict-ready schemas ===");
 {
@@ -81,7 +80,7 @@ console.log("=== strict-ready schemas ===");
 // strict when a strict-capable provider is present, which is the part that was unverified.
 console.log("\n=== strict resolver (pi-ai's real gate) ===");
 {
-	const { resolveJsonSchemaStrictSampling } = await import(`${dist}/api/constrained-sampling.js`);
+	const { resolveJsonSchemaStrictSampling } = await import(`${PI_AI_DIST}/api/constrained-sampling.js`);
 	for (const [label, tool] of [
 		["record_memory", sections.RECORD_MEMORY_TOOL],
 		["record_skill", autolearnSchema.RECORD_SKILL_TOOL],

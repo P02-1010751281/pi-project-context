@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** pi package root; override with PI_PKG when it is not in the global npm root. */
+/** pi package root; override with PI_PKG when it is not in a known install root. */
 export function findPiPackage() {
 	if (process.env.PI_PKG) return process.env.PI_PKG;
 	const candidates = [];
@@ -20,9 +20,20 @@ export function findPiPackage() {
 		const root = execSync("npm root -g", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 		if (root) candidates.push(path.join(root, "@earendil-works/pi-coding-agent"));
 	} catch {
-		// npm may be unavailable; fall through to the known location.
+		// npm may be unavailable; fall through to the known locations.
 	}
-	candidates.push("/home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent");
+	// Managed self-install (pi >= 1.0.2): <agent dir>/install/releases/<version>/node_modules/...
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? path.join(process.env.HOME ?? "", ".pi/agent");
+	try {
+		const release = readFileSync(path.join(agentDir, "install/current-version"), "utf8").trim();
+		if (release) {
+			candidates.push(path.join(agentDir, "install/releases", release, "node_modules/@earendil-works/pi-coding-agent"));
+		}
+	} catch {
+		// No managed install on this machine; the candidates below may still hit.
+	}
+	// Legacy npm-global location.
+	candidates.push(path.join(process.env.HOME ?? "", ".local/lib/node_modules/@earendil-works/pi-coding-agent"));
 	for (const candidate of candidates) {
 		if (existsSync(path.join(candidate, "dist/index.js"))) return candidate;
 	}
@@ -30,21 +41,38 @@ export function findPiPackage() {
 }
 
 export const PI = findPiPackage();
+
+/**
+ * A dependency of the pi package. npm may hoist it ABOVE the package directory (the managed
+ * self-install does: `<release>/node_modules/jiti`, not `<pi>/node_modules/jiti`), so walk up.
+ */
+function findDep(pkg) {
+	for (let dir = PI; ; dir = path.dirname(dir)) {
+		const candidate = path.join(dir, "node_modules", pkg);
+		if (existsSync(candidate)) return candidate;
+		if (path.dirname(dir) === dir) break;
+	}
+	throw new Error(`cannot locate ${pkg}; checked node_modules up from ${PI}`);
+}
+
+/** pi-ai dist, for tests that import pi's own helpers. */
+export const PI_AI_DIST = path.join(findDep("@earendil-works/pi-ai"), "dist");
 /** Extensions directory of this repository (tests run against it, not ~/.pi). */
 export const EXT = path.resolve(here, "../extensions");
 export const PC = path.join(EXT, "project-context");
 
 const alias = {
 	"@earendil-works/pi-coding-agent": `${PI}/dist/index.js`,
-	"@earendil-works/pi-ai": `${PI}/node_modules/@earendil-works/pi-ai/dist/compat.js`,
+	"@earendil-works/pi-ai": `${PI_AI_DIST}/compat.js`,
 	// Extensions that register tools import typebox; pi resolves it from its own deps.
-	typebox: `${PI}/node_modules/typebox/build/index.mjs`,
+	typebox: `${findDep("typebox")}/build/index.mjs`,
 };
 const loaderUrl = `${PI}/dist/core/extensions/loader.js`;
+const jitiEntry = `${findDep("jiti")}/lib/jiti-static.mjs`;
 
 let jitiModule;
 async function loadJiti(aliases) {
-	if (!jitiModule) jitiModule = await import(`${PI}/node_modules/jiti/lib/jiti-static.mjs`);
+	if (!jitiModule) jitiModule = await import(jitiEntry);
 	return jitiModule.createJiti(loaderUrl, { moduleCache: false, alias: aliases ? { ...alias, ...aliases } : alias });
 }
 
@@ -68,7 +96,7 @@ export async function loadNamespace(file, aliases) {
 export async function loadShared(files) {
 	// Its own loader with the module cache ON: `loadJiti` deliberately disables it so each test file
 	// starts clean, but that also means two `loadNamespace` calls never share module state.
-	if (!jitiModule) jitiModule = await import(`${PI}/node_modules/jiti/lib/jiti-static.mjs`);
+	if (!jitiModule) jitiModule = await import(jitiEntry);
 	const jiti = jitiModule.createJiti(loaderUrl, { alias });
 	const loaded = [];
 	for (const file of files) loaded.push(await jiti.import(file));
@@ -86,8 +114,7 @@ export async function loadShared(files) {
  * Throws on the first violation, so a test can simply await it.
  */
 export async function assertStrictReady(schema) {
-	const dist = `${PI}/node_modules/@earendil-works/pi-ai/dist`;
-	const sampling = await import(`${dist}/api/constrained-sampling.js`);
+	const sampling = await import(`${PI_AI_DIST}/api/constrained-sampling.js`);
 	// The base-table verdict, including the nested object/array-union rule.
 	sampling.makeStrictJsonSchema(schema);
 
@@ -97,9 +124,9 @@ export async function assertStrictReady(schema) {
 		if (!match) throw new Error(`cannot read ${name} from ${file}`);
 		return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 	};
-	const base = readTable(`${dist}/api/constrained-sampling.js`, "UNSUPPORTED_STRICT_SCHEMA_KEYS");
-	const anthropic = readTable(`${dist}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS");
-	const formats = readTable(`${dist}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_STRING_FORMATS");
+	const base = readTable(`${PI_AI_DIST}/api/constrained-sampling.js`, "UNSUPPORTED_STRICT_SCHEMA_KEYS");
+	const anthropic = readTable(`${PI_AI_DIST}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_UNSUPPORTED_KEYWORDS");
+	const formats = readTable(`${PI_AI_DIST}/api/anthropic-messages.js`, "ANTHROPIC_STRICT_STRING_FORMATS");
 	// Pin the sizes: if pi-ai's tables change, these tests must be re-read, not silently weakened.
 	if (base.length !== 16) throw new Error(`pi-ai base unsupported-key table changed size: ${base.length}`);
 	if (anthropic.length !== 11) throw new Error(`Anthropic unsupported-key table changed size: ${anthropic.length}`);
