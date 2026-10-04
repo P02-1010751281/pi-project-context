@@ -3,6 +3,24 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.3.0 — 2026-10-04
+
+### 变更（破坏性命令面）
+
+- 命令面按数据流层重排：一个参数住进**改变它的那一层**。`/memory` 新增 `on|off` 与 `max-memory <n>|default`，`/session-log` 新增 `on|off`、
+  `write`，两者的无参调用各自打本层的状态行（`max-memory` 从伞形搬来，四个特性的 `on|off` 现在都有本层入口）。
+- 伞形的 `on|off` 只剩**四特性批量**，且不接受目标：`/project-context off all` 这类旧写法会被拒绝并提示用裸 `on|off`。
+  命令面**没有**扩展开关——整扩展禁用仍然只有 run 级 `--no-project-context` flag，文档与注册描述都写明这一点。
+- `/context` 退役：context 文件行归 `/memory`（与 `status` 共用同一 `contextStatusLine()`，两处逐行一致），session index 与 session logs 两行归 `/session-log`（无参**只读**：
+  pi 自己已在 `turn_end`/`agent_settled`/`session_shutdown` 写存档，读路径不再带写副作用，要立刻写用 `write`）。
+- `/handoff` 动词 13 → 9：`threshold <auto|比例>` 合并 `auto` 与裸比例（`40`、`0.4`、`40%` 等价），
+  `budget summary <n>`/`budget recent <n|off>` 取代 `target`/`keep`（两个数一个量摘要、一个量近期窗口，各自说出量的是什么），
+  `mode <send|draft>` 取代两个裸词。裸比例**硬切**；`force-auto` 与 `language`/`run`/`force` 同义保持原样。
+- 配置兼容不再常驻读路径：嵌套 `features.*`/`autolearn.*`/`handoff.*`、`memory/autolearn.json` 与全局 `~/.pi/agent/auto-handoff.json`
+  改为某项目首次读配置时**迁移一次**（折进扁平键、整份写回、提示 moved from …）；此后读路径只看扁平键，新键不再获得回退项。
+- autolearn 提示词补两条规则：技能只写本项目自己的持久事实（绝不搬他仓测量值），检查写成形态（如
+  `[0-9]{2,3},[0-9]{3} chars`）而不是某一次跑出来的数字；并要求描述保持一行短句、已有技能覆盖时宁可不提案而非生成近似重复。
+
 ## v0.2.3 — 2026-10-04
 
 ### 修复

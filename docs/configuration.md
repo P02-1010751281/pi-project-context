@@ -39,7 +39,7 @@
 | `archiveEnabled` | 是否自动存档会话 |
 | `autoConsolidate` | 是否自动更新 memory/context |
 | `autoLearn` | 是否自动沉淀项目 skill |
-| `maxMemoryChars` | `MEMORY.md` 正文 cap；4000–200000，默认 32000；可用 `/project-context max-memory <n>` 修改 |
+| `maxMemoryChars` | `MEMORY.md` 正文 cap；4000–200000，默认 32000；可用 `/memory max-memory <n>` 修改 |
 | `provider` / `model` | consolidation/autolearn 的辅助模型路由；空值使用会话模型 |
 | `maxTokens` | consolidation/autolearn 输出上限；默认 8192，最低 256 |
 | `maxOutputTokens` | 辅助输出自适应上限；默认 32768 |
@@ -68,7 +68,7 @@
 _[memory truncated at N characters: M dropped]_
 ```
 
-marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/project-context max-memory` 建议 —— 这条路径下数字是准的）
+marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/memory max-memory` 建议 —— 这条路径下数字是准的）
 。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
 cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁一次。已进 journal 的内容才有机会留下 ⇒ **手工并回 `MEMORY.md` 不算持久化**（要持久就抬高 `maxMemoryChars` 或让内容进 consolidation 输出）。
@@ -91,34 +91,41 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 
 ## 命令
 
-| 命令 | 用法 |
-|---|---|
-| `/project-context` | `status`；`on|off <archive|memory|autolearn|handoff|all>`；`model <provider>/<id>|off`；`max-tokens <n>|default`；`max-memory <n>|default` |
-| `/memory` | 无参：显示项目 memory 路径和状态；`update`：立即跑 consolidation，重写 `MEMORY.md` 和 `CONTEXT.md` |
-| `/context` | 显示 context、session index、session log 路径 |
-| `/session-log` | 写当前存档；`import <session.jsonl|目录>…` 导入历史 session |
-| `/autolearn` | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off`。`approve` 会重新套用与提案路径相同的形状规则（描述/体积上下限、注入检测），不满足则拒绝并点名原因 |
-| `/handoff` | `status`、`on`、`off`、`auto`、裸比例、`target`、`keep`、`thinking`、`guard`、`lang`、`send`、`draft`、`now` |
+一条命令管一层；伞形只留两个以上层共用的东西。
 
-每个命令都注册了 `getArgumentCompletions`，所以 Tab 会补全参数（`/memory u` → `update`，`/handoff guard ` → `wait|draft|send|skip`，`/project-context on ` → 各特性名）。
+| 命令 | 层 | 用法 |
+|---|---|---|
+| `/project-context` | 跨层 | `status`；`on|off`（**无目标**：一次开关四个特性）；`model <provider>/<id>|off`；`max-tokens <n>|default` |
+| `/memory` | memory | 无参：memory 状态行 ＋ `Context file:` 行；`update`：立即跑 consolidation，重写 `MEMORY.md` 和 `CONTEXT.md`；`on|off`；`max-memory <n>|default` |
+| `/handoff` | handoff | `status`、`on|off`、`threshold <auto|比例>`、`budget summary|recent`、`thinking`、`mode`、`guard`、`lang`、`now`（取值见下） |
+| `/autolearn` | autolearn | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off`。`approve` 会重新套用与提案路径相同的形状规则（描述/体积上下限、注入检测），不满足则拒绝并点名原因 |
+| `/session-log` | archive | 无参：存档状态行 ＋ `Session index:` 与 `Session logs:` 两行（**只读**）；`write`：立即写当前存档；`import <session.jsonl|目录>…`：导入历史 session；`on|off` |
+
+每个命令都注册了 `getArgumentCompletions`，所以 Tab 会补全参数（`/memory max-memory ` → `default`，`/handoff guard ` → `wait|draft|send|skip`，`/handoff budget recent ` → `off`）。
+`/project-context on|off` 是唯一没有二级补全的命令，因为它不接受目标。
 
 **命令改名（破坏性，无过渡期）**：`/memory-learn` → `/memory update`，`/auto-handoff` → `/handoff`，`/context-update` 直接删除（无别名、无提示）。flag 不变。
+**v0.3.0 收束（同样无过渡期）**：`/context` 退役，三行按层归位（context 文件行 → `/memory`，session index 与 session logs → `/session-log`）；
+`max-memory` 与四个特性级 `on|off` 从伞形移到本层命令；`/handoff` 的裸比例、`auto`、`target`、`keep`、`send`、`draft` 六个写法被
+`threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
-说明：`/handoff auto` 是自适应模式（无参数，阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升）
-，`/handoff target 64k` 是手动设定的**目标摘要量**，不参与触发公式，被护栏压掉时 `status` 会点名
-；裸 `/handoff 0.6` 是固定 60% 模式，`handoffThresholdRatio` 只用于固定模式（旧配置同时有 `handoffAdaptive: true` 与 ratio 时，
-auto 忽略 ratio；要比例请用裸 `/handoff 0.6`）。`/handoff` 写入时只提交自己拥有的 handoff 键，因此不会覆盖 `/project-context off memory` 之类的开关、
-另一个实例的改动或手改的字段。
+取值：`thinking off|session`、`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
 
-**入口关系**：`/project-context` 是设置与开关的权威入口——四个特性（`archive`、`memory`、`autolearn`、`handoff`）的 `on|off` 写同一批配置键，
-`/handoff on|off` 与 `/autolearn on|off` 只是同一开关的快捷入口；`memory`、`archive` 没有自己的 `on|off`，只能走伞形。`/project-context status` 是一屏总览
-（特性、辅助调用、配置路径、memory 与 context 文件状态行），`/context` 打三条路径（context 文件、session index、session logs 目录）。
-两者**只重合一条**：context 文件路径——status 标 `Context file:` 并附更新时间，`/context` 打同一个 `Context file:`；
-session index 与 session logs 目录只在 `/context` 里。`/memory`、`/session-log`、无参 `/autolearn`、`/handoff now` 各自负责本功能的动作。
-**一个事实一个名字**（v0.2.3 起）：伞形首行只报特性，标签 `Features:`；context 文件那行在两条命令里都叫 `Context file:`。
+说明：`/handoff threshold auto` 是自适应模式（阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升）
+，`threshold <比例>` 是固定比例模式（`handoffThresholdRatio` 只用于固定模式；`threshold 40`、`threshold 0.4`、`threshold 40%` 等价，都读作 40%），
+两种模式共用一个动词、切换即覆盖一个字段。
+`budget summary <n>` 是手动设定的**目标摘要量**（不参与触发公式，被护栏压掉时 `status` 会点名），`budget recent <n|off>` 是逐字带回新会话的近期窗口（`off` 等价 `0`，即只带摘要）；
+两个数一个量摘要、一个量近期窗口，所以名字各自说出自己量的是什么。`/handoff` 写入时只提交自己拥有的 handoff 键，
+因此不会覆盖 `/memory off` 之类的开关、另一个实例的改动或手改的字段。
+
+**入口关系**（v0.3.0 起重排）：一个参数住在**改变它的那一层**。每个特性有自己的 `on|off`（`/memory`、`/session-log`、`/handoff`、`/autolearn`），
+伞形只保留两个以上层共用的项：`status`、`model`、`max-tokens`，以及**四特性批量** `on|off`——批量形**不接受目标**，`/project-context off all`
+会被拒绝并提示改用裸 `off`（一个事实一个名字）。伞形的批量不是扩展开关：命令面关不掉扩展，唯一的整扩展禁用是 run 级 `--no-project-context` flag。
+`/project-context status` 是一屏总览（特性、辅助调用、配置路径、memory 状态行、context 文件行）；memory 状态行由共享的 `memoryStatusMessage()` 渲染，
+context 文件行由共享的 `contextStatusLine()` 渲染，所以 `/memory` 与伞形两处逐行一致（**不做整块相等**：伞形的副本带更新时间戳）。
+`/session-log` 无参只读，打存档状态行与两条路径；`/memory` 无参打 memory 状态行与 context 文件行——`/context` 原来的三行就是这样拆完的。
+**一个事实一个名字**（v0.2.3 起）：伞形首行只报特性，标签 `Features:`；context 文件那行都叫 `Context file:`。
 旧版有三套叫法：伞形首行与 `/context` 都叫 `Project context:` 却指两样东西，context 文件在 status 里又叫 `Context:`。
-命令面**有意不收束**：把特性级 `on|off` 或 `/context` 折进伞形属于破坏性用户面变更，而本机无法度量命令使用（pi 的 `session.jsonl`
-只存展开后的消息，没有字面 `/cmd`），所以保留现有入口，等有使用证据再谈。
 ## flags
 
 ```text
@@ -138,10 +145,9 @@ pi 的 handoff 摘要使用宿主 `generateSummaryWithUsage`，其输出 reserve
 
 ## 兼容迁移
 
-旧配置只读兼容：
+旧配置形态**迁移一次，不再常驻读路径**：`features.*`、`autolearn.*`、`handoff.*` 嵌套布局，`memory/autolearn.json` 的 `enabled`/`at`，
+以及全局 `~/.pi/agent/auto-handoff.json`，都在某项目第一次读配置时被折进扁平键、整份写回，并提示「migrated from …」。
+之后的读路径只看扁平键；只有 `legacyConfigPatch()` 认识旧形态，所以新键不会再顺手得到一个回退项（扁平化之后新增的 8 个键从来没有过）。
+扁平键已有的值永远优先，迁移不会覆盖当前设置。
 
-- `features.*`、`autolearn.*`、`handoff.*` 嵌套布局；
-- `memory/autolearn.json` 的 `enabled`/`at`；
-- 全局 `~/.pi/agent/auto-handoff.json`。
-
-下次保存时重写为扁平布局。旧 memory/session 数据的路径与冲突策略见 [架构与数据模型](architecture.md)。
+旧 memory/session 数据的路径与冲突策略见 [架构与数据模型](architecture.md)。
