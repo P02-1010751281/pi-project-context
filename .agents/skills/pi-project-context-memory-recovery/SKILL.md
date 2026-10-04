@@ -48,7 +48,7 @@ cat project-context.json   # maxMemoryChars, default 32000, range 4000-200000
 
 ## 2. Read through the real paths (do not hand-edit)
 
-`loadMemory()` in `extensions/project-context/project-state.ts` is the single shared read path (injection, consolidation, autolearn). It folds `memory.jsonl` in order, falls back to the legacy `MEMORY.md` read when no journal exists (old projects need no migration), and returns `{ text, source, poisoned, unreadable, damaged, ... }` — ENOENT is distinguished from unreadable. With a journal present, `source` is the journal path, not `MEMORY.md`.
+`loadMemory()` in `extensions/project-context/shared/project-state.ts` is the single shared read path (injection, consolidation, autolearn). It folds `memory.jsonl` in order, falls back to the legacy `MEMORY.md` read when no journal exists (old projects need no migration), and returns `{ text, source, poisoned, unreadable, damaged, ... }` — ENOENT is distinguished from unreadable. With a journal present, `source` is the journal path, not `MEMORY.md`.
 
 Poison decode (owner-approved heal-mode B) is read-only: the stored reply is decoded on read with no write side effect; the on-disk poison is repaired by the next normal consolidation write, which first takes a `.poison-backup-*` of the raw file. Never add a heuristic repair write inside the read path.
 

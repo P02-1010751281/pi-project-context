@@ -37,7 +37,7 @@ If the missing lines are substantive lessons/conclusions (e.g. experiment verdic
 
 Current format starts `# Project Context` followed by `Last updated: <ISO-8601>`. The old `# Context` heading and hand-written `Last updated: <date> (agent 重建…)` style are stale.
 
-- Budget: keep the file under `MAX_CONTEXT_CHARS = 32000` (`extensions/project-context/project-state.ts`; `MAX_SUMMARY_CHARS = 6000`, `MAX_LIST_ITEM_CHARS = 800`). ~2.5K chars is a healthy target.
+- Budget: keep the file under `MAX_CONTEXT_CHARS = 32000` (`extensions/project-context/shared/project-state.ts`; `MAX_SUMMARY_CHARS = 6000`, `MAX_LIST_ITEM_CHARS = 800`). ~2.5K chars is a healthy target.
 - Source content from the repo's current `MEMORY.md` **plus** live repo evidence (HEAD, docs, result files).
 - Drop already-executed plan items: if the memory still says a migration/decision is pending but HEAD shows it landed (e.g. `docs/discussion-log.md` + `DiscussionLog/` at `f33da15`), write the completed state instead of repeating the stale conclusion.
 

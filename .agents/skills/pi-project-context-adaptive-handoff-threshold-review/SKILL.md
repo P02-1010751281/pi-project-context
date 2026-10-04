@@ -7,7 +7,7 @@ description: "Derive, test, and independently review adaptive handoff thresholds
 Use when changing adaptive handoff thresholds, budget formulas, summarizer limits, pricing-tier caps, or `/handoff status` diagnostics.
 
 ## Procedure
-1. Inspect `extensions/project-context/handoff.ts`, `tests/handoff-test.mjs`, and the configuration documentation in `README.md`.
+1. Inspect `extensions/project-context/handoff/run.ts`, `tests/handoff-test.mjs`, and the configuration documentation in `README.md`.
 2. Verify the budget in this order:
    - `usable = contextWindow - 16384`
    - reserve `baseline + handoffKeepTokens`

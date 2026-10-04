@@ -4,11 +4,11 @@ description: "Harden or triage the cross-process write lock and claim path (lock
 ---
 
 ## When to use
-Use when a pi-project-context memory write or consolidation hangs (the 5s lock timeout), when `.agents/memory/MEMORY.md.lock` or a claim path may be a non-regular file (directory, FIFO, symlink, dangling symlink), or when changing lock/claim/backup logic in `extensions/project-context/project-state.ts`.
+Use when a pi-project-context memory write or consolidation hangs (the 5s lock timeout), when `.agents/memory/MEMORY.md.lock` or a claim path may be a non-regular file (directory, FIFO, symlink, dangling symlink), or when changing lock/claim/backup logic in `extensions/project-context/shared/project-state.ts`.
 
 ## Key files
 - Lock path: `.agents/memory/MEMORY.md.lock` (per project, under `.agents/memory/`).
-- Code: `extensions/project-context/project-state.ts` (`tryLock`, `acquireClaim`, `stealStaleLock`, backup pruning).
+- Code: `extensions/project-context/shared/project-state.ts` (`tryLock`, `acquireClaim`, `stealStaleLock`, backup pruning).
 - Tests: `tests/consolidation-test.mjs`; run the suite with `node tests/run-all.mjs`.
 
 ## Procedure
