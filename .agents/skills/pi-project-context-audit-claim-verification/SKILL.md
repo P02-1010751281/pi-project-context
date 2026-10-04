@@ -91,6 +91,6 @@ For a publicly published extension, the honest conclusion for unused surface is 
 ## Step 5 — deliver, verify, commit
 
 - New audit goes to `.codestable/audits/YYYY-MM-DD-<topic>-audit-addendum-<scope>.md`; update the **main audit's "unaudited" section** to point at it so the list cannot silently stay stale.
-- Run the gates: `node tests/run-all.mjs` must stay 15/15 (an audit changes docs only, so any test movement means you touched code).
+- Run the gates: `node tests/run-all.mjs` must stay green (an audit changes docs only, so any test movement means you touched code).
 - Commit as `docs(audits): ...` and push once: `git push origin master` reaches **both** push URLs (forgejo + github mirror); verify the mirror separately, `git ls-remote origin` only queries the fetch URL.
 - Hand the owner the leftover non-audit items with current numbers instead of re-deriving them (e.g. sibling repos N commits ahead of `origin/master`, untracked `.agents/memory/*` files and skill dirs).
