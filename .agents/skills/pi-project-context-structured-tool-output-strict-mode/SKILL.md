@@ -7,12 +7,12 @@ description: "Wire strict JSON-schema structured output into pi-project-context 
 Adding or changing structured output for pi-project-context auxiliary calls (e.g. the `record_memory` consolidation tool), or turning on real strict-mode sampling for a route.
 
 # pi-ai facts (re-verify line numbers against the installed version)
-- `shared/llm.ts:103-106` throws when `stopReason === "toolUse"` and there is no text. When `tools` are requested this is the SUCCESS path (the answer lives in `toolCall.arguments`), so this error contract must be relaxed or structured output always fails.
+- `shared/llm.ts` (the `stopReason === "toolUse"` / empty-text branch) throws when there is no text. When `tools` are requested this is the SUCCESS path (the answer lives in `toolCall.arguments`), so this error contract must be relaxed or structured output always fails.
 - `ToolCall.arguments` is already parsed; pi-ai's `parseStreamingJson` also repairs a truncated argument string into a shape-valid object. So check `stopReason === "length"` BEFORE trusting a tool call as complete.
 - Request structured output via `tools: [<tool>]` with `Tool.constrainedSampling = { type: "json_schema", strict: "prefer" }` (`strict: "require"` throws on routes without strict support).
 - Use `strict: "prefer"`. `strict: "require"` throws on routes that do not support it (`resolveJsonSchemaStrictSampling`).
-- OpenAI-compatible providers (commandcode / scnet etc.): `supportsStrictMode` defaults to `false` (`openai-completions.js:1288-1289`). Grammar constraints only appear with `compat.supportsStrictMode: true` in `models.yml` AND an upstream that honors it.
-- Constrained sampling is built by `makeStrictJsonSchema` (`constrained-sampling.js:42-110`).
+- OpenAI-compatible providers (commandcode / scnet etc.): `supportsStrictMode` defaults to `false` (`openai-completions.js`, the provider-options table). Grammar constraints only appear with `compat.supportsStrictMode: true` in `models.yml` AND an upstream that honors it.
+- Constrained sampling is built by `makeStrictJsonSchema` (`constrained-sampling.js` → `makeStrictJsonSchema`).
 
 # Steps
 1. Move the internal representation to code-owned structure (e.g. `MemorySections {project, invariants, pitfalls, index: string[]}`) so headings/order/blank lines come from code, not the model.

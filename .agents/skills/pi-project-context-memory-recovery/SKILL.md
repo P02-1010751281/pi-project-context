@@ -1,11 +1,13 @@
 ---
 name: pi-project-context-memory-recovery
-description: "Diagnose and repair .agents/memory: stale writer, truncation vs poisoned JSON, dropped tails, backups, tests. Use when MEMORY.md lost content."
+description: "Diagnose and repair .agents/memory: stale old-code writer, truncation vs poison, which path clipped it, dropped tails, backups, tests. Use when MEMORY.md lost content."
 ---
 
 ## When to use
 
 `MEMORY.md` looks like a raw model reply (JSON envelope, `memory_markdown` key, fences), ends mid-word/mid-sentence (e.g. `…buildTreePre~`) or silently drops trailing bullets, pi warns like `consolidation reply was not a usable JSON object`, `/memory` reports poison/damage, or a sibling project that installs this extension has suspect memory. Use for repair/verification, not for normal consolidation tuning.
+
+A silent trim of the middle of the document (typically inside Invariants/Pitfalls), or a cap warning / `memory-overflow-*.md` file, is the same family: name the clipping path in section 1b before proposing a fix or a release.
 
 ## 0. Rule out a live old-code writer first
 
@@ -43,8 +45,45 @@ cat project-context.json   # maxMemoryChars, default 32000, range 4000-200000
 - Mid-word cut **without** a marker → older/installed code path (a bare `.slice(0, 24000)` while claiming "keeping every line") or a poisoned reply.
 - `_[memory truncated at N characters: M dropped]_` → the current whole-line cap; a render at/above `maxMemoryChars` (CJK bytes ≈ 3× characters) is cap truncation, not corruption.
 - `MEMORY.md` starting with `{"memory_markdown":` (or an unterminated string/fence/short preamble) is poison, not memory. Truncation and JSON-poison are different failure modes: never copy a poisoned blob into a valid render.
-- Check the truncation logic on disk: `grep -rn "normalizeMemoryDocument\|maxMemoryChars\|truncated at" extensions/project-context/project-state.ts extensions/project-context/consolidate.ts`. The limit must be passed explicitly through normalization, folding, loading, comparison, and recording; a process-global limit or bare `.slice(0, N)` is pre-fix code.
+- Check the truncation logic on disk: `grep -rn "normalizeMemoryDocument\|maxMemoryChars\|truncated at" extensions/project-context/`. The limit must be passed explicitly through normalization, folding, loading, comparison, and recording; a process-global limit or bare `.slice(0, N)` is pre-fix code.
 - A journal with damaged/skipped lines shows as `damaged` counts in `errors.log` and `/memory`; zero usable records is the fail-closed state.
+
+## 1b. Which path clipped it (sectioned drop vs byte clip)
+
+Before proposing a fix, decide **which write path did the clipping** — name it from the code, not from the symptom.
+
+`extensions/project-context/memory/pass.ts` → `resolveReply` classifies every reply into one of three kinds:
+
+- `structured` — the model called the `record_memory` tool.
+- `fallback-sections` — the plain-text reply was accepted by the Markdown extractor (exactly the four known sections).
+- `fallback-opaque` — everything else.
+
+Paths 1–2 go through `renderMemoryDocument`: whole entries are dropped per section and reported via `sectionDropped` / `itemTruncated` — counted, never arbitrary byte loss. Path 3 is the only byte-lossy one: over-cap replies hit `exceedsMemoryCap` → `clipToLineBoundaryBothEnds` (head ~60% + tail ~40%; the middle disappears permanently, leaving only a marker).
+
+```bash
+grep -rn 'sectionDropped\|itemTruncated\|clipToLineBoundaryBothEnds\|exceedsMemoryCap' extensions/project-context/
+ls -lt .agents/memory/memory-overflow-*.md | head
+grep -n 'overflow\|cap\|clip' .agents/memory/errors.log | tail -20
+```
+
+If only `sectionDropped`/`itemTruncated` fire, nothing was silently destroyed — read the counts and the section names before touching code.
+
+**Recover the pre-clip text.** Since `1f0672c` (D2; `v0.2.0` predates it) the reply's **uncut** text is persisted to `.agents/memory/memory-overflow-<timestamp>.md`; the write is best-effort, the log line and the toast name that file, and the pattern is added to the memory dir's local `.gitignore`. Seed `MEMORY.md` back from that file rather than from the head/tail fragments.
+
+**Timing (changed by `00bf797`, the external-edit fix).** The copy is written **after** a successful publish, and only then: the file holds pre-clip *content*, but disk *order* is `MEMORY.md` first, copy second. A pass whose publish was refused (an external edit won — see `the reply was not published` in `errors.log`) writes **no copy at all**, because that reply has no `MEMORY.md` to point at. So a missing copy means one of three things, and the log distinguishes them: the build predates `1f0672c`, the publish was refused, or the process died between the two writes (`report.ts`, the overflow-copy block; design residual R-13).
+
+If no such file exists for the incident, verify the actual loaded code instead of assuming: check the pin at `~/.pi/agent/settings.json` and the installed clone's tag (`git -C ~/.pi/agent/git/git.lentech.site/<org>/pi-project-context describe --tags`) and grep the clone for the marker function.
+
+**Do not expect the over-cap retry to fix it.** The condense retry in `pass.ts` asks the model for a `memory_markdown` string plus a `context` object and is issued with tools disabled — i.e. it steers the reply toward the **opaque** shape. Adoption only tests `!exceedsMemoryCap(condensedText, limit)`, not that sections exist. A retry can therefore come back still opaque; the retry does not migrate output into the sectioned renderer.
+
+**Constraint to state before proposing "migrate it to sections".** Semantic migration of prose into Project/Invariants/Pitfalls requires a model call: the extractor deliberately refuses that guess, because silently misattributing durable facts is worse than clipping. Two legal shapes:
+
+- **M** — re-ask with a sectioned target: prefer the `record_memory` tool; when the sticky no-tools switch is on, require exactly the four sections the Markdown extractor (`sectionsFromMarkdown`) accepts.
+- **N** — migrate only the clipping granularity: drop whole blocks (paragraph/bullet/heading) with counts, no section semantics. This makes the opaque path lossless and makes D1 (section-aware clipping) redundant.
+
+Keep the overflow file (D2) as the safety net in either case.
+
+**Label hygiene in write-ups.** "D2" is ambiguous in this repo. In the post-v0.2.0 follow-up list: D1 = section-aware clipping, D2 = persist the over-cap reply, D3 = session-log retention, D4 = strict-mode end-to-end. But `.codestable/issues/*/structured-consolidation-output/implementation-note.md` carries an unrelated D2 (`toolsAttempted` set before the call). Cite the file plus label, never the label alone.
 
 ## 2. Read through the real paths (do not hand-edit)
 
@@ -91,3 +130,4 @@ Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it
 - Consolidation must fail closed: never write an unparseable model reply as memory — prefer a failed pass, and let `errors.log` capture the raw reply head (≤4000 chars) while the UI shows only the first line.
 - External edits are detected with `memoryComparisonKey` in both `recordMemoryDocument` and `loadMemory`: content-equal renders are never adopted even with a newer mtime; a genuine external edit (different content + newer mtime) is folded as a `replace` record on the next write with an `errors.log` note.
 - Journal rotation at >512KB uses temp → archive → replace with rollback; the temp file name is `memory.jsonl.<epoch-ms>.<uuid>.tmp` so it matches both the memory gitignore and `cleanStaleTemps`.
+- For changing the cap or budget wording itself, use `pi-project-context-memory-cap-budget-change`.

@@ -17,7 +17,7 @@ git diff --check
 涉及 handoff、memory 写入或 compaction prompt 时，还应使用仓库 skill 做真实验证：
 
 ```text
-.agents/skills/pi-project-context-headless-rpc-handoff-validation/SKILL.md
+.agents/skills/pi-project-context-headless-runs/SKILL.md
 ```
 
 该验证必须使用 throwaway sandbox，检查 `HANDOFF.md`、`MEMORY.md`、`memory.jsonl`、backup、`CONTEXT.md`、`errors.log` 和 session JSONL；

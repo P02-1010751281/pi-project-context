@@ -1,27 +1,35 @@
 ---
-name: pi-project-context-headless-route-probe
-description: "Probe pi model routes for headless or independent-review runs without disabling extension-registered providers. Use when a run reports a blocked route."
+name: pi-project-context-headless-runs
+description: "Run headless pi against this extension: probe model routes for review or helper runs, and validate handoff end-to-end over RPC."
 ---
 
-# Headless model-route probing for pi-project-context
+# Headless pi runs (pi-project-context)
 
 ## When to use
+
 - Before launching a sandboxed independent-review round (`pi -p` over a read-only `/tmp` copy) or any headless helper call that must reach a custom provider.
 - Whenever a headless run reports `Model ... not found`, `Unknown provider "<id>"`, `402 Insufficient Balance`, an invalidated OAuth token, or hangs with zero output for many minutes.
+- After changing handoff code (`extensions/project-context/handoff/`), compaction-prompt handling, `handoffKeepTokens`/`handoffLanguage` logic, or memory write paths, to prove the feature works end-to-end: unit tests in `tests/*.mjs` do not exercise pi's real prompt/turn alignment.
 
-## Trap: `--no-extensions` unregisters custom providers
+## Part 1 — Probe a model route first
+
+### Trap: `--no-extensions` unregisters custom providers
+
 Providers such as `commandcode` are **registered by an extension**, not by pi core. A probe that passes the blanket `--no-extensions` drops the registration before model-id resolution, so every id fails with `Model not found` / `Unknown provider "commandcode"` — even the model the live session itself is using. That false signal produced a ~20-minute zero-output review round and a wrong "the balance is exhausted" diagnosis before it was caught.
 
 Disable only the extension under test, keeping provider registration:
+
 ```bash
 pi -p --no-project-context \
   --provider commandcode \
   --model commandcode/deepseek/deepseek-v4.1-flash-fast \
   "Reply with exactly OK."
 ```
+
 Rule of thumb: prefer the narrowest disable flag (`--no-project-context`); never `--no-extensions` when the goal is to exercise a provider.
 
-## Probe one route cheaply before starting a round
+### Probe one route cheaply before starting a round
+
 Do not discover an unusable route only after a round times out. Run the one-line probe first and read the error:
 
 | Error | Meaning / next action |
@@ -34,10 +42,11 @@ Do not discover an unusable route only after a round times out. Run the one-line
 | `Model ... not found` | if `--no-extensions` was passed, suspect the flag first; otherwise the id is not resolvable in a fresh process even when `--list-models` shows it |
 | `Unknown provider "<name>"` | the provider's registering extension is not loaded |
 
-## Do not record a failed probe as a review round
+### Do not record a failed probe as a review round
+
 An empty or timed-out transcript is a provider failure, not a clean review. Per the project invariant, paid-route failures must never be recorded as successful validation: leave the round unfiled, re-probe, and only then restart the round.
 
-## Enumerate the routes before calling a round blocked
+### Enumerate the routes before calling a round blocked
 
 A single `429` from `commandcode/deepseek/deepseek-v4.1-flash-fast` parked a whole review round for a day (2026-10-03) because the operator trusted a note saying this machine had **one** usable route. It had four:
 
@@ -50,3 +59,41 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
 - **Trap: `pi auth check` lies about extension-registered providers.** For `commandcode` and `scnet` (both registered by extensions) it answers `{"status":"not_ready","reason":"provider_not_found"}` even when the route answers fine. It is only meaningful for providers pi core knows: measured `deepseek` → `ready` (api_key), `openai-codex` → `invalid_state`.
 - Measured 2026-10-03 on this host: `commandcode/deepseek/deepseek-v4.1-flash-fast` → `429` weekly (reset `2026-10-08T08:37:39Z`); every probed `scnet/*` model → `403 … does not support Token Plan` (the relay's plan, not the route — but note `scnet/DeepSeek-V4.1-Flash-Event` was serving the live session, so the relay itself was up); `deepseek/deepseek-flash` and `deepseek/deepseek-v4-pro` → `OK`; `openai-codex/*` → credentials invalid.
 - **Record the serving route in the round's prompt and transcript.** When a round runs on a different model than the protocol's original one, the round table must be able to say which model judged what: rounds R1–R8 of the external-edit issue ran on `commandcode/deepseek/deepseek-v4.1-flash-fast`; R9 and code-review round 1 ran on `deepseek/deepseek-v4-pro` because the former was `429` until 2026-10-08.
+
+## Part 2 — Validate handoff end-to-end over RPC
+
+### Preconditions
+
+- Extension entry point: `extensions/project-context/index.ts` in the repo root.
+- Use a throwaway project directory (e.g. `mktemp -d`) so `.agents/memory/` artifacts do not pollute the repo.
+- Old `pi` processes must be exited first; a stale process holding `MEMORY.md.lock` will stall writes.
+
+### Procedure
+
+1. Create a sandbox project and drive pi in RPC mode with extensions/skills/prompt-templates disabled except the extension under test:
+
+   ```bash
+   sandbox=$(mktemp -d)
+   cd "$sandbox"
+   pi --mode rpc -ne -ns -nt --thinking off \
+     -e <repo>/extensions/project-context/index.ts -- <prompt-file-or-stdin>
+   ```
+
+   `-ne`/`-ns`/`-nt` disable extensions, skills, prompt templates so only the `-e` extension loads; `--thinking off` keeps output deterministic.
+
+2. Drive the session far enough to cross the handoff threshold (or temporarily lower `handoffKeepTokens` in `.agents/memory/project-context.json` in the sandbox) so `runHandoff` actually fires.
+
+3. Inspect the artifacts in `$sandbox/.agents/memory/`:
+   - `HANDOFF.md` — check headers/language match the configured `handoffLanguage` (`auto`|`zh`|`en`), and that old handoff prompts appear as the one-line `[handoff prompt omitted]` marker rather than being deleted.
+   - `MEMORY.md` + `memory.jsonl` — confirm a `replace` record was appended, not an overwrite outside the journal.
+   - `memory-log-*.jsonl` / `MEMORY.md.memory-backup-*` — confirm backups were taken when a write occurred.
+   - `errors.log` — confirm no unparseable-model-reply or lock errors.
+
+4. For language resolution, send a short Chinese user turn and repeat: the handoff doc headings should render in Chinese when `handoffLanguage: auto` resolves to `zh`.
+
+### Gotchas
+
+- Replay blocks must not open with `assistant(toolCall)` — Anthropic/Gemini routes reject it with 400. Verify the omitted-marker substitution preserved `findCutPoint` slicing and toolCall/toolResult pairing.
+- `session_shutdown` always runs a forced silent consolidation pass, so replacing a session produces extra `MEMORY.md` + backup writes — that is expected, not a bug.
+- Known pre-existing gap: when the whole session fits in `handoffKeepTokens`, `runHandoff` returns before any notify and the user sees a silent no-op. Do not mistake that for a failure of your change.
+- The keep budget is an upper bound; do not back-fill old prompts to "use" the budget — refilling breaks turn alignment.

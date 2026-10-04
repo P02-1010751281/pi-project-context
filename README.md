@@ -64,7 +64,7 @@ node tests/run-all.mjs
 git diff --check
 ```
 
-涉及 handoff、memory 写入或 compaction prompt 时，按 `.agents/skills/pi-project-context-headless-rpc-handoff-validation/SKILL.md` 使用 throwaway sandbox 做真实 RPC 验证；
+涉及 handoff、memory 写入或 compaction prompt 时，按 `.agents/skills/pi-project-context-headless-runs/SKILL.md` 使用 throwaway sandbox 做真实 RPC 验证；
 provider 的 402/429/credits 错误只能记录为环境阻塞，不能算 handoff 通过。
 
 ## 许可证

@@ -32,7 +32,7 @@ Changing anything about the memory character budget in `pi-project-context`: `ma
    ```
    Add/extend `tests/memory-budget-test.mjs` with cases that pin exact numeric values and label strings. Run the mutation matrix (each guard's mutation must redden only that probe, plus a positive control) per `pi-project-context-gate-probe-mutation-check`.
 
-8. **Review + rollout.** Protocol/boundary changes (prompt contract, marker semantics, message strings) go through `pi-project-context-sandboxed-independent-review`; keep user-visible strings and numbers identical when refactoring shared helpers. Running pi sessions use the installed clone — they will not see the change until rebuild/reinstall and restart.
+8. **Review + rollout.** Protocol/boundary changes (prompt contract, marker semantics, message strings) go through `pi-project-context-independent-review`; keep user-visible strings and numbers identical when refactoring shared helpers. Running pi sessions use the installed clone — they will not see the change until rebuild/reinstall and restart.
 
 ## Gotchas
 

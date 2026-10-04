@@ -18,7 +18,7 @@ Use when a pi-project-context memory write or consolidation hangs (the 5s lock t
 4. Recheck ownership before every destructive op (`claimStillOurs`) using a per-acquisition claim token; a reclaimed claim invalidates the previous holder's token so it cannot delete the new lock.
 5. Bound backups: hard cap 20 (`max(KEPT, 20)` self-guarding), deterministic tie-break by name when mtimes collide, and skip entries whose `stat` fails instead of treating size as 0 and deleting them.
 6. Fix the tests so they are not vacuous: separate the pathological-path probe from the assertion, so a lock failure makes the test fail (a FIFO/rename probe with no assertion always passes). Add directory, FIFO, symlink, dangling-symlink, backup-cap, and tie-break regressions.
-7. Verify: `node tests/run-all.mjs` (all tests green; 8/8 at commit `6818935`, 9/9 now), plus a pathological matrix and a multi-writer stress run expecting 0 overlap and 0 leaked locks.
+7. Verify: `node tests/run-all.mjs` (all tests green), plus a pathological matrix and a multi-writer stress run expecting 0 overlap and 0 leaked locks.
 
 ## Gotchas / limits
 - `node:fs` exposes no `flock`, so the final `check -> unlink` is not kernel-atomic. Trigger needs a process suspended >=30s inside the window plus a concurrent steal; impact is transient mutex loss only (writes are atomic renames with pre-overwrite backups). Document trigger and impact instead of claiming closure.
