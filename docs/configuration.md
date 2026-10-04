@@ -112,11 +112,13 @@ auto 忽略 ratio；要比例请用裸 `/handoff 0.6`）。`/handoff` 写入时�
 
 **入口关系**：`/project-context` 是设置与开关的权威入口——四个特性（`archive`、`memory`、`autolearn`、`handoff`）的 `on|off` 写同一批配置键，
 `/handoff on|off` 与 `/autolearn on|off` 只是同一开关的快捷入口；`memory`、`archive` 没有自己的 `on|off`，只能走伞形。`/project-context status` 是一屏总览
-（特性、辅助调用、配置路径、memory 与 context 状态行），`/context` 只打三条路径（context 文件、session index、session logs）——它**不是** status 的子集，
-那三条路径在 status 里没有。`/memory`、`/session-log`、无参 `/autolearn`、`/handoff now` 各自负责本功能的动作。
+（特性、辅助调用、配置路径、memory 与 context 文件状态行），`/context` 打三条路径（context 文件、session index、session logs 目录）。
+两者**只重合一条**：context 文件路径——status 标 `Context file:` 并附更新时间，`/context` 打同一个 `Context file:`；
+session index 与 session logs 目录只在 `/context` 里。`/memory`、`/session-log`、无参 `/autolearn`、`/handoff now` 各自负责本功能的动作。
+**一个事实一个名字**（v0.2.3 起）：伞形首行只报特性，标签 `Features:`；context 文件那行在两条命令里都叫 `Context file:`。
+旧版有三套叫法：伞形首行与 `/context` 都叫 `Project context:` 却指两样东西，context 文件在 status 里又叫 `Context:`。
 命令面**有意不收束**：把特性级 `on|off` 或 `/context` 折进伞形属于破坏性用户面变更，而本机无法度量命令使用（pi 的 `session.jsonl`
 只存展开后的消息，没有字面 `/cmd`），所以保留现有入口，等有使用证据再谈。
-
 ## flags
 
 ```text

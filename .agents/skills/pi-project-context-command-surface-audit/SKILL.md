@@ -28,7 +28,7 @@ print a different body and confirm exactly the equality assertions fail). Full p
 ## 3. Classify the rest as design, not defects
 
 - Feature toggles are duplicate *surface* only: `/project-context on|off`, `/handoff on|off` and `/autolearn on|off` all end in `setFeature()` in `shared/config.ts`. Deleting any entry point is a destructive user-surface change, not a cleanup.
-- `/context` is not a subset of `/project-context status`: the umbrella prints Config plus memory/context status lines, `/context` prints the context file path, session index and session-logs paths. Retiring it would lose those paths.
+- `/context` overlaps `/project-context status` in exactly one place (measured: status 6 lines / 761 chars, `/context` 3 lines / 379 chars): the context file path. The umbrella prints it as `Context file: <path> — updated <ts>`, `/context` prints the same `Context file:` line without the age; the session index and the session-logs directory appear only in `/context`. So it is not a strict subset, and retiring it would lose those two paths. One fact keeps one name (v0.2.3): the umbrella's first line is `Features:`, never a second `Project context:` meaning.
 - Asymmetry worth recording: the umbrella toggles four features (archive, memory, autolearn, handoff) but only handoff and autolearn have their own `on|off`; memory and archive do not.
 
 ## 4. Usage is not measurable on this machine (do not skip)
