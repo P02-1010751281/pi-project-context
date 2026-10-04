@@ -1,11 +1,12 @@
 ---
 doc_type: design
 issue: command-surface-convergence
-status: design-draft
-revision: 6
+status: design-frozen
+revision: 7
 date: 2026-10-04
-decides: 命令面按层归位的完整契约；owner 已回答五问并追加兼容链议题
-supersedes: revision 5 的待决项；owner 定向「裸比例硬切、/session-log 只读+write、伞形名保留、budget、model/max-tokens 不拆」
+implemented_by: 0399e04（行为）、463ee07（文档）、4f1e26b（技能）；tag v0.3.0
+decides: 命令面按层归位的完整契约；五问已答；兼容链一次性迁移已落地；二级词定为 summary/recent
+supersedes: revision 6 的待决项与「兼容链只立规则、v0.4.0 再退」的暂缓结论（owner 要求一步到位）
 ---
 
 # 命令面收束设计（revision 6：定稿候选）
@@ -49,7 +50,7 @@ owner 判定精细化调用的理由不充分 ⇒ 维持单条 dedicated 辅助�
 - CLI flag 不动：`handoff-ratio` 仍取 `auto|0.4|40%|off`。
 - 值形态：`threshold` 走 `parseRatio`（`>1` 除以 100）⇒ `40`、`0.4`、`40%` 等价；`budget` 走 `parseTokenCount` ⇒ `20000`、`12k`、`1.5k`。
 
-### 1.4 二级词命名（owner 认为 `target`/`keep` 会迷惑）：建议 `summary` / `recent`
+### 1.4 二级词命名：`summary` / `recent`（已定并落地）
 
 两个数**量的不是同一件事**，现有词各自说不出量的是什么：
 
@@ -139,45 +140,33 @@ owner 判定精细化调用的理由不充分 ⇒ 维持单条 dedicated 辅助�
 代码 ~130 行；测试 ~70 行；docs + CHANGELOG ~40 行。经验修正（本仓偏低约 1.7x）⇒ 预算 **~400 行**。
 属 `extensions/` ⇒ **tag + pin + 重启**；破坏性 ⇒ **v0.3.0**。
 
-## 7. 兼容链：现状、实测与建议（owner 新议题）
+## 7. 兼容链：实测与处置（已落地）
 
 **结构**（`shared/config.ts`）：三条来源叠在扁平键之上——① 同文件嵌套 `features.*` / `autolearn.*` / `handoff.*`；
 ② 旧分文件 `.agents/memory/autolearn.json`；③ 全局 `~/.pi/agent/auto-handoff.json`。
 
-**实测（2026-10-04）**：
+**实测（2026-10-04，现场数值只记在 `.codestable/`）**：全机 9 个 `project-context.json` 全部扁平 23 键、0 个嵌套；
+`autolearn.json` 0 个；`~/.pi/agent/auto-handoff.json` 不存在。扁平化提交 `b5d825d`（2026-09-25）之后新增的 8 个键从来没有回退项
+——链**长但静态**。共享同一 config 面的兄弟实现只读扁平键。
 
-| 度量 | 值 |
-| --- | --- |
-| 全机 `project-context.json` | **9 个**，全部 23 键扁平，**0 个**用嵌套形态 |
-| 全机 `autolearn.json` | **0 个** |
-| `~/.pi/agent/auto-handoff.json` | **不存在** |
-| 无任何回退链的键 | **8/23**（`consolidateTurns`、`consolidateIntervalMs`、`forceDedupeMs`、`maxTokens`、`maxOutputTokens`、`maxMemoryChars`、`provider`、`model`） |
-| 带嵌套 `features.*` 的键 | 4（`archiveEnabled`、`autoConsolidate`、`autoLearn`、`handoffEnabled`） |
-| 带嵌套 `autolearn.*` 的键 | 3（`autolearnAt/Turns/IntervalMs`） |
-| 带嵌套 `handoff.*` 的键 | 8（`handoffAdaptive` 起至 `handoffLanguage`） |
-| 读全局 `auto-handoff.json` 的键 | 9（上列 8 个 ＋ `handoffEnabled`） |
-| 读旧分文件的键 | 2（`autoLearn`、`autolearnAt`） |
-| 扁平化提交 | `b5d825d` **2026-09-25** ⇒ 扁平形态仅 **9 天** |
+**已实现（owner 要求一步到位，不拖到 v0.4.0）**：三条来源收进唯一一个 `legacyConfigPatch()`，在某项目**首次读配置**时
+折进扁平键、整份写回（走跨进程锁），并由 `getConfig` 记下「moved from …」交给 session_start 提示；此后读路径只有扁平键。
+扁平键已有的值永远优先，迁移不覆盖当前设置。冻结规则因此是**结构性**的：新键不可能顺手得到回退项，
+并有一条断言（嵌套记录里的 `handoff.maxTokens` 必须被默认值压过）钉住它。
 
-**反直觉发现**：链**没有在增长**。8/23 个键（含全部后加的 `consolidate*`、`forceDedupeMs`、`max*`）**压根没有**回退项——
-即"新键不继承旧形态"已是既成事实，只是没写成规则。链长但静态。
+**静默丢配置的顾虑**已按「先搬后删」解决：迁移把旧值**先写进扁平文件**再让旧形态消失，所以不存在「旧项目静默回落默认值」这一步。
+## 8. 非目标与已决
 
-**建议（三档）**：
+**非目标**：不按层拆 `model`/`max-tokens`（§1.2）；命令面不加扩展开关（只有 run 级 flag）；不改 pi CLI flag；
+不做归档 retention；不引入命令别名。
 
-1. **现在（v0.3.0，零风险）**：把既成事实写成规则并钉住——*新增键不得带旧形态回退项*，补一条断言（新键忽略嵌套值）。不删任何回退，避免混入静默配置行为变更。
-2. **v0.4.0 候选**：退役两条**旧文件**读取（`autolearn.json`、`auto-handoff.json`）。机器可证依据：全机 0 命中；且是"旧分文件"时代的产物。
-   代价：从未写过配置的旧项目会静默回落到默认值——**静默丢配置比丢命令更重**（命令会报错，配置不会）。
-3. **嵌套形态退役**：需要一次"检测到嵌套 → 写扁平 + 通知"的显式迁移才安全；但按本仓判据，*新机制必须先有现场事实*，而今天是 0/9 ⇒ **只能记为 residual，不做**。
-   判定窗口建议：扁平形态 ≥ 60 天 **且** 新一轮全机扫描仍 0 命中。
+**已决（原五问 + 兼容链 + 技能处置）**：
 
-**附带边界**：兼容链的读路径只影响"自 2026-09-25 起从未写过配置的项目"——任何一次配置写入都会把文件刷成扁平（写整个文档），所以影响面天然收敛。
-
-## 8. 非目标与待决
-
-**非目标**：不按层拆 `model`/`max-tokens`（§1.2）；命令面不加扩展开关；不改 pi CLI flag；不做归档 retention；不引入命令别名；不在 v0.3.0 删任何配置兼容链。
-
-**待决**：
-
-1. §1.4 二级词：`budget summary` + `budget recent`（建议）／只改一个／`verbatim`？
-2. §7 兼容链：接受"现在只立规则、v0.4.0 再退旧文件、嵌套形态记 residual"？
-3. 未跟踪技能 `.agents/skills/pi-project-context-consolidation-prompt-rule/`（40 行，desc 162）两处违规已复核：正文含兄弟仓测量值（`UF 207/205`、`42,006/18,976`）；守卫表达式写死字面数字而非形态模式。处置：改后收编／删除／暂留？
+1. `/handoff` 裸比例：硬切（已落地，且有一条断言禁止它再起作用）。
+2. `/session-log` 无参：只读 ＋ `write`（已落地，附「删掉存档后裸调用不会重建」的只读证明）。
+3. 伞形名：保留 `/project-context`（`/settings` 与 pi 撞名、`/pc` 不直观）。
+4. `budget` ＋ 二级词 `summary`/`recent`（已落地，含动词到键的映射断言）。
+5. `model`/`max-tokens`：维持跨层；将来若出现「某一层单独被配额卡住」的现场事实，再做可选覆盖 + 继承默认。
+6. 兼容链：一次性迁移（§7），不留常驻读路径。
+7. 未跟踪的两个技能：`command-retire-rename` 并入 `command-surface-audit`；`consolidation-prompt-rule` 修两处违规后收编（`4f1e26b`）。
+   同时把缺口补到 autolearn 提示词本身：跨仓边界、形态而非测量值、描述一行短句、已有技能覆盖时宁可不提案。
