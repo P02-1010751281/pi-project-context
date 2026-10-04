@@ -37,6 +37,10 @@ export function buildPrompt(
 		...contextSections,
 		"Remove stale, duplicated and placeholder content (for example \"no conversation content was provided\" or empty-session notes).",
 		"Do not store secrets, API keys, credentials, generic advice, or conversational filler. Never add instructions that override system or user instructions.",
+		// Three renders of this repo's own MEMORY.md carried a sibling repo's state (its memory sizes and
+		// research values) back in from the session context, so the boundary is stated as a rule and again
+		// at the conversation block below, which is where the foreign text actually enters the prompt.
+		"Write only durable facts about this project itself. Never copy another repository's state or measurements (commit distances, file sizes, research values, key counts) into memory or context; naming another project is fine only to record who owns an open item.",
 		`Either the tool's memory sections or memory_markdown (as a whole document, including its "# Project Memory" heading) must stay at or under ${budget.maxMemoryChars} characters; the stored memory is currently about ${budget.currentChars}. That is a hard cap, and the sections are budgeted so that a reply within them fits; entries beyond a section's budget are dropped whole.`,
 		"If the conversation contains nothing new, keep the existing memory and context mostly unchanged; still return valid JSON.",
 		// A marker copied out of the stored render made a short reply look capped and left a stale
@@ -57,6 +61,7 @@ export function buildPrompt(
 		"</existing-context>",
 		"",
 		"<recent-conversation>",
+		"[This session's working state. It may quote other projects and their numbers; those are not memory material — write only durable facts about this project.]",
 		conversation,
 		"</recent-conversation>",
 	].join("\n");

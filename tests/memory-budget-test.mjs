@@ -41,6 +41,15 @@ try {
 	check("the prompt states the cap and the current size", budgeted.includes("at or under 4000 characters") && budgeted.includes("currently about 1234"));
 	check("the prompt calls it a hard cap", budgeted.includes("hard cap"));
 	check("the prompt forbids writing truncation markers and names both shapes", budgeted.includes("Never write omission or truncation markers") && budgeted.includes("_[context truncated: … characters dropped]_"));
+	console.log("\n=== the prompt draws the cross-project boundary where the conversation enters ===");
+	// Three renders of this repo's own MEMORY.md pulled a sibling repo's state back in from the session
+	// context, so the boundary is stated twice: as a rule, and at the block that carries the foreign text.
+	const boundaryRule = "Write only durable facts about this project itself";
+	const boundaryCaption = "[This session's working state. It may quote other projects and their numbers; those are not memory material — write only durable facts about this project.]";
+	check("the prompt states the boundary as a rule", budgeted.includes(boundaryRule) && budgeted.includes("Never copy another repository's state or measurements"));
+	check("naming another project stays allowed for ownership", budgeted.includes("naming another project is fine only to record who owns an open item"));
+	check("the caption opens the conversation block, before its content", budgeted.includes(`<recent-conversation>\n${boundaryCaption}\nconversation`));
+	check("the caption sits below the existing memory and context blocks", budgeted.indexOf(boundaryCaption) > budgeted.lastIndexOf("</existing-context>"));
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
 	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
 	const freeFitted = fitMemoryInput("# Project Memory\n\n- a free-form fact\n", "", 8192, { maxTokens: 32768 });
