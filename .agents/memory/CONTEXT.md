@@ -1,28 +1,29 @@
 # Project Context
 
-Last updated: 2026-10-04T11:15:53.320Z
+Last updated: 2026-10-04T12:36:41.194Z
 
 ## Summary
 
-This session ran a full-tree sweep (375 tracked files, six dimensions: dead pointers, machine-bound paths, stale claims, external-repo state, listing/defensive density, command consistency) after the owner challenged the previous pass for reaching outside the project. The curated surfaces held 5 dead pre-split module references in four skills (handoff.ts, project-state.ts) - fixed, and every extensions/... reference under .agents/skills resolves now (12/12); the 89 dead references across 54 files under .codestable/ are frozen records and were deliberately left. The sweep also caught a third re-leak of sibling measurements into CONTEXT.md, which had been re-bundled into a skills commit by my own `git add -A`, and an anomalously tracked autolearn candidate. Fixes landed as ad78038 (skills module paths) and 6d49e2c (memory render + boundary re-applied), both pushed to forgejo and the github mirror, working tree clean, tests 15/15, extensions/ still byte-identical to v0.2.1 so no new tag.
+This session finished a full-tree quality sweep and then answered the owner's question about which of the extension's six slash commands need consolidating. The sweep's fixes (dead pre-split module paths in the skills; the memory render with the external-state boundary re-applied) are committed and pushed to both push URLs, tree clean, tests 15/15, and extensions/ is still byte-identical to v0.2.1, so no tag is warranted. The command investigation found one genuine duplication - memory status is formatted twice (index.ts memoryStatusLine for /project-context status versus memory/report.ts for /memory) and the two wordings have already drifted - plus three overlaps that are design rather than defects, and one asymmetry (handoff and autolearn carry their own on|off, memory and archive do not). Command usage turned out to be unmeasurable from the artifacts, so no command or verb removal is evidence-backed; the owner still has to decide on the formatter dedup (code change, new tag) and on a docs-only 'which command is canonical' paragraph.
 
 ## Key points
 
-- Curated-surface dead pointers: 5, all in four skills naming pre-split extensions/project-context/handoff.ts and project-state.ts; corrected to handoff/run.ts and shared/project-state.ts, rechecked 12/12 valid.
-- .codestable/ dead pointers: 89 across 54 files, expected frozen history - rewriting them would falsify the evidence they preserve, so they stay.
-- Machine-bound paths judged: HANDOFF.md's absolute repo paths are pi-generated session state, tests/handoff-test.mjs's /home/user/.pi/... strings are fixture strings, tests/harness.mjs's legacy pi path is an intentional fallback - none is a defect.
-- Stale-claim check: test-count claims match reality (15 tests / 15/15), the old pi bundle path survives only inside .codestable history where it was accurate at the time.
-- External-state check: the curated surfaces hold only the allowed form (naming a repo plus who owns the open item); the 193 sibling mentions live in .codestable as evidence.
-- Third re-leak: the 10:54:28 render rewrote CONTEXT.md with the sibling commit distances and the two renders' character counts that had just been removed - hand cleanup is only good until the next pass.
-- Process slip disclosed: commit 015b025 staged with `git add -A` and swept that render churn (plus a MEMORY.md path fix) into a docs(skills) commit, violating the render-gets-its-own-commit invariant; 6d49e2c re-applies the boundary and the discipline is now explicit pathspecs only.
-- Anomaly found: .agents/memory/skill-candidates/pi-project-context-consumer-alert-triage.md is tracked although candidates are otherwise untracked, and it is already superseded by the promoted auxiliary-alert-storm-triage skill; its hard-coded sibling repo names were removed this pass.
-- Commits ad78038 and 6d49e2c are identical on forgejo and the github mirror; HEAD 6d49e2c, 0 dirty, tests 15/15.
-- extensions/ is byte-identical to v0.2.1 across these commits, so no release tag is warranted; a prompt-level boundary line would change that.
+- Sweep fixes landed and pushed to both push URLs; per the last check HEAD is 6d49e2c, tree clean, tests 15/15, extensions/ byte-identical to v0.2.1 so no new tag.
+- Command surface mapped: /project-context umbrella (status, on|off <archive|memory|autolearn|handoff|all>, model, max-tokens, max-memory); /handoff 12 verbs (status, on, off, auto, keep, target, thinking, send, draft, guard, lang, now); /autolearn (run now, list, approve, reject, on, off); /memory (status, update); /session-log (write now, import); /context (three paths). docs/configuration.md documents all six and all six are registered for argument completion.
+- Real duplication: memory status has two implementations that have already drifted - the /memory wording (memory/report.ts) has a journal-unreadable branch ('delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl') that the umbrella status line (index.ts memoryStatusLine) lacks, and the other branches are worded differently ('No project memory yet: X' versus a bare source plus size).
+- Toggles: /project-context on|off, /handoff on|off and /autolearn on|off all end in setFeature (shared/config.ts), so there is no logic duplication, only surface duplication; the asymmetry is that the umbrella covers four features while only handoff and autolearn have their own on|off.
+- /context versus /project-context status is not a subset relationship: the umbrella prints Config plus memory/context status lines, /context prints the context file, session index and session-logs paths, so retiring /context would lose those paths.
+- Evidence boundary: pi's session.jsonl stores expanded user/assistant/toolResult messages with no literal /cmd token and no notify text; searching four repos' session-logs for seven command names and nine notify/status strings returned 0 hits, so 'which command is unused' is not measurable on this machine and cannot ground a removal.
+- Search cost: a Projects-wide find|grep over all session-logs timed out at 600s (one consumer repo's session-logs is multi-GB); the workable form is rg per repo with --max-filesize.
+- No code or doc change was made in this phase; the deliverable was the analysis itself, which is the reason the phase produced no commit.
+- Recommended set given to the owner: do the shared memory-status formatter (code change under extensions/ -> new tag, pin bump, restart; test both entry points agree on every branch and that the journal-unreadable case is covered); optionally add a docs-only paragraph on entry-point relationships; do not converge the user surface without evidence.
 
 ## Open tasks
 
-- Owner decision: add a boundary instruction to the consolidation prompt (memory/prompt.ts) so a render cannot re-introduce external state - a code change under extensions/, which would require a new tag, a pin bump and a session restart; ready to open as an issue with a test.
-- Owner decision: the tracked autolearn candidate pi-project-context-consumer-alert-triage.md - keep it tracked, untrack it, or delete it now that its skill is promoted.
+- Owner decision: dedupe the memory status formatter into one helper used by /project-context status and /memory, carrying the journal-unreadable branch into the umbrella line; code change under extensions/ so it needs a new tag, pin bump and pi restart; ready to open as an issue with a test asserting both entry points print identical status for every branch.
+- Owner decision: add a docs-only 'entry point relationship' note to docs/configuration.md (the umbrella is the canonical toggle place; /context is a cheap path lookup; feature-level on|off kept for muscle memory) - no tag needed; offered, awaiting go-ahead.
+- Owner decision: whether to open an issue (not implement) for converging the user surface - folding the feature-level on|off verbs and /context into the umbrella - since that is a destructive surface change needing a design doc plus usage evidence that does not exist today.
+- Owner decision: a boundary instruction in the consolidation prompt (memory/prompt.ts) so a render cannot re-introduce external state - a code change under extensions/, needing a new tag, pin bump and restart.
 - Restart the two pi processes older than the v0.2.1 install so the refusal fix actually loads; `pi update --extensions` only replaces on-disk code.
 - Owner review of the accumulated audit findings (stop knob growth, legacy compat retirement window, handoff/memory shutdown coupling, D2 dead export, D4 per-session migration cost, lock hygiene, the corrected D7 attribution).
 - Sibling repos (their call, handed back): UF's quantified block dropped by the new render needs merging back again; a consumer render must be tested against HEAD before it is committed or merged; both repos still hold an uncommitted pi-rendered MEMORY.md plus unpushed local commits, and UF's memory file sits over its own maxMemoryChars so its cap path can clip the tail.
@@ -30,4 +31,4 @@ This session ran a full-tree sweep (375 tracked files, six dimensions: dead poin
 - Parked: option M (retarget the over-cap condensation retry at record_memory) and option N (rejected), plus whether D1 becomes wontfix.
 - Note: the ~/.pi repo still carries another session's dirty files (agent/custom-providers/scnet/models.json plus a .bak) that the v0.2.1 pin commit deliberately did not touch.
 
-<!-- latest-session-title: Full-tree sweep: dead pointers fixed, render re-leak caught a third time, boundary re-applied -->
+<!-- latest-session-title: Full-tree sweep closed; command-surface consolidation triaged (one real dedup, no usage telemetry) -->

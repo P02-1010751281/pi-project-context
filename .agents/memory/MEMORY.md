@@ -2,11 +2,11 @@
 
 ## Project
 - pi-project-context is a pi coding-agent extension that maintains durable project memory (MEMORY.md, CONTEXT.md) plus session context; written in TypeScript under extensions/project-context/.
-- Module layout: memory/store.ts (journal, atomic write, external-edit adoption), memory/report.ts (record_memory tool, refusal gating), memory/pass.ts (ConsolidateOutcome.basisKey), memory/sections.ts, memory/journal.ts, memory/document.ts, memory/poison.ts, memory/backup.ts, shared/migrate.ts, handoff/run.ts, handoff/prompt.ts, handoff/summary.ts, handoff/settings.ts, handoff/session-settings.ts, handoff/threshold.ts, handoff/handoff.ts (test-only barrel), autolearn/* (8 files, 729 lines), archive/* (4 files, 687 lines), shared/config.ts, shared/llm.ts, shared/call-policy.ts, shared/lock.ts.
+- Module layout: memory/store.ts (journal, atomic write, external-edit adoption), memory/report.ts (record_memory tool, refusal gating), memory/pass.ts (ConsolidateOutcome.basisKey), memory/sections.ts, memory/journal.ts, memory/document.ts, memory/poison.ts, memory/status.ts (the one memory-status wording both entry points print), memory/backup.ts, shared/migrate.ts, handoff/run.ts, handoff/prompt.ts, handoff/summary.ts, handoff/settings.ts, handoff/session-settings.ts, handoff/threshold.ts, handoff/handoff.ts (test-only barrel), autolearn/* (8 files, 729 lines), archive/* (4 files, 687 lines), shared/config.ts, shared/llm.ts, shared/call-policy.ts, shared/lock.ts.
 - The extension has 58 .ts modules totalling about 7,772 lines; the 2026-10-03 complexity audit has covered all 58 in the main audit plus three addenda, addendum 3 closing autolearn/* and archive/*.
 - Tests live in tests/ with run-all.mjs as the entry point, run via `node tests/run-all.mjs` (15 tests, all green); tests import the barrels (handoff/handoff.ts, shared/project-state.ts), so a name-based coverage check undercounts.
 - Process artifacts live under .codestable/ (issues/, audits/, attention.md); each issue dir holds its design doc, design archive, fix note, review report and review prompts/transcripts.
-- Runtime memory state lives in .agents/memory/ (tracked: .gitignore, MEMORY.md, CONTEXT.md, HANDOFF.md, project-context.json; untracked: memory.jsonl, session-logs/, backups, skill-candidates/ mostly); project-local skills live in .agents/skills/ (18 tracked skills).
+- Runtime memory state lives in .agents/memory/ (tracked: .gitignore, MEMORY.md, CONTEXT.md, HANDOFF.md, project-context.json; untracked: memory.jsonl, session-logs/, backups, skill-candidates/ mostly); project-local skills live in .agents/skills/ and are tracked.
 - Docs live in docs/ (README.md as index plus architecture.md, configuration.md, handoff.md and siblings); CHANGELOG.md sits at the repo root and records per-version feat/fix changes derived from tagged ranges, excluding docs and audit commits.
 - Release model: a git tag consumed through a pinned entry in ~/.pi/agent/settings.json, installed into ~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context.
 - There is a single git remote origin carrying two push URLs (forgejo ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git and github mirror ssh://git@ssh.github.com:443/P02-1010751281/pi-project-context.git), so one `git push origin master` reaches both.
@@ -15,6 +15,7 @@
 - The pi host bundle lives in the managed install tree: `~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/dist/`, with the active version in `~/.pi/agent/install/current-version` (1.0.2 on 2026-10-04); the old `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/` copy is a leftover shell.
 - Consumer repos on the same machine (Quantum_Matrix, UniField, CipherCat, pi-custom-providers) are this extension's only runtime: they supply field evidence and receive local commits only. Their volatile state belongs in the audit, not here.
 - Repo scale for sweeps: about 375 tracked files / 3.09 MB, split between curated surfaces (docs/, .agents/skills/, tests/, extensions/, CHANGELOG.md, the memory renders) and frozen history under .codestable/.
+- User surface is six slash commands: /project-context (umbrella: status, on|off <archive|memory|autolearn|handoff|all>, model, max-tokens, max-memory), /handoff, /autolearn, /memory, /session-log and /context; all six are documented in docs/configuration.md.
 
 ## Invariants
 - External-edit adoption is fixed by carrying the prompt-time loadMemory().text as basisKey and refusing to publish a reply whose basisKey no longer matches current effective content.
@@ -26,6 +27,8 @@
 - When the pre-publish recheck fires, the newer bytes are appended to the journal before returning.
 - Independent review runs one round per frozen revision, in a /tmp sandbox copy of the repo, with before/after zero-write proof against the live tree.
 - A review finding that asks for a new mechanism must first cite a field fact from this repo; with no field fact it goes to the non-goals instead of into the design.
+- Removing a user-facing command, verb or knob needs a design doc plus a field fact; because command usage is not measurable from the artifacts (see Pitfalls), a `nobody uses it` removal is not justified.
+- Every feature toggle funnels through setFeature in shared/config.ts, so /project-context on|off, /handoff on|off and /autolearn on|off write the same config keys; only handoff and autolearn carry their own on|off verbs, memory and archive do not.
 - A mechanism may only be called justified (or newly built) if it traces to a field fact: an errors.log line, a journal line, a success artifact such as migration-manifest.json, or a reproducible probe; otherwise it is recorded as a residual or a non-goal, never as a design requirement.
 - A zero-hit logError key proves the error did not occur, it does not prove the mechanism never ran; look for success artifacts as well before calling a path untested or unused.
 - Consumer-repo artifacts are read-only field evidence: cite them in .codestable audits only and never persist their measurements or volatile state (commit distance, file size, research values, key tallies) into MEMORY.md, CONTEXT.md, docs/ or CHANGELOG.md; naming the repo and who owns an open item is fine (owner boundary, set 2026-10-04); pi-generated artifacts (HANDOFF.md, session-logs/) are session state, not curated memory, and are outside that rule.
@@ -92,29 +95,31 @@
 - A full-tree pointer sweep finds dead pre-split module references of two kinds: on the curated surfaces they are fixed (skills now reference handoff/run.ts and shared/project-state.ts, including paths inside code blocks), while the ones under .codestable/ are frozen records and must not be "fixed".
 - Machine-bound-path sweeps need judgement: HANDOFF.md's absolute repo paths are pi-generated session state, tests/handoff-test.mjs's /home/user/.pi/... strings are fixtures, and tests/harness.mjs's legacy pi path is an intentional fallback, so none of the three is a defect.
 - Sweep .agents/memory/skill-candidates/ as well as .agents/skills/: the candidate pi-project-context-consumer-alert-triage.md was tracked although candidates are pipeline state, carried hard-coded sibling repo names, and was already superseded by the promoted auxiliary-alert-storm-triage skill, so it was deleted after its provenance moved into the audit.
+- Keep the memory status at one wording: memory/status.ts memoryStatusMessage() (plus memoryStatusLevel() for the notify level) is called by both /project-context status and /memory, and tests/memory-ops-test.mjs pins six fixtures to byte-identical bodies; re-inlining a branch into either command turns that red.
+- Command usage is unmeasurable from the artifacts: pi's session.jsonl stores expanded user/assistant/toolResult messages with no literal /cmd token and no notify text, so a 2026-10-04 search of four repos' session-logs for seven command names and nine notify strings returned 0 hits and `nobody uses command X` cannot be proven.
 
 ## Index
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
-- extensions/project-context/memory/report.ts - record_memory tool, refusal gating, stale sentence, side-effect skipping; migrateProjectState call at report.ts:319.
+- extensions/project-context/memory/report.ts - record_memory tool, refusal gating, stale sentence, side-effect skipping; migrateProjectState call at report.ts:319; its /memory status output comes from memory/status.ts.
 - extensions/project-context/memory/pass.ts - ConsolidateOutcome.basisKey, single-flight throttled pass, modelBlocked parking.
 - extensions/project-context/memory/sections.ts - section parsing and CLI, constrainedSampling strict prefer.
 - extensions/project-context/memory/journal.ts - append-only journal plus dead export newestMemoryArchiveSync.
+- extensions/project-context/index.ts - command registration and handlers: PROJECT_CONTEXT_VERBS, memoryStatusLine, featuresText/auxText/capCeilingWarning helpers, setFeature toggles.
 - extensions/project-context/handoff/run.ts - handoff transaction, newSession, replay filter, language selection, maybeTrigger to /handoff force-auto round trip; the pre-split path extensions/project-context/handoff.ts no longer exists.
 - extensions/project-context/handoff/prompt.ts - summary heading localization map (nine headings complete); the intended home of a boundary instruction for the consolidation prompt.
 - extensions/project-context/handoff/summary.ts - summary call and token-cap retry via generateSummaryWithUsage.
 - extensions/project-context/handoff/settings.ts - saveConfig eight-key patch through updateConfig.
 - extensions/project-context/handoff/session-settings.ts - staged model/thinking handoff with never-fired logError keys.
-- extensions/project-context/shared/config.ts - flat config, legacy fallback chains, saveConfig via updateConfig.
+- extensions/project-context/shared/config.ts - flat config, legacy fallback chains, setFeature feature toggle writer, saveConfig via updateConfig.
 - extensions/project-context/shared/lock.ts - stale-horizon steal path; its justification is code-level only: the zero-byte `.lock` files at `<repo>/.agents/memory/session-logs/<session>/.lock` are the Codex port's flock lock files (contextctl.py:317 opens with O_CREAT and never unlinks), not lock.ts, and they were cleaned up 2026-10-04.
 - tests/run-all.mjs, tests/external-edit-test.mjs, tests/consolidation-test.mjs, tests/handoff-test.mjs, tests/harness.mjs (makeCtx / makePi / makeSessionManager fakes).
-- docs/README.md - documentation index (links architecture.md, configuration.md, handoff.md, CHANGELOG.md); docs/architecture.md - semantics only, per-section map of the data flow, memory writes and recovery.
+- docs/README.md - documentation index (links architecture.md, configuration.md, handoff.md, CHANGELOG.md); docs/architecture.md - semantics only, per-section map of the data flow, memory writes and recovery; docs/configuration.md - config knob table plus the six-command reference (all commands and knobs documented).
 - CHANGELOG.md - per-version feat/fix history derived from tagged ranges (v0.1.0 through v0.2.1 plus Unreleased).
 - .codestable/issues/2026-10-03-external-edit-adoption-overwritten/ - design doc (design-frozen, revision 9), v5 archive, fix note, review report, design rounds R6-R9 and code-review prompt+transcript files, repro-write-ordering.mjs.
 - .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/ - D2 fix note, release-v0.2.1-evidence.md.
 - .codestable/audits/2026-10-03-design-complexity-audit.md - main audit; -addendum-handoff-config.md - handoff/config pass; 2026-10-04-...-addendum-2-module-inventory.md - 58-module inventory plus D1-D8 (D7 corrected in place); 2026-10-04-...-addendum-3-autolearn-archive.md - closes autolearn/* and archive/*, 58/58 modules, section 7 records the render-loss incidents.
-- .agents/skills/ - 14 tracked project skills after the consolidation (memory, review, headless, audit and sibling families merged); each SKILL.md description is the routing line injected into every session, and every extensions/project-context/*.ts reference in them resolves (15/15, code blocks included).
+- .agents/skills/ - 15 tracked project skills in families (memory, review, headless, audit, sibling, hygiene); each SKILL.md description is the routing line injected into every session, and every extensions/project-context/*.ts reference in them resolves (code blocks included).
 - .agents/skills/pi-project-context-independent-review/SKILL.md, .agents/skills/pi-project-context-audit-claim-verification/SKILL.md.
 - .agents/memory/skill-candidates/ - autolearn pipeline state, untracked; the promoted consumer-alert-triage candidate is deleted with its session-id evidence recorded in the autolearn audit addendum.
-- .agents/memory/MEMORY.md - corrected line about the stale .lock attribution.
 - ~/.pi/agent/settings.json:30 - pinned extension URL; ~/.pi/README.md:23 - same pin in docs.
 - Commands: `node tests/run-all.mjs`, `git push origin master <tag>`, `pi update --extensions`.
