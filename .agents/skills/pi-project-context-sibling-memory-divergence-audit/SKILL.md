@@ -42,8 +42,8 @@ Run each repo's fence/guard test against current and candidate before choosing a
 
 Compare the lossless merge char count against the repo's self-imposed fence/cap, including headroom:
 
-- QM good = 17998 chars vs fence 18000 chars / 100 lines -> 2 chars headroom, so ANY merge turns the guard red.
-- UF good = 34994 < cap 36000, but the merge is ~38100 > cap (worst case higher).
+- Repo A: the passing version sat 2 chars under its fence -> ANY merge turns the guard red.
+- Repo B: the passing version fit its cap, but the lossless merge ran past it (worst case higher still).
 
 When the fence has no headroom, stop merging. Restore the version the guard passes and hand the other side's unique facts to the owner as a separate list — they do not fit memory. Keep merged renders on the opaque (non-schema) path; do not push custom multi-section memory through the fixed 4-section schema.
 
