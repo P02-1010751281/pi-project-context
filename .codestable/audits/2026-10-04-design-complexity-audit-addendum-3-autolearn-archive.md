@@ -214,3 +214,16 @@ parked; without this the pass retried on every settle and one provider outage be
 - **两仓推送**（UF 的 origin 第二 push URL 是公开站 gitcode，推 = 207 提交 / 18 天未发表研究上网）：由各仓 owner 自己决定，本仓不代推。
 
 本仓对兄弟仓的动作限于「把丢掉的策展行并入当前版 + 本地提交 `agents/skills/`」这一项（owner 先前许可），配置、上限、远端一律未动。
+
+## 8. 补记：被跟踪的 autolearn 候选（2026-10-04 审阅后删除）
+
+`.agents/memory/skill-candidates/pi-project-context-consumer-alert-triage.md` 是全机唯一**被 git 跟踪**的候选
+（`candidate: true`，25 行），与 §3 的 P3 分布（候选是 autolearn 写盘路径的产物、各仓普遍存在）不符；它同时
+已被提升为正式技能 `.agents/skills/pi-project-context-auxiliary-alert-storm-triage/`，而提升时**丢掉了
+`<!-- evidence: … -->` 注释**，所以该候选是那两条会话 id 的唯一载体。
+
+审阅结论：候选内容被正式技能完全覆盖（技能版把证据行换成通用触发描述，并已泛化邻居仓名），保留它只会让
+「候选 = 未跟踪流水线状态」的约定出现例外，并使同一路由说明存在两份。
+
+处置：把 provenance（`01a0f19c-40e0-75f6-9452-fa8df68590f0`、`01a0b4de-d116-75fb-b815-6d0fc812cdcb`）记入本
+节，然后删除该文件（`git rm`）。此后 `.agents/memory/skill-candidates/` 回归「整目录不跟踪」。
