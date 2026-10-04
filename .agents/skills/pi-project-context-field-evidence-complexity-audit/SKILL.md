@@ -18,7 +18,7 @@ The extension writes the **entire** config document, so every `.agents/memory/pr
 1. Locate every config file on the machine, including sibling consumer repos (QM / UF) and throwaway probes:
    `find / -name project-context.json -path '*/.agents/memory/*' 2>/dev/null` (or search the known consumer roots).
 2. Read `DEFAULT_CONFIG` in `extensions/project-context/shared/config.ts`.
-3. Diff each file against the defaults key by key; count how many files differ and on which knob. Report it as `changed/total` numbers (at the 2026-10-03 audit: 9 files, exactly one knob ever changed anywhere — UniField `maxMemoryChars` 32000→36000 — and zero of the eight handoff knobs).
+3. Diff each file against the defaults key by key; count how many files differ and on which knob. Report it as `changed/total` numbers (at the 2026-10-03 audit: nine config files, exactly one knob ever changed anywhere — one consumer's `maxMemoryChars` — and zero of the eight handoff knobs).
 4. Treat `autolearnAt` (and similar) as machine-written state, not user intent; exclude it from "was this knob tuned".
 5. Same technique for the legacy compatibility layer: grep the consumer configs for nested `features` / `autolearn` / `handoff` keys, `autolearn.json`, agent-level `auto-handoff.json`. Migration is one-way (read old, write new), so an evidence count of 0/N licenses a **retirement window** rather than permanent support.
 
