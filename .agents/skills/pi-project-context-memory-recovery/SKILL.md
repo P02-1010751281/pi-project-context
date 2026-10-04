@@ -5,7 +5,7 @@ description: "Diagnose and repair .agents/memory: stale writer, truncation vs po
 
 ## When to use
 
-`MEMORY.md` looks like a raw model reply (JSON envelope, `memory_markdown` key, fences), ends mid-word/mid-sentence (e.g. `…buildTreePre~`) or silently drops trailing bullets, pi warns like `consolidation reply was not a usable JSON object`, `/memory` reports poison/damage, or a sibling project (`../UniField`, `../Quantum_Matrix`) has suspect memory. Use for repair/verification, not for normal consolidation tuning.
+`MEMORY.md` looks like a raw model reply (JSON envelope, `memory_markdown` key, fences), ends mid-word/mid-sentence (e.g. `…buildTreePre~`) or silently drops trailing bullets, pi warns like `consolidation reply was not a usable JSON object`, `/memory` reports poison/damage, or a sibling project that installs this extension has suspect memory. Use for repair/verification, not for normal consolidation tuning.
 
 ## 0. Rule out a live old-code writer first
 
@@ -70,7 +70,7 @@ Then call `loadMemory` from the harness against `/tmp/pc-mem` and check `poisone
 5. Fix forward for a cap: raise `maxMemoryChars` in `.agents/memory/project-context.json`, restart pi, run one consolidation, then re-tail `MEMORY.md` and confirm the marker is gone. The warning can recur until the installed package is updated and the process restarted; one bounded retry only mitigates the output-budget mismatch. Check the same output-budget mismatch cannot starve `CONTEXT.md`: a reply cut before the context member keeps the previous `CONTEXT.md`, so inspect `errors.log` for the "object never closed"/recovered trace.
 6. Do not fix by hand-editing multiple stores at once: repair the render, then let the next normal write journal and back up.
 7. Before overwriting `MEMORY.md`, confirm `backupMemoryBeforeWrite()` will run: it reads current bytes, names backups `MEMORY.md.memory-backup-<stamp>-<rand>`, fails closed when the target exists but can't be read, keeps 5 by mtime but never prunes backups younger than 1 hour, and hard-caps at 20 total.
-8. Never delete backups or a newer memory render of a sibling project without explicit owner confirmation (Quantum_Matrix's newer memory vs HEAD was an open decision in this project).
+8. Never delete backups or a newer memory render of a sibling project without explicit owner confirmation.
 
 All `MEMORY.md` writes run under the cross-process lock `MEMORY.md.lock`. Do not bypass it; `stealStaleLock` renames non-regular lock entries aside (`.broken-<8hex>`) and self-heals, and `cleanStaleTemps` only reclaims over-age empty broken directories. For changing lock/claim/backup code itself, use `pi-project-context-write-lock-hardening`.
 
@@ -79,8 +79,8 @@ All `MEMORY.md` writes run under the cross-process lock `MEMORY.md.lock`. Do not
 The plain-`node` harness is `tests/harness.mjs` (exposes `loadNamespace`, `PC`), per-module tests are `.mjs`, and `tests/run-all.mjs` aggregates them.
 
 ```sh
-cd /run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context
-node tests/run-all.mjs        # expect 9/9 passing in the current tree
+cd "$(git rev-parse --show-toplevel)"
+node tests/run-all.mjs        # expect the whole suite green
 ```
 
 Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it when a repair touches lock or rotation code. Confirm `git status` is clean except intended edits, and that memory `.tmp`/`.broken-*` artifacts were not committed.

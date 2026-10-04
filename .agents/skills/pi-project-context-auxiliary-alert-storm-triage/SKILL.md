@@ -9,7 +9,7 @@ A project consuming pi-project-context starts toasting repeatedly ("hit the cap"
 ## Steps
 1. Inventory consumers and live sessions.
    - `ps -eo pid,ppid,etime,cmd | grep -iE "pi|omp" | grep -v grep` — note the PIDs of the affected projects.
-   - Look in the Projects dir for the consumer repos (e.g. `UniField`, `Quantum_Matrix` next to `pi-project-context`).
+   - Look in the parent Projects dir for the repos that install this extension.
 2. Size and read the noise per project.
    - `wc -l .agents/memory/errors.log; ls -l .agents/memory/errors.log`
    - `tail -60 .agents/memory/errors.log` — spot repeated identical headlines and the failure text (usage limit, 402 insufficient balance, 403 auth, 429 quota, connection errors, JSON truncation).
@@ -18,7 +18,7 @@ A project consuming pi-project-context starts toasting repeatedly ("hit the cap"
    - `.agents/memory/project-context.json`: empty `provider`/`model` means the session model is used, so a Codex quota/auth failure hits consolidation and autolearn directly.
    - Compare `maxMemoryChars` with the render size: `wc -c .agents/memory/MEMORY.md` (a cap at or near the render size guarantees repeated cap hits).
 5. Pin the code the live sessions actually run: running PIDs execute the installed clone under `~/.pi/agent/git/<host>/<...>/pi-project-context/`, not the working tree. Locally committed fixes are invisible until rebuild/reinstall + restart of those PIDs — never report an unreleased fix as curing a live alert.
-6. Fix and verify in the source repo `/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context`.
+6. Fix and verify in this repository's working tree (`git rev-parse --show-toplevel`).
    - Cooldown/backoff and failure classes: `extensions/project-context/shared/call-policy.ts` (wired in `memory/pass.ts`, `memory/report.ts`, `autolearn/pass.ts`).
    - Log noise dedupe: `extensions/project-context/shared/error-log.ts`.
    - Cap/truncation handling: `memory/document.ts`, `memory/prompt.ts`.

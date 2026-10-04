@@ -39,7 +39,7 @@ python3 -c "print(len(open('.agents/memory/MEMORY.md',encoding='utf-8').read()))
 wc -c .agents/memory/MEMORY.md                                                     # bytes, CJK-heavy files run ~1.6x larger
 ```
 
-Comparing bytes to a character cap produced a false "over cap" premise (QM 11009 chars, UniField 26931 chars — both under 36000) and a wrong `maxMemoryChars` raise; byte growth is also not evidence that curated content survived a rewrite.
+Comparing bytes to a character cap produced a false "over cap" premise (the files were under the cap) and a wrong `maxMemoryChars` raise; byte growth is also not evidence that curated content survived a rewrite.
 
 ## 4. Status fields and self-claims: verify against code and commit, then flip
 

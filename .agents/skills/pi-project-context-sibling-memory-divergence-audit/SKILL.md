@@ -20,7 +20,7 @@ for p in [".../Quantum_Matrix/.agents/memory/MEMORY.md",
 PY
 ```
 
-Recorded run: QM 18525 bytes / 11009 chars; UF 42327 bytes / 26931 chars — both far under their 32000/36000 caps, so the alarmed "over cap" was a byte artifact and no truncation had occurred. Do not cite byte counts as cap evidence again.
+Recorded run: two sibling renders were both far under their own caps, so the alarmed "over cap" was a byte artifact and no truncation had occurred. Do not cite byte counts as cap evidence again.
 
 ## Step 2 — bidirectional feature-coverage audit (do not trust ratio())
 
@@ -51,7 +51,7 @@ When the fence has no headroom, stop merging. Restore the version the guard pass
 
 Both journals showed an adoption immediately followed by a write of the other version:
 
-- QM `[3] 17998 -> [4] 11009` 80 ms apart; UF `[3] 34994 -> [4] 26931` 329 ms apart.
+- Both journals showed the same shape: an adoption record immediately followed by a write of the other version, tens to hundreds of milliseconds apart.
 - `errors.log` logged `adopted an externally edited MEMORY.md into the memory journal` at the later record's millisecond, and `MEMORY.md` mtime/length match the later record.
 
 Interpretation stays ambiguous (owner deliberately shrank vs adoption was overwritten), but the repo's guard failing on the current render and passing on the guarded one biases toward the overwrite reading. Treat a restore as provisional until the adoption-vs-write ordering is fixed with a reproducible script; file that issue first, then restore.

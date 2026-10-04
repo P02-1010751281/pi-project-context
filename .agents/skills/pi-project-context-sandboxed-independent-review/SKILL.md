@@ -10,7 +10,7 @@ description: "Run an independent review of uncommitted changes in a byte-identic
 ## Procedure
 1. Byte-identical sandbox (never review or edit the live tree in place):
 ```bash
-ROOT=/run/media/user/6b058d20-a617-484d-b7c6-cd7146baf77c/Projects/pi-project-context
+ROOT="$(git rev-parse --show-toplevel)"
 N=8
 rm -rf /tmp/pi-context-rev$N && cp -a "$ROOT" /tmp/pi-context-rev$N
 ```

@@ -21,7 +21,7 @@ When a probe in `tests/` claims to cover a guard in `extensions/project-context/
    - target gate -> the probe's assertion must be the **only** red;
    - unrelated gates (`autoLearn`, `changed`, `due`) -> green, i.e. no false red;
    - record the matrix verbatim in the issue fix-note.
-8. Confirm stability and load: `node tests/autolearn-test.mjs` (expect 10/10) and `node tests/run-all.mjs` idle and under hog load (expect 9/9).
+8. Confirm stability and load: `node tests/autolearn-test.mjs` and `node tests/run-all.mjs` (expect both green) idle and under hog load.
 
 ## Gotchas
 

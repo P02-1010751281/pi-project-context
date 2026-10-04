@@ -12,7 +12,7 @@
 - There is a single git remote origin carrying two push URLs (forgejo ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git and github mirror ssh://git@ssh.github.com:443/P02-1010751281/pi-project-context.git), so one `git push origin master` reaches both.
 - Current release state: v0.2.1 (tag object d69ae48, peeled commit ab0984c) is the latest tag; the ~/.pi pin is @v0.2.1 and the installed clone is at ab0984c, so live sessions still run pre-fix code until restarted.
 - Master head is 268a53f (skill-description trim, docs re-wrap plus CHANGELOG, memory boundary cleanup), present on both push URLs; the working tree is clean and extensions/ is still byte-identical to v0.2.1, so these doc commits need no new tag.
-- The pi host bundle reads at /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/.
+- The pi host bundle lives in the managed install tree: `~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/dist/`, with the active version in `~/.pi/agent/install/current-version` (1.0.2 on 2026-10-04); the old `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/` copy is a leftover shell.
 - Consumer repos on the same machine (Quantum_Matrix, UniField, CipherCat, pi-custom-providers) are this extension's only runtime: they supply field evidence and receive local commits only. Their volatile state belongs in the audit, not here.
 
 ## Invariants
