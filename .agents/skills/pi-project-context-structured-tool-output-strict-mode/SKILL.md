@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-structured-tool-output-strict-mode
-description: "Wire strict JSON-schema structured output (a pi tool + constrainedSampling) into pi-project-context auxiliary LLM calls, capturing the pi-ai strict-mode gotchas and a strict-ready schema checklist."
+description: "Wire strict JSON-schema structured output into pi-project-context auxiliary LLM calls, with the pi-ai strict-mode gotchas and a schema checklist."
 ---
 
 # When to use

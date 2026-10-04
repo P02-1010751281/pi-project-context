@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-sibling-repo-memory-sync
-description: "Reconcile .agents/memory state across sibling repos that consume pi-project-context (MEMORY.md vs HEAD diff, CONTEXT.md rewrite in renderer format, stale lock cleanup, errors.log archive) without losing curated lines."
+description: "Reconcile .agents/memory across sibling repos (MEMORY.md vs HEAD, stale locks, error logs) without losing curated lines."
 ---
 
 ## When to use

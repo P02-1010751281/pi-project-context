@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-design-review-round-budget
-description: "Budget, bookkeep and close independent design-review rounds for a pi-project-context issue design doc: per-round verdict/nature table, concrete stop rule, anti-growth rules, archive-banner hygiene."
+description: "Budget, bookkeep and close independent design-review rounds for a pi-project-context issue: per-round verdict table, stop rule, archive hygiene."
 ---
 
 # Budgeting independent design-review rounds (pi-project-context)

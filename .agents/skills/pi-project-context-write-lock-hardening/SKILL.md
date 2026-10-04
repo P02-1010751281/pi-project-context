@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-write-lock-hardening
-description: "Harden and triage the cross-process write lock/claim path in pi-project-context (extensions/project-context/project-state.ts): lstat-based pathological-path self-heal, inode-pinned steals, claim ownership rechecks, bounded backups, and non-vacuous directory/FIFO/symlink lock tests."
+description: "Harden or triage the cross-process write lock and claim path (lock.ts, project-state.ts). Use when a lock or steal path is suspect."
 ---
 
 ## When to use

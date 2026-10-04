@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-memory-clip-path-triage
-description: "Triage lost/trimmed MEMORY.md content in pi-project-context by naming which of the three consolidation write paths clipped it (sectioned drop vs byte clip), recovering the pre-clip reply, and knowing why an over-cap retry does not migrate output to the sectioned renderer."
+description: "Name which consolidation path clipped MEMORY.md (sectioned drop vs byte clip) and recover the pre-clip reply. Use when memory is silently trimmed."
 ---
 
 # Memory clip-path triage (pi-project-context)

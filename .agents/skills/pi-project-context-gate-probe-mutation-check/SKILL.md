@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-gate-probe-mutation-check
-description: "Make each pi-project-context autolearn/gate test probe pin exactly one guard, then prove it with a mutation matrix plus a positive control, so a green test can no longer hide a dead gate."
+description: "Make each autolearn/gate test probe pin exactly one guard, then prove it with a mutation matrix plus a positive control."
 ---
 
 # Gate-probe mutation check (pi-project-context)

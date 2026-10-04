@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-release-tag-and-pin-sync
-description: "Cut or re-point a pi-project-context release (annotated tag, dual-remote push, pi-config pin bump), verify the installed clone carries the tagged code, and run a real settings-installed probe."
+description: "Cut or re-point a pi-project-context release: annotated tag, dual-remote push, pi-config pin bump, installed-clone verification."
 ---
 
 # When to use

@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-sandboxed-independent-review
-description: "Run per-round independent CodeStable reviews of uncommitted pi-project-context changes in a byte-identical /tmp sandbox via headless pi with read-only tools, and prove zero writes with before/after git-status and file-stat snapshots."
+description: "Run an independent review of uncommitted changes in a byte-identical /tmp sandbox with read-only tools and zero-write proof."
 ---
 
 # Sandboxed independent review of pi-project-context changes

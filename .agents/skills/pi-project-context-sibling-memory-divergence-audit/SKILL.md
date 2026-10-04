@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-sibling-memory-divergence-audit
-description: "Decide restore-vs-merge for a diverged sibling-repo .agents/memory/MEMORY.md: audit both sides' unique features, use the repo's own guard test as owner-authored oracle, compare the lossless merge against its self-imposed char fence, and check the journal adoption/write ordering before restoring."
+description: "Choose restore vs merge for a diverged sibling-repo MEMORY.md. Use when a consumer repo's memory file diverges from HEAD."
 ---
 
 ## When to use

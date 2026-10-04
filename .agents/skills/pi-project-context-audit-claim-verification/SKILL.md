@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-audit-claim-verification
-description: "Verify pi-project-context audit, residual and status claims against the real tests, call sites and units before writing them into .codestable or .agents/memory/MEMORY.md, and when one is falsified, correct it at every propagation site."
+description: "Verify an audit, residual or status claim against the real tests and call sites, and fix it at every propagation site. Use before recording claims."
 ---
 
 # When to use

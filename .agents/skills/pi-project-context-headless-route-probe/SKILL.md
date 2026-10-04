@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-headless-route-probe
-description: "Probe pi model routes for pi-project-context headless/independent-review runs without disabling extension-registered providers like commandcode, and read provider failures correctly."
+description: "Probe pi model routes for headless or independent-review runs without disabling extension-registered providers. Use when a run reports a blocked route."
 ---
 
 # Headless model-route probing for pi-project-context

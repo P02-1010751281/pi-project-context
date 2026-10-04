@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-memory-cap-budget-change
-description: "Change pi-project-context's memory character budget/cap behavior safely: thread maxMemoryChars explicitly through every read/write path, keep whole-line clipping and truncation-marker semantics idempotent, pass the real cap into the consolidation prompt, add one bounded condensation call on overflow, and pin the behavior with tests plus an independent review."
+description: "Change the memory cap safely: thread maxMemoryChars through every read/write path, keep clipping idempotent, pin with tests. Use for cap or budget edits."
 ---
 
 ## When to use

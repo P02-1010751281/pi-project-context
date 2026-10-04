@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-auxiliary-alert-storm-triage
-description: "Triage repeated pi-project-context toasts and fast-growing errors.log in consumer projects: pin the failing auxiliary-call class, check route/cap pressure, confirm which extension build the live sessions actually run, then verify fixes with the full test suite."
+description: "Triage repeating pi-project-context toasts and a fast-growing errors.log, then verify the fix. Use during alert storms."
 ---
 
 ## When to use

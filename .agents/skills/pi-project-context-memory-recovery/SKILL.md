@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-memory-recovery
-description: "Diagnose and repair .agents/memory in pi-project-context (or codex-project-context) projects: rule out a stale-writer process, tell maxMemoryChars truncation from poisoned JSON, recover dropped tails, repair MEMORY.md/memory.jsonl with backups, and verify with the node tests."
+description: "Diagnose and repair .agents/memory: stale writer, truncation vs poisoned JSON, dropped tails, backups, tests. Use when MEMORY.md lost content."
 ---
 
 ## When to use

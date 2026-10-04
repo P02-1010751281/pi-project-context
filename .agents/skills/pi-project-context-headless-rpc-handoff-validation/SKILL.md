@@ -1,6 +1,6 @@
 ---
 name: pi-project-context-headless-rpc-handoff-validation
-description: "Validate pi-project-context handoff/compaction end-to-end with a headless pi RPC run against a throwaway sandbox project, then inspect the resulting HANDOFF.md and memory artifacts instead of trusting unit tests."
+description: "Validate handoff/compaction end-to-end with a headless pi RPC run against a throwaway sandbox, then inspect HANDOFF.md and the memory artifacts."
 ---
 
 ## When to use
