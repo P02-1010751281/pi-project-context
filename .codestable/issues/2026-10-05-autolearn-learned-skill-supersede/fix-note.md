@@ -82,9 +82,14 @@ approve 覆盖学到的且拒绝手写的）。变异验证（每组单侧，实
   且多次整理提交的手写重写改过正文，所以盘上没有任何东西能证明某一条到底出自哪次 pass。记在这里，以便按名字单独回退。
   走**发货代码**验证（非肉眼）：`collectSkills` 报 17/17 为 learned 且带正文，`inventoryText` 显示 `(project, learned)`，
   `learnedBodiesText` 返回 18859 字符且已剥掉标记。
-- **预算已用到 94%**：注入预算 `AUTOLEARN_LEARNED_BODY_CHARS = 20000`，补标记后总量 18859 —— 下一条 learned 技能就会把靠后的正文挤出提示词，
-  而**代码 gate 只认标记、不认「正文有没有被展示」**：那种情况下提示词禁止复用名字，但那是**提示词层**的约束，代码层仍会放行覆盖。
-  要不要补一道代码层守卫（只允许更新「正文确实进了本次提示词」的技能）是 owner 的决定，本次未做。
+- **注入预算与真实覆盖率**（修正上一版写错的算术）：预算是**总量**而不是每条 —— `AUTOLEARN_LEARNED_BODY_CHARS = 20000`，
+  而 17 条正文合计 **96975** 字符（均值 5704，最大 `memory-recovery` 13207、`independent-review` 12196）。
+  按 inventory 顺序装得下的只有 **4 条**（`adaptive-handoff-threshold-review`、`audit-claim-verification`、`auxiliary-alert-storm-triage`、
+  `gate-probe-mutation-check`，合 18857），其余 **13 条永远进不了提示词** —— 其中包括最胖的两条。
+  即：补上标记让 17 条在**代码 gate** 上全部可覆盖，但只有 4 条的正文真的会被模型看到；其余 13 条是「可覆盖、但提示词里看不到原文」。
+  提示词确实禁止复用「正文未被展示」的名字，但那是**提示词层**约束，代码 gate 只认标记。
+- 眼下能覆盖那 13 条的唯一路径是 candidate/approve（人工确认的盲写）。是否改成**按需取正文**（复用已有的 `inspect` 跟进轮，
+  第一轮只给清单，要点名的技能在第二轮注入其正文）由 owner 决定，本次未做。
 - 不引入侧挂 JSON 索引（第 2 节理由）；不新增用户面动词；不改候选文件的形状（`candidate: true` 仍表示「等人确认」）。
 - 提示词成本：本轮起每次 autolearn 调用都会带上约 18.9 KB 的技能正文（此前为 0）。
 
