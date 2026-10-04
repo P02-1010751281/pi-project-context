@@ -1,0 +1,46 @@
+---
+name: pi-project-context-command-surface-audit
+description: "Audit pi-project-context's slash-command surface for duplication: map verbs, check docs vs registrations, diff status formatters, and treat usage as unmeasurable."
+---
+
+## When to use
+
+The owner asks which slash commands overlap, should be merged or retired, or you just changed a command name/verb/flag and need to re-verify the documented surface. Also run the doc-side half after any edit to `docs/configuration.md` or to command registration in `extensions/project-context/index.ts`.
+
+## 1. Enumerate the registered surface (code is truth)
+
+- Read command registration and verb dispatch in `extensions/project-context/index.ts`; feature commands also carry their own handlers in `handoff/*` and `autolearn/*`.
+- Expected six (re-read the registrations; this list rots with every release): `/project-context` (status, `on|off <archive|memory|autolearn|handoff|all>`, model, max-tokens, max-memory), `/handoff` (status, on, off, auto, keep, target, thinking, send, draft, guard, lang, now), `/autolearn` (run now, list, approve, reject, on, off), `/memory` (bare status, update), `/session-log` (write now, `import <path>`), `/context` (bare, prints three paths).
+- Confirm all six are registered for argument completion, and that the `docs/configuration.md` command table is set-equal to the registrations (no extra row, no missing row). Record the comparison, not a memory of it.
+
+## 2. Keep the status rendering shared
+
+Memory status was formatted twice and had drifted; that was fixed in v0.2.2. `memoryStatusMessage()` in
+`extensions/project-context/memory/status.ts` is now the single wording, called by `/project-context status`
+(prefix `Memory: `) and `/memory` (prefix `Project memory: `), with `memoryStatusLevel()` choosing the
+`warning`/`info` level. The guard is the branch-equality block in `tests/memory-ops-test.mjs`: it drives
+both commands over six fixtures (normal, empty, at the cap, poisoned, journal unreadable, file unreadable)
+and asserts the bodies are byte-identical. Re-inlining a branch into either command turns that red, so
+change the shared formatter and re-run the test rather than adding a second copy.
+
+This is an `extensions/` change: it needs a new tag, pin bump and pi restart (see the release/pin skill),
+and the full suite must stay green. The end-to-end pin is a mutation check — make one entry point print a
+different body and confirm exactly those equality assertions fail.
+
+## 3. Classify the rest as design, not defects
+
+- Feature toggles are duplicate *surface* only: `/project-context on|off`, `/handoff on|off` and `/autolearn on|off` all end in `setFeature()` in `shared/config.ts`. Deleting any entry point is a destructive user-surface change, not a cleanup.
+- `/context` is not a subset of `/project-context status`: the umbrella prints Config plus memory/context status lines, `/context` prints the context file path, session index and session-logs paths. Retiring it would lose those paths.
+- Asymmetry worth recording: the umbrella toggles four features (archive, memory, autolearn, handoff) but only handoff and autolearn have their own `on|off`; memory and archive do not.
+
+## 4. Usage is not measurable on this machine (do not skip)
+
+pi's `session.jsonl` stores expanded user/assistant/toolResult messages: it contains no literal `/cmd` token and no notify/status text. Scanning four repos' session-logs for the seven command names plus nine feedback strings returned 0 hits, so "nobody uses command X" cannot be grounded, and a `nobody uses it` removal is not justified. Removal of a user-facing verb needs a design doc plus a field fact.
+
+Search cost gotcha: a Projects-wide `find | grep` across all session-logs timed out at 600 s (one consumer repo's session-logs is multi-GB). Search per repo with `rg --max-filesize ...` instead.
+
+## 5. Close out
+
+- Code dedup under `extensions/` -> new tag, `~/.pi` pin bump, pi restart (see the release/pin skill); run `node tests/run-all.mjs`, keep it 15/15.
+- Docs-only "entry point relationship" paragraph (umbrella is the canonical toggle place, `/context` is a cheap path lookup) needs no tag.
+- Surface convergence (folding `on|off` verbs or `/context` into the umbrella) is destructive with no usage evidence: open an issue and leave the decision with the owner, do not implement.
