@@ -50,6 +50,13 @@ try {
 		"the autolearn prompt prefers nothing over a near-duplicate",
 		autolearnPrompt.includes("propose nothing rather than a near-duplicate"),
 	);
+	// v0.3.1: the one exception is a skill this pipeline generated, whose own body is shown so a
+	// reuse of its name is a merge instead of a blind rewrite.
+	check(
+		"the autolearn prompt allows reusing a learned name only",
+		autolearnPrompt.includes("except for a `learned` skill whose body is shown under <learned-skill-bodies>") &&
+			!autolearnPrompt.includes("this pass can only add, not merge"),
+	);
 	check(
 		"the autolearn prompt keeps the description advisory",
 		autolearnPrompt.includes("stay near 170 characters"),
@@ -138,7 +145,11 @@ try {
 	check("rejection notified", String(ctx.notifications.at(-1)?.[0] ?? "").includes("delta-workflow"));
 
 	console.log("\n=== D. dedupe against live skills ===");
-	phase1 = { skill: { name: "alpha-workflow", description: "dup", body, evidence: ["sess-a", "sess-b"], candidate: false } };
+	// A hand-written skill owns its name: no provenance marker, so autolearn may never supersede it.
+	const handmadeDir = path.join(tmp, ".agents/skills/handmade-workflow");
+	await mkdir(handmadeDir, { recursive: true });
+	await writeFile(path.join(handmadeDir, "SKILL.md"), '---\nname: handmade-workflow\ndescription: "a hand-written skill"\n---\n\n## When to use\n\nHand-written procedure for the temp project.\n');
+	phase1 = { skill: { name: "handmade-workflow", description: "dup", body, evidence: ["sess-a", "sess-b"], candidate: false } };
 	await command.handler("", ctx);
 	check("duplicate rejected", String(ctx.notifications.at(-1)?.[0] ?? "").includes("already exists"));
 
@@ -173,6 +184,46 @@ try {
 	await command.handler("approve clean-workflow", ctx);
 	check("a clean candidate still activates", await exists(path.join(tmp, ".agents/skills/clean-workflow/SKILL.md")));
 	check("a clean candidate is consumed", !(await exists(path.join(candidateDir, "clean-workflow.md"))));
+
+	console.log("\n=== E3. only a learned skill may be superseded ===");
+	// The marker travels in the skill's own body, so the boundary is read off the artifact: a name
+	// freed by deleting a learned skill cannot make a later hand-written skill overwritable.
+	const alphaFile = path.join(tmp, ".agents/skills/alpha-workflow/SKILL.md");
+	const alphaDoc = await readFile(alphaFile, "utf8");
+	const frontmatter = alphaDoc.slice(4, alphaDoc.indexOf("\n---\n", 4));
+	check("a learned skill carries the provenance marker", alphaDoc.includes("autolearn-generated"));
+	check("the marker stays out of the frontmatter", !frontmatter.includes("autolearn-generated") && frontmatter.includes("description:"));
+
+	const mergedBody = "## When to use\n\nMerged alpha workflow for the temp project: every still-valid step kept.\n\n## Steps\n\n1. `node merged.mjs`\n2. Verify the render under `.agents/memory/MEMORY.md` before publishing.\n";
+	phase1 = { skill: null, inspect: ["sess-a", "sess-b"], reason: "merge the learned skill" };
+	phase2 = { skill: { name: "alpha-workflow", description: "alpha workflow merged", body: mergedBody, evidence: ["sess-a", "sess-b"], candidate: false } };
+	prompts = [];
+	await command.handler("", ctx);
+	const updatedDoc = await readFile(alphaFile, "utf8");
+	check("a learned skill is superseded in place", updatedDoc.includes("node merged.mjs") && !updatedDoc.includes("Step one with an exact command"));
+	check("the update is announced as an update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
+	check("the merge prompt carried the learned skill's body", prompts[0].includes("Step one with an exact command"));
+	check("the merge prompt marks it as learned", prompts[0].includes("(project, learned)"));
+	check("a hand-written body is not offered for merging", !prompts[0].includes("Hand-written procedure for the temp project."));
+	check("the marker survives as exactly one copy", (updatedDoc.match(/autolearn-generated/g) ?? []).length === 1);
+
+	// The gate guards the candidate path too: a candidate may not be stored for a name that belongs to a
+	// hand-written skill (approve would refuse it, but the file would sit there as a trap).
+	phase1 = { skill: { name: "handmade-workflow", description: "dup candidate", body, evidence: ["sess-a"], candidate: true } };
+	await command.handler("", ctx);
+	check("no candidate is stored for a hand-written name", !(await exists(path.join(candidateDir, "handmade-workflow.md"))));
+	check("the candidate proposal named the collision", String(ctx.notifications.at(-1)?.[0] ?? "").includes("already exists"));
+
+	// The approve path shares the boundary: a candidate may supersede a learned skill, never a hand-written one.
+	const longBody = (line) => `${line}\n\n${"Keep the merged steps that still hold. ".repeat(6)}`;
+	await writeFile(path.join(candidateDir, "alpha-workflow.md"), `---\nname: alpha-workflow\ndescription: "alpha workflow, approved"\n---\n\n${longBody("## Steps\n\n1. `node approved.mjs`")}\n`);
+	await command.handler("approve alpha-workflow", ctx);
+	check("approve supersedes a learned skill", (await readFile(alphaFile, "utf8")).includes("node approved.mjs"));
+	check("approve announces the update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
+	await writeFile(path.join(candidateDir, "handmade-workflow.md"), `---\nname: handmade-workflow\ndescription: "handmade, approved"\n---\n\n${longBody("## Steps\n\n1. `node nope.mjs`")}\n`);
+	await command.handler("approve handmade-workflow", ctx);
+	check("approve refuses a hand-written collision", String(ctx.notifications.at(-1)?.[0] ?? "").includes("already exists"));
+	check("the hand-written body survives approve", !(await readFile(path.join(handmadeDir, "SKILL.md"), "utf8")).includes("nope.mjs"));
 
 	console.log("\n=== F. switch lives in project-context.json ===");
 	const configFile = path.join(tmp, ".agents/memory/project-context.json");

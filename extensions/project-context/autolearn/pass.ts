@@ -16,7 +16,7 @@ import { collectSkills } from "./inventory.ts";
 import { parseDecision, type Decision } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
 import { RECORD_SKILL_TOOL } from "./schema.ts";
-import { skillDocument } from "./skill.ts";
+import { autolearnProvenance, skillDocument } from "./skill.ts";
 
 export function registerAutolearn(pi: ExtensionAPI): void {
 	/** Single-flight guard: session_start and agent_settled can both schedule a pass. */
@@ -174,12 +174,14 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return;
 			}
 			const destination = path.join(skillsDir(projectRoot), skill.name, "SKILL.md");
-			if (await readOptional(destination)) {
+			const existing = await readOptional(destination);
+			// The boundary is read off the artifact itself: only a skill this pipeline wrote may be superseded.
+			if (existing && !autolearnProvenance(existing)) {
 				if (force) notify(ctx, `Autolearn: rejected "${skill.name}" (already exists)`, "warning");
 				return;
 			}
 			await writeAtomic(destination, skillDocument(skill, false));
-			notify(ctx, `Learned project skill: ${skill.name} → ${destination}`);
+			notify(ctx, `${existing ? "Updated" : "Learned"} project skill: ${skill.name} → ${destination}`);
 		} catch (error) {
 			if (projectRoot) {
 				await logError(projectRoot, "autolearn", error);

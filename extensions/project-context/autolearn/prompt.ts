@@ -4,7 +4,7 @@
 
 import { MAX_SKILL_BODY_CHARS } from "../shared/project-state.ts";
 import { type Evidence, type IndexEntry } from "./evidence.ts";
-import { inventoryText } from "./inventory.ts";
+import { inventoryText, learnedBodiesText } from "./inventory.ts";
 import { RECORD_SKILL_TOOL } from "./schema.ts";
 import { MAX_SKILL_DESCRIPTION_CHARS, MIN_SKILL_BODY_CHARS, type SkillInfo } from "./skill.ts";
 
@@ -17,6 +17,8 @@ export function buildPrompt(
 	options: { evidence?: Evidence } = {},
 ): string {
 	const evidence = options.evidence;
+	// Only learned project skills are shown with their own body; every other skill is name+description.
+	const learned = learnedBodiesText(skills);
 	return [
 		"Maintain project-specific skills for the coding project below.",
 		"",
@@ -25,7 +27,7 @@ export function buildPrompt(
 		"- appears in at least two different sessions for a normal skill,",
 		"- contains concrete steps, commands, paths, or gotchas that will save real work next time,",
 		"- is procedural, not a fact, decision, preference, or one-off task (those belong in memory/context),",
-		"- is not already covered by an existing skill; if one already carries the workflow, propose nothing rather than a near-duplicate (this pass can only add, not merge),",
+		"- is not already covered by an existing skill; if one already carries the workflow, propose nothing rather than a near-duplicate. The one exception is a skill this pipeline generated, marked `learned` in the inventory: its own body is shown under <learned-skill-bodies>, and reusing that exact name supersedes it with a merged body,",
 		"- holds this project's own durable facts only: name another project solely to record who owns an open item, and never copy its measurements, sizes, commit distances or other volatile state,",
 		"- tells a check how to look, not what it once measured: write shapes such as `[0-9]{2,3},[0-9]{3} chars`, never the numbers a single run produced,",
 		"",
@@ -40,7 +42,8 @@ export function buildPrompt(
 		"",
 		"Rules:",
 		"- At most one skill per run. When in doubt, use an empty name.",
-		"- name must be new; never reuse a name from the existing-skill inventory.",
+		"- name must be new, except for a `learned` skill whose body is shown under <learned-skill-bodies>: reuse that exact name only to update that skill, and never reuse the name of any other existing skill.",
+		"- an update rewrites the whole body, so keep every step of the shown body that still holds; if you cannot merge without dropping something, propose nothing.",
 		`- body: concise Markdown of ${MIN_SKILL_BODY_CHARS}–${MAX_SKILL_BODY_CHARS} characters, with when-to-use and exact commands or paths.`,
 		"- description: one short what-plus-when line (these descriptions are injected into every session, so stay near 170 characters). The body carries the steps.",
 		"- body style: imperative and specific; no measured values, no session filler, no restatement of project facts.",
@@ -61,6 +64,7 @@ export function buildPrompt(
 		"<existing-skills>",
 		inventoryText(skills),
 		"</existing-skills>",
+		...(learned ? ["", "<learned-skill-bodies>", learned, "</learned-skill-bodies>"] : []),
 		"",
 		"<available-sessions>",
 		sessions.length

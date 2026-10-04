@@ -7,7 +7,7 @@ import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MAX_SKILL_BODY_CHARS, getProjectRoot, memoryDir, notify, readOptional, skillsDir, validSkillName, writeAtomic } from "../shared/project-state.ts";
-import { MAX_SKILL_DESCRIPTION_CHARS, MIN_SKILL_BODY_CHARS, type ProposedSkill, type SkillInfo, skillBodyUnsafe, skillDescription } from "./skill.ts";
+import { MAX_SKILL_DESCRIPTION_CHARS, MIN_SKILL_BODY_CHARS, type ProposedSkill, type SkillInfo, autolearnProvenance, promotedDocument, skillBody, skillBodyUnsafe, skillDescription } from "./skill.ts";
 
 const AUTOLEARN_MIN_SESSIONS = 2;
 
@@ -49,15 +49,16 @@ export function rejectionReason(skill: ProposedSkill, verified: Set<string>, ski
 	if (cited.length < required) {
 		return skill.candidate ? "needs at least one verified session id" : "needs evidence from at least two different sessions";
 	}
-	if (skills.some((existing) => existing.name === skill.name)) return `skill "${skill.name}" already exists`;
+	// A name this pipeline generated may be reused to supersede that skill; every other existing name
+	// (hand-written, imported, or global) belongs to someone else and is left alone.
+	const collision = skills.find((existing) => existing.name === skill.name);
+	if (collision && !(collision.scope === "project" && collision.autolearn)) return `skill "${skill.name}" already exists`;
 	if (candidateExists) return `candidate "${skill.name}" already exists`;
 	return undefined;
 }
 
 function candidateBody(raw: string): string {
-	const match = /^---\n[\s\S]*?\n---\n/.exec(raw);
-	const rest = match ? raw.slice(match[0].length) : raw;
-	return rest.replace(/^\s*<!--[\s\S]*?-->\s*/, "").trim();
+	return skillBody(raw).replace(/^\s*<!--[\s\S]*?-->\s*/, "").trim();
 }
 
 export async function candidateNames(projectRoot: string): Promise<string[]> {
@@ -91,13 +92,15 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 		return;
 	}
 	const destination = path.join(skillsDir(projectRoot), name, "SKILL.md");
-	if (await readOptional(destination)) {
+	const existing = await readOptional(destination);
+	// Same boundary as the proposal path: only a skill this pipeline generated may be superseded.
+	if (existing && !autolearnProvenance(existing)) {
 		notify(ctx, `Skill "${name}" already exists; remove the candidate manually.`, "warning");
 		return;
 	}
-	await writeAtomic(destination, `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`);
+	await writeAtomic(destination, promotedDocument(name, description, body));
 	await rm(file, { force: true });
-	notify(ctx, `Activated project skill: ${name} → ${destination}`);
+	notify(ctx, `${existing ? "Updated" : "Activated"} project skill: ${name} → ${destination}`);
 }
 
 export async function rejectCandidate(pi: ExtensionAPI, ctx: ExtensionContext, name: string | undefined): Promise<void> {
