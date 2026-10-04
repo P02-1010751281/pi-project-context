@@ -6,13 +6,14 @@
 - The extension has 58 .ts modules totalling about 7,772 lines; the 2026-10-03 complexity audit has covered all 58 in the main audit plus three addenda, addendum 3 closing autolearn/* and archive/*.
 - Tests live in tests/ with run-all.mjs as the entry point, run via `node tests/run-all.mjs` (15 tests, all green); tests import the barrels (handoff/handoff.ts, shared/project-state.ts), so a name-based coverage check undercounts.
 - Process artifacts live under .codestable/ (issues/, audits/, attention.md); each issue dir holds its design doc, design archive, fix note, review report and review prompts/transcripts.
-- Runtime memory state lives in .agents/memory/ (tracked: .gitignore, MEMORY.md, CONTEXT.md, HANDOFF.md, project-context.json; untracked: memory.jsonl, session-logs/, backups, skill-candidates/ mostly); project-local skills live in .agents/skills/ (16 tracked skills plus autolearn-approved additions).
+- Runtime memory state lives in .agents/memory/ (tracked: .gitignore, MEMORY.md, CONTEXT.md, HANDOFF.md, project-context.json; untracked: memory.jsonl, session-logs/, backups, skill-candidates/ mostly); project-local skills live in .agents/skills/ (18 tracked skills).
+- Docs live in docs/ (README.md as index plus architecture.md, configuration.md, handoff.md and siblings); CHANGELOG.md sits at the repo root and records per-version feat/fix changes derived from tagged ranges, excluding docs and audit commits.
 - Release model: a git tag consumed through a pinned entry in ~/.pi/agent/settings.json, installed into ~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context.
 - There is a single git remote origin carrying two push URLs (forgejo ssh://forgejo@git.lentech.site/C02-1010751281/pi-project-context.git and github mirror ssh://git@ssh.github.com:443/P02-1010751281/pi-project-context.git), so one `git push origin master` reaches both.
 - Current release state: v0.2.1 (tag object d69ae48, peeled commit ab0984c) is the latest tag; the ~/.pi pin is @v0.2.1 and the installed clone is at ab0984c, so live sessions still run pre-fix code until restarted.
-- Master head is 8697d94 (audit addendum 3, the addendum-2 D7 correction, the new audit-claim-verification skill, two memory renders), present on both push URLs; working tree is clean.
+- Master head is 268a53f (skill-description trim, docs re-wrap plus CHANGELOG, memory boundary cleanup), present on both push URLs; the working tree is clean and extensions/ is still byte-identical to v0.2.1, so these doc commits need no new tag.
 - The pi host bundle reads at /home/user/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/.
-- Consumer repos on the same machine (Quantum_Matrix, UniField, CipherCat, pi-custom-providers) are this extension's only runtime: they supply field evidence and receive local commits only. Their volatile state (commit distance, memory size) belongs in the audit, not here.
+- Consumer repos on the same machine (Quantum_Matrix, UniField, CipherCat, pi-custom-providers) are this extension's only runtime: they supply field evidence and receive local commits only. Their volatile state belongs in the audit, not here.
 
 ## Invariants
 - External-edit adoption is fixed by carrying the prompt-time loadMemory().text as basisKey and refusing to publish a reply whose basisKey no longer matches current effective content.
@@ -26,6 +27,15 @@
 - A review finding that asks for a new mechanism must first cite a field fact from this repo; with no field fact it goes to the non-goals instead of into the design.
 - A mechanism may only be called justified (or newly built) if it traces to a field fact: an errors.log line, a journal line, a success artifact such as migration-manifest.json, or a reproducible probe; otherwise it is recorded as a residual or a non-goal, never as a design requirement.
 - A zero-hit logError key proves the error did not occur, it does not prove the mechanism never ran; look for success artifacts as well before calling a path untested or unused.
+- Consumer-repo artifacts are read-only field evidence: cite them in .codestable audits only and never persist their measurements or volatile state (commit distance, file size, research values, key tallies) into MEMORY.md, CONTEXT.md, docs/ or CHANGELOG.md; naming the repo and who owns an open item is fine (owner boundary, set 2026-10-04); pi-generated artifacts (HANDOFF.md, session-logs/) are session state, not curated memory, and are outside that rule.
+- A memory render draws on the session's own context as well as the journal, so external state deleted by hand can come back in the next render: re-check the boundary at every render commit, not once.
+- Project memory carries only durable, verifiable statements: no sibling commit distances, no sibling memory file sizes, no other projects' research values, and no line numbers into MEMORY.md itself.
+- A field fact that needs a home goes into the audit that used it; a fact with no home stays out rather than being parked in this repo's memory.
+- Repository docs split by kind: architecture.md holds semantics only, field incidents belong in .codestable audits, and version-visible behavior changes belong in CHANGELOG.md.
+- docs/*.md prose is wrapped at sentence boundaries with no line exceeding 160 characters.
+- A formatting-only rewrite of docs must be proven content-identical (whitespace-normalized comparison) before it is committed.
+- Skill descriptions under .agents/skills/ are injected into every session's system prompt, so each stays one short what-plus-when line of at most 170 characters, with step-by-step prose left in the SKILL.md body.
+- Before a consumer repo's pi-rendered MEMORY.md is committed or merged, HEAD's curated facts must be shown to survive in the render; a render that dropped them is left uncommitted and reported.
 - Design docs get status: design-frozen once implemented, and the banner records the implementing commit next to the revision number.
 - Only origin is pushed to (both push URLs); release tags are never moved, and release docs land in a separate commit from the tag.
 - Release evidence for a behavior-changing version must state that `pi update --extensions` requires a restart.
@@ -43,7 +53,7 @@
 - Committing a consumer repo's working tree on owner instruction must record in the commit message whatever a non-pi rewrite of .agents/memory/* dropped; when merging lost content back, prefer merging into the current file over restoring the parent version, so the newer curation survives.
 - Autolearn-approved skills under .agents/skills/ are tracked after review; a newly added skill that cites a claim this project has already superseded must be corrected before it is committed.
 - The never-fired autolearn second-level "disabled for this session" degradation stays in place: it is the only visible signal of a silent session-level disable, so deleting it is a behavior change with negative expected value.
-- Sibling consumer repos (QM, UF) receive local commits only; pushing their 200+ unpublished commits is the owner's call, never automatic.
+- Sibling consumer repos (QM, UF) receive local commits only; pushing any of their unpublished commits is the owner's call, never automatic.
 
 ## Pitfalls
 - Grep the live filesystem before trusting any handed-off task list; a previous run may have died mid-implementation on a rate limit.
@@ -55,7 +65,7 @@
 - Each review round that adds machinery adds surface for the next round to find problems, so unconverged growth is a signal to stop rather than to add more.
 - The superseded 415-line v5 design is archived with a do-not-implement banner; it must not be resurrected.
 - The installed clone lags the repo by design through the pin, so verify the pin and the clone's tag before claiming a fix is live; `describe --tags` in the clone needs a fetch --tags first.
-- Line numbers written into design and fix-note docs must be re-measured against the final commit with grep -n; mapping a review round's citations back to the parent commit lands sites off by a couple of lines.
+- Line numbers written into design docs, fix notes or MEMORY.md rot at the next render or commit; keep pointers file-level and re-measure with grep -n against the final revision before citing one.
 - `git ls-remote origin` queries only the fetch URL; verify the github mirror through the second push URL separately.
 - The design's code-size estimate came in about 1.7x low because report.ts needed a larger gating restructure; budget implementation accordingly.
 - A provider 429 or quota message blocks only that route: commandcode/deepseek routes hit weekly limits while deepseek/deepseek-v4-pro served design rounds and code review.
@@ -70,10 +80,11 @@
 - A suspicious filename in the field is not proof of ownership: migration-manifest.json exists in two consumer repos but appears nowhere in this extension's code or history except a port design doc, so migrateProjectState still has 0/9 field evidence.
 - A lossy external rewrite of a consumer repo's memory layer is real: the curated parent-commit lines were dropped while the file grew several-fold, so byte growth is not evidence of retained content (numbers in the audit).
 - pi's own re-projection of a consumer repo's memory file is that repo's main eroder, not external writers.
+- A consumer repo's working-tree MEMORY.md is usually such a render and silently drops curated facts: a curated block merged back the day before was gone again in the next render while the file grew, so test key survival against HEAD before committing or merging one (counts in the audit).
 - Sessions archived from pi diverge from their source: of 306 comparable sessions 239 archives are prefixes and 67 are not, most of the 67 are larger than the source, and a sampled archive held a context_edit entry the source no longer had while the source's next entry still cited it as parentId, so the archive layer preserves content pi's file dropped.
 - All 55 [autolearn] errors.log entries are auxiliary-call failures (connection, balance, usage limits, timeouts, one stale extension ctx) and none is a mechanism error, so the two degradation branches it describes have zero hits and the second-level "disabled for this session" notice is a never-reached residual.
 - A pi re-render is produced from the extension's own memory state plus the model reply, not from the current bytes of MEMORY.md, so a host-side merge-back is not durable; if the render lands over maxMemoryChars, the cap then clips its tail (see audit addendum 3 section 7).
-- Adoption does work on an external merge-back: 12:05:29 on 2026-10-04 UF wrote MEMORY.md.memory-backup-2026-10-04T04-05-29-803Z-*.md (71 KB) for the merged file and QM's next render kept the declaration lines that had been merged in, so a re-merge survives into the journal even though it is not durable across renders.
+- Adoption does work on an external merge-back: the write is journaled as an adoption before the next render runs, so the merged lines do reach the journal even though they are not durable across renders (artifact in the audit).
 
 ## Index
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
@@ -89,9 +100,12 @@
 - extensions/project-context/shared/config.ts - flat config, legacy fallback chains, saveConfig via updateConfig.
 - extensions/project-context/shared/lock.ts - stale-horizon steal path; its justification is code-level only: the zero-byte `.lock` files at `<repo>/.agents/memory/session-logs/<session>/.lock` are the Codex port's flock lock files (contextctl.py:317 opens with O_CREAT and never unlinks), not lock.ts, and they were cleaned up 2026-10-04.
 - tests/run-all.mjs, tests/external-edit-test.mjs, tests/consolidation-test.mjs, tests/handoff-test.mjs, tests/harness.mjs (makeCtx / makePi / makeSessionManager fakes).
+- docs/README.md - documentation index (links architecture.md, configuration.md, handoff.md, CHANGELOG.md); docs/architecture.md - semantics only, per-section map of the data flow, memory writes and recovery.
+- CHANGELOG.md - per-version feat/fix history derived from tagged ranges (v0.1.0 through v0.2.1 plus Unreleased).
 - .codestable/issues/2026-10-03-external-edit-adoption-overwritten/ - design doc (design-frozen, revision 9), v5 archive, fix note, review report, design rounds R6-R9 and code-review prompt+transcript files, repro-write-ordering.mjs.
 - .codestable/issues/2026-09-30-auxiliary-call-noise-and-memory-cap/ - D2 fix note, release-v0.2.1-evidence.md.
 - .codestable/audits/2026-10-03-design-complexity-audit.md - main audit; -addendum-handoff-config.md - handoff/config pass; 2026-10-04-...-addendum-2-module-inventory.md - 58-module inventory plus D1-D8 (D7 corrected in place); 2026-10-04-...-addendum-3-autolearn-archive.md - closes autolearn/* and archive/*, 58/58 modules, section 7 records the second render-loss incident.
+- .agents/skills/ - 18 tracked project skills; each SKILL.md description is the routing line injected into every session.
 - .agents/skills/pi-project-context-sandboxed-independent-review/SKILL.md, .agents/skills/pi-project-context-design-review-round-budget/SKILL.md, .agents/skills/pi-project-context-field-evidence-complexity-audit/SKILL.md, .agents/skills/audit-claim-verification/SKILL.md.
 - .agents/memory/MEMORY.md - corrected line about the stale .lock attribution.
 - ~/.pi/agent/settings.json:30 - pinned extension URL; ~/.pi/README.md:23 - same pin in docs.
