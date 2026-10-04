@@ -31,12 +31,14 @@ character count).
 ```bash
 grep -nE 'UniField|Quantum_Matrix|CipherCat|gitcode' .agents/memory/MEMORY.md CHANGELOG.md
 grep -c 'UniField' docs/*.md
-grep -nE '[0-9]{3}/[0-9]{3}|[0-9]{2,3},[0-9]{3} char' .agents/skills/*/SKILL.md
+grep -nE '[0-9]{2,3},[0-9]{3} char' .agents/skills/*/SKILL.md
 ```
 
-The second pattern is a shape, not a value: a bare `N/M` pair or a comma-grouped character tally is the
-signature of a measurement copied out of a consumer repo. Do not park the actual numbers in the pattern,
-because then the guard carries the dirt it exists to find.
+The second pattern is a shape, not a value: a comma-grouped character tally is the signature of a
+measurement copied out of a consumer repo. Do not park the actual numbers in the pattern, because then the
+guard carries the dirt it exists to find. A bare `N/M` size pair is the other signature — check that one by
+eye, because grepping for it collides with legitimate repo content (HTTP codes such as `402/429`, threshold
+fits such as `273K/650K`).
 
 Expected after cleanup: one hit in MEMORY.md (the consumer-repo boundary declaration) and none in
 CHANGELOG.md, every `docs/*.md` and every skill body. Sources of re-contamination are the session
