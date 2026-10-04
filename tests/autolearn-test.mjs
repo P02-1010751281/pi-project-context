@@ -34,6 +34,27 @@ try {
 			!autolearnPrompt.includes("2000 words"),
 	);
 
+	// The consolidation prompt got a cross-project boundary in v0.2.3; the autolearn prompt carried
+	// none, which is how a generated skill body ended up holding a sibling repo's measurements and a
+	// guard regex built from the numbers of one run.
+	check(
+		"the autolearn prompt keeps the cross-project boundary",
+		autolearnPrompt.includes("this project's own durable facts only") &&
+			autolearnPrompt.includes("never copy its measurements"),
+	);
+	check(
+		"the autolearn prompt asks for checks as shapes, not measurements",
+		autolearnPrompt.includes("[0-9]{2,3},[0-9]{3} chars") && autolearnPrompt.includes("never the numbers a single run produced"),
+	);
+	check(
+		"the autolearn prompt prefers nothing over a near-duplicate",
+		autolearnPrompt.includes("propose nothing rather than a near-duplicate"),
+	);
+	check(
+		"the autolearn prompt keeps the description advisory",
+		autolearnPrompt.includes("stay near 170 characters"),
+	);
+
 	const logs = path.join(tmp, ".agents/memory/session-logs");
 	await mkdir(path.join(logs, "sess-a"), { recursive: true });
 	await mkdir(path.join(logs, "sess-b"), { recursive: true });

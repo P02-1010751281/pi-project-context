@@ -1,16 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { stat } from "node:fs/promises";
 import { registerArchive } from "./archive/archive.ts";
 import { registerAutolearn } from "./autolearn/pass.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
 import { completeValues, completeVerbs } from "./shared/complete.ts";
-import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "./shared/limits.ts";
-import { memoryCapUnsatisfiable, memoryReplyTokens } from "./shared/output-budget.ts";
+import { capCeilingWarning, memoryCapUnsatisfiable } from "./shared/output-budget.ts";
 import { registerConsolidation } from "./memory/report.ts";
-import { memoryStatusMessage } from "./memory/status.ts";
+import { contextStatusLine, memoryStatusMessage } from "./memory/status.ts";
 import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
-import { contextFile, getProjectRoot, loadMemory, notify } from "./shared/project-state.ts";
+import { getProjectRoot, loadMemory, notify } from "./shared/project-state.ts";
 
 /**
  * project-context — project memory, session archive, skill learning and the window valve.
@@ -26,10 +24,11 @@ import { contextFile, getProjectRoot, loadMemory, notify } from "./shared/projec
  *    └─ handoff      (1 LLM)   context-window valve: summarize the old span, replay recent
  *                              messages verbatim, continue in a fresh session
  *
- * Every feature has a switch in `<project>/.agents/memory/project-context.json`
- * (`/project-context on|off <feature|all>`); `--no-project-context` disables the whole
- * extension for one run. Switches gate the automatic behavior (and, for `memory`, the
- * injection); explicit commands keep working.
+ * Every feature has a switch in `<project>/.agents/memory/project-context.json`. Each layer command owns
+ * its own (`/memory on|off`, `/session-log on|off`, `/handoff on|off`, `/autolearn on|off`) and the bare
+ * `/project-context on|off` sets all four at once — a batch, not an extension switch: only the
+ * `--no-project-context` flag disables the whole extension, and only for one run. Switches gate the
+ * automatic behavior (and, for `memory`, the injection); explicit commands keep working.
  *
  * All of this lives in one extension on purpose: pi loads each extension in its own
  * module registry (jiti with `moduleCache: false`), so shared throttle/single-flight
@@ -67,34 +66,8 @@ export default function projectContext(pi: ExtensionAPI): void {
 		return `${route}, max ${config.maxTokens} tokens`;
 	}
 
-	/** One wording for the M7 upper-bound check; `status` and the `max-memory` verb both use it. */
-	function capCeilingWarning(config: Awaited<ReturnType<typeof getConfig>>): string {
-		const ceiling = Math.max(config.maxTokens, config.maxOutputTokens);
-		return `${config.maxMemoryChars} chars needs about ${memoryReplyTokens(config.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${ceiling}`;
-	}
-
-	/** CONTEXT.md is only rewritten when a pass returns one, so its age is the useful signal here. */
-	async function contextStatusLine(projectRoot: string): Promise<string> {
-		const file = contextFile(projectRoot);
-		try {
-			const info = await stat(file);
-			const updated = new Date(info.mtimeMs).toISOString().replace(/\.\d+Z$/, "Z");
-			return `${file} — updated ${updated} (${humanAge(Date.now() - info.mtimeMs)} ago)`;
-		} catch {
-			return "none yet (a consolidation pass that returns one writes it)";
-		}
-	}
-
-	function humanAge(ms: number): string {
-		const minutes = Math.floor(ms / 60_000);
-		if (minutes < 1) return "less than a minute";
-		if (minutes < 60) return `${minutes} min`;
-		const hours = Math.floor(minutes / 60);
-		return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
-	}
-
 	pi.registerCommand("project-context", {
-		description: "Show or change project-context settings: status | on|off <feature|all> | model <provider>/<id>|off | max-tokens <n>|default | max-memory <n>|default",
+		description: "Show or change cross-layer settings: status | on|off (all four features) | model <provider>/<id>|off | max-tokens <n>|default",
 		getArgumentCompletions: (prefix) => {
 			const verbs = completeVerbs(prefix, PROJECT_CONTEXT_VERBS);
 			if (verbs) return verbs;
@@ -120,39 +93,10 @@ export default function projectContext(pi: ExtensionAPI): void {
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
 				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
-					lines.push(`Memory cap warning: ${capCeilingWarning(config)}; lower it with /project-context max-memory <n> or raise maxTokens/maxOutputTokens.`);
+					lines.push(`Memory cap warning: ${capCeilingWarning(config)}; lower it with /memory max-memory <n> or raise maxTokens/maxOutputTokens.`);
 				}
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));
-				return;
-			}
-			if (verb === "max-memory") {
-				const value = (parts[1] ?? "").trim();
-				const usage = `Usage: /project-context max-memory <${MIN_MEMORY_CHARS}–${MAX_MEMORY_CHARS_LIMIT}> | default`;
-				if (!value) {
-					notify(ctx, usage, "warning");
-					return;
-				}
-				if (value === "default") {
-					await updateConfig(projectRoot, { maxMemoryChars: DEFAULT_CONFIG.maxMemoryChars });
-				} else {
-					const chars = Number(value);
-					if (!Number.isFinite(chars) || chars < MIN_MEMORY_CHARS || chars > MAX_MEMORY_CHARS_LIMIT) {
-						notify(ctx, usage, "warning");
-						return;
-					}
-					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
-				}
-				const config = await getConfig(projectRoot);
-				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
-					notify(
-						ctx,
-						`Memory cap set to ${config.maxMemoryChars} characters, but ${capCeilingWarning(config)}; raise maxTokens/maxOutputTokens too or replies can be truncated.`,
-						"warning",
-					);
-				} else {
-					notify(ctx, `Memory cap: ${config.maxMemoryChars} characters.`);
-				}
 				return;
 			}
 			if (verb === "model" || verb === "max-tokens") {
@@ -189,19 +133,18 @@ export default function projectContext(pi: ExtensionAPI): void {
 				return;
 			}
 			if (verb !== "on" && verb !== "off") {
-				notify(ctx, `Usage: /project-context status | on|off <${FEATURE_NAMES.join("|")}|all> | model <provider>/<id>|off | max-tokens <n>|default | max-memory <n>|default`, "warning");
+				notify(ctx, "Usage: /project-context status | on|off | model <provider>/<id>|off | max-tokens <n>|default", "warning");
 				return;
 			}
 
-			const target = (parts[1] ?? "").toLowerCase();
-			const names = target === "all" ? FEATURE_NAMES : FEATURE_NAMES.filter((name) => name === target);
-			if (names.length === 0) {
-				notify(ctx, `Unknown feature "${target}". Use ${FEATURE_NAMES.join("|")}|all.`, "warning");
+			// The bare form is the batch over the four feature switches. A per-feature toggle lives in that
+			// feature's own command, so there is no target here and no `all` token either: one name, one path.
+			if (parts.length > 1) {
+				notify(ctx, `The batch form takes no target; /project-context ${verb} sets all four features.`, "warning");
 				return;
 			}
-			for (const name of names) await setFeature(projectRoot, name, verb === "on");
-			const config = await getConfig(projectRoot);
-			notify(ctx, `Features: ${featuresText(config)}`);
+			for (const name of FEATURE_NAMES) await setFeature(projectRoot, name, verb === "on");
+			notify(ctx, `Features: ${featuresText(await getConfig(projectRoot))}`);
 		},
 	});
 }
@@ -209,18 +152,14 @@ export default function projectContext(pi: ExtensionAPI): void {
 /** Verbs the `project-context` command accepts, for argument completion (mirrors the handler). */
 const PROJECT_CONTEXT_VERBS = [
 	{ value: "status" },
-	{ value: "on", description: "enable automatic behavior for a feature" },
-	{ value: "off", description: "disable a feature" },
+	{ value: "on", description: "enable all four features at once" },
+	{ value: "off", description: "disable all four features at once" },
 	{ value: "model", description: "auxiliary model route" },
 	{ value: "max-tokens", description: "output budget for auxiliary calls" },
-	{ value: "max-memory", description: "MEMORY.md character cap" },
 ];
 
 /** Second-argument completions, keyed by the verb that takes them. */
 const PROJECT_CONTEXT_VALUE_COMPLETIONS = [
-	{ head: "on", values: [...FEATURE_NAMES.map((name) => ({ value: name })), { value: "all" }] },
-	{ head: "off", values: [...FEATURE_NAMES.map((name) => ({ value: name })), { value: "all" }] },
 	{ head: "model", values: [{ value: "off", description: "use the session model" }, { value: "session" }] },
 	{ head: "max-tokens", values: [{ value: "default" }] },
-	{ head: "max-memory", values: [{ value: "default" }] },
 ];

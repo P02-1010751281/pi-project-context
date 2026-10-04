@@ -46,6 +46,15 @@ export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number
 }
 
 /**
+ * The one sentence for a memory cap the configured output ceiling cannot re-emit. The umbrella
+ * status, the set-time reply and the set-time warning all print it, so it cannot drift per caller.
+ */
+export function capCeilingWarning(cap: { maxMemoryChars: number; maxTokens: number; maxOutputTokens: number }): string {
+	const ceiling = Math.max(cap.maxTokens, cap.maxOutputTokens);
+	return `${cap.maxMemoryChars} chars needs about ${memoryReplyTokens(cap.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${ceiling}`;
+}
+
+/**
  * Extra output tokens a reasoning model needs beyond the text it must re-emit. Providers report
  * those thinking tokens as a subset of the output, so a budget that only pays for the visible
  * memory and context gets its JSON cut off mid-string (`stopReason: "length"`).

@@ -314,6 +314,51 @@ try {
 	await command.handler("status", ctx);
 	check("status reports the language", String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto"));
 
+	// v0.3.0 shrank the verb set: three bare-word forms became value-taking verbs, and the two token
+	// amounts moved under `budget` with names that say which quantity they size.
+	console.log("\n=== /handoff threshold | budget | mode ===");
+	await command.handler("threshold 0.55", ctx);
+	let verbs = await readConfig();
+	check("threshold <ratio> pins a fixed share", verbs?.handoffAdaptive === false && verbs?.handoffThresholdRatio === 0.55);
+	await command.handler("threshold 40%", ctx);
+	check("threshold accepts a percentage", (await readConfig())?.handoffThresholdRatio === 0.4);
+	await command.handler("threshold 0.9", ctx);
+	await command.handler("threshold auto", ctx);
+	verbs = await readConfig();
+	check("threshold auto restores adaptive mode and keeps the ratio aside", verbs?.handoffAdaptive === true && verbs?.handoffThresholdRatio === 0.9);
+	await command.handler("threshold nope", ctx);
+	check(
+		"an invalid threshold warns and leaves the config",
+		(await readConfig())?.handoffThresholdRatio === 0.9 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff threshold"),
+	);
+	await command.handler("budget summary 48k", ctx);
+	check("budget summary sets the summary target", (await readConfig())?.handoffTargetTokens === 48_000);
+	await command.handler("budget recent 12k", ctx);
+	check("budget recent sets the recent window", (await readConfig())?.handoffKeepTokens === 12_000);
+	await command.handler("budget recent off", ctx);
+	check("budget recent off carries nothing verbatim", (await readConfig())?.handoffKeepTokens === 0);
+	await command.handler("budget summary 1", ctx);
+	check(
+		"a below-floor summary budget warns and leaves the config",
+		(await readConfig())?.handoffTargetTokens === 48_000 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff budget"),
+	);
+	await command.handler("mode draft", ctx);
+	check("mode draft persists", (await readConfig())?.handoffMode === "draft");
+	await command.handler("mode nope", ctx);
+	check("an invalid mode warns and leaves the config", (await readConfig())?.handoffMode === "draft" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff mode"));
+	// The retired bare forms must not act silently: a bare ratio used to pin the threshold and the bare
+	// `send`/`draft` words used to set the mode.
+	await command.handler("0.6", ctx);
+	check(
+		"the bare ratio is retired",
+		(await readConfig())?.handoffThresholdRatio === 0.9 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Unknown option"),
+	);
+	await command.handler("send", ctx);
+	check(
+		"bare send is retired",
+		(await readConfig())?.handoffMode === "draft" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Unknown option"),
+	);
+
 	console.log("\n=== /handoff now (nothing to hand off) ===");
 	// A no-op handoff must explain itself: both bail-outs used to return without any notify.
 	await writeFile(configPath, JSON.stringify({ handoffKeepTokens: 50 }));
@@ -455,7 +500,7 @@ try {
 		check("a raised target cannot lift the trigger above the knee", targetReceipt.includes("auto 157k (16%)"));
 		check(
 			"the overridden target is named, not silently ignored",
-			/· handoff target 200k is not applied in full/.test(targetReceipt),
+			/· handoff budget summary 200k is not applied in full/.test(targetReceipt),
 		);
 		check("the warning names the guardrail that bound it", /quality knee allows 157k/.test(targetReceipt));
 	} finally {
@@ -551,7 +596,7 @@ try {
 		await runHandlers(fixedPi, "session_start", fixedCtx);
 		await fixedPi.commands.get("handoff").handler("status", fixedCtx);
 		check("fixed mode uses the configured window share", String(fixedCtx.notifications.at(-1)?.[0] ?? "").includes("60% of window"));
-		await fixedPi.commands.get("handoff").handler("auto 0.7", fixedCtx);
+		await fixedPi.commands.get("handoff").handler("threshold auto 0.7", fixedCtx);
 		check(
 			"adaptive mode rejects a ratio argument",
 			fixedCtx.notifications.some((entry) => String(entry?.[0] ?? "").includes("takes no ratio")),

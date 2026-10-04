@@ -7,7 +7,7 @@ import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, setFeature } from "../shared/config.ts";
-import { completeValues, completeVerbs } from "../shared/complete.ts";
+import { completeSubValues, completeValues, completeVerbs } from "../shared/complete.ts";
 import { resolveAuxModel } from "../shared/llm.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
@@ -48,7 +48,7 @@ export function statusText(ctx: ExtensionContext): string {
 	const target = config.handoffAdaptive
 		? threshold?.summarizeTokens !== undefined
 			? ` · summarize ${fmtTokens(threshold.summarizeTokens)}`
-			: ` · target ${fmtTokens(config.handoffTargetTokens)}`
+			: ` · summary budget ${fmtTokens(config.handoffTargetTokens)}`
 		: "";
 	const language = config.handoffLanguage === "auto"
 		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLanguage)})`
@@ -372,7 +372,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("handoff", {
-		description: "Fresh session when context hits the threshold (status|on|off|auto|<ratio>|target|keep|thinking|send|draft|guard|lang|now)",
+		description: "Fresh session when context hits the threshold (status|on|off|threshold|budget|thinking|mode|guard|lang|now)",
 		getArgumentCompletions: (prefix) => {
 			const verbs = completeVerbs(prefix, HANDOFF_VERBS);
 			if (verbs) return verbs;
@@ -380,45 +380,52 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				const items = completeValues(prefix, head, values);
 				if (items) return items;
 			}
-			return null;
+			// The deepest argument (`budget recent off`) has no second-level table of its own.
+			return completeSubValues(prefix, "budget", "recent", [{ value: "off", description: "carry no recent messages" }]);
 		},
 		handler: async (args, ctx) => {
 			if (!getConfigRoot()) await syncConfig(await getProjectRoot(pi, ctx.cwd).catch(() => undefined));
 			const arg = args.trim().toLowerCase();
-			const [head, value] = arg.split(/\s+/);
+			const [head, value, extra] = arg.split(/\s+/);
 			if (!head || head === "status") {
 				notify(ctx, statusText(ctx));
 				return;
 			}
-			if (head === "keep") {
-				if (value === "off") {
-					config.handoffKeepTokens = 0;
-				} else {
-					const tokens = parseTokenCount(value ?? "");
-					if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
-						notify(ctx, "Usage: /handoff keep <tokens|off> (e.g. keep 20k)", "warning");
+			if (head === "budget") {
+				// The two token amounts are different quantities, so each name says what it sizes: the summary
+				// the pass asks for, and the recent window carried over verbatim.
+				if (value === "summary") {
+					const tokens = parseTokenCount(extra ?? "");
+					if (tokens === undefined || tokens < MIN_SUMMARIZE_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
+						notify(ctx, "Usage: /handoff budget summary <tokens> (e.g. budget summary 64k)", "warning");
 						return;
 					}
-					config.handoffKeepTokens = tokens;
-				}
-				await saveConfig();
-				notify(
-					ctx,
-					config.handoffKeepTokens > 0
-						? `Auto handoff will keep ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
-						: "Auto handoff will use summary only (no recent carry-over).",
-				);
-				return;
-			}
-			if (head === "target") {
-				const tokens = parseTokenCount(value ?? "");
-				if (tokens === undefined || tokens < MIN_SUMMARIZE_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
-					notify(ctx, "Usage: /handoff target <tokens> (e.g. target 64k)", "warning");
+					config.handoffTargetTokens = tokens;
+					await saveConfig();
+					notify(ctx, `Auto summarize target: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
 					return;
 				}
-				config.handoffTargetTokens = tokens;
-				await saveConfig();
-				notify(ctx, `Auto summarize target: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
+				if (value === "recent") {
+					if (extra === "off") {
+						config.handoffKeepTokens = 0;
+					} else {
+						const tokens = parseTokenCount(extra ?? "");
+						if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
+							notify(ctx, "Usage: /handoff budget recent <tokens|off> (e.g. budget recent 20k)", "warning");
+							return;
+						}
+						config.handoffKeepTokens = tokens;
+					}
+					await saveConfig();
+					notify(
+						ctx,
+						config.handoffKeepTokens > 0
+							? `Auto handoff will keep ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
+							: "Auto handoff will use summary only (no recent carry-over).",
+					);
+					return;
+				}
+				notify(ctx, "Usage: /handoff budget summary <tokens> | budget recent <tokens|off>", "warning");
 				return;
 			}
 			if (head === "thinking") {
@@ -436,13 +443,27 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			if (head === "auto") {
-				config.handoffAdaptive = true;
-				await saveConfig();
-				if (value) {
-					notify(ctx, "Adaptive mode takes no ratio; use /handoff 0.6 for a fixed share.", "warning");
+			if (head === "threshold") {
+				// One verb for both modes: `auto` keeps the adaptive threshold, a ratio pins a fixed share.
+				if (value === "auto") {
+					config.handoffAdaptive = true;
+					await saveConfig();
+					if (extra) {
+						notify(ctx, "Adaptive mode takes no ratio; use /handoff threshold 0.4 for a fixed share.", "warning");
+						return;
+					}
+					notify(ctx, statusText(ctx));
+					return;
 				}
-				notify(ctx, statusText(ctx));
+				const ratio = parseRatio(value ?? "");
+				if (ratio === undefined) {
+					notify(ctx, "Usage: /handoff threshold <auto|0.1-0.95|10-95%> (e.g. threshold 0.6)", "warning");
+					return;
+				}
+				config.handoffAdaptive = false;
+				config.handoffThresholdRatio = ratio;
+				await saveConfig();
+				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
 				return;
 			}
 			if (head === "on" || head === "off") {
@@ -452,10 +473,14 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				notify(ctx, head === "on" ? statusText(ctx) : "Auto handoff disabled.");
 				return;
 			}
-			if (head === "send" || head === "draft") {
-				config.handoffMode = head;
+			if (head === "mode") {
+				if (value !== "send" && value !== "draft") {
+					notify(ctx, "Usage: /handoff mode send|draft", "warning");
+					return;
+				}
+				config.handoffMode = value;
 				await saveConfig();
-				notify(ctx, `Auto handoff mode: ${head}.`);
+				notify(ctx, `Auto handoff mode: ${value}.`);
 				return;
 			}
 			if (head === "guard") {
@@ -500,15 +525,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				await runHandoff(pi, "force-auto", ctx);
 				return;
 			}
-			const ratio = parseRatio(head);
-			if (ratio !== undefined) {
-				config.handoffAdaptive = false;
-				config.handoffThresholdRatio = ratio;
-				await saveConfig();
-				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
-				return;
-			}
-			notify(ctx, `Unknown option "${arg}". Usage: /handoff [on|off|auto|<ratio>|target <tokens>|keep <tokens>|thinking off|session|send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now|status]`, "warning");
+			notify(ctx, `Unknown option "${arg}". Usage: /handoff [status|on|off|threshold <auto|ratio>|budget summary <tokens>|budget recent <tokens|off>|thinking off|session|mode send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now]`, "warning");
 		},
 	});
 }
@@ -518,12 +535,10 @@ const HANDOFF_VERBS = [
 	{ value: "status" },
 	{ value: "on" },
 	{ value: "off" },
-	{ value: "auto", description: "adaptive threshold (the default)" },
-	{ value: "keep", description: "recent tokens carried over verbatim" },
-	{ value: "target", description: "summary target tokens before caps" },
+	{ value: "threshold", description: "adaptive, or a fixed share of the window" },
+	{ value: "budget", description: "token amounts: the summary target and the recent window" },
 	{ value: "thinking", description: "thinking level for the summary" },
-	{ value: "send" },
-	{ value: "draft" },
+	{ value: "mode", description: "dismiss the handoff into a new session, or leave it in the editor" },
 	{ value: "guard", description: "what to do while a question is pending" },
 	{ value: "lang", description: "handoff scaffolding language" },
 	{ value: "now", description: "hand off immediately" },
@@ -531,8 +546,10 @@ const HANDOFF_VERBS = [
 
 /** Second-argument completions, keyed by the verb that takes them. */
 const HANDOFF_VALUE_COMPLETIONS = [
-	{ head: "keep", values: [{ value: "off", description: "carry no recent messages" }] },
+	{ head: "threshold", values: [{ value: "auto", description: "adaptive threshold (the default)" }] },
+	{ head: "budget", values: [{ value: "summary", description: "summary target tokens before caps" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
 	{ head: "thinking", values: [{ value: "off" }, { value: "session" }] },
+	{ head: "mode", values: [{ value: "send" }, { value: "draft" }] },
 	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },
 	{ head: "lang", values: [{ value: "auto" }, { value: "zh" }, { value: "en" }] },
 ];

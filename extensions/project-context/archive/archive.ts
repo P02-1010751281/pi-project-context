@@ -1,8 +1,8 @@
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getConfig, runIsDisabled } from "../shared/config.ts";
+import { getConfig, runIsDisabled, setFeature } from "../shared/config.ts";
 import { completeVerbs } from "../shared/complete.ts";
-import { normalizeLegacyIndex, renderIndexDocument, sessionIndexLine, sessionIndexLockTarget, sessionTitle } from "./session-index.ts";
+import { normalizeLegacyIndex, parseIndexLines, renderIndexDocument, sessionIndexLine, sessionIndexLockTarget, sessionTitle } from "./session-index.ts";
 import { importArchiveFiles, resolveImportTargets } from "./import-archive.ts";
 import {
 	MAX_CONTEXT_CHARS,
@@ -139,14 +139,20 @@ export function registerArchive(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("session-log", {
-		description: "Write the current session log, or backfill ended sessions (import <path…>)",
+		description: "Show the session archive status and paths (write | import <path…> | on|off)",
 		getArgumentCompletions: (prefix) =>
-			completeVerbs(prefix, [{ value: "import", description: "backfill archives from session files or directories" }]),
+			completeVerbs(prefix, [
+				{ value: "write", description: "write the current session's archive now" },
+				{ value: "import", description: "backfill archives from session files or directories" },
+				{ value: "on", description: "enable session archiving" },
+				{ value: "off", description: "disable session archiving" },
+			]),
 		handler: async (args, ctx) => {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			const value = (args ?? "").trim();
-			if (value === "import" || value.startsWith("import ")) {
-				const targets = await resolveImportTargets(value.replace(/^import\s*/, ""), ctx.cwd);
+			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
+			const verb = (parts[0] ?? "").toLowerCase();
+			if (verb === "import") {
+				const targets = await resolveImportTargets(parts.slice(1).join(" "), ctx.cwd);
 				if (targets.length === 0) {
 					notify(ctx, "Usage: /session-log import <session.jsonl|dir>…", "warning");
 					return;
@@ -162,19 +168,37 @@ export function registerArchive(pi: ExtensionAPI): void {
 				notify(ctx, `Imported ${created} archive(s) into ${logsDir(projectRoot)}${detail ? ` (${detail})` : ""}`, failed.length > 0 ? "warning" : "info");
 				return;
 			}
-			const result = await writeSessionArtifacts(projectRoot, ctx);
-			await updateSessionIndex(ctx, projectRoot);
-			notify(ctx, `Session log written: ${result.dir}`);
+			if (verb === "on" || verb === "off") {
+				await setFeature(projectRoot, "archive", verb === "on");
+				notify(ctx, `Session archiving: ${verb}.`);
+				return;
+			}
+			if (verb === "write") {
+				const result = await writeSessionArtifacts(projectRoot, ctx);
+				await updateSessionIndex(ctx, projectRoot);
+				notify(ctx, `Session log written: ${result.dir}`);
+				return;
+			}
+			if (verb) {
+				notify(ctx, `Unknown option "${verb}". Usage: /session-log | write | import <path…> | on|off`, "warning");
+				return;
+			}
+			// Bare: read-only. pi already writes the archive at turn_end, agent_settled and
+			// session_shutdown, so a read path must not carry that side effect; `write` owns it.
+			// These two paths used to live in `/context`, which the memory and archive layers split.
+			const indexLines = parseIndexLines(await readOptional(sessionIndexFile(projectRoot)));
+			notify(
+				ctx,
+				`Session archive: ${archiveStatusText(indexLines)}\nSession index: ${sessionIndexFile(projectRoot)}\nSession logs: ${logsDir(projectRoot)}`,
+			);
 		},
 	});
+}
 
-	pi.registerCommand("context", {
-		description: "Show the project context and session log locations",
-		// Takes no arguments; an explicit null keeps the menu from offering anything.
-		getArgumentCompletions: () => null,
-		handler: async (_args, ctx) => {
-			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			notify(ctx, `Context file: ${contextFile(projectRoot)}\nSession index: ${sessionIndexFile(projectRoot)}\nSession logs: ${logsDir(projectRoot)}`);
-		},
-	});
+/** Read-only archive status: how many sessions the index carries and which one is newest. */
+function archiveStatusText(indexLines: string[]): string {
+	if (indexLines.length === 0) return "no sessions indexed yet";
+	const [date, title] = (indexLines[indexLines.length - 1] ?? "").split(" — ").slice(1, 3);
+	const count = `${indexLines.length} ${indexLines.length === 1 ? "session" : "sessions"} indexed`;
+	return `${count}, latest ${date ?? "unknown"}${title ? ` (${title})` : ""}`;
 }

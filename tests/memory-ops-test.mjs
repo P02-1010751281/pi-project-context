@@ -5,7 +5,7 @@ import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messag
 
 /**
  * Memory operations: error-log noise folding (B4), head+tail fallback clipping (M3), cap
- * visibility and the `/project-context max-memory` verb (M4), and the output-ceiling
+ * visibility and the `/memory max-memory` verb (M4), and the output-ceiling
  * satisfiability check (M7).
  */
 
@@ -112,21 +112,21 @@ try {
 		check("status warns when the default cap is unsatisfiable", (await status()).includes("Memory cap warning"));
 		check("the memory command shows the percentage too", /\d+% of the 32000-char cap/.test(await memoryCmd()));
 
-		await pi.commands.get("project-context").handler("max-memory 20000", ctx);
+		await pi.commands.get("memory").handler("max-memory 20000", ctx);
 		check("a fitting cap is accepted", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("20000"));
 		check("the accepted cap is reported", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Memory cap: 20000 characters."));
 		check("status now uses the new cap", (await status()).includes("of the 20000-char cap"));
 		check("a fitting cap raises no warning", !(await status()).includes("Memory cap warning"));
 
-		await pi.commands.get("project-context").handler("max-memory 32000", ctx);
+		await pi.commands.get("memory").handler("max-memory 32000", ctx);
 		check("an unsatisfiable cap is warned about on set", String(ctx.notifications.at(-1)?.[0] ?? "").includes("output ceiling of 32768"));
 		check("the unsatisfiable cap is still persisted", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
 
-		await pi.commands.get("project-context").handler("max-memory 10", ctx);
-		check("a below-floor cap is refused", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /project-context max-memory"));
+		await pi.commands.get("memory").handler("max-memory 10", ctx);
+		check("a below-floor cap is refused", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /memory max-memory"));
 		check("the refused value is not written", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
 
-		await pi.commands.get("project-context").handler("max-memory default", ctx);
+		await pi.commands.get("memory").handler("max-memory default", ctx);
 		check("default restores the built-in cap", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
 	}
 
@@ -184,7 +184,9 @@ try {
 			await pi.commands.get("project-context").handler("status", ctx);
 			const status = String(ctx.notifications.at(-1)?.[0] ?? "");
 			const line = status.split("\n").find((entry) => entry.startsWith("Memory: ")) ?? "";
-			return { fromCommand: String(notified[0] ?? ""), level: notified[1], statusBody: line.slice("Memory: ".length) };
+			// `/memory` prints the CONTEXT.md line in the same notification, after the status line; the
+			// equality pin is over line one only, so a one-sided body change still turns it red.
+			return { fromCommand: String(notified[0] ?? "").split("\n")[0], level: notified[1], statusBody: line.slice("Memory: ".length) };
 		};
 		const cases = [];
 		cases.push(["normal", await makeProject(), /of the 32000-char cap/, "info"]);

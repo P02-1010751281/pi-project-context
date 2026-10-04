@@ -64,7 +64,7 @@ export interface Threshold {
  * A manually-set `handoffTargetTokens` that the guardrail overrode, and the term that bound below it.
  *
  * The trigger has two sources — what the model actually supports (the knee curve, then the usable
- * window) and what the user set by hand (`/handoff target`) — and the guardrail owns the trigger.
+ * window) and what the user set by hand (`/handoff threshold 0.6`) — and the guardrail owns the trigger.
  * A manual setting it cannot honour must therefore be **named**: a user who raises the target and sees
  * nothing change has been sent to a control that does nothing.
  */
@@ -274,5 +274,5 @@ export function thresholdOverrideText(override: ThresholdOverride, window: numbe
 			: override.by === "summarizer"
 				? `the summarizer window leaves ${fmtTokens(override.tokens)}`
 				: `the first pricing tier leaves ${fmtTokens(override.tokens)}`;
-	return `handoff target ${fmtTokens(config.handoffTargetTokens)} is not applied in full: it needs a ${fmtTokens(override.asked)}-token threshold and ${guardrail}, so the auto guardrail decides — lower /handoff target`;
+	return `handoff budget summary ${fmtTokens(config.handoffTargetTokens)} is not applied in full: it needs a ${fmtTokens(override.asked)}-token threshold and ${guardrail}, so the auto guardrail decides — lower /handoff budget summary`;
 }

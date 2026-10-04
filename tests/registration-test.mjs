@@ -26,10 +26,16 @@ for (const [name, file] of [
 		const registrations = [...pi.handlers.keys()].map((event) => `on:${event}`).concat([...pi.commands.keys()].map((command) => `cmd:${command}`));
 		console.log(`OK   ${name}: ${registrations.join(", ")}`);
 		if (name === "project-context") {
-			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:session-log", "cmd:context", "cmd:autolearn", "cmd:handoff"];
+			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:session-log", "cmd:autolearn", "cmd:handoff"];
 			const missing = expected.filter((item) => !registrations.includes(item));
 			if (missing.length > 0) {
 				console.log(`FAIL missing registrations: ${missing.join(", ")}`);
+				failures += 1;
+			}
+			// `/context` retired in v0.3.0: its three lines moved to the layer commands that own them
+			// (the context file to `/memory`, the session index and log directory to `/session-log`).
+			if (registrations.includes("cmd:context")) {
+				console.log("FAIL /context is still registered");
 				failures += 1;
 			}
 			// The naming consolidation deleted these outright: no alias, no transition period.
@@ -58,8 +64,59 @@ for (const [name, file] of [
 				console.log("FAIL /handoff does not complete the guard values");
 				failures += 1;
 			}
-			if ((await pi.commands.get("context").getArgumentCompletions("")) !== null) {
-				console.log("FAIL /context takes no arguments but offers completions");
+			// One fact keeps one name: the path lookup lives in the layer commands' bare calls, and the
+			// umbrella's `on|off` is a target-less batch (no feature names, no `all`).
+			const sessionVerbs = (await pi.commands.get("session-log").getArgumentCompletions("")) ?? [];
+			const sessionMissing = ["write", "import", "on", "off"].filter((verb) => !sessionVerbs.some((item) => item.value === verb));
+			if (sessionMissing.length > 0) {
+				console.log(`FAIL /session-log does not complete: ${sessionMissing.join(", ")}`);
+				failures += 1;
+			}
+			const memoryMenu = (await pi.commands.get("memory").getArgumentCompletions("")) ?? [];
+			for (const verb of ["update", "on", "off", "max-memory"]) {
+				if (!memoryMenu.some((item) => item.value === verb)) {
+					console.log(`FAIL /memory does not complete ${verb}`);
+					failures += 1;
+				}
+			}
+			if (!((await pi.commands.get("memory").getArgumentCompletions("max-memory ")) ?? []).some((item) => item.value === "default")) {
+				console.log("FAIL /memory max-memory does not complete 'default'");
+				failures += 1;
+			}
+			const umbrellaVerbs = (await pi.commands.get("project-context").getArgumentCompletions("")) ?? [];
+			for (const verb of ["status", "on", "off", "model", "max-tokens"]) {
+				if (!umbrellaVerbs.some((item) => item.value === verb)) {
+					console.log(`FAIL /project-context does not complete ${verb}`);
+					failures += 1;
+				}
+			}
+			if (umbrellaVerbs.some((item) => item.value === "max-memory")) {
+				console.log("FAIL /project-context still completes max-memory");
+				failures += 1;
+			}
+			if ((await pi.commands.get("project-context").getArgumentCompletions("on ")) !== null) {
+				console.log("FAIL /project-context on|off offers a target (it is the target-less batch)");
+				failures += 1;
+			}
+			const handoffVerbs = (await pi.commands.get("handoff").getArgumentCompletions("")) ?? [];
+			for (const verb of ["status", "on", "off", "threshold", "budget", "thinking", "mode", "guard", "lang", "now"]) {
+				if (!handoffVerbs.some((item) => item.value === verb)) {
+					console.log(`FAIL /handoff does not complete ${verb}`);
+					failures += 1;
+				}
+			}
+			for (const gone of ["auto", "target", "keep", "send", "draft"]) {
+				if (handoffVerbs.some((item) => item.value === gone)) {
+					console.log(`FAIL /handoff still completes the retired verb ${gone}`);
+					failures += 1;
+				}
+			}
+			if (!((await pi.commands.get("handoff").getArgumentCompletions("budget ")) ?? []).some((item) => item.value === "summary")) {
+				console.log("FAIL /handoff budget does not complete 'summary'");
+				failures += 1;
+			}
+			if (!((await pi.commands.get("handoff").getArgumentCompletions("budget recent ")) ?? []).some((item) => item.value === "off")) {
+				console.log("FAIL /handoff budget recent does not complete 'off'");
 				failures += 1;
 			}
 		}

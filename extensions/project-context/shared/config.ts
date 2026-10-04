@@ -13,11 +13,12 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * Field names are shared with the dsh plugin (the two repos keep the same config
  * surface; only the storage and the pi-only `handoffMode`/`handoffGuard`/`handoffLanguage` differ).
  *
- * Backward compatibility, read-only until the next save:
- *   - the pre-unification nested layout (`features.*`, `autolearn.*`, `handoff.*`)
- *   - `<project>/.agents/memory/autolearn.json` (enabled/at)
- *   - the global handoff settings (`~/.pi/agent/auto-handoff.json`)
- * The file is rewritten in the flat layout on the next save.
+ * Backward compatibility is a **one-time migration**, not a permanent read path: the pre-unification
+ * nested layout (`features.*`, `autolearn.*`, `handoff.*`), the split `<project>/.agents/memory/
+ * autolearn.json` and the global `~/.pi/agent/auto-handoff.json` are read once by
+ * `migrateLegacyConfig`, folded into the flat keys and written back as a flat document; nothing on the
+ * read path consults them again. Only `legacyConfigPatch` knows those layouts, so a new key cannot
+ * pick up a legacy fallback term by accident — the eight keys added after the unification never had one.
  */
 
 export type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
@@ -191,45 +192,99 @@ function languageOf(value: unknown): HandoffSettings["handoffLanguage"] | undefi
 	return value === "auto" || value === "zh" || value === "en" ? value : undefined;
 }
 
-/** Defaults from the previous, split configuration files (read once, never written back). */
-async function legacyDefaults(projectRoot: string): Promise<{
-	autolearnEnabled?: boolean;
-	autolearnAt?: number;
-	handoff?: Record<string, unknown>;
-	handoffEnabled?: boolean;
-}> {
-	const autolearn = await readJson(join(memoryDir(projectRoot), "autolearn.json"));
-	const globalHandoff = await readJson(join(getAgentDir(), "auto-handoff.json"));
-	return {
-		autolearnEnabled: autolearn ? bool(autolearn.enabled) : undefined,
-		autolearnAt: autolearn && typeof autolearn.at === "number" ? autolearn.at : undefined,
-		handoff: globalHandoff,
-		handoffEnabled: globalHandoff ? bool(globalHandoff.enabled) : undefined,
-	};
+function thinkingOf(value: unknown): HandoffSettings["handoffSummaryThinking"] | undefined {
+	return value === "session" || value === "off" ? value : undefined;
 }
 
-/** Parse a project's configuration from disk, legacy layouts included. */
-async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
+/**
+ * The pre-unification layouts, folded into flat keys: the nested `features.*`/`autolearn.*`/`handoff.*`
+ * records in the same file, the split `<memory>/autolearn.json`, and the global `auto-handoff.json`.
+ * A flat key already on disk always wins, so this can never override current settings.
+ */
+async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<ProjectContextConfig>; sources: string[] } | undefined> {
 	const raw = (await readJson(configFile(projectRoot))) ?? {};
-	const legacy = await legacyDefaults(projectRoot);
 	const features = asRecord(raw.features);
 	const autolearn = asRecord(raw.autolearn);
 	const handoff = asRecord(raw.handoff);
-	const global = legacy.handoff ?? {};
-	const route = auxRoute(raw.provider, raw.model);
-	// Pre-unification threshold keys: nested `handoff.threshold`/`ratio`, then the global file.
+	const autolearnFile = await readJson(join(memoryDir(projectRoot), "autolearn.json"));
+	const globalHandoff = await readJson(join(getAgentDir(), "auto-handoff.json"));
+	const global = globalHandoff ?? {};
+	const sources: string[] = [];
+	if (Object.keys(features).length > 0 || Object.keys(autolearn).length > 0 || Object.keys(handoff).length > 0) {
+		sources.push("the nested features/autolearn/handoff layout");
+	}
+	if (autolearnFile) sources.push("autolearn.json");
+	if (globalHandoff) sources.push("the global auto-handoff.json");
+	// No legacy layout on disk: nothing to migrate and nothing to clean up.
+	if (sources.length === 0) return undefined;
+
 	const nestedThreshold = handoff.threshold ?? handoff.ratio;
-	const legacyThreshold = global.threshold ?? global.ratio;
+	const globalThreshold = global.threshold ?? global.ratio;
+	const patch: Partial<ProjectContextConfig> = {};
+	const put = (key: keyof ProjectContextConfig, value: unknown) => {
+		if (value === undefined || raw[key] !== undefined) return;
+		(patch as Record<string, unknown>)[key] = value;
+	};
+	put("archiveEnabled", bool(features.archive));
+	put("autoConsolidate", bool(features.memory));
+	put("autoLearn", bool(features.autolearn) ?? (autolearnFile ? bool(autolearnFile.enabled) : undefined));
+	put("handoffEnabled", bool(features.handoff) ?? (globalHandoff ? bool(globalHandoff.enabled) : undefined));
+	put("autolearnAt", positive(autolearn.at, 0) ?? (autolearnFile ? positive(autolearnFile.at, 0) : undefined));
+	put("autolearnTurns", positive(autolearn.turns, 1));
+	put("autolearnIntervalMs", positive(autolearn.intervalMs, 1000));
+	put("handoffAdaptive", adaptiveOf(nestedThreshold) ?? adaptiveOf(globalThreshold));
+	put("handoffThresholdRatio", ratio(nestedThreshold) ?? ratio(globalThreshold));
+	put("handoffTargetTokens", bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
+		?? bounded(global.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS));
+	put("handoffKeepTokens", bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
+		?? bounded(global.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS));
+	put("handoffSummaryThinking", thinkingOf(handoff.summaryThinking) ?? thinkingOf(global.summaryThinking));
+	put("handoffMode", modeOf(handoff.mode) ?? modeOf(global.mode));
+	put("handoffGuard", guardOf(handoff.guard) ?? guardOf(global.guard));
+	put("handoffLanguage", languageOf(handoff.language) ?? languageOf(global.language));
+	return { patch, sources };
+}
+
+/**
+ * Move a project off the pre-unification layouts: fold their values into the flat keys and rewrite the
+ * file (full flat document, under the cross-process lock). Idempotent — a second run finds nothing.
+ * Returns the layouts that contributed, empty when there was nothing to migrate.
+ */
+export async function migrateLegacyConfig(projectRoot: string): Promise<string[]> {
+	const legacy = await legacyConfigPatch(projectRoot);
+	if (!legacy) return [];
+	// An empty patch still rewrites the file, which is what drops the now-dead nested keys.
+	await updateConfig(projectRoot, legacy.patch);
+	return legacy.sources;
+}
+
+const migrationNotices = new Map<string, string[]>();
+
+/**
+ * The layouts a migration moved for this project, consumed once by the caller that can notify a user
+ * (`getConfig` migrates, but it has no `ctx` to say so with).
+ */
+export function takeConfigMigrationNotice(projectRoot: string): string[] | undefined {
+	const sources = migrationNotices.get(projectRoot);
+	if (!sources) return undefined;
+	migrationNotices.delete(projectRoot);
+	return sources;
+}
+
+/** Parse a project's flat configuration from disk. */
+async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
+	const raw = (await readJson(configFile(projectRoot))) ?? {};
+	const route = auxRoute(raw.provider, raw.model);
 
 	const config: ProjectContextConfig = {
-		archiveEnabled: bool(raw.archiveEnabled) ?? bool(features.archive) ?? DEFAULT_CONFIG.archiveEnabled,
-		autoConsolidate: bool(raw.autoConsolidate) ?? bool(features.memory) ?? DEFAULT_CONFIG.autoConsolidate,
-		autoLearn: bool(raw.autoLearn) ?? bool(features.autolearn) ?? legacy.autolearnEnabled ?? DEFAULT_CONFIG.autoLearn,
-		handoffEnabled: bool(raw.handoffEnabled) ?? bool(features.handoff) ?? legacy.handoffEnabled ?? DEFAULT_CONFIG.handoffEnabled,
+		archiveEnabled: bool(raw.archiveEnabled) ?? DEFAULT_CONFIG.archiveEnabled,
+		autoConsolidate: bool(raw.autoConsolidate) ?? DEFAULT_CONFIG.autoConsolidate,
+		autoLearn: bool(raw.autoLearn) ?? DEFAULT_CONFIG.autoLearn,
+		handoffEnabled: bool(raw.handoffEnabled) ?? DEFAULT_CONFIG.handoffEnabled,
 
-		autolearnAt: positive(raw.autolearnAt, 0) ?? positive(autolearn.at, 0) ?? legacy.autolearnAt ?? DEFAULT_CONFIG.autolearnAt,
-		autolearnTurns: positive(raw.autolearnTurns, 1) ?? positive(autolearn.turns, 1) ?? DEFAULT_CONFIG.autolearnTurns,
-		autolearnIntervalMs: positive(raw.autolearnIntervalMs, 1000) ?? positive(autolearn.intervalMs, 1000) ?? DEFAULT_CONFIG.autolearnIntervalMs,
+		autolearnAt: positive(raw.autolearnAt, 0) ?? DEFAULT_CONFIG.autolearnAt,
+		autolearnTurns: positive(raw.autolearnTurns, 1) ?? DEFAULT_CONFIG.autolearnTurns,
+		autolearnIntervalMs: positive(raw.autolearnIntervalMs, 1000) ?? DEFAULT_CONFIG.autolearnIntervalMs,
 		consolidateTurns: positive(raw.consolidateTurns, 1) ?? DEFAULT_CONFIG.consolidateTurns,
 		consolidateIntervalMs: positive(raw.consolidateIntervalMs, 1000) ?? DEFAULT_CONFIG.consolidateIntervalMs,
 		forceDedupeMs: positive(raw.forceDedupeMs, 0) ?? DEFAULT_CONFIG.forceDedupeMs,
@@ -239,28 +294,14 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 		provider: route.provider,
 		model: route.model,
 
-		handoffAdaptive: bool(raw.handoffAdaptive) ?? adaptiveOf(nestedThreshold) ?? adaptiveOf(legacyThreshold) ?? DEFAULT_CONFIG.handoffAdaptive,
-		handoffThresholdRatio: ratio(raw.handoffThresholdRatio)
-			?? ratio(nestedThreshold)
-			?? ratio(legacyThreshold)
-			?? DEFAULT_CONFIG.handoffThresholdRatio,
-		handoffTargetTokens: bounded(raw.handoffTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
-			?? bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
-			?? bounded(global.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
-			?? DEFAULT_CONFIG.handoffTargetTokens,
-		handoffKeepTokens: bounded(raw.handoffKeepTokens, 0, MAX_KEEP_RECENT_TOKENS)
-			?? bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
-			?? bounded(global.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
-			?? DEFAULT_CONFIG.handoffKeepTokens,
-		handoffSummaryThinking: (raw.handoffSummaryThinking === "session" || raw.handoffSummaryThinking === "off"
-			? raw.handoffSummaryThinking
-			: undefined)
-			?? (handoff.summaryThinking === "session" || handoff.summaryThinking === "off" ? handoff.summaryThinking : undefined)
-			?? (global.summaryThinking === "session" || global.summaryThinking === "off" ? global.summaryThinking : undefined)
-			?? DEFAULT_CONFIG.handoffSummaryThinking,
-		handoffMode: modeOf(raw.handoffMode) ?? modeOf(handoff.mode) ?? modeOf(global.mode) ?? DEFAULT_CONFIG.handoffMode,
-		handoffGuard: guardOf(raw.handoffGuard) ?? guardOf(handoff.guard) ?? guardOf(global.guard) ?? DEFAULT_CONFIG.handoffGuard,
-		handoffLanguage: languageOf(raw.handoffLanguage) ?? languageOf(handoff.language) ?? languageOf(global.language) ?? DEFAULT_CONFIG.handoffLanguage,
+		handoffAdaptive: bool(raw.handoffAdaptive) ?? DEFAULT_CONFIG.handoffAdaptive,
+		handoffThresholdRatio: ratio(raw.handoffThresholdRatio) ?? DEFAULT_CONFIG.handoffThresholdRatio,
+		handoffTargetTokens: bounded(raw.handoffTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffTargetTokens,
+		handoffKeepTokens: bounded(raw.handoffKeepTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffKeepTokens,
+		handoffSummaryThinking: thinkingOf(raw.handoffSummaryThinking) ?? DEFAULT_CONFIG.handoffSummaryThinking,
+		handoffMode: modeOf(raw.handoffMode) ?? DEFAULT_CONFIG.handoffMode,
+		handoffGuard: guardOf(raw.handoffGuard) ?? DEFAULT_CONFIG.handoffGuard,
+		handoffLanguage: languageOf(raw.handoffLanguage) ?? DEFAULT_CONFIG.handoffLanguage,
 	};
 	return config;
 }
@@ -269,8 +310,12 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 export async function getConfig(projectRoot: string): Promise<ProjectContextConfig> {
 	const cached = cache.get(projectRoot);
 	if (cached) return cached;
+	// A legacy layout still on disk is migrated before the first read, so the read path only ever sees
+	// flat keys. A failure here must not break the caller: what is already flat still parses.
+	const moved = await migrateLegacyConfig(projectRoot).catch(() => []);
 	const config = await parseConfig(projectRoot);
 	cache.set(projectRoot, config);
+	if (moved.length > 0) migrationNotices.set(projectRoot, moved);
 	return config;
 }
 

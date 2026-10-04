@@ -50,3 +50,16 @@ export function completeValues(prefix: string, head: string, choices: Choice[]):
 	if (!parsed.hasSpace || parsed.head.toLowerCase() !== head.toLowerCase()) return null;
 	return matching(choices, parsed.rest);
 }
+
+/**
+ * Complete the third argument, when the first two already match. A verb that groups values under a
+ * sub-verb (e.g. `/handoff budget recent <tokens|off>`) still needs its own menu, or the deepest
+ * argument is the only one a user has to remember blind.
+ */
+export function completeSubValues(prefix: string, head: string, sub: string, choices: Choice[]): ArgumentCompletion[] | null {
+	const parsed = splitArguments(prefix);
+	if (!parsed.hasSpace || parsed.head.toLowerCase() !== head.toLowerCase()) return null;
+	const second = splitArguments(parsed.rest);
+	if (!second.hasSpace || second.head.toLowerCase() !== sub.toLowerCase()) return null;
+	return matching(choices, second.rest);
+}

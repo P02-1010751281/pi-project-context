@@ -5,8 +5,9 @@ import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messag
 
 /**
  * Feature-switch tests: every feature has an on/off switch in project-context.json,
- * switches gate automatic behavior, `/project-context on|off` persists them, and
- * --no-project-context disables the whole extension for one run.
+ * switches gate automatic behavior, each layer command owns its own on/off while the bare
+ * `/project-context on|off` is the target-less batch, and --no-project-context disables the
+ * whole extension for one run.
  */
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-switches-"));
@@ -63,10 +64,10 @@ try {
 	// Turn the autolearn switch off before the first settle: with it off from the start, any
 	// autolearn completion in this test is a switch violation, which makes the probe below a
 	// cumulative check instead of one that a mutated gate can satisfy earlier and hide.
-	await command.handler("off autolearn", ctx);
+	await pi.commands.get("autolearn").handler("off", ctx);
 
 	console.log("\n=== archive switch ===");
-	await command.handler("off archive", ctx);
+	await pi.commands.get("session-log").handler("off", ctx);
 	check("off persisted", (await readConfig())?.archiveEnabled === false);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "turn_end", ctx);
@@ -76,24 +77,55 @@ try {
 		await stayedQuiet(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).length > 0),
 	);
 
-	await command.handler("on archive", ctx);
+	await pi.commands.get("session-log").handler("on", ctx);
 	await runHandlers(pi, "turn_end", ctx);
 	check("archive written after on", await waitUntil(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).includes("turn 0")));
 
+	// The bare call is a read path: pi writes the archive itself at turn_end, agent_settled and
+	// session_shutdown, so it must not carry that write as a side effect. Removing the archive first is
+	// the proof — a read cannot bring it back, and `write` is the verb that can.
+	await rm(logDir, { recursive: true, force: true });
+	await pi.commands.get("session-log").handler("", ctx);
+	const bareLog = lastNotification();
+	check("bare /session-log writes nothing", !(await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")));
+	check(
+		"bare /session-log prints its status line and both paths",
+		bareLog.includes("Session archive:") && bareLog.includes("Session index: ") && bareLog.includes("Session logs: "),
+	);
+	await pi.commands.get("session-log").handler("write", ctx);
+	check("`write` writes the archive", await waitUntil(async () => (await readFile(path.join(logDir, "session.jsonl"), "utf8").catch(() => "")).includes("turn 0")));
+
+	console.log("\n=== /context retired: the layer commands print its lines ===");
+	{
+		// `/context` printed three paths; the layers that own them print them now (the context file from
+		// `/memory`, the index and the log directory from `/session-log`). The context-file line is
+		// rendered by one helper for both `/memory` and the umbrella, so the two sides are compared line
+		// by line — never as whole blocks, because the umbrella's copy carries an updated timestamp.
+		const contextPath = path.join(tmp, ".agents/memory/CONTEXT.md");
+		await pi.commands.get("memory").handler("", ctx);
+		const memoryBare = lastNotification();
+		await command.handler("status", ctx);
+		const statusBody = lastNotification();
+		const contextLine = (text) => (text.split("\n").find((entry) => entry.startsWith("Context file: ")) ?? "").replace(/ — updated .*/, "");
+		check("/memory prints the context-file line", contextLine(memoryBare) === `Context file: ${contextPath}`);
+		check("the umbrella prints the same context-file line", contextLine(statusBody) === contextLine(memoryBare));
+		check("/session-log owns the other two lines", !memoryBare.includes("Session index:") && !memoryBare.includes("Session logs:"));
+	}
+
 	console.log("\n=== memory switch ===");
-	await command.handler("off autolearn", ctx); // isolate the model-call checks below
+	await pi.commands.get("autolearn").handler("off", ctx); // isolate the model-call checks below
 	const injected = await runHandlers(pi, "before_agent_start", ctx, { systemPrompt: "base" });
 	const promptText = injected.filter(Boolean).map((result) => result.systemPrompt).join("\n");
 	check("memory on injects MEMORY.md and CONTEXT.md", promptText.includes("## Project Memory") && promptText.includes("## Project Context"));
 
-	await command.handler("off memory", ctx);
+	await pi.commands.get("memory").handler("off", ctx);
 	const skipped = await runHandlers(pi, "before_agent_start", ctx, { systemPrompt: "base" });
 	check("memory off injects nothing", skipped.every((result) => result === undefined));
 	const callsBefore = modelCalls;
 	await runHandlers(pi, "agent_settled", ctx);
 	check("memory off does not call the model", await stayedQuiet(() => modelCalls === callsBefore + 1));
 
-	await command.handler("on memory", ctx);
+	await pi.commands.get("memory").handler("on", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
 	check("memory on consolidates", await waitUntil(() => modelCalls === callsBefore + 1));
 	// The write lands after the model call resolves: wait for the file, not for the counter.
@@ -119,13 +151,13 @@ try {
 
 	console.log("\n=== handoff switch ===");
 	// Fixed threshold so a synthetic conversation can cross it (auto mode needs real bulk).
-	await pi.commands.get("handoff").handler("0.5", ctx);
-	await command.handler("off handoff", ctx);
+	await pi.commands.get("handoff").handler("threshold 0.5", ctx);
+	await pi.commands.get("handoff").handler("off", ctx);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
 	check("off: no handoff triggered", await stayedQuiet(() => pi.sentMessages.length > 0));
 
-	await command.handler("on handoff", ctx);
+	await pi.commands.get("handoff").handler("on", ctx);
 	await runHandlers(pi, "session_start", ctx);
 	await runHandlers(pi, "agent_settled", ctx);
 	check("on: handoff trigger sent", await waitUntil(() => pi.sentMessages.length === 1));
@@ -147,22 +179,33 @@ try {
 	const disabledInject = await runHandlers(pi2, "before_agent_start", ctx2, { systemPrompt: "base" });
 	check("no injection", disabledInject.every((result) => result === undefined));
 
-	console.log("\n=== off all / on all ===");
+	console.log("\n=== the umbrella on|off is the target-less batch ===");
 	const FEATURE_KEYS = ["archiveEnabled", "autoConsolidate", "autoLearn", "handoffEnabled"];
+	// One name, one path: a target (the old `<feature|all>`) and a per-feature toggle now belong to the
+	// layer commands, so the batch refuses the token instead of silently doing the same thing.
+	const beforeBatch = await readConfig();
 	await command.handler("off all", ctx);
+	check("the batch refuses a target", lastNotification().includes("takes no target"));
+	const afterBatch = await readConfig();
+	check("the refused batch changed nothing", FEATURE_KEYS.every((key) => afterBatch?.[key] === beforeBatch?.[key]));
+	await command.handler("off", ctx);
 	const allOff = await readConfig();
 	check("all off persisted", FEATURE_KEYS.every((key) => allOff?.[key] === false));
-	await command.handler("on all", ctx);
+	await command.handler("on", ctx);
 	const allOn = await readConfig();
 	check("all on persisted", FEATURE_KEYS.every((key) => allOn?.[key] === true));
 
 	console.log("\n=== legacy autolearn.json compatibility ===");
 	await rm(configPath, { force: true });
 	await writeFile(path.join(tmp, ".agents/memory/autolearn.json"), `${JSON.stringify({ at: 123, enabled: false })}\n`);
-	const { getConfig } = await loadNamespace(`${PC}/shared/config.ts`);
+	const { getConfig, takeConfigMigrationNotice } = await loadNamespace(`${PC}/shared/config.ts`);
 	const legacy = await getConfig(tmp);
 	check("legacy enabled=false maps to the switch", legacy.autoLearn === false);
 	check("legacy throttle timestamp kept", legacy.autolearnAt === 123);
+	// The migration is a write, so it says what it moved instead of rewriting the file silently.
+	const movedFrom = takeConfigMigrationNotice(tmp);
+	check("the migration names the layout it moved", Array.isArray(movedFrom) && movedFrom.some((item) => String(item).includes("autolearn.json")));
+	check("the notice is consumed once", takeConfigMigrationNotice(tmp) === undefined);
 
 	console.log("\n=== nested config layout still loads (and upgrades on save) ===");
 	await rm(path.join(tmp, ".agents/memory/autolearn.json"), { force: true });
@@ -170,15 +213,19 @@ try {
 		features: { archive: false, memory: false, autolearn: true, handoff: false },
 		autolearn: { at: 456, turns: 7, intervalMs: 60_000 },
 		consolidateTurns: 9,
-		handoff: { threshold: 0.6, autoTargetTokens: 32_000, keepRecentTokens: 1_000, summaryThinking: "session", mode: "draft", guard: "skip" },
+		// `maxTokens` was added after the unification and never had a legacy term, so the nested record
+		// must not move it: that is the freeze that keeps the migration from growing a term per key.
+		handoff: { threshold: 0.6, autoTargetTokens: 32_000, keepRecentTokens: 1_000, summaryThinking: "session", mode: "draft", guard: "skip", maxTokens: 999 },
 	}, null, 2)}\n`);
-	const { getConfig: getNested, setFeature: setNested } = await loadNamespace(`${PC}/shared/config.ts`);
+	const { getConfig: getNested, takeConfigMigrationNotice: takeNestedNotice, setFeature: setNested } = await loadNamespace(`${PC}/shared/config.ts`);
 	const nested = await getNested(tmp);
 	check("nested switches mapped", nested.archiveEnabled === false && nested.autoConsolidate === false && nested.handoffEnabled === false && nested.autoLearn === true);
 	check("nested threshold maps to adaptive=false + ratio", nested.handoffAdaptive === false && nested.handoffThresholdRatio === 0.6);
 	check("nested handoff settings mapped", nested.handoffTargetTokens === 32_000 && nested.handoffKeepTokens === 1_000 && nested.handoffSummaryThinking === "session" && nested.handoffMode === "draft" && nested.handoffGuard === "skip");
 	check("nested autolearn state mapped", nested.autolearnAt === 456 && nested.autolearnTurns === 7 && nested.autolearnIntervalMs === 60_000);
 	check("flat consolidation cadence read", nested.consolidateTurns === 9 && nested.consolidateIntervalMs === 300_000 && nested.forceDedupeMs === 15_000);
+	check("a key added after the unification gets no legacy term", nested.maxTokens === 8192);
+	check("the nested migration names its source", (takeNestedNotice(tmp) ?? []).some((item) => String(item).includes("nested")));
 	await setNested(tmp, "archive", true);
 	const upgraded = await readConfig();
 	check("file rewritten flat on save", upgraded.archiveEnabled === true && upgraded.features === undefined && upgraded.autolearn === undefined && upgraded.handoff === undefined);
@@ -189,13 +236,13 @@ try {
 	// module's entire session-start snapshot, and `/project-context off memory` publishes a NEW cached
 	// object, so the next `/handoff` command silently turned the memory switch back on. One
 	// process, no crash, no notice.
-	await command.handler("off memory", ctx);
+	await pi.commands.get("memory").handler("off", ctx);
 	check("memory is off before the handoff save", (await readConfig())?.autoConsolidate === false);
 	await pi.commands.get("handoff").handler("lang zh", ctx);
 	const afterHandoff = await readConfig();
 	check("the memory switch survives a handoff save", afterHandoff?.autoConsolidate === false);
 	check("the handoff key is still persisted", afterHandoff?.handoffLanguage === "zh");
-	await command.handler("on memory", ctx);
+	await pi.commands.get("memory").handler("on", ctx);
 
 	console.log("\n=== the config write takes the cross-process lock ===");
 	// `updateConfig` is a read-modify-write of one file shared by every process that mounts the project,
@@ -206,7 +253,7 @@ try {
 		await writeFile(lockFile, "stale");
 		const longAgo = new Date(Date.now() - 60_000);
 		await utimes(lockFile, longAgo, longAgo);
-		await command.handler("off memory", ctx);
+		await pi.commands.get("memory").handler("off", ctx);
 		check("the config write consumed and released the stale lock", await stat(lockFile).then(() => false).catch(() => true));
 		check("the write still landed", (await readConfig())?.autoConsolidate === false);
 	}

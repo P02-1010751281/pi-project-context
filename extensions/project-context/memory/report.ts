@@ -5,14 +5,15 @@
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
-import { getConfig, runIsDisabled } from "../shared/config.ts";
-import { completeVerbs } from "../shared/complete.ts";
+import { getConfig, DEFAULT_CONFIG, runIsDisabled, setFeature, takeConfigMigrationNotice, updateConfig } from "../shared/config.ts";
+import { completeValues, completeVerbs } from "../shared/complete.ts";
 import { MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
+import { capCeilingWarning, memoryCapUnsatisfiable } from "../shared/output-budget.ts";
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
-import { memoryStatusLevel, memoryStatusMessage } from "./status.ts";
+import { memoryStatusLevel, memoryStatusMessage, contextStatusLine } from "./status.ts";
 
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = {
@@ -190,7 +191,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					cappedSections = outcome.sectionDropped > 0 || outcome.itemTruncated > 0;
 					cappedMemory = !sectioned && exceedsMemoryCap(memoryText, maxMemoryChars);
 					// Only the opaque entry still needs a number: under section shares the smallest workable cap is
-					// not an integer (4009.33 for one probe), and `/project-context max-memory` only rounds, so a
+					// not an integer (4009.33 for one probe), and `/memory max-memory` only rounds, so a
 					// suggested value would simply be clipped again.
 					if (cappedMemory) neededChars = Math.max(MIN_MEMORY_CHARS, Math.min(memoryDocumentChars(memoryText), MAX_MEMORY_CHARS_LIMIT));
 					if (storedPoisoned) {
@@ -317,6 +318,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
 		try {
 			const { maxMemoryChars } = await getConfig(projectRoot);
+			// `getConfig` migrated a legacy layout on this first load; say so instead of rewriting the file silently.
+			const migratedSources = takeConfigMigrationNotice(projectRoot);
+			if (migratedSources) {
+				notify(ctx, `project-context config written in the flat layout (migrated from ${migratedSources.join(", ")}).`);
+			}
 			const result = await migrateProjectState(projectRoot, maxMemoryChars);
 			const details: string[] = [];
 			if (result.moved.length > 0) details.push(`moved ${result.moved.join(", ")}`);
@@ -357,28 +363,82 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("memory", {
-		description: "Show this project's memory location and status, or 'update' to consolidate now",
-		getArgumentCompletions: (prefix) =>
-			completeVerbs(prefix, [{ value: "update", description: "consolidate durable facts and the session context now" }]),
+		description: "Show this project's memory and CONTEXT.md status (update | on|off | max-memory <n>|default)",
+		getArgumentCompletions: (prefix) => {
+			const verbs = completeVerbs(prefix, MEMORY_VERBS);
+			if (verbs) return verbs;
+			return completeValues(prefix, "max-memory", [{ value: "default" }]);
+		},
 		handler: async (args, ctx) => {
-			const verb = (args ?? "").trim().toLowerCase();
+			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
+			const verb = (parts[0] ?? "").toLowerCase();
+			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			if (verb === "update") {
-				const projectRoot = await getProjectRoot(pi, ctx.cwd);
 				const report = await consolidate(ctx, true, true);
 				notify(ctx, consolidateReply(report, lastWrite.get(projectRoot)), report === "failed" || report === "clipped" ? "warning" : "info");
 				return;
 			}
-			if (verb) {
-				notify(ctx, `Unknown option "${verb}". Usage: /memory | /memory update`, "warning");
+			if (verb === "on" || verb === "off") {
+				await setFeature(projectRoot, "memory", verb === "on");
+				notify(ctx, `Automatic consolidation: ${verb}.`);
 				return;
 			}
-			const projectRoot = await getProjectRoot(pi, ctx.cwd);
+			if (verb === "max-memory") {
+				// The cap sizes what this layer writes, so the verb lives here; the umbrella only keeps
+				// what two or more layers share (its route and the feature batch).
+				const value = (parts[1] ?? "").trim();
+				const usage = `Usage: /memory max-memory <${MIN_MEMORY_CHARS}–${MAX_MEMORY_CHARS_LIMIT}> | default`;
+				if (!value) {
+					notify(ctx, usage, "warning");
+					return;
+				}
+				if (value === "default") {
+					await updateConfig(projectRoot, { maxMemoryChars: DEFAULT_CONFIG.maxMemoryChars });
+				} else {
+					const chars = Number(value);
+					if (!Number.isFinite(chars) || chars < MIN_MEMORY_CHARS || chars > MAX_MEMORY_CHARS_LIMIT) {
+						notify(ctx, usage, "warning");
+						return;
+					}
+					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
+				}
+				const config = await getConfig(projectRoot);
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
+					notify(
+						ctx,
+						`Memory cap set to ${config.maxMemoryChars} characters, but ${capCeilingWarning(config)}; raise maxTokens/maxOutputTokens too or replies can be truncated.`,
+						"warning",
+					);
+				} else {
+					notify(ctx, `Memory cap: ${config.maxMemoryChars} characters.`);
+				}
+				return;
+			}
+			if (verb) {
+				notify(ctx, `Unknown option "${verb}". Usage: /memory | update | on|off | max-memory <n>|default`, "warning");
+				return;
+			}
 			const { maxMemoryChars } = await getConfig(projectRoot);
 			const memory = await loadMemory(projectRoot, maxMemoryChars);
-			notify(ctx, `Project memory: ${memoryStatusMessage(memory, maxMemoryChars)}`, memoryStatusLevel(memory));
+			// The CONTEXT.md line goes through the same helper the umbrella status uses, so the two
+			// entry points print one wording; the memory line having been split off `/context` is why
+			// this command now owns both lines.
+			notify(
+				ctx,
+				`Project memory: ${memoryStatusMessage(memory, maxMemoryChars)}\nContext file: ${await contextStatusLine(projectRoot)}`,
+				memoryStatusLevel(memory),
+			);
 		},
 	});
 }
+
+/** Verbs the `memory` command accepts, for argument completion (mirrors the handler). */
+const MEMORY_VERBS = [
+	{ value: "update", description: "consolidate durable facts and the session context now" },
+	{ value: "on", description: "enable automatic consolidation" },
+	{ value: "off", description: "disable automatic consolidation" },
+	{ value: "max-memory", description: "MEMORY.md character cap" },
+];
 
 /** What one consolidation attempt did, so the explicit commands can report truthfully. */
 export type ConsolidateReport = "updated" | "clipped" | "unchanged" | "deduped" | "failed";

@@ -29,7 +29,7 @@ export function setFlagEnabled(value: boolean): void {
 	flagEnabled = value;
 }
 
-/** Feature switch (`/project-context off handoff`) plus run-level overrides. */
+/** Feature switch (`/handoff on|off`) plus run-level overrides. */
 export function handoffEnabled(): boolean {
 	return !runIsDisabled() && flagEnabled && (peekConfig(configRoot)?.handoffEnabled ?? false);
 }
@@ -53,7 +53,7 @@ export async function syncConfig(root: string | undefined): Promise<void> {
  * Persist the handoff settings.
  *
  * `updateConfig` merges into the cached configuration and publishes a **new** object, so this
- * module's mirror goes stale the moment another writer saves — `/project-context off memory` calls
+ * module's mirror goes stale the moment another writer saves — `/memory off` calls
  * `setFeature` and does exactly that. Writing the whole mirror back then silently reverted whatever
  * the other writer had just set (and any other host's or hand edit's changes). A command that means
  * to change one handoff key must send only the handoff keys, and then adopt the merged result so the
