@@ -26,13 +26,13 @@ Consolidation pass closing the session that finished the UniField memory merge-b
 
 ## Open tasks
 
-- Owner decision: push the sibling repos. `git -C UniField push origin master` and `git -C Quantum_Matrix push origin master`; UniField's extra gitcode.com push URL would publish 207 commits of unpublished research with no way back, which is why neither was pushed.
-- Owner decision: UniField's MEMORY.md is 44,910 characters against maxMemoryChars 36000 and the cap path clips the tail, so either raise that repo's maxMemoryChars to about 48000 or let a render converge under the cap.
+- Handed back to the sibling projects (not this repo's call): pushing their local commits. UniField's origin carries a public gitcode.com push URL, which is why nothing was pushed from here.
+- Handed back to UniField: its own memory file sits over its own maxMemoryChars, so the cap path can clip the tail; that repo's config or trim decides.
 - Restart the two pi processes older than the v0.2.1 install (PID 2432868 from 10-03 10:39 and PID 2911933 from 10-03 23:08) so the refusal fix actually loads; `pi update --extensions` only replaces on-disk code and a stale reply can still overwrite an external edit.
 - Owner decision: whether UF commit 84fe9a9 and f2824f7 and QM 59b886f get pushed at all, and whether the remaining dirty consumer working trees in QM and UF should be committed.
 - Owner decision: whether the now twice-field-evidenced render-plus-cap loss justifies work on re-render retention or cap policy; the merge-on-external-edit guard remains deliberately unbuilt.
 - Owner review of the accumulated audit findings (stop knob growth, legacy compat retirement window, handoff/memory shutdown coupling, D2 dead export, D4 per-session migration cost, D7 lock hygiene, the corrected D7 attribution).
-- Optional hygiene: the unattributed stale .lock files in CipherCat have no known owner and could be swept by the archive layer.
+- CipherCat's remaining stale .lock sweep: handed to that repo (no owner here).
 - Parked: option M (retarget the over-cap condensation retry at record_memory so an accepted retry lands on renderMemoryDocument), option N (rejected), and whether D1 becomes wontfix.
 - Note: the ~/.pi repo still carries another session's dirty files (agent/custom-providers/scnet/models.json plus a .bak) that the v0.2.1 pin commit deliberately did not touch.
 
