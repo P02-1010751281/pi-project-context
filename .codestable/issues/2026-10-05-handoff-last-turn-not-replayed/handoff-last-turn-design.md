@@ -3,8 +3,8 @@ doc_type: design
 issue: handoff-last-turn-not-replayed
 date: 2026-10-05
 status: design-frozen
-revision: 1
-implemented_in: f19dc93536ba
+revision: 2
+implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体删除，见 §8）
 ---
 
 # handoff 保住「最后一轮」：A+B 设计与裁切+索引
@@ -80,6 +80,8 @@ implemented_in: f19dc93536ba
 | `tests/handoff-test.mjs` | 新增断言（只加断言，不加测试文件） |
 | `docs/architecture.md`、`CHANGELOG.md` | 行为变化（v0.4.x 条目） |
 
+> rev 2 更正：下表两行的「本片未改」只适用于 rev 1；摘要链在 rev 2 被整体删除（见 §8）。
+
 ## 4. 断言与单侧变异计划
 
 断言（新增 8 条，已实现）：
@@ -126,3 +128,46 @@ implemented_in: f19dc93536ba
   断言落在「摘要含该段但其内容只有索引级信息」。
 - 结论：**「最后一轮的问题」已经以原文到达 successor（本片已达成）**；「那一轮做过什么」仍是普通摘要散文，
   没有独立小节。
+
+## 8. rev 2：摘要链整体删除（2026-10-05，`b4c9405`）
+
+### 8.1 owner 决议
+
+交接载荷选 **A 形态并删掉整条摘要链**：不再有任何摘要模型调用，successor 得到「最近回合原文 + 文件清单 + 上一会话日志指针」；
+**B 不建**（pi 式九节摘要）；**不加「摘要形状守卫」**。依据是本评估的两条现场事实（§9.1 的 C′ 负面、§9.2 的真实日志正面）。
+
+### 8.2 实际变更面
+
+| 文件 | 改动 |
+| --- | --- |
+| `handoff/summary.ts` | **删除**（模型调用、token-cap 三次重试、`summaryFocus` 的拼装） |
+| `handoff/prompt.ts` | 删九节本地化映射表（含 `进度`/`阻塞` 变体）与 `## Handoff Summary` 节；文件清单改挂 `## 上一会话信息` 下；`detailLookup` 升级为必读强指令 |
+| `handoff/run.ts` | 删摘要调用、`requestModel`/授权段、`previousCompaction` 槽、`summaryWithIndex`；续接 prompt 改在护栏前构建，预估用自身长度；状态行/提示词改成事实描述 |
+| `handoff/threshold.ts` | 删 `SUMMARY_OUTPUT_RESERVE_TOKENS` 与 summarizer 上界；`summarizeTokens` 改名 `dropTokens`（内部名） |
+| `handoff/language.ts`、`text.ts`、`file-ops.ts`、`handoff.ts`、`index.ts` | 删 `summaryFocus`；marker 文案改为 dropped（`[turn prefix dropped during handoff]`）；注释与模块表同步 |
+| `tests/handoff-test.mjs` | 删 stub 摘要机具与九节断言；集成段改为「零模型调用」+ replay/载荷断言 |
+| `docs/handoff.md`、`docs/configuration.md`、`docs/architecture.md`、`CHANGELOG.md` | 同轮末尾一次写 |
+
+### 8.3 断言与单侧变异（实测）
+
+新增/替换的 pin：「the handoff reaches no model at all」（集成段共享计数器，`complete` 被调用即抛错）、
+「the prompt carries no summary section」、「the prompt points at the previous session and the log index」、
+「zh carries the file list」、「the older side is dropped, not replayed」、「the archived handoff document points at the log and carries no summary」。
+
+| 变异 | 变红的断言 |
+| --- | --- |
+| 交接路径又发起一次模型调用 | 级联（该调用抛错，整段交接中止）：含 the handoff reaches no model at all |
+| 续接 prompt 又带摘要小节 | zh carries the details heading and no summary section / the prompt carries no summary section |
+| 指针句退回裸指针 | the prompt points at the previous session and the log index |
+| 续接 prompt 不带文件清单 | zh carries the file list |
+| 整段会话都进重放 | the older side is dropped, not replayed 等 9 条 |
+| `HANDOFF.md` 又带摘要小节 | document carries the file list and no summary / the archived handoff document points at the log and carries no summary |
+
+### 8.4 残留与待决
+
+- **旋钮命名未动**：`handoffBudgetSummaryTokens` 与 `/handoff budget summary` 保留原拼写（与 dsh 面共享，改名/删旋钮需单独的设计文档 + 现场事实）；
+  但 pi 侧 `handoffThinking` 现已**无读者**（只有写路径），这是一条「不动也不生效」的控制，需 owner 决定去留。
+- **用户可见文案改了词**：开始提示 `dropping ~X`、成功提示「dropped prefix stays in its session log」、
+  状态行 `drop N` / `drop budget N`、拒绝句里的 summary → handoff。旋钮名未改，因此收据词与配置键现在不同词，待命名决议一并处理。
+- **`MIN_SUMMARIZE_TOKENS` 名未改**：它现在是「dropped prefix 的下限」，语义未变、名字带旧词。
+- **端到端未验**：A 形态的真实交接（发布后在真实 TUI 跑一次）尚未做；§9.2 的正面事实来自 headless 探针。

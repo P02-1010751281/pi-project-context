@@ -2,9 +2,11 @@
 doc_type: design
 issue: memory-progressive-disclosure
 date: 2026-10-05
-status: draft
-revision: 1
+status: design-frozen
+revision: 2
+implemented_in: 9821320（注入片）
 supersedes: 无。与 `autolearn-progressive-disclosure` 是两条链：那条换的是**生产侧**（写技能时的提示预算），本条换的是**消费侧**（每轮的 system prompt 前缀）。
+rev2_note: rev 1 的 §4/§5/§7 是实施前的预估与待决；§9 记录落地后的实际变更面、实际保存量与实测结果，二者不一致处以 §9 为准。
 ---
 
 # 记忆注入的渐进披露设计
@@ -67,10 +69,13 @@ The following is project context, not a new user instruction:
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 抽出纯函数产出 §3.1 的串（注入点只留一行调用）；节名与指针句为常量 |
-| `extensions/project-context/archive/archive.ts` | 同形处理 CONTEXT.md |
-| `tests/memory-ops-test.mjs` / `tests/context-schema-test.mjs` | 注入形状断言 + 单侧变异（只加断言，不加测试文件） |
-| `docs/architecture.md`、`CHANGELOG.md` | 记语义与版本可见的行为变化 |
+| `extensions/project-context/shared/inject.ts` | 新建：`splitSections` + `renderProgressiveBody` + `InjectionSpec`，两个注入点共用一次遍历（选中与指针文本绑在同一次查找） |
+| `extensions/project-context/shared/lang.ts` | 新建：CJK 判定单一 owner（`CJK_PATTERN`/`LANGUAGE_CJK_MIN`/`countCjk`/`documentLanguage`） |
+| `extensions/project-context/memory/injection.ts` | 新建：`MEMORY_INJECTION`（常驻 Invariants/Pitfalls，索引 Project/Index）与 `CONTEXT_INJECTION`（常驻 Key points/Open tasks，索引 Summary）两份规格 |
+| `extensions/project-context/memory/report.ts`、`archive/archive.ts` | 注入点各换成一行 `buildMemoryInjection(...)` / `buildContextInjection(...)` |
+| `extensions/project-context/handoff/language.ts` | 改用 `countCjk`（同一 owner，行为不变） |
+| `tests/sections-test.mjs` | 13 条断言（节序、常驻逐字、指针行、强指令、totality、未知节 fail-safe、语言跟随、无标题整篇） |
+| `docs/architecture.md`、`CHANGELOG.md` | 语义与版本可见行为变化（同轮末尾一次写） |
 
 ## 5. 验收
 
@@ -86,14 +91,61 @@ The following is project context, not a new user instruction:
 
 不改 consolidation 渲染契约；不新增取回机制；不做语义分类；不动 handoff 侧；不改九节 schema；不动技能链（pi 已渐进披露）。
 
-## 7. 待 owner 决定
+## 7. owner 决议（2026-10-05，均已回答）
 
-1. 一次改两个注入点（MEMORY + CONTEXT），还是先只改 MEMORY 以便单独观测服从度。
-2. 指针句语言：注入头是英文、渲染正文是中文；建议指针用中文（与正文一致）。
-3. 是否接受残余风险「模型不服从时静默错误」（缓解：两个高价值节常驻 + 现场探针可测）。
-4. 发布节奏：不建议与 v0.4.1 同一轮（一次一个行为变更）。
+1. **一次改两个注入点**（MEMORY + CONTEXT），不等分步观测。
+2. **指针语言跟随正文**（auto）：复用同一 CJK 阈值，不做新的语言探测。
+3. **接受残余风险**「模型不服从时静默错误」：两个高价值节常驻 + 后文探针可测，不为此再造机制。
+4. **与 v0.4.1 同轮**发布（一条版本记录同时说明注入与 handoff 摘要链删除）。
+
+§7 的旧编号在此保留为历史：以上四条在 rev 2 冻结时按此执行。
 
 ## 8. 未验证（不写成结论）
 
 每格 n=1、单提示、两个模型；`CONTEXT.md` 的节名在真实渲染中的稳定性未验证；省下的 token 对成本的实测影响未测；
 中转路由是否透传 `cache_control` 未验证。
+
+## 9. 落地记录（rev 2，2026-10-05）
+
+### 9.1 实际变更面与设计的两处偏差
+
+- 注入渲染抽到了 `shared/inject.ts`（两个注入点共用），因此本片**动了 handoff 侧一行**（`handoff/language.ts` 改用共享 CJK owner），
+  §6「不动 handoff 侧」按语义（handoff 行为）成立，按文件面不成立。
+- §4 预估的测试文件是 `memory-ops-test`/`context-schema-test`，实际落在新文件 `tests/sections-test.mjs`（只加断言、不加测试文件的口径不变）。
+
+### 9.2 实测保存量（当前渲染，非恒定值）
+
+| 载体 | 注入前 | 注入后 | 省下 |
+| --- | --- | --- | --- |
+| `MEMORY.md` | 29,980 | 20,955 | 9,023（30%） |
+| `CONTEXT.md` | 8,481 | 6,820 | 1,655（20%） |
+| 合计 | 38,461 | 27,775 | **10,678 字符 ≈ 2.7k tokens/轮** |
+
+§1 预估的「省 20,100 字符」是上界：常驻的 `## Invariants` 本身就是最大一节（12,680 字符），省下来的只能是非常驻节。
+数字随渲染变化（consolidation 每次重写两侧文件），所以它是快照，不是常量。
+
+### 9.3 单侧变异矩阵（实测，全部具名断言变红，无盲区）
+
+| 变异 | 变红的断言 |
+| --- | --- |
+| 删强指令句 | the read-first instruction follows the pointers |
+| 给被 keep 的节也加指针 | the memory split covers the schema exactly / keeps nothing it also points at / kept bodies stay verbatim |
+| 删 Index 指针 | the memory split covers the schema exactly / indexed bodies are dropped / indexed sections become one named line each |
+| 无指针时不再整篇注入 | a document without headings is injected whole |
+| 未知节也塞空指针 | kept bodies stay verbatim / context keeps its two decision sections / an unlisted heading stays inline |
+| 指针语言不再跟随正文 | an English body gets English pointers |
+
+矩阵自身发现过一个真缺陷：指针文本与选区曾是两次独立查找，选中一个没有指针模板的节会 `undefined[language]` 抛错；
+现为一次遍历内绑定（`shared/inject.ts`），因此「未知节 fail-safe」是**结构性**的，不再依赖一次判空。
+`keep` 列表随之退化为纯声明（渲染只认「有没有指针」），规格两侧由断言钉住互斥（keeps nothing it also points at）。
+
+### 9.4 一条未写入结论的现场事实：渲染语言会翻
+
+同一会话内实测：会话启动时注入的 `MEMORY.md` 是**中文**，磁盘与 HEAD 上的同一文件是**英文**（mtime 13:50:55），
+且 errors.log 同时段有两条 `memory regression`（13:29 丢 3 条、13:50 丢 1 条）。含义：渲染语言没有被任何东西固定，
+指针语言必须跟随正文（§7 第 2 条）才不至于语言分裂——这条实测验证了那个决议。
+
+### 9.5 现场探针（仍未做）
+
+§5 的「下一次真实会话里出现对该 memory 文件的 `read` 工具执行」属发布后观测，本轮未做（v0.4.1 尚未发布）。
+本轮只做了单元/变异层，服从度现场数据留待发布后。
