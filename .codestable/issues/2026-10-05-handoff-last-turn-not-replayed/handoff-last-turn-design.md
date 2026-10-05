@@ -65,10 +65,9 @@ implemented_in: f19dc93536ba
 
 装不下的 turn prefix 中间体积允许裁切，但索引必须落地：
 
-- 摘要侧：turn prefix 单独成段，标题 `**Turn Context (split turn):**`（对齐 pi），其中只放
-  该回合起始 user 消息的原文 + 工具交换的**索引**（工具名、文件操作，复用 `collectFileOps`/`formatFileOperations`），
-  不放全量工具输出。
-- 索引沿用文档既有的 `<modified-files>` 块，不另造格式；turn prefix 段只补「本回合做了哪些动作」的一行式条目。
+- **本片已实现的部分**：裁切 = 超窗的 turn prefix **不进重放**（仍进摘要输入，悬空 tool 结果按既有 `droppedOrphans`
+  折进摘要）；索引 = 文档既有的 `<modified-files>` 块（`collectFileOps`/`formatFileOperations`），**未另造格式**。
+- **本片未实现**：pi 那种把 turn prefix 单独摘要成 `**Turn Context (split turn):**` 段的第二段摘要（见 §7）。
 
 ## 3. 变更面（文件级）
 
@@ -76,8 +75,8 @@ implemented_in: f19dc93536ba
 | --- | --- |
 | `extensions/project-context/handoff/run.ts` | 读 `cut.isSplitTurn`/`cut.turnStartIndex`；有条件吸附（B）；锚定回起始 user 消息进重放切片（A）；把 turn prefix 与历史分开传给摘要 |
 | `extensions/project-context/handoff/text.ts` | 回合内「起始 user 消息」定位工具函数；占位标记只在**找不到**真实 user 消息时兜底 |
-| `extensions/project-context/handoff/summary.ts` | 可选 `turnPrefixMessages` 入参，产出 `**Turn Context (split turn):**` 段（复用同一次模型调用或第二次调用，二选一，见开放问题） |
-| `extensions/project-context/handoff/prompt.ts` | 无结构变化（`summaryWithIndex` 直接承载新段） |
+| `extensions/project-context/handoff/summary.ts` | **本片未改**（Turn Context 段留待 §7） |
+| `extensions/project-context/handoff/prompt.ts` | **本片未改** |
 | `tests/handoff-test.mjs` | 新增断言（只加断言，不加测试文件） |
 | `docs/architecture.md`、`CHANGELOG.md` | 行为变化（v0.4.x 条目） |
 
@@ -116,3 +115,14 @@ implemented_in: f19dc93536ba
    **第二次调用**（严格对齐 pi）？倾向同一次调用：省一次往返，且本扩展的摘要提示词是自有的九节结构。
 2. 锚定的 user 消息若自身超长（远超 keep 预算）是否允许裁切？倾向**不裁切**（它是"最后一轮"的语义核心），
    并把超长风险记入残留。
+
+## 7. 本片未实现（留待后续，需要 owner 再点头）
+
+- **pi 式的 turn-prefix 第二段摘要**：pi 在 split turn 时用 `TURN_PREFIX_SUMMARIZATION_PROMPT`
+  （`## Original Request` / `## Progress So Far` / `## Context Needed to Continue`）单独摘要 turn prefix，
+  再拼成 `**Turn Context (split turn):**` 段。本扩展只调 pi 的 `generateSummaryWithUsage`（单段九节格式），
+  没有走 `compact()`，所以没有这一段。本片的替代是 **A（起始 user 消息原文锚定进重放）+ 裁切**。
+- 若后续要做，改动面是 `summary.ts` 增加一次调用或一个标注块 + `run.ts` 传 `turnPrefixMessages`，
+  断言落在「摘要含该段但其内容只有索引级信息」。
+- 结论：**「最后一轮的问题」已经以原文到达 successor（本片已达成）**；「那一轮做过什么」仍是普通摘要散文，
+  没有独立小节。
