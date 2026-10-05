@@ -113,11 +113,12 @@
 
 | 现值 | 终态 | 理由 |
 | --- | --- | --- |
-| `handoffTargetTokens` | `handoffSummaryTokens` | 与 `budget summary` 同词 |
-| `handoffKeepTokens` | `handoffRecentTokens` | 与 `budget recent` 同词 |
+| `handoffTargetTokens` | `handoffBudgetSummaryTokens` | 键名镜射命令路径 `/handoff budget summary`（owner：`budget` 要保留在键里） |
+| `handoffKeepTokens` | `handoffBudgetRecentTokens` | 同上，镜射 `/handoff budget recent` |
 | `autoLearn` | `autolearnEnabled` | 同特性拼写统一（`autolearn*`）+ `<能力>Enabled` |
-| `autoConsolidate` | 待定（`memoryEnabled`？） | 能力名是 `memory`，但「自动整理」是它的动作——issue 里定 |
+| `autoConsolidate` | `memoryEnabled` | 能力名是 `memory`，歧义最小（owner 定）；不用动作词避免与 `auto*` 旧名混 |
 | `archiveEnabled` / `handoffEnabled` | 不变 | 已是 `<能力>Enabled` |
+| `handoffSummaryThinking` / `handoffLanguage` / `handoffAdaptive` | 待定 | 按镜射读法应为 `handoffThinking` / `handoffLang` / `handoffThresholdAuto`；改不改由 `词汇一致性` issue 定 |
 
 ### P. 通知前缀终态（待 `词汇一致性` issue 落地）
 

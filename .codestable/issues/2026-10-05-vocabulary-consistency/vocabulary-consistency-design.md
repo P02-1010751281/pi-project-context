@@ -18,11 +18,12 @@ supersedes: 无（承接 2026-10-05 词汇审计；V1 已在 v0.3.1 之后的 b8
 
 | 键 | extensions | tests | docs+README+CHANGELOG | 终态 |
 | --- | --- | --- | --- | --- |
-| `handoffTargetTokens` | 18 | 9 | 4 | `handoffSummaryTokens` |
-| `handoffKeepTokens` | 19 | 8 | 4 | `handoffRecentTokens` |
+| `handoffTargetTokens` | 18 | 9 | 4 | `handoffBudgetSummaryTokens` |
+| `handoffKeepTokens` | 19 | 8 | 4 | `handoffBudgetRecentTokens` |
 | `autoLearn` | 9 | 15 | 3 | `autolearnEnabled` |
-| `autoConsolidate` | 10 | 17 | 3 | **待定**（§6.1） |
+| `autoConsolidate` | 10 | 17 | 3 | `memoryEnabled` |
 | `archiveEnabled` / `handoffEnabled` | 12 / 14 | 4 / 17 | 3 / 2 | 不变（已是 `<能力>Enabled`） |
+| `autolearnAt` / `autolearnTurns` / `autolearnIntervalMs` | 10 / 7 / 7 | 7 / 3 / 2 | 1 / 2 / 2 | 不变（`autolearn*` 拼写统一后即一致） |
 | `autolearnAt` / `autolearnTurns` / `autolearnIntervalMs` | 10 / 7 / 7 | 7 / 3 / 2 | 1 / 2 / 2 | 不变（`autolearn*` 拼写统一后即一致） |
 
 - V1 已修（`b869be3`）：命令词 v0.3.0 已改，通知/补全说明共 6 处仍留旧词 —— 这是「只改一半」的活例，也是本主题存在的原因。
@@ -62,15 +63,22 @@ supersedes: 无（承接 2026-10-05 词汇审计；V1 已在 v0.3.1 之后的 b8
 3. 单侧变异：去掉迁移里的某一对映射 → 对应断言红；只改读路径不改写回 → 写回断言红。
 4. 通知前缀：每层一条通知的断言就够，不必逐条断言全部前缀。
 
-## 6. 待 owner 决定
+## 6. owner 已答（2026-10-05）与新生问题
 
-1. **`autoConsolidate` 的终态**：能力名是 `memory`（命令 `/memory`、键 `maxMemoryChars`），但「自动整理」是它的动作。
-   候选：`memoryEnabled`（与其余三个 `<能力>Enabled` 齐）／`autoConsolidate`（保留，理由是它描述动作而非能力）／`consolidateEnabled`。
-2. **`handoffRecentTokens`** 还是 `handoffRecentWindowTokens`（后者更长但更明确；命令词是 `budget recent`）。
-3. **通知前缀词形**：`Memory:` / `Session log:` / `Handoff:` / `Autolearn:` 是否照用（`Session log` 与命令名 `/session-log` 一致）。
-4. **顺带修一个死指针**：`.codestable/attention.md` 的「一个 issue 只做一个主题」条目指向
-   `.agents/skills/pi-project-context-design-review-round-budget/SKILL.md`，该技能已不存在（现有 17 条技能里没有它）。
-   修法需 owner 指定归宿（`curated-surface-hygiene`？`independent-review`？）——不猜。
+| # | 议题 | 结论 |
+| --- | --- | --- |
+| 1 | `autoConsolidate` 终态 | **`memoryEnabled`**（能力名，歧义最小） |
+| 2 | recent 键要不要带 `budget` | **要** —— 键名镜射命令路径：`handoffBudgetSummaryTokens`／`handoffBudgetRecentTokens` |
+| 3 | 通知前缀词形 | 照用：`Memory:` / `Session log:` / `Handoff:` / `Autolearn:`（跨层仍用 `Features:`、`Auxiliary calls:`） |
+| 4 | `attention.md` 死指针 | **删掉那个技能路径，换成两个**：`pi-project-context-independent-review` 与 `pi-project-context-curated-surface-hygiene` |
+
+同族新扫出的偏离（按「键名镜射命令路径」的同一读法，由本 issue 一并定）：
+
+| 键 | 命令路径 | 镜射读法 | 备注 |
+| --- | --- | --- | --- |
+| `handoffSummaryThinking` | `/handoff thinking <off\|session>` | `handoffThinking` | 多的 `Summary` 限定了它服务的对象（摘要）；要保留还是镜射由本 issue 定 |
+| `handoffLanguage` | `/handoff lang <auto\|zh\|en>` | `handoffLang` | 命令词是 `lang`，键名却写全了 `Language` |
+| `handoffAdaptive` | `/handoff threshold auto` | `handoffThresholdAuto` | 它其实是「阈值模式」的布尔开关 |
 
 ## 7. 发布
 
