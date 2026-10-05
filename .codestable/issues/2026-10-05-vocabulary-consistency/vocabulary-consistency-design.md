@@ -1,11 +1,12 @@
 ---
 doc_type: design
 issue: vocabulary-consistency
-status: draft
+status: design-frozen
 revision: 1
 date: 2026-10-05
 decides: 配置键改名（V2/V3）、通知前缀统一（V5）、跨层渲染器名（V6）三件事一起做；V4 已决（四层动词各自描述本层动作），规则成文于 .codestable/reference/vocabulary-conventions.md
 supersedes: 无（承接 2026-10-05 词汇审计；V1 已在 v0.3.1 之后的 b869be3 修完）
+implemented_by: v0.4.0（tag 9e1b39d4acfd / peeled f217e7d335e3）；证据在同目录 release-v0.4.0-evidence.md
 ---
 
 # 词汇一致性设计（revision 1，draft）
@@ -63,7 +64,7 @@ supersedes: 无（承接 2026-10-05 词汇审计；V1 已在 v0.3.1 之后的 b8
 3. 单侧变异：去掉迁移里的某一对映射 → 对应断言红；只改读路径不改写回 → 写回断言红。
 4. 通知前缀：每层一条通知的断言就够，不必逐条断言全部前缀。
 
-## 6. owner 已答（2026-10-05）与新生问题
+## 6. owner 已答（2026-10-05）——全部落地（v0.4.0）
 
 | # | 议题 | 结论 |
 | --- | --- | --- |
