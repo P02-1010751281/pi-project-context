@@ -3,6 +3,17 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.1 — 未发布
+
+### 修复
+
+- **交接保住「最后一轮」**：pi 的 `findCutPoint` 本来就返回 `turnStartIndex`/`isSplitTurn`，本扩展此前只取
+  `firstKeptEntryIndex`，于是被切开的那个回合（连同它的起始 user 消息）只以摘要散文进入 successor，
+  重放块以 assistant 工具调用/工具结果开头（`[turn prefix summarized during handoff]` 占位）。
+  现在：前缀不超一窗且老侧仍可摘要时**吸附到回合起点**（整轮原文保留）；否则把该回合的起始 user 消息
+  **锚定进重放**，中间体积留在摘要（裁切 + 既有文件索引）。单回合会话不会因吸附而变成「无可摘要」而中止。
+  现场与设计：`.codestable/issues/2026-10-05-handoff-last-turn-not-replayed/`。
+
 ## v0.4.0 — 2026-10-05
 
 ### 变更（破坏性：配置键改名）

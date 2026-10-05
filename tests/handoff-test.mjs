@@ -806,9 +806,9 @@ try {
 	check("the model's headings are localized before they reach the prompt", String(captured.prompt).includes("## 目标") && !String(captured.prompt).includes("## Goal"));
 	check("the prompt carries the summary body and the previous session", String(captured.prompt).includes("- 做完了。") && String(captured.prompt).includes("handoff-pin"));
 	check(
-		"the replay is the post-cut slice, opening user-first",
+		"the split turn's opening question is anchored into the replay",
 		captured.replay[0]?.role === "user" &&
-			captured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER &&
+			captured.replay[0]?.content?.[0]?.text === "Please make the memory journal append-only and add tests for it." &&
 			captured.replay.map((message) => message.role).join(",") === "user,assistant,user",
 	);
 	check("the dropped tool output never enters the replay", !JSON.stringify(captured.replay).includes("tool output line"));
@@ -855,6 +855,111 @@ try {
 	check("the orphan replay carries the kept tail", orphanCaptured.replay.map((message) => message.role).join(",") === "user,assistant,user");
 	check("the orphan result never enters the replay", !JSON.stringify(orphanCaptured.replay).includes("ORPHAN_SECRET"));
 	check("the orphan replay opens user-first", orphanCaptured.replay[0]?.role === "user" && orphanCaptured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER);
+
+	// A split turn whose cut-off prefix fits inside one window is snapped to the turn start: the whole last
+	// turn is then replayed verbatim and only the older side is summarized.
+	const snapEntries = [
+		contentEntry("sn1", "user", [{ type: "text", text: "OLDER_QUESTION 先把旧逻辑读完。" }], "2026-09-16T01:10:00.000Z"),
+		contentEntry("sn2", "assistant", [{ type: "text", text: "旧回合的答复。" }], "2026-09-16T01:10:01.000Z", "sn1"),
+		contentEntry("sn3", "user", [{ type: "text", text: "SNAP_QUESTION 把 A 改成 B。" }], "2026-09-16T01:10:02.000Z", "sn2"),
+		contentEntry(
+			"sn4",
+			"assistant",
+			[{ type: "text", text: `SNAP_KEEP_MARKER ${"长正文 ".repeat(600)}` }],
+			"2026-09-16T01:10:03.000Z",
+			"sn3",
+		),
+	];
+	const snapCaptured = { replay: [], prompt: undefined };
+	const snapCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(snapEntries, "handoff-snap"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	snapCtx.newSession = captureNewSession(snapCaptured);
+	const stubsBeforeSnap = stubCalls.length;
+	await runHandlers(pinPi, "session_start", snapCtx);
+	await pinPi.commands.get("handoff").handler("now", snapCtx);
+	check("a turn whose prefix fits the window snaps to the turn start", snapCaptured.replay[0]?.content?.[0]?.text === "SNAP_QUESTION 把 A 改成 B。");
+	check(
+		"the snapped turn is replayed whole and stays out of the summary",
+		JSON.stringify(snapCaptured.replay).includes("SNAP_KEEP_MARKER") &&
+			!stubCalls.slice(stubsBeforeSnap).some((call) => JSON.stringify(call.messages).includes("SNAP_KEEP_MARKER")),
+	);
+	check("the older side still reaches the summarizer", stubCalls.slice(stubsBeforeSnap).some((call) => JSON.stringify(call.messages).includes("OLDER_QUESTION")));
+
+	// A session that is a single turn cannot snap (the older side would be empty); the handoff must keep
+	// running on the mid-turn cut instead of reporting "nothing older to summarize".
+	const singleTurnEntries = [
+		contentEntry("sg1", "user", [{ type: "text", text: "SINGLE_QUESTION 只有这一轮。" }], "2026-09-16T01:20:00.000Z"),
+		contentEntry(
+			"sg2",
+			"assistant",
+			[{ type: "text", text: `SINGLE_KEEP_MARKER ${"长正文 ".repeat(600)}` }],
+			"2026-09-16T01:20:01.000Z",
+			"sg1",
+		),
+	];
+	const singleCaptured = { replay: [], prompt: undefined };
+	const singleCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(singleTurnEntries, "handoff-single-turn"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	singleCtx.newSession = captureNewSession(singleCaptured);
+	await runHandlers(pinPi, "session_start", singleCtx);
+	await pinPi.commands.get("handoff").handler("now", singleCtx);
+	check("a single-turn session still hands off instead of snapping into an empty summary", singleCaptured.prompt !== undefined);
+	check("the single turn replays its opening question", singleCaptured.replay[0]?.content?.[0]?.text === "SINGLE_QUESTION 只有这一轮。");
+
+	// A split turn whose cut-off prefix overruns the window must not be snapped whole: the bulky middle
+	// stays in the summary and only the turn's opening question is anchored.
+	const bigPrefixEntries = [
+		contentEntry("bp1", "user", [{ type: "text", text: "BIGPREFIX_OLDER 更早的那一轮。" }], "2026-09-16T01:30:00.000Z"),
+		contentEntry("bp2", "assistant", [{ type: "text", text: "更早的答复。" }], "2026-09-16T01:30:01.000Z", "bp1"),
+		contentEntry("bp3", "user", [{ type: "text", text: "BIGPREFIX_QUESTION 读大文件再改。" }], "2026-09-16T01:30:02.000Z", "bp2"),
+		contentEntry(
+			"bp4",
+			"assistant",
+			[{ type: "text", text: "读取中。" }, { type: "toolCall", id: "bc1", name: "bash", arguments: { command: "cat big" } }],
+			"2026-09-16T01:30:03.000Z",
+			"bp3",
+		),
+		toolResultEntry("bp5", "bc1", `BIGPREFIX_DROP_MARKER ${"大文件内容 ".repeat(600)}`, "2026-09-16T01:30:04.000Z", "bp4"),
+		contentEntry("bp6", "assistant", [{ type: "text", text: "大文件读完了。" }], "2026-09-16T01:30:05.000Z", "bp5"),
+	];
+	const bigCaptured = { replay: [], prompt: undefined };
+	const bigCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(bigPrefixEntries, "handoff-big-prefix"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+		modelRegistry: {
+			hasConfiguredAuth: () => true,
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
+			complete: async () => {
+				throw new Error("the stub must serve the summary");
+			},
+		},
+	});
+	bigCtx.newSession = captureNewSession(bigCaptured);
+	await runHandlers(pinPi, "session_start", bigCtx);
+	await pinPi.commands.get("handoff").handler("now", bigCtx);
+	check("an overrun prefix is not snapped whole", bigCaptured.replay[0]?.content?.[0]?.text === "BIGPREFIX_QUESTION 读大文件再改。");
+	check("the bulky prefix stays out of the replay", !JSON.stringify(bigCaptured.replay).includes("BIGPREFIX_DROP_MARKER"));
 
 	// Session settings survive the switch and the pi session tree stays flat. Session files on
 	// disk give the parent chain meaning: the replacement must point at the chain root, and the

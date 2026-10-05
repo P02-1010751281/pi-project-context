@@ -25,6 +25,11 @@ session.jsonl ──► session.md ──► INDEX.md
 | 沉淀 | 材料更新且达到轮数/时间门槛 | 项目 skill 或候选 skill |
 | 交接 | 上下文达到阈值，或手动 `/handoff now` | successor session、`HANDOFF.md` |
 
+交接的切点由 pi 的 `findCutPoint` 选定，它同时给出 `turnStartIndex` 与 `isSplitTurn`：本扩展据此在
+**前缀不超一窗且老侧仍可摘要**时吸附到回合起点（整轮原文保留），否则把该回合的起始 user 消息**锚定进重放**、
+其余进摘要（裁切 + 既有文件索引），所以「最后问了什么」始终以原文到达 successor，而不是只剩摘要散文。
+被切回合的悬空 tool 结果仍折进摘要，不丢内容。
+
 ## 数据布局
 
 ```text

@@ -96,19 +96,40 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 
 		// Older context gets summarized; the recent tail is carried over verbatim.
 		let firstKeptIndex = allEntries.length;
+		// pi reports the turn start of a mid-turn cut; the successor cannot do without that message, since
+		// the summary only carries it as prose. -1 means the cut starts a turn.
+		let splitTurnStart = -1;
 		if (config.handoffBudgetRecentTokens > 0) {
 			// Cut where the keep budget runs out, mid-turn included: pi cuts at conversation
 			// boundaries and never at a tool result, so the replay stays parseable — a result whose call
 			// was summarized is folded into the summary, and a slice opening on an assistant message is
-			// marked by SPLIT_TURN_MARKER. Backing the cut up to the turn start instead (the old
-			// behavior) kept the whole turn, which left nothing older to summarize whenever one turn
-			// exceeded the keep window and blocked the handoff entirely.
+			// marked by SPLIT_TURN_MARKER.
 			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffBudgetRecentTokens);
 			firstKeptIndex = cut.firstKeptEntryIndex;
+			splitTurnStart = cut.isSplitTurn ? cut.turnStartIndex : -1;
+		}
+		// A split turn exists only when that turn alone overruns the keep window, so keeping it whole
+		// always overshoots the budget. Snap to its start while the overshoot stays inside one extra window
+		// and the older side still holds something to summarize; snapping unconditionally is what used to
+		// leave nothing to summarize and block a handoff whose session was a single turn.
+		if (splitTurnStart >= 0) {
+			const prefixTokens = allEntries
+				.slice(splitTurnStart, firstKeptIndex)
+				.flatMap(sessionEntryToContextMessages)
+				.reduce((sum, message) => sum + estimateTokens(message), 0);
+			const olderHasContent = allEntries
+				.slice(0, splitTurnStart)
+				.flatMap(sessionEntryToContextMessages)
+				.some((message) => message.role === "user" || message.role === "assistant");
+			if (prefixTokens <= config.handoffBudgetRecentTokens && olderHasContent) firstKeptIndex = splitTurnStart;
 		}
 		// Stale continuation prompts are replaced by a marker on replay: verbatim they read as a
 		// fresh instruction and open the new session with an already-superseded state.
-		const keptSlice = allEntries.slice(firstKeptIndex);
+		// When the turn cannot be kept whole, anchor its opening message ahead of the kept tail: the summary
+		// carries it as prose, and the successor needs what was asked verbatim. The middle stays in the
+		// summarized prefix (clipped, with the file index the summary already carries).
+		const anchorEntry = splitTurnStart >= 0 && splitTurnStart < firstKeptIndex ? allEntries[splitTurnStart] : undefined;
+		const keptSlice = anchorEntry ? [anchorEntry, ...allEntries.slice(firstKeptIndex)] : allEntries.slice(firstKeptIndex);
 		const olderEntries = allEntries.slice(0, firstKeptIndex);
 		// If the older span starts with a previous compaction, let the summarizer update it
 		// instead of feeding the old summary in as ordinary conversation.
@@ -136,7 +157,12 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 
 		const olderTokens = olderPrefixMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		const sliceTokens = carriedMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		// The anchor is already counted by `olderTokens` (it sits in the summarized prefix), so the usage
+		// baseline subtracts only the raw kept tail and never counts it twice.
+		const sliceTokens = allEntries
+			.slice(firstKeptIndex)
+			.flatMap(sessionEntryToContextMessages)
+			.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		// Floor: below this the summary saves too little and drops too much detail.
 		if (!force && olderTokens < MIN_SUMMARIZE_TOKENS) return;
