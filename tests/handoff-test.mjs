@@ -1191,6 +1191,12 @@ try {
 		"a failed switch is reported to the user",
 		throwCtx.notifications.some(([message, type]) => type === "error" && message.includes("Handoff: failed")),
 	);
+	// The toast used to promise that pi's own compaction would still apply; the handoff stopped claiming
+	// what it does not control. Single-sided pin: re-adding the clause reddens.
+	check(
+		"the failure toast does not promise pi's compaction",
+		throwCtx.notifications.every(([message]) => !String(message).includes("auto-compaction")),
+	);
 } finally {
 	delete globalThis.__handoffStub;
 	await rmTemp(tmp);

@@ -359,8 +359,15 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		// Write silently: the UI may already be rebuilding for a session switch.
-		await consolidate(ctx, true, true);
+		// Write silently: the UI may already be rebuilding for a session switch. A failure must not reach the
+		// caller: the handoff path awaits ctx.newSession from this same event, and one field failure chain is
+		// a consolidation error thrown here that took the new session down with it. Log and return instead.
+		try {
+			await consolidate(ctx, true, true);
+		} catch (error) {
+			const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
+			if (projectRoot) await logError(projectRoot, "shutdown:consolidate", error).catch(() => {});
+		}
 	});
 
 	pi.registerCommand("memory", {

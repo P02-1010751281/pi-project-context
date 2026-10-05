@@ -331,7 +331,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
 	} catch (error) {
 		armHandoffFailureBackoff(FAILURE_BACKOFF_MS);
-		notify(ctx, `Handoff: failed — ${errorText(error)}. Staying in this session; pi auto-compaction still applies.`, "error");
+		notify(ctx, `Handoff: failed — ${errorText(error)}. Staying in this session.`, "error");
 	} finally {
 		setHandoffInFlight(false);
 	}
