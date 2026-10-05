@@ -51,3 +51,18 @@ reported_by: owner（现场摩擦：「handoff 的结构化数据缺少最后一
 ## 5. 待 owner 提供（若有差异）
 
 - 该摩擦的具体仓/session（本分析用的是本机 `01a107b7 → 01a107d0` 这一对；若你遇到的是别的仓，请点名，复核后再定稿）。
+
+## 6. 订正（2026-10-05，读 pi 源码后）
+
+本文 §2 把切分说成「我们按预算选点、落在回合中间」，这不够准确：**切点是 pi 的 `findCutPoint` 选的**，
+它**同时返回 `turnStartIndex` 与 `isSplitTurn`**，而本扩展只取 `firstKeptEntryIndex`、把这两个字段丢掉了
+（`run.ts` 切分处；全仓 grep 零命中）。pi 自己的压缩在 split turn 时会**把 turn prefix 单独摘要**成
+`**Turn Context (split turn):**` 段（`core/compaction/compaction.js`），本扩展把 turn prefix 混进历史一次性摘要。
+
+因此「最后一轮丢失」的准确表述是：**我们没用 pi 已经算好的回合信息，也没有 pi 那样的 turn-context 段**，
+于是该回合起始的 user 指令只以散文形式埋在历史里，重放块则以 assistant 工具调用/工具结果开头。
+
+另：§4 的 B 方案**不能无条件做** —— 无条件吸附到回合起点正是历史上被回退的行为（整轮超出 keep 窗口时
+老侧无内容可摘要、交接被卡死），必须加「吸附后老侧仍有 user/assistant」这一守卫。
+
+owner 决议与实现方案见同目录 `handoff-last-turn-design.md`（A+B，允许裁切+索引）。
