@@ -4,12 +4,12 @@
 
 handoff 有两种阈值模式：
 
-- **自适应**（`handoffAdaptive=true`，默认，`/handoff threshold auto`）：auto = 模型的**质量拐点**
+- **自适应**（`handoffThresholdAuto=true`，默认，`/handoff threshold auto`）：auto = 模型的**质量拐点**
   （按保守拟合曲线 `knee(W)`：≤~400K 诚实窗口取自身边界，450K 起过渡，1M 级收敛到 157K，
-  与窗口末点取小），**两项**：`min(knee(W), U − 4000)`；caps 只降不升。`handoffTargetTokens`
+  与窗口末点取小），**两项**：`min(knee(W), U − 4000)`；caps 只降不升。`handoffBudgetSummaryTokens`
   **不在触发线上**——它是手动设定的请求量，护栏决定触发点；被护栏压掉时 `/handoff status`
   点名它，不静默（见下）。
-- **固定**（`handoffAdaptive=false`，`/handoff threshold 0.6`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的摘要模型 cap。
+- **固定**（`handoffThresholdAuto=false`，`/handoff threshold 0.6`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的摘要模型 cap。
 
 手动 `/handoff now` 不等待阈值；自动触发只在宿主允许的 TUI 模式中运行。
 
@@ -20,8 +20,8 @@ handoff 有两种阈值模式：
 - `W`：当前模型 context window。
 - `U`：可用于交接的窗口，预留 16384 token。
 - `B`：system、工具 schema、注入 memory/context 等非 conversation token。
-- `K`：`handoffKeepTokens`，最近内容原文保留预算。
-- `S`：`handoffTargetTokens`，用户手动设定的**目标摘要量**（配置钳制 ≥ 8000）。它**不进入触发公式**：
+- `K`：`handoffBudgetRecentTokens`，最近内容原文保留预算。
+- `S`：`handoffBudgetSummaryTokens`，用户手动设定的**目标摘要量**（配置钳制 ≥ 8000）。它**不进入触发公式**：
   护栏决定触发点；`B + K + S` 高于护栏时，状态行点名这个请求没有被完整采纳。
 - `r`：`handoffThresholdRatio`，仅固定模式使用。
 - `A`：摘要模型的 context window。
@@ -102,7 +102,7 @@ E-4000
 successor 接收：
 
 1. 旧会话较早部分的模型摘要；
-2. 最近 `handoffKeepTokens` 范围内的可重放原文；
+2. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文；
 3. `HANDOFF.md` 中的摘要和旧 session log 指针。
 
 为保证不同 provider 都能接受 replay block：
@@ -114,7 +114,7 @@ successor 接收：
 
 ## 语言
 
-`handoffLanguage`：
+`handoffLang`：
 
 - `en`：英文 scaffold 与 continuation。
 - `zh`：中文 scaffold 与 continuation。

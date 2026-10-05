@@ -2,13 +2,14 @@
 
 ## 配置文件
 
-配置位于 `<project>/.agents/memory/project-context.json`。pi 与 dsh 共享大部分字段；`handoffMode`、`handoffGuard`、`handoffLanguage` 是 pi 侧交接差异。
+配置位于 `<project>/.agents/memory/project-context.json`。v0.4.0 起键名**镜像命令路径**（`.codestable/reference/vocabulary-conventions.md` 是权威表）；
+六个键原先与 dsh 共享，改名后两仓配置面分叉，dsh 需同步采用新名（旧名在首次读配置时一次性迁移）。
 
 ```json
 {
   "archiveEnabled": true,
-  "autoConsolidate": true,
-  "autoLearn": true,
+  "memoryEnabled": true,
+  "autolearnEnabled": true,
   "handoffEnabled": true,
   "autolearnAt": 0,
   "autolearnTurns": 20,
@@ -21,14 +22,14 @@
   "maxMemoryChars": 32000,
   "provider": "",
   "model": "",
-  "handoffAdaptive": true,
+  "handoffThresholdAuto": true,
   "handoffThresholdRatio": 0.4,
-  "handoffTargetTokens": 64000,
-  "handoffKeepTokens": 20000,
-  "handoffSummaryThinking": "off",
+  "handoffBudgetSummaryTokens": 64000,
+  "handoffBudgetRecentTokens": 20000,
+  "handoffThinking": "off",
   "handoffMode": "send",
   "handoffGuard": "wait",
-  "handoffLanguage": "auto"
+  "handoffLang": "auto"
 }
 ```
 
@@ -37,8 +38,8 @@
 | 字段 | 作用 |
 |---|---|
 | `archiveEnabled` | 是否自动存档会话 |
-| `autoConsolidate` | 是否自动更新 memory/context |
-| `autoLearn` | 是否自动沉淀项目 skill |
+| `memoryEnabled` | 是否自动更新 memory/context |
+| `autolearnEnabled` | 是否自动沉淀项目 skill |
 | `maxMemoryChars` | `MEMORY.md` 正文 cap；4000–200000，默认 32000；可用 `/memory max-memory <n>` 修改 |
 | `provider` / `model` | consolidation/autolearn 的辅助模型路由；空值使用会话模型 |
 | `maxTokens` | consolidation/autolearn 输出上限；默认 8192，最低 256 |
@@ -46,10 +47,11 @@
 | `consolidateTurns` / `consolidateIntervalMs` | 整理的轮数/时间节流 |
 | `autolearnTurns` / `autolearnIntervalMs` | 沉淀的轮数/时间门槛 |
 | `forceDedupeMs` | 强制整理的去重窗口 |
-| `handoffAdaptive`、ratio、target、keep | 交接预算；详见 [handoff 预算与恢复](handoff.md) |
+| `handoffThresholdAuto` / `handoffThresholdRatio` | 阈值是自适应还是固定比例 |
+| `handoffBudgetSummaryTokens` / `handoffBudgetRecentTokens` | 交接预算（对应 `/handoff budget summary|recent`）；详见 [handoff 预算与恢复](handoff.md) |
 | `handoffMode` | `send` 自动发送 successor continuation，或 `draft` 留在编辑器 |
 | `handoffGuard` | 遇到待回答问题时 `wait`/`draft`/`send`/`skip` |
-| `handoffLanguage` | `auto`、`zh` 或 `en` |
+| `handoffLang` | `auto`、`zh` 或 `en`（对应 `/handoff lang`） |
 
 ### memory cap
 
@@ -152,5 +154,10 @@ pi 的 handoff 摘要使用宿主 `generateSummaryWithUsage`，其输出 reserve
 以及全局 `~/.pi/agent/auto-handoff.json`，都在某项目第一次读配置时被折进扁平键、整份写回，并提示「migrated from …」。
 之后的读路径只看扁平键；只有 `legacyConfigPatch()` 认识旧形态，所以新键不会再顺手得到一个回退项（扁平化之后新增的 8 个键从来没有过）。
 扁平键已有的值永远优先，迁移不会覆盖当前设置。
+
+v0.4.0 的**改名**走同一台机器：`autoConsolidate`→`memoryEnabled`、`autoLearn`→`autolearnEnabled`、
+`handoffTargetTokens`→`handoffBudgetSummaryTokens`、`handoffKeepTokens`→`handoffBudgetRecentTokens`、
+`handoffSummaryThinking`→`handoffThinking`、`handoffAdaptive`→`handoffThresholdAuto`、`handoffLanguage`→`handoffLang`。
+旧名与新名并存时**新名优先**，写回后旧名消失；唯一认识这些旧名的地方仍是 `legacyConfigPatch()`。
 
 旧 memory/session 数据的路径与冲突策略见 [架构与数据模型](architecture.md)。

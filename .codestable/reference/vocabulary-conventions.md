@@ -40,7 +40,9 @@
 
 ### 2.3 用户可见文案
 
-- **通知前缀**：一层一个前缀，形态 `<前缀>: <事实>`（终态见 §5 P；现在 memory 层内部有三个前缀，属整改中）。
+- **通知前缀**：一层一个前缀，形态 `<前缀>: <事实>`，且前缀之后**不再重复层名**（`Memory: updated <file>`，不是 `Memory: memory updated`）。
+  两条豁免：① `Usage: …` 行不加层前缀（它本身以命令名开头）；② `/project-context status` 的多行报告用**行标签**
+  （`Features:`／`Auxiliary calls:`／`Config:`／`Memory:`／`Context file:`／`Memory cap warning:`），与单行 toast 是两个面。
 - **拒绝理由**：小写、无句号、`<对象> <条件>`；必须是可以被测试断言的**字面量**，不要在别处再拼一份。现行全集：
   `invalid kebab-case name`、`missing description`、`description too long`、`body too short`、`body too long`、
   `body looks like an instruction injection`、`body not shown this pass`、`skill "<name>" already exists`、
@@ -109,7 +111,7 @@
 
 - **D1 四层「立即执行」动词不统一是故意的**：`update` / `write` / `now` / 裸调用，各自描述本层的动作。
 
-### K. 配置键终态（待 `词汇一致性` issue 落地，含一次性迁移）
+### K. 配置键终态（**已落地 v0.4.0**，一次性迁移在 `legacyConfigPatch`）
 
 | 现值 | 终态 | 理由 |
 | --- | --- | --- |
@@ -118,12 +120,15 @@
 | `autoLearn` | `autolearnEnabled` | 同特性拼写统一（`autolearn*`）+ `<能力>Enabled` |
 | `autoConsolidate` | `memoryEnabled` | 能力名是 `memory`，歧义最小（owner 定）；不用动作词避免与 `auto*` 旧名混 |
 | `archiveEnabled` / `handoffEnabled` | 不变 | 已是 `<能力>Enabled` |
-| `handoffSummaryThinking` / `handoffLanguage` / `handoffAdaptive` | 待定 | 按镜射读法应为 `handoffThinking` / `handoffLang` / `handoffThresholdAuto`；改不改由 `词汇一致性` issue 定 |
+| `handoffSummaryThinking` | `handoffThinking` | 镜射 `/handoff thinking` |
+| `handoffLanguage` | `handoffLang` | 镜射 `/handoff lang` |
+| `handoffAdaptive` | `handoffThresholdAuto` | 镜射 `/handoff threshold auto`（与 `handoffThresholdRatio` 成对） |
 
-### P. 通知前缀终态（待 `词汇一致性` issue 落地）
+### P. 通知前缀终态（**已落地 v0.4.0**）
 
-一层一个前缀；候选：`Memory:`、`Session log:`、`Handoff:`、`Autolearn:`（现状 `Automatic consolidation:` / `Project memory updated:` /
-`Memory cap:` / `Auto handoff:` / `Session archiving:` 等并存）。前缀与 §2.3 的「一层一个」冲突时，以本表为准。
+一层一个前缀（v0.4.0 已统一）：`Memory:`、`Session log:`、`Handoff:`、`Autolearn:`；跨层仍是 `Features:` 与 `Auxiliary calls:`。
+原 `Automatic consolidation:`／`Project memory updated:`／`Memory cap:` 归 `Memory:`，`Auto handoff*` 归 `Handoff:`，
+`Session archiving:`／`Session log written:`／`Session log update failed:` 归 `Session log:`。
 
 ### X. 例外
 
@@ -144,3 +149,4 @@
 | 2026-10-05 | v0.3.0 只收束了命令面与配置布局；通知文案、持久化键拼写、通知前缀、跨层渲染器名未跟上 | 设计文档 §13（V1–V7 + 逐条 `file:line`） |
 | 2026-10-05 | V1 已修（`b869be3`）：`Auto summarize target` → `Summary budget`，连带 `keep/kept/keeping`、两处补全说明里的 `summary target`，共 6 处 | `extensions/project-context/handoff/run.ts`；`tests/handoff-test.mjs` 绿 |
 | 2026-10-05 | V2/V3/V5/V6 立为独立主题；V4 记为已决（§5 D1） | `.codestable/issues/2026-10-05-vocabulary-consistency/` |
+| 2026-10-05 | V2/V3/V5/V6 **全部落地**（v0.4.0）：7 个键改名＋一次性迁移、通知前缀统一、渲染器名统一 | 同上 issue 的设计文档与 `release-v0.4.0-evidence.md` |

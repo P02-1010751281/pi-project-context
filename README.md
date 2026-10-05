@@ -44,14 +44,14 @@ pi install git:github.com/P02-1010751281/pi-project-context
 ```json
 {
   "archiveEnabled": true,
-  "autoConsolidate": true,
-  "autoLearn": true,
+  "memoryEnabled": true,
+  "autolearnEnabled": true,
   "handoffEnabled": true,
   "maxMemoryChars": 32000,
-  "handoffAdaptive": true,
+  "handoffThresholdAuto": true,
   "handoffThresholdRatio": 0.4,
-  "handoffTargetTokens": 64000,
-  "handoffKeepTokens": 20000
+  "handoffBudgetSummaryTokens": 64000,
+  "handoffBudgetRecentTokens": 20000
 }
 ```
 

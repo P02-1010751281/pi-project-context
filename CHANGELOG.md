@@ -3,6 +3,23 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.0 — 2026-10-05
+
+### 变更（破坏性：配置键改名）
+
+- 配置键改为**镜像命令路径**（`/handoff budget summary` ⇒ `handoffBudgetSummaryTokens`）：`autoConsolidate`→`memoryEnabled`、
+  `autoLearn`→`autolearnEnabled`、`handoffTargetTokens`→`handoffBudgetSummaryTokens`、`handoffKeepTokens`→`handoffBudgetRecentTokens`、
+  `handoffSummaryThinking`→`handoffThinking`、`handoffAdaptive`→`handoffThresholdAuto`、`handoffLanguage`→`handoffLang`。
+  首次读配置时一次性迁移（与 v0.3.0 的嵌套布局同一条路）：**旧键存在即折进新键、整份写回、旧名消失；新旧并存时新键优先**；
+  仍是只有 `legacyConfigPatch()` 认识旧名。根因是 v0.3.0 只收束了命令面，键名/文案没跟上（`Auto summarize target` 到 `b869be3` 才补）。
+- 命名与词汇规则成文：`.codestable/reference/vocabulary-conventions.md`（配置键、通知前缀、拒绝理由句式、模型可见词汇、
+  代码命名、pi/pi-ai 的 strict-schema 约束、术语表、审计历史）；`.codestable/attention.md` 指向它。
+- 通知前缀按层统一：`Automatic consolidation:`／`Project memory updated:`／`Memory cap:` → `Memory:`，`Auto handoff*` → `Handoff:`，
+  `Session archiving:`／`Session log written:`／`Session log update failed:` → `Session log:`；前缀后不再重复层名。
+  `/memory` 与 `/project-context status` 的 memory 状态行现在是同一句 `Memory: …`。
+- 跨层渲染器名统一：handoff 的 `statusText` → `handoffStatusLine`，memory 的 `memoryStatusMessage` → `memoryStatusLine`。
+- 六个键原先与 dsh 共享，改名后两仓配置面分叉：dsh 需同步采用新名（映射见 `docs/configuration.md` 的兼容迁移段）。
+
 ## v0.3.2 — 2026-10-05
 
 ### 变更
