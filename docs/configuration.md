@@ -103,7 +103,8 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 
 每个命令都注册了 `getArgumentCompletions`，所以 Tab 会补全参数（`/memory max-memory ` → `default`，`/handoff guard ` → `wait|draft|send|skip`，`/handoff budget recent ` → `off`）。
 `/project-context on|off` 是唯一没有二级补全的命令，因为它不接受目标。
-同名覆盖只对 autolearn **自己生成的**技能开放：那类技能的 `SKILL.md` 正文带一行 `<!-- autolearn-generated -->` 标记，
+同名覆盖只对 autolearn **自己生成的**技能开放，且必须**在本轮提示词里展示过它的正文**——模型要先在 `inspectSkill` 里点名（最多 2 条），
+下一轮才拿到正文；没展示过的名字会被拒绝（`body not shown this pass`）。那类技能的 `SKILL.md` 正文带一行 `<!-- autolearn-generated -->` 标记，
 手写技能与旧布局导入的技能仍按「已存在」拒绝（范围与判定见 `docs/architecture.md` 的「技能沉淀与来源」）。
 
 **命令改名（破坏性，无过渡期）**：`/memory-learn` → `/memory update`，`/auto-handoff` → `/handoff`，`/context-update` 直接删除（无别名、无提示）。flag 不变。

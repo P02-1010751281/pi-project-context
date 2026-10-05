@@ -67,8 +67,12 @@ session.jsonl ──► session.md ──► INDEX.md
   **同名覆盖**，判定依据是文档正文里的来源标记 `<!-- autolearn-generated: … -->`（写在 body 而不是 frontmatter：
   pi 启动只注入 name/description/path，未知 frontmatter 键行为未定义）。
 - 标记跟着文件生灭，所以范围是**结构保证**：技能删掉后名字若被手写技能占用，对方不带标记，就不会被当成可覆盖的目标。
-- 覆盖前，被标记技能的正文整篇进入 `<learned-skill-bodies>`（放不下就整篇不放），所以覆盖是**合并**而不是盲写：
-  规则要求保留仍然成立的步骤，合并不了就什么都不提。新技能通知 `Learned project skill:`，覆盖通知 `Updated project skill:`。
+- 覆盖前模型的正文要**点名取**：第一轮提示词不带任何技能正文，模型用 `inspectSkill`（最多 2 条）要哪几条，
+  第二轮才把它们的正文整篇放进 `<learned-skill-bodies>`（放不下就整篇不放）。于是基础提示词不随技能总量增长，
+  而「谁能被合并」不再由预算顺序决定。覆盖是**合并**而不是盲写：规则要求保留仍然成立的步骤，合并不了就什么都不提。
+- 判定用**本轮实际展示过的名字集合**（gate 与写入路径各读一次），所以没被展示过的技能既不会被模型看到、也不会被覆盖；
+  点名了却不该给（手写、global、超预算）会在第二轮明确回一句「没给正文，这些名字本轮不可复用」。
+  新技能通知 `Learned project skill:`，覆盖通知 `Updated project skill:`；`/autolearn approve` 是人工确认，覆盖时明说是盲写。
 
 ## 记忆写入与恢复
 
