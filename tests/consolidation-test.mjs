@@ -1822,6 +1822,21 @@ try {
 			}
 		}
 	}
+	console.log("\n=== shutdown fallback: which root may take the error log ===");
+	// The handler's catch only runs when something escapes the pass, which no mock can make happen, so the
+	// decision itself is pinned directly: `shutdownErrorRoot` is the whole of the fallback, and the
+	// `.agents/memory` precision (not `.agents`) is exactly what a one-sided mutation would break.
+	const { shutdownErrorRoot } = await loadNamespace(`${PC}/memory/report.ts`);
+	const agentsOnly = await mkdtemp(path.join(os.tmpdir(), "pi-shutdown-root-"));
+	try {
+		await mkdir(path.join(agentsOnly, ".agents"), { recursive: true });
+		check("a known project root is used as-is", shutdownErrorRoot("/somewhere", agentsOnly) === "/somewhere");
+		check("a cwd that only has .agents is not the memory layer", shutdownErrorRoot(undefined, agentsOnly) === undefined);
+		await mkdir(path.join(agentsOnly, ".agents", "memory"), { recursive: true });
+		check("a cwd that already carries the memory layer takes the log", shutdownErrorRoot(undefined, agentsOnly) === agentsOnly);
+	} finally {
+		await rmTemp(agentsOnly);
+	}
 } finally {
 	await rmTemp(tmp);
 }

@@ -18,6 +18,17 @@ import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries }
 import { memoryStatusLevel, memoryStatusLine, contextStatusLine } from "./status.ts";
 import { buildMemoryInjection } from "./injection.ts";
 
+
+/**
+ * Which root may take the error log when a `session_shutdown` write fails: the project root when it is
+ * known, and the session cwd only when the memory layer is already there. The check names the directory
+ * `logError` writes into, not its parent - `.agents` alone is not the memory layer - so an arbitrary
+ * directory never gets a stray `.agents/memory/` created inside it.
+ */
+export function shutdownErrorRoot(projectRoot: string | undefined, cwd: string): string | undefined {
+	return projectRoot ?? (existsSync(join(cwd, ".agents", "memory")) ? cwd : undefined);
+}
+
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = {
 	backup?: string;
@@ -367,13 +378,9 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		try {
 			await consolidate(ctx, true, true);
 		} catch (error) {
-			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory). Fall back to the
-			// session cwd only when the memory layer is already there, so an arbitrary directory never gets a
-			// stray `.agents/memory/` created inside it; the check names the directory `logError` writes into,
-			// not its parent, since `.agents` alone is not the memory layer. Otherwise the failure has nowhere
-			// safe to go.
-			const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
-			const root = projectRoot ?? (existsSync(join(ctx.cwd, ".agents", "memory")) ? ctx.cwd : undefined);
+			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory); see
+			// `shutdownErrorRoot` for the cwd fallback rule, and act only when it names a safe root.
+			const root = shutdownErrorRoot(await getProjectRoot(pi, ctx.cwd).catch(() => undefined), ctx.cwd);
 			if (root) await logError(root, "shutdown:consolidate", error).catch(() => {});
 		}
 	});

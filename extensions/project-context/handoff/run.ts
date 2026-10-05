@@ -61,7 +61,6 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
  */
 async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
 	const trigger = args.trim();
-	const force = trigger === "force" || trigger === "force-auto";
 	// "force-auto" marks the scheduled agent_settled trigger; only it applies the
 	// pending-question guard, so /handoff now keeps the configured mode.
 	const autoTriggered = trigger === "force-auto";
@@ -70,16 +69,10 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			notify(ctx, "Handoff: skipped — the agent is busy.", "warning");
 			return;
 		}
-		// The threshold uses the session model's window and pricing tier. The handoff itself needs no
-		// model call: the replacement gets the carried tail plus a pointer to the session log.
+		// Both call sites pass a force trigger (`force` for now/run, `force-auto` for the scheduled one),
+		// so "is a handoff wanted at all" was decided by `maybeTrigger` (enabled, mode, window, knee)
+		// before it sent its message; the usage is read here for the receipt text only.
 		const usage = ctx.getContextUsage();
-		let threshold: Threshold | undefined;
-		if (!force) {
-			if (!handoffEnabled()) return;
-			if (!usage || usage.tokens === null || usage.percent === null) return;
-			threshold = resolveThreshold(ctx, usage);
-			if (!threshold || usage.tokens < threshold.tokens) return;
-		}
 
 		const allEntries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 		if (allEntries.length === 0) {
@@ -149,21 +142,13 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 
 		const olderTokens = olderPrefixMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		// The anchor is already counted by `olderTokens` (it sits in the dropped prefix), so the usage
-		// baseline subtracts only the raw kept tail and never counts it twice.
-		const sliceTokens = allEntries
-			.slice(firstKeptIndex)
-			.flatMap(sessionEntryToContextMessages)
-			.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		// The anchor is carried verbatim, so it is not part of what a handoff drops: the floor and the receipt
-		// measure the middle alone, or one huge anchored turn start would make a handoff that drops almost
-		// nothing look worthwhile.
+		// The anchor is carried verbatim, so it is not part of what a handoff drops: the receipt measures
+		// the middle alone, or one huge anchored turn start would make a handoff that drops almost nothing
+		// look worthwhile.
 		const anchorTokens = anchorEntry
 			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
 			: 0;
-		// Floor: below this dropping the prefix saves too little and loses too much detail.
-		if (!force && olderTokens - anchorTokens < MIN_DROP_TOKENS) return;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
 		// /handoff keeps the configured mode. "skip" leaves the session as-is
@@ -209,22 +194,6 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			previousSessionId,
 			previousSessionFile: previousSessionFile || undefined,
 		});
-		// The prompt is built before the guardrail so its own length is what the estimate counts.
-		const promptTokens = Math.ceil(handoffPrompt.length / 4);
-		if (!force && usage && usage.tokens !== null && threshold) {
-			// Baseline = system prompt, tool schemas, and injected memory/context. The stale prompts
-			// replaced by markers are still part of the measured usage, so subtract the raw slice.
-			const baselineNow = Math.max(0, usage.tokens - olderTokens - sliceTokens);
-			const estimatedAfter = baselineNow + keptTokens + promptTokens + 1_500;
-			if (estimatedAfter >= threshold.tokens) {
-				notify(
-					ctx,
-					`Handoff: skipped — the fresh session would start at ~${fmtTokens(estimatedAfter)}, too close to the ${threshold.label} threshold to help.`,
-					"warning",
-				);
-				return;
-			}
-		}
 
 		// A new prompt can arrive while the handoff is being prepared.
 		// Replacing the session now would abort that run and leave its user message
