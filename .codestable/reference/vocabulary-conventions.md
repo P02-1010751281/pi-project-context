@@ -133,9 +133,12 @@
 ### X. 例外与约定
 
 - 内部变量名（如 `keep`、`target`）只要不出现在用户可见文案与配置键里，可保留；改了更好，但不是规范要求。
-- **项目级技能一律视为 autolearn 产物**（owner 2026-10-05 两次裁定）：本仓 `.agents/skills/` 与**任何消费仓**的 `.agents/skills/` 下的技能，
-  正文都带 `<!-- autolearn-generated: … -->` 标记，从而可被该仓的 pass 合并。作用域外的只有 `~/.agents/skills/`（全局技能，只读，永不写、也不标记）。
-  标记必须与 `autolearn/skill.ts` 的 `PROVENANCE_COMMENT` **逐字节相同**，否则 pass 认不出来。
+- **标记是唯一的判定依据，作用域不是**：判断一条技能能不能被覆盖，看它正文有没有标记，**不看它在哪个目录**。
+  owner 的惯例是**只装全局技能**（`~/.agents/skills/`），从不手写或导入项目级技能，所以他各仓 `.agents/skills/` 里现有的技能都出自 agent/autolearn 沉淀
+  → 对这些仓按名字补标记是安全的（2026-10-05 的 backfill）。**这是对 owner 实践的记录，不是目录级法则**：
+  手写、导入或他人贡献的项目级技能**不标、也不可覆盖**；已有标记但实际是手写的，按名字摘掉标记即可。
+  无标记 = fail-closed（`rejectionReason` 拒写），所以「忘了标」的代价是这条技能暂时不可合并，而不是被误覆盖。
+- 标记必须与 `autolearn/skill.ts` 的 `PROVENANCE_COMMENT` **逐字节相同**，否则 pass 认不出来；全局 `~/.agents/skills/`（51 条）只读，永不写、也不标记。
 
 ## 6. 执行与核验
 
