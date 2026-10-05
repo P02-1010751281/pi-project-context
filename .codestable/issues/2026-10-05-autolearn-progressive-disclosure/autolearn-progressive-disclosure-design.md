@@ -44,7 +44,7 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 | N13 | B 的拒绝理由 | `reference path must be references/<kebab>.md`／`reference file is missing`／`reference file is not linked from the body`／`too many references`／`reference too long` |
 | N14 | `body` 上限语义 | **乙**：`body` 上限改为 6,000（entry），单篇引用另设 `MAX_SKILL_REFERENCE_CHARS = 20000`；存量 >6,000 的四条靠「触发式分层」豁免 |
 
-### 0.2 词汇审计遗留（2026-10-05 扫出，待 owner 拍；详见 §13）
+### 0.2 词汇审计遗留（2026-10-05 扫出，owner 已拍；规则成文于 `.codestable/reference/vocabulary-conventions.md`，落地见 `.codestable/issues/2026-10-05-vocabulary-consistency/`；逐条证据见 §13）
 
 | # | 项 | 建议 |
 | --- | --- | --- |
@@ -366,12 +366,12 @@ arXiv 2607.17598 是首个受控研究（raw 文档导航 / flat 技能包 / hie
 | V6 | 跨层状态渲染器名 | handoff = `statusText(ctx)`（`handoff/run.ts:27`）；memory = `memoryStatusMessage`／`memoryStatusLevel`／`contextStatusLine`（`memory/status.ts`） | 内部名，未统一 |
 | V7 | 函数/变量名抽检 | 全仓导出函数基本为 verb+noun（`collectSkills`／`buildPrompt`／`parseDecision`／`resolveAuxModel`…）；`clip*` 家族 5 个成员（`clipTo`／`clipText`／`clipTailToLineBoundary`／`clipToLineBoundary`／`clipToLineBoundaryBothEnds`）各自锁不同边 | 不算残留 |
 
-处置建议：
+处置（owner 2026-10-05 已拍）：
 
-1. A1 内联做：§0.1 的 N1–N14（本主题自己的词）＋ **V1**（一行文案，先查测试是否钉）。
-2. 单独立项「词汇一致性」（建议 v0.4.0 级别）：**V2+V3**（配置键改名，一次做完，带迁移与文档；方向待 owner：`handoffTargetTokens`→`handoffSummaryTokens`？`autoLearn`→`autolearnEnabled`？）、
-   **V5**（通知前缀）、**V6**（渲染器名）。
-3. **V4** 建议**记为已决**（四层动词各自描述本层动作），写进 MEMORY 不变式，不再当残留看。
+1. A1 内联做：§0.1 的 N1–N14（本主题自己的词）＋ **V1**（已完成，`b869be3`：6 处旧词全清，`tests/handoff-test.mjs` 绿）。
+2. 单独立项「词汇一致性」（v0.4.0 级别）：**V2+V3**（配置键改名，带迁移与文档）、**V5**（通知前缀）、**V6**（跨层渲染器名）。
+   设计、影响面引用计数与待定项见 `.codestable/issues/2026-10-05-vocabulary-consistency/vocabulary-consistency-design.md`。
+3. **V4 已决**：四层「立即执行」动词各自描述本层动作，不统一；已写入规范文档 §5 D1，不再当残留看。
 
 不把 V2/V3 的破坏性改名夹进 A1：A1 是 feat（autolearn 要发 v0.3.2），配置键改名是另一件事，混在一起会让「一次提交可自证」失效，也难回退。
 
