@@ -3,7 +3,7 @@
 ## 配置文件
 
 配置位于 `<project>/.agents/memory/project-context.json`。v0.4.0 起键名**镜像命令路径**（`.codestable/reference/vocabulary-conventions.md` 是权威表）；
-六个键原先与 dsh 共享，改名后两仓配置面分叉，dsh 需同步采用新名（旧名在首次读配置时一次性迁移）。
+七个改名两仓同名：dsh 改的是同样七个拼写，两仓配置面不在拼写上分叉。差别是 dsh profile 里残留的旧拼写没有别名可退、须在宿主重启前改掉；本项目旧名在首次读配置时一次性迁移。
 
 ```json
 {
