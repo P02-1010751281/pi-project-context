@@ -1,0 +1,89 @@
+# v0.4.1 独立审查（Lane A · 审1）
+
+判定模型：deepseek/deepseek-v4-pro · 冻结点 HEAD 98abe01df89a · 沙箱 /tmp/pc-v041-r1（只读，未写任何工作区文件）
+
+核对了 `git log v0.4.0..HEAD`、四个核心代码提交的完整 diff、`.codestable/attention.md`、三份设计/证据文档、`docs/`×3、`CHANGELOG.md`、注入层与 handoff 全部现状文件，并实测运行测试。
+
+---
+
+## blocking
+
+无。
+
+---
+
+## important
+
+1. **`/handoff budget recent off` 的回执文案声称摘要存在** — `extensions/project-context/handoff/run.ts:435`：「Handoff: summary only, no recent carry-over.」此模式下 successor 实际只拿到文件清单 + 日志指针，**没有任何摘要**。文案把丢数据的模式描述成「内容仍在摘要里」，是本次审查焦点 #2 要找的「看起来有效但无读者」误导的最直接实例。影响：用户据此以为会话内容以摘要形式保留。最小修法：改为「no recent carry-over; the file list and the session-log pointer are all that carry.」（zh 同改），只动这一句。
+
+2. **`/handoff thinking` 回执文案声称摘要调用仍在跑** — `run.ts:452-453`：「Handoff summaries will run without thinking…」/「…will use the session thinking level (may hit the shared token cap)」。摘要链已删（`handoff/summary.ts` 删除，全仓唯一读者消失），`handoffThinking` 只剩写路径（CHANGELOG 与 `docs/configuration.md:118` 都承认）。命令还能写值，回执却描述一个不存在的行为；补全描述 `run.ts:550`「thinking level for the summary」与 `run.ts:549`「the summary budget」同病。影响：TUI 用户被告知一个永不发生的效果。最小修法：回执改为「thinking is kept for dsh profile parity; pi-side handoff makes no model call」一类事实句（键与动词保留，仅文案）。
+
+3. **CHANGELOG 修复条目与自身第一条矛盾，且描述错误** — `CHANGELOG.md:39-40`：「前缀不超一窗且**老侧仍可摘要**时吸附…**中间体积留在摘要**（裁切 + 既有文件索引）。单回合会话不会因吸附而变成「**无可摘要**」而中止。」同一文件的 `CHANGELOG.md:13-24` 已声明「交接不再生成摘要」，被丢弃的中间体积实际留在旧会话日志（`docs/architecture.md:28-31` 才是正确措辞）。影响：发布说明对核心载荷去向给出相反描述。最小修法：把三处「摘要」改成「可丢内容/留在会话日志」（对齐 architecture.md 的表述），只动该条。
+
+4. **状态行换词未同步权威词汇表** — `run.ts:47-50` 状态行现为 ` · drop N` / ` · drop budget N`，而命令面与配置键仍是 `budget summary`（保留拼写是设计决定，合理），但 `.codestable/reference/vocabulary-conventions.md:50` 仍规定「状态行事实词与命令面同词（`summary budget 64k`）」。按 `attention.md` 的硬规则「只改一半算未完成」，本轮改了状态行词却没把规范表改齐（设计 `handoff-last-turn-design.md` §8.4 只记录「待命名决议」，未落到规范表）。影响：下一轮按规范表做事的人会读到一条代码已违反的规则。最小修法：在 vocabulary-conventions.md 增补一条 v0.4.1 分叉词记录（`drop budget` = 状态行事实词，键名保留 pending 决议），一行即可。
+
+---
+
+## nit
+
+5. **陈旧注释残留（代码）**：`run.ts:100-103`（「a result whose call was summarized is folded into the summary」）、`run.ts:406-407`（「the summary the pass asks for」）、`text.ts:73`（「the summarized prefix is marked」）、`threshold.ts:147`（「a handoff that both summarizes and stays in the cheap tier」）、`threshold.ts:196` 处 ThresholdRefusal docblock（「a worthwhile summary needs」）、`config.ts:47`（「conversation tokens to summarize per handoff」）、`config.ts:50`（「0 = summary only」）、`config.ts:52`（「Thinking for the summary call」）。不改变行为，但读者会误以为摘要链仍在。最小修法：逐条改成 drop/log 措辞。
+
+6. **陈旧测试注释/断言标签**：`tests/handoff-test.mjs:605`（「stand-in for the summarized prefix」）、`:620`（「call lives in the summarized prefix」）、`:634`（「handed back for the summary」——orphan 现在只用于跳过检查与语言采样）、`:665-667`（「which slice feeds the summarizer… shadowed by a stub」——stub 已删）。与焦点 #2 的「测试骨架注释与代码一致」不符。最小修法：改写这四处注释。
+
+7. **`dropping ~X` 把锚点消息同时计入「丢弃」与「携带」** — `run.ts:151`（olderTokens 含 anchor，注释 `run.ts:152-153` 自认）+ `run.ts:173`（通知用 olderTokens）与 `keptTokens`（含 anchor）。锚定分支下两数之和大于会话总量，丢弃量被高估一个起始 user 消息。纯展示性，无行为影响。最小修法：通知里减去 anchor tokens，或注明「dropped prefix (minus the anchored turn start)」。
+
+8. **注入渲染静默丢弃文档前言** — `shared/inject.ts:48-56`：第一个 `##` 之前的行不属于任何节；一旦存在任何指针，前言（CONTEXT.md 的 `Last updated: <时间戳>`、MEMORY.md 的 `# Project Memory` 标题）被静默丢弃，且 `sections-test.mjs` 无断言钉住。文档字符串只承诺「spec 未命名的**节**常驻」，没提前言；实测本仓 CONTEXT.md 的时间戳已从注入中消失（合成探针确认）。影响：模型失去「上下文新鲜度」信号。最小修法：要么保留前言并入注入，要么在 inject.ts 文档与 CHANGELOG 明说前言被裁。
+
+9. **截断标记可能随 `## Index` 一起被索引掉** — `memory/document.ts:134` 把 `_[memory truncated at …]_` 追加在保留下界之后；`## Index` 是最后一节（`schema.ts:24`），当 cap 裁点落在 Index 节内时，标记随指针被压掉。「被裁的记忆绝不能看起来完整」这一诚实性不变量在注入层降级（模型读到文件时仍能看见标记，故非数据丢失）。最小修法：渲染时把该行视为文档级内容挪出节体，或注入时单独保留。
+
+10. **设计文档的测试基线数与实际不符** — `handoff-last-turn-design.md:95,106` 称「基线 189 OK」，实测 `tests/handoff-test.mjs` 现有 177 条 `check(`。计数口径未写明，可能是历史值。最小修法：改为按 `grep -c '^\s*check('` 口径复核并更新（或注明口径）。
+
+11. **指针语言用整篇文档的 CJK 计数（≥2 即 zh）** — `shared/lang.ts:20-29`：英文文档里出现两个中文文件名即可让指针整体变中文；反之 <2 个 CJK 的短中文文档会得英文指针。测试只有纯 zh / 纯 en fixture，边界未钉。影响极小（指针语言仍可读）。最小修法：可选，按节或按正文占比判定，或加一条边界断言记录现状。
+
+12. **零模型调用 pin 只在前三幕之后求值一次** — `tests/handoff-test.mjs:721`：`modelCalls === 0` 在 pin 场景后立即检查，后续 orphan/snap/single/big/settings/restore 场景共享同一个 `countModelCall`（`handoff-test.mjs:670-673`），只能靠「调用即抛错 → 该场景断言级联红」兜底；若回归路径把模型调用**吞掉错误后回退**，任何断言都不会红。设计 `handoff-last-turn-design.md` §8.3 的「级联…含 the handoff reaches no model at all」只对第一幕字面成立。最小修法：把 `modelCalls === 0` 的检查移到所有场景之后再断言一次。
+
+---
+
+## suggestion
+
+13. **session_shutdown 守卫的吞错宽度与措辞** — `report.ts:362-368`：`getProjectRoot` 失败时（catch 吞掉后 `projectRoot` 为 undefined）错误**连 errors.log 都不落**，完全无声；守卫本身按 CHANGELOG 与审计 §9.4(1) 是有现场依据的防御（errors.log 2026-09-22 栈证据），方向正确。另外注释「the handoff path awaits ctx.newSession from this same event」不精确：handoff 的 `newSession` 在命令处理器里，耦合实际经由 pi 的 shutdown emit 链——机制结论对，措辞建议收紧为「a throw here aborts the session switch pi is performing, which the handoff awaits」。最小修法：projectRoot 解析失败时退回 `logError` 的 pi 级落盘或 notify；改注释措辞。
+
+14. **指针路径依赖 cwd==项目根，建议输出绝对路径** — 见 residual-risk 第一条；修法就是把 `inject.ts` 的 path 渲染成 `projectRoot` 拼出的绝对路径（handoff 的 INDEX.md 指针同建议）。
+
+---
+
+## learning
+
+- **「一次遍历内绑定指针文本」让未知节 fail-safe 结构化**（`shared/inject.ts:53-60`）：指针与选区同一查找，未知节默认常驻不再依赖判空——变异矩阵自证曾抓到 `undefined[language]` 抛错，这种把易错点变成结构性不可能的做法值得沉淀为模式。
+- **不可测守卫按「有现场依据的防御」记录、不写「已验证」**（`CHANGELOG.md:43-46`、审计 §9.4）：与 attention.md「机制必须标现场事实」一致，保持。
+- **单侧变异矩阵 + 具名红条**（两份设计 §5/§8.3）是本次测试可信度的主要来源，继续沿用。
+
+---
+
+## praise
+
+- 注入层 fail-safe 完整：未知节常驻、无标题整篇注入、全部被索引时输出指针块（不空）、keep/pointers 互斥由构造保证且被 totality 断言钉住（`tests/sections-test.mjs` 13 条全绿）。
+- 摘要链删除干净：`summaryFocus`/`localizeSummaryHeadings`/`SUMMARY_OUTPUT_RESERVE_TOKENS`/`generateHandoffSummary`/`summary.ts` 无存活引用；`resolveAuxModel` 只留给 memory/autolearn 真读者；`HANDOFF_PROMPT_HEADINGS` 为旧 prompt 回放保留，理由写清。
+- 护栏重算自洽：anchor 只计一次（`run.ts:152-154`），orphan 不双计；`docs/handoff.md` 公式与代码逐项一致。
+- 用户可见词 `dropping ~X` / `drop N` / `drop budget N` / `nothing older than the recent window to drop` / 拒绝句 handoff 化，代码与 docs/CHANGELOG 逐字一致（除第 1、2 条）。
+
+---
+
+## residual-risk（对抗轮）
+
+**最可能的生产 bug：指针是仓库相对路径，而模型 read 工具按会话 cwd 解析。**
+证据路径：`memory/injection.ts:24` 断言「injected prompt runs with the project root as its working directory」——这是一条**未经测试的假设**；`shared/inject.ts:62` 渲染的指针是相对路径 `.agents/memory/MEMORY.md`；而扩展自己的 `shared/paths.ts` `getProjectRoot` 用 `git rev-parse --show-toplevel` 从 `ctx.cwd` **向上找根**——代码自己承认二者可能不同；pi 的 read 工具按会话 cwd 解析相对路径（pi-core `dist/core/tools/read.js:56`：`resolveReadPathAsync(path, ctx?.cwd || cwd)`）；审计 §7/§8 的所有探针都在项目根跑，该风险从未被暴露。消费仓若在子目录启动 pi，强指令规定的 read 会 ENOENT——恰恰落回设计 §2 实测过的失败模式（v4-pro 不读时「不声明自己在猜」），或浪费一轮。最小修法：指针里输出绝对路径（注入时已知 projectRoot）。
+
+**次级：锚点依赖 `turnStartIndex` 是 user 条目。** 设计文档自己记录 pi 的 `isTurnStartMessage` 也认 `branchSummary`/`compactionSummary`（`handoff-last-turn-design.md` §2 A）：若被切回合紧跟一次 compaction，锚点可能锚住一个重放层过滤掉的条目（`text.ts` 的 `isReplayableRole` 不含这些角色），起始问题再次丢失、退回 `SPLIT_TURN_MARKER` 兜底。纯推测，需要一次真实压缩后会话的探针验证。
+
+---
+
+## Test And QA Focus
+
+**实测**：`node tests/run-all.mjs` → **15/15 全绿**（autolearn / aux-model / call-policy / consolidation / context-schema / external-edit / handoff / index / loadtest / memory-budget / memory-ops / registration / sections / switches / sync），零落盘改动。
+
+**另做的只读检查**：已删符号全仓清扫（无存活引用，仅保留旋钮定义与 CHANGELOG 描述）；docs×3 与 CHANGELOG 行长检查（>160 字符行数 = 0）；用户可见串逐字对表（`dropping ~X`、`drop N`/`drop budget N`、失败句去 auto-compaction、拒绝句 handoff 化——全部一致，除 important #1/#2）；用合成脚本对本仓真实 `MEMORY.md`/`CONTEXT.md` 跑注入形状（节识别正确，前言时间戳确实被裁）；测试计数核对（177 vs 设计声称 189）。
+
+**想跑但没跑**：真实端到端交接一次（设计 §8.4 自认未做，发布后必做）；子目录 cwd 的注入 read 探针（对抗轮第一条）；压缩后会话的 split-turn 锚点探针（对抗轮第二条）；两份设计里的单侧变异矩阵复跑；发布后 §5 现场探针（真实 JSONL 出现 `read` 工具执行）。
+
+VERDICT: CHANGES-REQUESTED

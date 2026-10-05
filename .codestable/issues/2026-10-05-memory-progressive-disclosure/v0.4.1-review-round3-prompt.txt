@@ -1,0 +1,35 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审3 = 发布候选最终校验轮）。工作目录（沙箱，冻结版）：/tmp/pc-v041-r3
+
+严格只读：不得写工作区任何文件、不得 git add/commit/checkout/stash、不得改配置；临时文件只能放 /tmp。
+只有 read 与 bash 两个工具。判定模型（记入本次记录）：deepseek/deepseek-v4-pro。请独立判断，不要采信仓库结论。
+
+## 背景
+发布 v0.4.1 前的第三轮审查。审1、审2 均已跑过（均 CHANGES-REQUESTED，无 blocking），其发现已落在 HEAD a0bcdd12feb1。
+本轮是**发布候选校验轮**：不要求新机制，只判定「现在这一版能不能发」。
+
+## 先读
+- `git log --oneline v0.4.0..HEAD`、`git show a0bcdd12feb1`、`git diff v0.4.0..HEAD -- extensions tests`
+- `.codestable/attention.md`、三个 issue 目录、`.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md`
+- `README.md`、`docs/{architecture,handoff,configuration}.md`、`CHANGELOG.md` 的 v0.4.1 段、`.codestable/reference/vocabulary-conventions.md`
+
+## (A) 审2 修复核对（逐条：修好 / 只改表面 / 引入新问题）
+1. README.md 两处不再宣称 handoff 带摘要
+2. `budget summary` 回执点明「这是触发请求，没有调用读它」
+3. shutdown 守卫的 cwd 回退只在已有 `.agents` 时写入
+4. 文档级注记只在最后一节被识别（`DOCUMENT_NOTE_RE`）
+5. `splitSections` 恢复 fence 追踪
+6. 下限（floor）改用 `olderTokens - anchorTokens`
+7. 新收据的单侧 pin（off 回执、thinking 两个分支）
+
+## (B) 发布候选判定
+1. 是否还有 **blocking** 或 **important** 级问题（即发布后会造成用户可见错误、错误承诺或数据丢失）。
+2. 用户可见面是否自洽：README / docs / CHANGELOG / 命令回执 / 状态行 / 提示词，与代码逐字一致。
+3. 交付物完整性：CHANGELOG v0.4.1 段、docs 更新、设计冻结文档的 banner、attention 的残留项是否与代码一致。
+4. 测试可信度：`node tests/run-all.mjs`、`node tests/handoff-test.mjs`、`node tests/sections-test.mjs`（沙箱内实跑，只读）。
+5. 对抗轮：发布后最可能被用户撞到的问题是什么？给出证据路径，并说明它属 blocking / important / 可接受残留。
+
+## 输出
+按严重度分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条给 `file:line`、影响、最小修法边界。
+另给 `## Test And QA Focus`：报告实跑结果。
+最后一行必须恰是：`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`。
+若判定 PASSED，请在同一行之后补一行 `RELEASE-OK: yes`（否则 `RELEASE-OK: no`）。

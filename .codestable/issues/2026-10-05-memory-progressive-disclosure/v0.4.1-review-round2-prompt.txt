@@ -1,0 +1,44 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审2）。工作目录（沙箱，冻结版）：/tmp/pc-v041-r2
+
+严格只读：不得写工作区任何文件、不得 git add/commit/checkout/stash、不得改配置；临时文件只能放 /tmp。
+只有 read 与 bash 两个工具。判定模型（记入本次记录）：deepseek/deepseek-v4-pro。请独立判断，不要采信仓库里的结论。
+
+## 背景
+这是发布 v0.4.1 前的第二轮独立审查（审1 已跑过并返回 CHANGES-REQUESTED，无 blocking；修复已落在 HEAD 9abd9713f38c）。
+本轮两件事：(A) 核对审1 的每条重要发现是否真的被修好、修法是否引入新问题；(B) 对新代码与整份 v0.4.0..HEAD 再做一次独立对抗审查。
+
+## 先读
+- `git log --oneline v0.4.0..HEAD`、`git show 9abd9713f38c`、`git diff v0.4.0..HEAD -- extensions tests`
+- `.codestable/attention.md`
+- 设计/证据：`.codestable/issues/2026-10-05-memory-progressive-disclosure/`、
+  `.codestable/issues/2026-10-05-handoff-last-turn-not-replayed/`、
+  `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md`
+- `docs/{architecture,handoff,configuration}.md`、`CHANGELOG.md` 的 v0.4.1 段、`.codestable/reference/vocabulary-conventions.md`
+
+## (A) 审1 修复核对（逐条给结论：修好 / 只改了表面 / 引入新问题）
+1. `/handoff budget recent off` 回执不再声称有摘要（run.ts）
+2. `/handoff thinking` 回执与补全描述改为「本侧不调模型」（run.ts）
+3. CHANGELOG 修复条目不再自相矛盾（「老侧仍可摘要 / 中间体积留在摘要」措辞）
+4. 词汇表补记 `drop budget` 与命令面 `budget summary` 的分叉
+5. 陈旧摘要注释清理（run.ts / text.ts / threshold.ts / config.ts）
+6. 测试注释清理 + 「零模型调用」断言移到所有场景之后（tests/handoff-test.mjs）
+7. `dropping ~X` 不再把锚点重复计入（run.ts 的 anchorTokens）
+8. 文档前言与文档级注记（截断标记）在注入里保留（shared/inject.ts）
+9. 注入指针改为按项目根解析的绝对路径（shared/inject.ts / memory/injection.ts 及其调用点）
+10. shutdown 守卫在解析项目根失败时不再静默（memory/report.ts）
+11. 设计文档测试基线数改为实测口径
+
+## (B) 新一轮独立审查焦点
+1. `shared/inject.ts` 的新逻辑：前言提取（`firstHeading`）、文档级注记（`DOCUMENT_NOTE_RE`）与节体的交互、
+   绝对路径解析（`join(root, path)`）在各 fail-safe 路径下的行为；有无新的截断/重复/丢内容路径。
+2. `renderProgressiveBody` 在「无指针」「全部节有指针」「节体只剩注记」「空前言」等极端输入下的输出是否仍自洽。
+3. run.ts 的 `anchorTokens` 计算是否真的与 `olderTokens` 口径一致（会不会在某些分支下减错、或与 keptTokens 重复/漏计）。
+4. 调用的两个注入点（memory/report.ts、archive/archive.ts）传入的 root 是否总是项目根；子目录 cwd 场景下的实际行为。
+5. 整份 v0.4.0..HEAD 的对抗轮：假设这个版本在真实消费仓引起一个生产 bug，最可能是什么？给出证据路径。
+6. 文档与代码是否还有逐字不一致（用户可见串、模块表、行宽 ≤160 字符、表格行例外）。
+
+## 输出
+按严重度分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条给 `file:line`、影响、最小修法边界。
+新机制类 finding 必须先指出它服务哪条现场事实，否则归入 non-goal。
+另给 `## Test And QA Focus`：可在沙箱内运行 `node tests/run-all.mjs` 与 `node tests/handoff-test.mjs`（只读、不落盘），报告实际结果。
+最后一行必须恰是：`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`。

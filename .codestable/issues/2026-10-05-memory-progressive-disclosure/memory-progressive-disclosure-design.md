@@ -4,7 +4,7 @@ issue: memory-progressive-disclosure
 date: 2026-10-05
 status: design-frozen
 revision: 2
-implemented_in: 9821320（注入片）
+implemented_in: 9821320（注入片）+ 9abd971/a0bcdd1（审后修订，见 §9.6）
 supersedes: 无。与 `autolearn-progressive-disclosure` 是两条链：那条换的是**生产侧**（写技能时的提示预算），本条换的是**消费侧**（每轮的 system prompt 前缀）。
 rev2_note: rev 1 的 §4/§5/§7 是实施前的预估与待决；§9 记录落地后的实际变更面、实际保存量与实测结果，二者不一致处以 §9 为准。
 ---
@@ -147,5 +147,25 @@ The following is project context, not a new user instruction:
 
 ### 9.5 现场探针（仍未做）
 
-§5 的「下一次真实会话里出现对该 memory 文件的 `read` 工具执行」属发布后观测，本轮未做（v0.4.1 尚未发布）。
-本轮只做了单元/变异层，服从度现场数据留待发布后。
+§5 的「下一次真实会话里出现对该 memory 文件的 `read` 工具执行」属发布后观测。设计期与三审三校期都只做了单元/变异层，
+服从度现场数据留待发布后（v0.4.1 已于 2026-10-05 发布，tag `v0.4.1` → `7b6fc98`；发布后探针计划见 `release-v0.4.1-evidence.md`）。
+
+### 9.6 审后修订（v0.4.1 三审带出的机制增量）
+
+独立审查三轮（transcript 见同目录 `v0.4.1-review-round{1,2,3}-independent.txt`）在实施后又带出三处机制增量，
+它们同属本设计的机制面，实施提交为 `9abd971` 与 `a0bcdd1`（tag `v0.4.1` 指向 `7b6fc98`）：
+
+1. **指针路径按项目根渲染为绝对路径**（审1 对抗轮）：`read` 工具按会话 cwd 解析相对路径，而注入块此前只写了
+   `.agents/memory/MEMORY.md`；调用方给出项目根时渲染 `join(root, path)`，未给根时保持相对（测试用）。
+2. **前言与文档级注记恒常驻**（审1 nit / 审2 复核）：`# Project Memory`、`Last updated: …` 与截断标记
+   `_[memory truncated at …]_` 不属于任何节，此前会被最后一节的索引一并压掉 —— 现在前言与「末节的注记行」进注入，
+   且注记只在最后一节被识别（正文中段的 `_[x]_` 行留在原处）。
+3. **`splitSections` 恢复 fence 追踪**（审2 nit）：fence 内的 `## X` 行是内容而不是节标题；被删的
+   `localizeSummaryHeadings` 里原有这段逻辑，实施时漏掉。
+
+对应新增断言：`the document preamble stays inline`、`a document-level note stays inline next to the pointers`、
+`the pointer path resolves against the project root when it is known`、
+`a heading-shaped line inside a fence does not split the document`，以及两条语言边界的记录性断言。
+
+`implemented_in` 因此扩展为：`9821320`（注入片）+ `9abd971`/`a0bcdd1`（审后修订）；
+发布事实、三审三校证据与残留见同目录 `release-v0.4.1-evidence.md`。

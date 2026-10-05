@@ -1,0 +1,76 @@
+All checks complete. Here is the independent review report.
+
+---
+
+# lane A 审3（发布候选校验轮）— 判定模型 deepseek/deepseek-v4-pro，独立判定，不采信仓库结论
+
+**审查对象**：HEAD `a0bcdd12feb1`（v0.4.1 发布候选），工作区冻结版 `/tmp/pc-v041-r3`。本 lane 零写入（仅 `/tmp/lane-a-probe/` 两个探针脚本，属允许范围）。
+
+## (A) 审2 修复核对 —— 7/7 均「修好」，无「只改表面」
+
+1. **README 两处不再宣称 handoff 带摘要** — 修好。`README.md:3` 改「会话日志指针 + replay-safe 原文窗口」，`README.md:27` 表格行改「最近原文 + 文件清单 + 会话日志指针 + replay-safe marker」。全仓 grep（README/docs 五文件）已无残留「带摘要」表述。
+2. **budget summary 回执点明无读者** — 修好。`extensions/project-context/handoff/run.ts:434` 回执现为「the pass reports this trigger; no call reads it (the physical floor stays at …)」。与代码事实一致（该键只被 threshold.ts 用于 override 命名与状态行）。
+3. **shutdown 守卫 cwd 回退加存在性检查** — 修好。`extensions/project-context/memory/report.ts:373-374`：`projectRoot ?? (existsSync(join(ctx.cwd, ".agents")) ? ctx.cwd : undefined)`，且 `if (root)` 才写。见 nit-1。
+4. **文档级注记只在最后一节被识别** — 修好。`extensions/project-context/shared/inject.ts:100-104` 以 `isLast` 门控提取 `DOCUMENT_NOTE_RE` 行，且 `noteLines.includes(line)` 过滤；`sections-test.mjs` 有 pin。探针验证：中段 `_[note]_` 保持原位、尾节截断标记被提出（E4/E5）。
+5. **splitSections 恢复 fence 追踪** — 修好。`inject.ts:58-75` 恢复 `FENCE_RE` 追踪，```/``` 与 `~~~/~~~` 均探针验证（E1/E2）：fence 内 `##` 不拆节；单反引号内联代码行**不会**误关 fence（FENCE_RE 要求 3+ 同字符）。见 nit-3。
+6. **floor 改用 `olderTokens - anchorTokens`** — 修好。`run.ts:169` 前移 anchor 计算、floor 判据用差值；注释与回执口径一致（中间量 + 尾部量，锚点不双计）。
+7. **新收据单侧 pin** — 修好。`tests/handoff-test.mjs` 新增三条具名断言（off 回执无 "summary only"、thinking 两分支无 /summar/i），外加「no scenario above reached a model」总闸；测试实跑全绿。
+
+另确认：审2 声明「两条边界行为故意不 pin」（floor 锚点减法、cwd 回退存在性检查）与提交信息一致，理由（需真实边界场景才能观测）成立。
+
+## (B) 发布候选判定
+
+**B1. blocking / important 级问题**：**未发现**。无发布后用户可见错误、错误承诺或数据丢失路径。
+
+**B2. 用户可见面自洽性** — 逐字核对通过：开始回执 `dropping ~X … carrying ~Y recent`（run.ts:196）、成功回执 `the dropped prefix stays in its session log`（run.ts:311）、失败回执无 auto-compaction 承诺、状态行 ` · drop N` / ` · drop budget N`（run.ts:44-47）、拒绝句全库无 "summary" 词（threshold.ts:222-241 六条 refusal 已核对）、thinking 回执「stored for the dsh profile; this side calls no model」、off 回执「no recent carry-over; the file list and the session-log pointer are all that carry」。docs/handoff.md、docs/configuration.md、docs/architecture.md、CHANGELOG v0.4.1 段与代码逐项一致（`MIN_SUMMARIZE_TOKENS` 旧名、旋钮拼写保留、`handoffThinking` 只剩写路径等均已如实记录为「分叉/残留」）。`SPLIT_TURN_MARKER` 改名 `[turn prefix dropped during handoff]` 与 CHANGELOG 一致。
+
+**B3. 交付物完整性**：CHANGELOG v0.4.1 段存在且与代码一致；两设计文档 banner 均 `status: design-frozen` + `implemented_in`（9821320 / f19dc93+b4c9405）；vocabulary-conventions §2.3 已记录 v0.4.1 分叉；attention.md 无与代码矛盾的残留项。存疑见 nit-4、nit-5。提交的 `.agents/memory/*` 是本仓自身运行态（节头符合新注入 schema，HANDOFF.md 为旧版历史产物），非用户可见面。
+
+**B4. 测试可信度** — 沙箱内实跑（见下方 Test And QA Focus）：全绿。变异矩阵（设计 §9.3）声称的单侧红我未重跑变异，但以断言的独立性与构造（同一次查找绑定指针文本、`keep`/`pointers` 互斥断言）抽查判断可信。
+
+**B5. 对抗轮——发布后最可能被撞到的问题**：**首次真实交接才首次运行 A+B 吸附/锚定路径**。证据路径：audit §2（安装副本仍 v0.4.0、`turnStartIndex` 现场命中 0、真实 successor `01a10bf1` 首条仍是旧占位符）→ 修复仅被 mock fixture + 真实 SDK `findCutPoint` 的合成条目 pin 过，从未经历一次真实 TUI 交接。**分类：可接受残留**——失败形态是「Handoff: failed — Staying in this session」+ 会话日志保留全部内容，无数据丢失；设计文档已把「发布后真实交接一次」列为零成本探针。次高概率：渐进披露下不读模型的静默错答（v4-pro 实验已证，强指令救回，决策节常驻，服从度可测）；死旋钮 `budget summary`/`thinking` 的困惑（三处文档+回执已明说）。均为可接受残留。
+
+## 分桶
+
+**blocking**：无。
+
+**important**：无。
+
+**nit**
+1. `extensions/project-context/memory/report.ts:373` — 存在性检查用 `.agents` 而非 `.agents/memory`：一个只有 `.agents/skills` 的目录（getProjectRoot 失败 + shutdown 失败时）仍会被 `logError` 的 `mkdir recursive` 建出 `.agents/memory`。影响：与提交信息「memory layer already exists」措辞差一级；后果仅多一个含 errors.log 的目录。最小修法：把检查对象换成 `join(ctx.cwd, ".agents", "memory")`。注：此边界已被提交信息明示为故意不 pin。
+2. `extensions/project-context/shared/inject.ts:87-89` — 前导段（preamble）扫描用裸 `HEADING_RE`、无 fence 追踪：若自由结构旧文档在首个真实 `##` 之前出现含 `##` 行的 fenced 块，preamble 会截在 fence 内，注入一个不闭合的 ``` 开栅。探针 E3 实复现（preamble = `# Project Memory\n\n```md`）。影响：仅系统提示呈现层（该块其余内容被模型读作代码字面量，正文不丢失）；规范 render 从不产出此形状，只有自由结构 legacy CONTEXT.md 可能。最小修法：preamble 扫描复用 fence 追踪或直接用 `splitSections` 的结果反推。
+3. `extensions/project-context/shared/inject.ts:62` — fence 关闭条件 `trimmed.startsWith(fence)` 不校验长度：` ``` ` 内出现 4 个反引号行可关 6 个反引号开栅（CommonMark 要求关闭栅 ≥ 开启栅）。影响：极边缘；最坏是某节内容多留在注入里。最小修法：记录开启栅长度并比较。
+4. `.codestable/reference/vocabulary-conventions.md:37` — 示例键写 `handoffSummaryTokens`，与权威键 `handoffBudgetSummaryTokens`（同文件 :121 明言「`budget` 要保留在键里」）矛盾。影响：纯文档；但本文件恰是词汇权威，release 主题即词汇。最小修法：改示例为 `handoffBudgetSummaryTokens`。
+5. `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:5` — 被 CHANGELOG 引作证据的审计文档 `status: draft`。影响：交付物状态学不一致。最小修法：发布时翻 final 或补一行说明其作为证据日志持续追加。
+
+**suggestion**
+- 发布 checklist（docs/README.md「发布前检查」第 2 条）要求复审 sandbox `git status --porcelain` 零变化：本沙箱工作树有 4 个修改 + 2 个未跟踪目录，均为 **10-05 22:24–22:27**（本 lane 启动 23:34 之前）前两轮评审会话的运行时产物（memory 收敛/autolearn 候选），非本 lane 写入、非源码变更。建议下一轮起把「零变化」口径改为「lane 自身零写入」，或评审启动前先重置沙箱。
+- 两条故意不 pin 的边界行为（floor 锚点减法、`.agents/memory` 检查）已按「有现场依据的防御」记录；建议在真实交接探针（§B5 第 1 项）时顺手观测一次，把边界从「未 pin」推进到「已观测」。
+
+**learning**
+- 单侧 pin 纪律在收据层执行到位：三条新断言各自只红对应文案，且共享「零模型调用」计数闸，回归模型调用会级联变红而非静默降级。
+- 「边界行为不值得造机制、但必须记录为故意不 pin」的取舍是可复用的评审尺度（本轮再次验证了提交信息与设计文档的如实性）。
+
+**praise**
+- a0bcdd 提交信息把每条修复映射到对应发现，README 矛盾（审2 唯一 important）已在最显眼的两处同时修掉。
+- 回执文案自描述性明显提升：用户现在能从回执本身知道旋钮「没有读者」，而不是被死旋钮蒙在鼓里。
+
+**residual-risk**（全部有据、有记录、不阻发布）
+- 首次真实交接 = A+B 与无模型载荷的首次生产暴露（失败安全、日志保全，发布后探针计划在案）。
+- 渐进披露对不读模型的服从度是模型相关的（强指令 + 决策节常驻已缓解，现场探针待发布后）。
+- 旋钮命名分叉（`budget summary` / `handoffThinking` / `MIN_SUMMARIZE_TOKENS`）已三处记录为待单独决议。
+- 两条边界行为故意未 pin（提交信息已声明）。
+- 实测保存量 10,678 字符/轮是快照值，会随 consolidation 重渲染浮动（文档已注明）。
+
+## Test And QA Focus
+
+- `node tests/run-all.mjs` → **15/15 ok**（60s 超时护栏生效，无 hang）。
+- `node tests/handoff-test.mjs` → **181 OK / 0 FAIL**（含审2 新增的 3 条收据 pin、failure-toast pin、零模型调用总闸）。
+- `node tests/sections-test.mjs` → **161 OK / 0 FAIL**（含 fence 不拆节、末节注记、totality、语言边界）。
+- `git diff --check v0.4.0..HEAD` → 干净（exit 0）。
+- 探针（/tmp/lane-a-probe，只读加载）：E1 单反引号行不误关 fence ✓；E2 波浪栅 ✓；E3 preamble 开栅不闭合（nit-2 证据）；E4/E5 注记提取行为符合设计。全库 grep：无 `generateSummaryWithUsage`/`localizeSummaryHeadings`/`previousCompaction`/`SUMMARY_OUTPUT_RESERVE_TOKENS` 残留；拒绝句与 docs 无 "summary" 残留（除已记录旋钮名与 `## Summary` 节名）。
+
+判定：未发现 blocking / important 级问题；用户可见面与代码逐字自洽；交付物完整；测试全绿；残余风险均已记录且有安全失败形态与发布后探针计划。
+
+VERDICT: PASSED
+RELEASE-OK: yes

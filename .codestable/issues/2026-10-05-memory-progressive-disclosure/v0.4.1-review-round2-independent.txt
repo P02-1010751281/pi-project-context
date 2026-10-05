@@ -1,0 +1,77 @@
+# 独立审查报告（lane A，审2）— pi-project-context v0.4.1 第二轮
+
+判定模型：`deepseek/deepseek-v4-pro`
+沙箱：`/tmp/pc-v041-r2` @ `9abd9713f38c`（冻结版，全程零写入；仓库状态与进入时逐字节一致，仅 `/tmp/inject-probe.mjs` 一个临时探针）
+
+## (A) 审1 修复核对
+
+| # | 结论 | 证据 |
+|---|---|---|
+| 1 `/handoff budget recent off` 回执 | **修好** | run.ts:445 `"Handoff: no recent carry-over; the file list and the session-log pointer are all that carry."`；全仓再无 "summary only" 回执 |
+| 2 `/handoff thinking` 回执与补全 | **修好** | run.ts:462-463 "stored for the dsh profile; this side calls no model"；run.ts:566、571 补全描述同改 |
+| 3 CHANGELOG 自相矛盾 | **修好** | 「中间体积留在旧会话日志里（裁切 + 既有文件索引）」与变更段一致；「整段丢出重放」表意正确（旧行为描述），措辞略拗口但无矛盾 |
+| 4 词汇表 `drop budget` 分叉 | **修好** | vocabulary-conventions.md §2.3 状态行段记录分叉与理由（dsh 共享面），与代码 `drop N` / `drop budget N` 一致 |
+| 5 陈旧摘要注释 | **修好** | run.ts:99-101/417、text.ts:73、threshold.ts:147-149/174-177、config.ts 四段注释全部改齐；`grep summariz` 残留均为合法项（键名、`/handoff budget summary`、legacy 标题识别） |
+| 6 测试注释 + 零模型断言后置 | **修好** | 「no scenario above reached a model」是 handoff-test.mjs:1111 最后一条 check，覆盖其前全部场景；注释同步 |
+| 7 anchorTokens 去重 | **修好（已核 SDK）** | 双方同用 `sessionEntryToContextMessages` + `estimateTokens`；pi 源码中 `isTurnStartEntry` 排除 `type==="compaction"`，锚点不可能落在 compaction 条目上，故 `olderTokens` 口径（仅滤 compaction）必含锚点且集合相等，减后无负数、无双计 |
+| 8 前言与注记保留 | **修好** | 用真实 MEMORY/CONTEXT 渲染验证：`# Project Memory` 与 `Last updated:` 行常驻；截断标记升格为 notes 块（sections-test 468-473 钉住） |
+| 9 绝对路径指针 | **修好** | inject.ts:95 `join(root, spec.path)`；两处调用点（report.ts:352、archive.ts:122）均传 `projectRoot`；实测输出 `` The remaining sections are in `/tmp/projroot/.agents/memory/MEMORY.md` `` |
+| 10 shutdown 守卫 | **修好** | report.ts:371 `logError(projectRoot ?? ctx.cwd, ...)`，解析失败不再静默 |
+| 11 设计文档基线数 | **修好** | 实测 `handoff-test.mjs` 178 OK / 0 FAIL，与文档 178 口径一致 |
+
+**审1 无 blocking 的判定成立；无一条只改了表面，修复未引入新回归。**
+
+## (B) 新一轮对抗审查焦点
+
+- **B1 inject.ts 新逻辑**：前言/注记/指针三分互不重叠，无重复路径；唯一新内容路径是「正文里碰巧整行形如 `_[x]_` 的行会被移出原节」（见 nit-3），内容不丢只换位。
+- **B2 renderProgressiveBody 极端输入**：无指针→整篇原样返回；全节指针→前言+注记+指针块；节体只剩注记→该节渲染为裸标题（注记已在 notes 块，无丢失）；空前言→被 `filter(Boolean)` 滤掉。均自洽。
+- **B3 anchorTokens 口径**：与 `olderTokens` 严格同源（见 A7）。仅一处边角：pi 的 turn start 可能是 `branch_summary` 条目（`isTurnStartMessage` 含 branchSummary），锚点不可重放，此时回执把它的 token 从 dropping 侧减掉却不计入 carrying 侧（见 residual-1）。
+- **B4 两个注入点的 root**：均为 `getProjectRoot`（git toplevel，绝对路径）；子目录 cwd 下返回仓库根，指针指向 `memoryDir(根)`，与写入位置一致。**fail-open 路径也自洽**：git 解析失败时 root=resolve(cwd)，而写入端同样以该 root 落盘，指针与文件仍指向同一处。
+- **B5 最可能的生产 bug**：见 residual-1（branch_summary 锚点退化路径）——最坏形态是 successor 拿不到「问题原文」、只有占位标记+半回合尾巴，全靠日志指针强指令兜底；另一候选是 fence 内 `## X` 错切分（nit-4），可把真内容折进指针段。
+- **B6 逐字一致**：docs/CHANGELOG/词汇表与代码逐字一致；**README.md 未改齐**（见 important-1）。`git diff --check v0.4.0..HEAD` 干净。
+
+## 严重度分桶
+
+### blocking
+无。
+
+### important
+1. **README 仍宣称 handoff 携带摘要** — `README.md:3`「带摘要和 replay-safe 原文窗口的 handoff」、`README.md:26`「旧段摘要 + 最近原文 + replay-safe marker」。v0.4.1 已删整条摘要链，README 是消费方第一眼文档，与版本头条「交接不再生成摘要」逐字冲突；attention.md/词汇规范明文「只改一半算未完成」。影响：用户按 README 预期摘要、按现实拿到指针，信任受损。最小修法：两处改「指针 + 最近原文 + replay-safe marker」，与 CHANGELOG 同轮。
+
+### nit
+1. `run.ts:426`：`budget summary` 回执「summary budget ~X per handoff before caps」仍可被读成「每次交接会生成摘要」；分叉是已决，但建议句尾补「(the pass reports this trigger; no summary call reads it)」。
+2. `report.ts:371`：root 解析失败时向 `ctx.cwd` 的 `.agents/memory/` 写 errors.log，可能在非项目目录造出游离目录树（本仓 `.agents` 是 tracked 路径，污染风险真实存在）。可接受，但建议落在 `~/.pi/agent` 或放弃写入而非 cwd。
+3. `inject.ts:51,88-89`：`DOCUMENT_NOTE_RE = /^_\[[^\]]+\]_$/` 过宽——任何整行 `_[x]_` 都会从原节升格进 notes 块（不丢内容只移位）。最小修法：收紧到两个已知标记前缀（`_[memory truncated` / `_[context truncated`）或只扫最后一节。
+4. `inject.ts:54-62`：`splitSections` 不追踪 fenced code block，fence 内一行 `## Index` 会把后续真内容错切进指针节（内容仍在磁盘、指针可达，但注入视角丢节）。被删的 `localizeSummaryHeadings` 恰有 fence 追踪逻辑，可移植。
+5. `run.ts:160,181`：下限按 `olderTokens`（含被携带的锚点）判，极端时回执可出现「dropping ~0」而交接照发（单条 ≥8k token 的起始消息被整条锚走）。无害但刺眼；下限宜用 `olderTokens - anchorTokens`。
+6. 新收据文案（A1/A2/dropping 行）无逐字断言；建议补 pin，防回退。
+
+### suggestion
+- `tests/sections-test.mjs` 补一条 fence 内 `## X` 不切分的断言（对应 nit-4）。
+- 行宽 ≤160：本 diff 新增多条 >160 行（archive.ts:122=204、run.ts:171、inject.ts 指令行 198/209、threshold.ts 收据 259/253 等）；存量代码本就大量超宽，说明该约定未被执行——要么执行要么从约定中降级。
+
+### learning
+- pi 的 `isTurnStartMessage` 把 `branchSummary`/`compactionSummary` 也当 turn start：A 方案的「锚定问题原文」在分支摘要开头的回合里语义不成立（对后续设计有用）。
+
+### praise
+- anchorTokens 修法严格：双方同估算器、同消息集，且锚点结构上不可能为 compaction 条目（读 pi 源码确认），无减错路径。
+- 指针路径 fail-open 对称性：root 解析失败时指针与写入端落同一处，设计漂亮。
+- 截断标记/前言保留让注入视图「诚实」：cap 与 progressive disclosure 两个机制叠加后仍不丢诚实信号。
+- 测试纪律：178/160/15 全绿，变异矩阵与设计文档逐条对齐。
+
+### residual-risk（不再要求改动）
+1. **branch_summary 锚点退化**：split turn 起始为 branch_summary 条目时，锚点不可重放 → successor 收到 `[turn prefix dropped during handoff]` + 半回合尾巴，问题原文在丢弃前缀里，仅靠日志指针+强指令恢复。f19dc93 引入，非本次修复引入，概率低。
+2. **绝对指针的机器绑定**：系统提示含宿主机绝对路径；跨机器复制会话/容器路径重映射时指针失效（单机使用无影响，已决设计）。
+3. **CJK 双字边界**：正文任意位置两个 CJK 字符即整体翻中文指针（含文件名场景）；已按「记录在案的边界」钉住，不再计缺陷。
+
+## Test And QA Focus
+
+沙箱内实跑（只读，无落盘）：
+
+- `node tests/run-all.mjs` → **All 15 tests passed.**
+- `node tests/handoff-test.mjs` → **handoff: all checks passed.（178 OK / 0 FAIL）**，与设计文档基线 178 一致
+- `node tests/sections-test.mjs` → 160 OK / 0 FAIL（含前言、注记、绝对路径、CJK 边界四条新 pin）
+- `git diff --check v0.4.0..HEAD` → 无输出（干净）
+- 真实文件注入探针：MEMORY 29,434→21,199 字符、CONTEXT 8,407→7,360 字符注入，前言/常驻节/指针块形状正确，指针为绝对路径
+
+VERDICT: CHANGES-REQUESTED
