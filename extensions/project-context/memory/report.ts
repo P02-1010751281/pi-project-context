@@ -457,7 +457,7 @@ const MEMORY_VERBS = [
 ];
 
 /** What one consolidation attempt did, so the explicit commands can report truthfully. */
-export type ConsolidateReport = "updated" | "clipped" | "unchanged" | "deduped" | "failed";
+type ConsolidateReport = "updated" | "clipped" | "unchanged" | "deduped" | "failed";
 
 /** Shown when the pass had to shorten stored content to fit the model output budget. */
 const CLIPPED_NOTICE =

@@ -31,7 +31,7 @@ export function candidateFile(projectRoot: string, name: string): string {
  * The name is checked by the caller: the pass validates the model's name, the approve path validates
  * the CLI argument before it reads anything.
  */
-export function shapeRejection(description: string, body: string): string | undefined {
+function shapeRejection(description: string, body: string): string | undefined {
 	if (!description) return "missing description";
 	if (description.length > MAX_SKILL_DESCRIPTION_CHARS) return "description too long";
 	if (body.length < MIN_SKILL_BODY_CHARS) return "body too short";

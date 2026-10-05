@@ -85,7 +85,7 @@ export function clipToLineBoundary(text: string, limit: number): string {
 }
 
 /** Largest whole-line suffix of `text` within `limit`; only a single over-long line is cut inside. */
-export function clipTailToLineBoundary(text: string, limit: number): string {
+function clipTailToLineBoundary(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const tail = text.slice(text.length - Math.max(0, limit));
 	const cut = tail.indexOf("\n");
@@ -104,7 +104,7 @@ const CLIP_HEAD_SHARE = 0.6;
  * section held the durable operating lessons — while a large early section stayed. Keeping both
  * ends preserves the opening facts and the closing lessons and drops the middle instead.
  */
-export function clipToLineBoundaryBothEnds(text: string, limit: number): string {
+function clipToLineBoundaryBothEnds(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const head = clipToLineBoundary(text, Math.max(0, Math.floor(limit * CLIP_HEAD_SHARE))).trimEnd();
 	const tailBudget = limit - head.length - 1;

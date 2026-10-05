@@ -26,7 +26,7 @@ import {
 } from "./sections.ts";
 
 /** Which entry produced the memory this pass would write; the report words its notices per entry. */
-export type ConsolidateKind = "structured" | "fallback-sections" | "fallback-opaque";
+type ConsolidateKind = "structured" | "fallback-sections" | "fallback-opaque";
 
 /** Entries the new memory no longer carries, for the regression guard's report. */
 export type RemovedEntries = { count: number; samples: string[] };

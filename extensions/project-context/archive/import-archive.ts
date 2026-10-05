@@ -13,9 +13,9 @@ import { renderSessionMarkdown } from "./session-log.ts";
  * unless `replace` is set.
  */
 
-export type ImportStatus = "created" | "skipped" | "failed";
+type ImportStatus = "created" | "skipped" | "failed";
 
-export interface ImportOutcome {
+interface ImportOutcome {
 	source: string;
 	id?: string;
 	status: ImportStatus;

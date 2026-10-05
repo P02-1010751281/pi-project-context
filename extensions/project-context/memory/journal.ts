@@ -4,7 +4,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readdirSync, statSync } from "node:fs";
 import { mkdir, copyFile, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { MEMORY_BACKUP_MIN_AGE_MS } from "./backup.ts";
@@ -179,30 +178,6 @@ export async function newestMemoryArchive(projectRoot: string): Promise<string |
 	return (await listMemoryArchives(projectRoot))[0]?.file;
 }
 
-/**
- * Synchronous counterpart of {@link newestMemoryArchive}, for prompt assembly (`loadMemorySync`),
- * which the host calls synchronously and therefore cannot await. Same name rule, same "newest first".
- */
-export function newestMemoryArchiveSync(projectRoot: string): string | undefined {
-	let best: { file: string; mtime: number } | undefined;
-	try {
-		const directory = memoryDir(projectRoot);
-		for (const entry of readdirSync(directory, { withFileTypes: true })) {
-			if (!entry.isFile() || !JOURNAL_ARCHIVE_NAME.test(entry.name)) continue;
-			const file = path.join(directory, entry.name);
-			let mtime: number;
-			try {
-				mtime = statSync(file).mtimeMs;
-			} catch {
-				continue;
-			}
-			if (!best || mtime > best.mtime || (mtime === best.mtime && file > best.file)) best = { file, mtime };
-		}
-	} catch {
-		return undefined;
-	}
-	return best?.file;
-}
 
 /** Keep the newest archived journals; anything younger than an hour is never pruned. */
 async function pruneMemoryJournalArchives(projectRoot: string): Promise<void> {

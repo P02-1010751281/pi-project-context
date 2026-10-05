@@ -10,12 +10,3 @@ export function fmtTokens(tokens: number): string {
 export function fmtPct(percent: number): string {
 	return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
-
-export function cleanHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
-	if (!headers) return undefined;
-	const cleaned: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		if (typeof value === "string") cleaned[key] = value;
-	}
-	return Object.keys(cleaned).length > 0 ? cleaned : undefined;
-}

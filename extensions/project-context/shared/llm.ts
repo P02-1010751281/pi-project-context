@@ -12,7 +12,7 @@ import { notify } from "./project-state.ts";
  * reasons ("stop", "length", "pending", "deferred", "toolUse") return whatever text arrived.
  */
 
-export function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
+function extractText(response: { content: Array<{ type: string; text?: string }> }): string {
 	return response.content
 		.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
 		.map((part) => part.text)
@@ -89,7 +89,7 @@ export type AuxTool = {
 };
 
 /** A tool call the model asked for, with its already-parsed arguments object. */
-export type AuxToolCall = { name: string; arguments: unknown };
+type AuxToolCall = { name: string; arguments: unknown };
 
 /**
  * Pull the usable tool calls out of a response.
@@ -117,7 +117,7 @@ function extractToolCalls(response: { content: Array<{ type: string }> }): AuxTo
  * `kind` separates "the provider failed" from "the reply never finished", both of which would fail
  * identically without `tools`; `callAux` uses that to avoid doubling the calls an outage makes.
  */
-export class AuxCallError extends Error {
+class AuxCallError extends Error {
 	readonly kind: "provider" | "incomplete";
 
 	constructor(message: string, kind: "provider" | "incomplete") {
@@ -131,7 +131,7 @@ export class AuxCallError extends Error {
  * A provider failure (`stopReason` error/aborted) throws instead of returning empty text: an
  * empty reply must never be mistaken for "the model had nothing to say".
  */
-export async function completeWithMeta(
+async function completeWithMeta(
 	ctx: ExtensionContext,
 	prompt: string,
 	options: { maxTokens?: number; model?: NonNullable<ExtensionContext["model"]>; tools?: AuxTool[] } = {},

@@ -15,8 +15,8 @@ import { renderProgressiveBody, type InjectionSpec } from "../shared/inject.ts";
 import { documentLanguage } from "../shared/lang.ts";
 
 /** Shown to the reader; rendered against the project root so the reader's `read` resolves it from any cwd. */
-export const MEMORY_INJECTION_PATH = ".agents/memory/MEMORY.md";
-export const CONTEXT_INJECTION_PATH = ".agents/memory/CONTEXT.md";
+const MEMORY_INJECTION_PATH = ".agents/memory/MEMORY.md";
+const CONTEXT_INJECTION_PATH = ".agents/memory/CONTEXT.md";
 
 export const MEMORY_INJECTION: InjectionSpec = {
 	keep: ["Invariants", "Pitfalls"],

@@ -31,7 +31,7 @@ const HANDOFF_SETTINGS_FOREIGN_GRACE_MS = 2 * 60_000;
 /** Report a foreign stage once per process: the successor that owns it may still arrive. */
 let foreignStageReported = false;
 
-export interface HandoffSessionSettings {
+interface HandoffSessionSettings {
 	previousSessionFile: string;
 	model?: { provider: string; id: string };
 	thinkingLevel?: string;
@@ -55,7 +55,7 @@ export async function clearHandoffSessionSettings(projectRoot: string): Promise<
 }
 
 /** Read the staged settings; a missing, torn, or foreign file reads as "nothing staged". */
-export async function readHandoffSessionSettings(projectRoot: string): Promise<HandoffSessionSettings | undefined> {
+async function readHandoffSessionSettings(projectRoot: string): Promise<HandoffSessionSettings | undefined> {
 	try {
 		const parsed = JSON.parse(await readFile(handoffSettingsFile(projectRoot), "utf8")) as Partial<HandoffSessionSettings>;
 		if (typeof parsed?.previousSessionFile !== "string" || typeof parsed.at !== "number") return undefined;

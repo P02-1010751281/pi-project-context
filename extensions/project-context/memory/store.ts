@@ -49,7 +49,7 @@ function renderKeyOf(raw: string, limit: number): string {
 }
 
 /** What one write of the memory document did: published the reply, or kept newer stored bytes. */
-export type MemoryWriteResult = { written: true } | { written: false; kept: string };
+type MemoryWriteResult = { written: true } | { written: false; kept: string };
 
 /**
  * Record one consolidated document: keep a pre-journal project's current memory as the journal's

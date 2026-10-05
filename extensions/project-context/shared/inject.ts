@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { DocumentLanguage } from "./lang.ts";
 
 /** One string per language; either can be rendered into the same slot. */
-export interface BilingualText {
+interface BilingualText {
 	zh: string;
 	en: string;
 }
@@ -36,7 +36,7 @@ export interface InjectionSpec {
 	path: string;
 }
 
-export interface InjectionSection {
+interface InjectionSection {
 	heading: string;
 	body: string;
 }
@@ -59,7 +59,7 @@ const DOCUMENT_NOTE_RE = /^_\[[^\]]+\]_$/;
  * What one traversal of a rendered document yields: the preamble (everything before the first heading,
  * which belongs to no section) and the sections in document order.
  */
-export interface ScannedDocument {
+interface ScannedDocument {
 	preamble: string;
 	sections: InjectionSection[];
 }
@@ -72,7 +72,7 @@ export interface ScannedDocument {
  * A closing fence is the opening character repeated at least as many times with nothing but whitespace
  * after it; a shorter run, a different character, or trailing text stays inside the block.
  */
-export function scanDocument(text: string): ScannedDocument {
+function scanDocument(text: string): ScannedDocument {
 	const preamble: string[] = [];
 	const sections: InjectionSection[] = [];
 	let fence: string | undefined;

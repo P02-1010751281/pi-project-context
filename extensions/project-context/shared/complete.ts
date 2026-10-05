@@ -11,7 +11,7 @@
  * Structurally `AutocompleteItem` from pi-tui. Declared here so this module needs no runtime import
  * of a package the extension does not otherwise depend on.
  */
-export type ArgumentCompletion = { value: string; label: string; description?: string };
+type ArgumentCompletion = { value: string; label: string; description?: string };
 
 type Choice = { value: string; description?: string };
 

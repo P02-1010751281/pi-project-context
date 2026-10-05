@@ -28,7 +28,7 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * `legacyConfigPatch`, mirrored in `.codestable/reference/vocabulary-conventions.md`).
  */
 
-export type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
+type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
 export const FEATURE_NAMES: FeatureName[] = ["archive", "memory", "autolearn", "handoff"];
 
 /** Command verb → config field. The verbs are pi-side copy; the fields are shared with dsh. */
@@ -39,7 +39,7 @@ export const FEATURE_FIELDS: Record<FeatureName, "archiveEnabled" | "memoryEnabl
 	handoff: "handoffEnabled",
 };
 
-export type HandoffSettings = {
+type HandoffSettings = {
 	/** Adaptive threshold (dsh `handoffAdaptive`); false uses `handoffThresholdRatio`. */
 	handoffThresholdAuto: boolean;
 	/** Context-window fraction (0.1–0.95) used when `handoffThresholdAuto` is false. */
@@ -268,7 +268,7 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
  * file (full flat document, under the cross-process lock). Idempotent — a second run finds nothing.
  * Returns the layouts that contributed, empty when there was nothing to migrate.
  */
-export async function migrateLegacyConfig(projectRoot: string): Promise<string[]> {
+async function migrateLegacyConfig(projectRoot: string): Promise<string[]> {
 	const legacy = await legacyConfigPatch(projectRoot);
 	if (!legacy) return [];
 	// An empty patch still rewrites the file, which is what drops the now-dead nested keys.

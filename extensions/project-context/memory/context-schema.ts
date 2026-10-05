@@ -10,7 +10,7 @@ import { MAX_CONTEXT_CHARS, MAX_SUMMARY_CHARS } from "../shared/limits.ts";
 /** The canonical heading every rendered context document carries. */
 export const CONTEXT_HEADER = "# Project Context\n\n";
 
-export type ContextSectionSpec = {
+type ContextSectionSpec = {
 	/** The `##` heading the section carries. */
 	heading: string;
 	/** What belongs in the section, rendered next to its heading in the prompt. */
@@ -57,10 +57,10 @@ export const CONTEXT_TOOL_SCHEMA = {
 };
 
 /** One blank line (two characters) terminates each section body; the last one over-reserves a character. */
-export const CONTEXT_SECTION_GAP_CHARS = 2;
+const CONTEXT_SECTION_GAP_CHARS = 2;
 
 /** `new Date().toISOString()` always renders this many characters. */
-export const CONTEXT_TIMESTAMP_CHARS = 24;
+const CONTEXT_TIMESTAMP_CHARS = 24;
 
 /** Longest session title the trailing comment carries (`renderContextDocument` trims to this). */
 export const CONTEXT_TITLE_CHARS = 160;

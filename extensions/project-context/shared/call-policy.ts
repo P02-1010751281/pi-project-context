@@ -9,7 +9,7 @@
  */
 
 /** What kind of failure a thrown model error is. */
-export type ModelFailureKind = "auth" | "quota" | "transient" | "shape" | "other";
+type ModelFailureKind = "auth" | "quota" | "transient" | "shape" | "other";
 
 /** Auth will not repair itself inside a session: park long and let the user notice. */
 export const AUTH_COOLDOWN_MS = 30 * 60_000;
@@ -44,7 +44,7 @@ export function classifyModelFailure(error: unknown): ModelFailureKind {
 type FailureState = { kind: ModelFailureKind; failures: number; until: number; disabled: boolean };
 
 /** What one recorded failure means for the caller: how long to park, and whether the pass is off. */
-export type FailureRecord = {
+type FailureRecord = {
 	kind: ModelFailureKind;
 	failures: number;
 	cooldownMs: number;
