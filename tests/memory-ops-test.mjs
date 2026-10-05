@@ -114,7 +114,7 @@ try {
 
 		await pi.commands.get("memory").handler("max-memory 20000", ctx);
 		check("a fitting cap is accepted", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("20000"));
-		check("the accepted cap is reported", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Memory cap: 20000 characters."));
+		check("the accepted cap is reported", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Memory: cap 20000 characters."));
 		check("status now uses the new cap", (await status()).includes("of the 20000-char cap"));
 		check("a fitting cap raises no warning", !(await status()).includes("Memory cap warning"));
 
@@ -132,7 +132,7 @@ try {
 
 	console.log("\n=== M4: the automatic cap toast names the cap (not a scope error) ===");
 	{
-		const tmp = await makeProject({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
+		const tmp = await makeProject({ memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "cap-toast-session") });
@@ -219,7 +219,7 @@ try {
 		}
 		for (const [label, tmp, expected, level] of cases) {
 			const { fromCommand, statusBody, level: notified } = await both(tmp);
-			check(`${label}: both entry points print the same body`, fromCommand === `Project memory: ${statusBody}`);
+			check(`${label}: both entry points print the same body`, fromCommand === `Memory: ${statusBody}`);
 			check(`${label}: the shared body reports it`, expected.test(statusBody));
 			check(`${label}: /memory warns with level ${level}`, notified === level);
 		}
@@ -227,7 +227,7 @@ try {
 
 	console.log("\n=== M4: the cap suggestion is a value the command accepts ===");
 	{
-		const tmp = await makeProject({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
+		const tmp = await makeProject({ memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false, maxMemoryChars: cap, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 });
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "cap-suggest-session") });

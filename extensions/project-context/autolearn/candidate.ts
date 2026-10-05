@@ -88,7 +88,7 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 	const file = candidateFile(projectRoot, name);
 	const raw = await readOptional(file);
 	if (!raw) {
-		notify(ctx, `No candidate named "${name}".`, "warning");
+		notify(ctx, `Autolearn: no candidate named "${name}".`, "warning");
 		return;
 	}
 	const description = skillDescription(raw, MAX_SKILL_DESCRIPTION_CHARS);
@@ -98,14 +98,14 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 	// makes the refusal actionable instead of a dead end.
 	const shape = shapeRejection(description, body);
 	if (shape !== undefined) {
-		notify(ctx, `Candidate "${name}" is not activatable (${shape}); not activating.`, "warning");
+		notify(ctx, `Autolearn: candidate "${name}" is not activatable (${shape}); not activating.`, "warning");
 		return;
 	}
 	const destination = path.join(skillsDir(projectRoot), name, "SKILL.md");
 	const existing = await readOptional(destination);
 	// Same boundary as the proposal path: only a skill this pipeline generated may be superseded.
 	if (existing && !autolearnProvenance(existing)) {
-		notify(ctx, `Skill "${name}" already exists; remove the candidate manually.`, "warning");
+		notify(ctx, `Autolearn: skill "${name}" already exists; remove the candidate manually.`, "warning");
 		return;
 	}
 	await writeAtomic(destination, promotedDocument(name, description, body));
@@ -114,7 +114,7 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 	// the message says so instead of implying the body was merged.
 	notify(
 		ctx,
-		`${existing ? "Updated" : "Activated"} project skill: ${name} → ${destination}${existing ? " — approved by hand; this pass never showed its body" : ""}`,
+		`Autolearn: ${existing ? "updated" : "activated"} project skill ${name} → ${destination}${existing ? " — approved by hand; this pass never showed its body" : ""}`,
 	);
 }
 
@@ -126,9 +126,9 @@ export async function rejectCandidate(pi: ExtensionAPI, ctx: ExtensionContext, n
 	}
 	const file = candidateFile(projectRoot, name);
 	if (!(await readOptional(file))) {
-		notify(ctx, `No candidate named "${name}".`, "warning");
+		notify(ctx, `Autolearn: no candidate named "${name}".`, "warning");
 		return;
 	}
 	await rm(file, { force: true });
-	notify(ctx, `Removed candidate skill: ${name}`);
+	notify(ctx, `Autolearn: removed candidate skill "${name}"`);
 }

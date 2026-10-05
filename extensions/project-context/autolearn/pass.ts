@@ -33,7 +33,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			projectRoot = await getProjectRoot(pi, ctx.cwd);
 			const config = await getConfig(projectRoot);
 			if (runIsDisabled() && !force) return;
-			if (!config.autoLearn && !force) return;
+			if (!config.autolearnEnabled && !force) return;
 			// A route that just failed stays parked; without this the pass retried on every settle and
 			// one provider outage became a burst. An explicit /autolearn passes `force` and still runs.
 			if (!force && modelBlocked("autolearn", projectRoot)) return;
@@ -63,7 +63,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			const sessions = indexedSessions(parseSessionIndex(await readOptional(sessionIndexFile(projectRoot))), archived, AUTOLEARN_INDEX_LINES);
 			const auxModel = resolveAuxModel(ctx, config);
 			if (!auxModel) {
-				if (force) notify(ctx, "Autolearn skipped: no authenticated model available", "warning");
+				if (force) notify(ctx, "Autolearn: skipped — no authenticated model available", "warning");
 				return;
 			}
 
@@ -200,7 +200,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return;
 			}
 			await writeAtomic(destination, skillDocument(skill, false));
-			notify(ctx, `${existing ? "Updated" : "Learned"} project skill: ${skill.name} → ${destination}`);
+			notify(ctx, `Autolearn: ${existing ? "updated" : "learned"} project skill ${skill.name} → ${destination}`);
 		} catch (error) {
 			if (projectRoot) {
 				await logError(projectRoot, "autolearn", error);
@@ -210,7 +210,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 					await logError(projectRoot, "autolearn", "autolearn is disabled for this session after repeated auxiliary-model failures; fix the route with /project-context model and retry with /autolearn");
 				}
 			}
-			if (!options.silent) notify(ctx, `Autolearn failed: ${errorText(error)}`, "warning");
+			if (!options.silent) notify(ctx, `Autolearn: failed — ${errorText(error)}`, "warning");
 		}
 	}
 
@@ -238,15 +238,15 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			if (verb === "on" || verb === "off") {
 				const projectRoot = await getProjectRoot(pi, ctx.cwd);
 				await setFeature(projectRoot, "autolearn", verb === "on");
-				notify(ctx, `Autolearn ${verb === "on" ? "enabled" : "disabled"} for ${projectRoot}`);
+				notify(ctx, `Autolearn: ${verb === "on" ? "enabled" : "disabled"} for ${projectRoot}`);
 				return;
 			}
 			if (verb === "list") {
 				const projectRoot = await getProjectRoot(pi, ctx.cwd);
 				const names = await candidateNames(projectRoot);
 				notify(ctx, names.length > 0
-					? `Skill candidates: ${names.join(", ")} (/autolearn approve <name>)`
-					: "No skill candidates.");
+					? `Autolearn: candidates ${names.join(", ")} (/autolearn approve <name>)`
+					: "Autolearn: no candidates.");
 				return;
 			}
 			if (verb === "approve") {

@@ -21,7 +21,7 @@ function textAsksQuestion(text: string): boolean {
 
 /**
  * The question the session is waiting on, if its last conversational message is
- * an assistant question. Auto handoff must not answer it on the user's behalf.
+ * an assistant question. Handoff must not answer it on the user's behalf.
  */
 export function findPendingQuestion(entries: SessionEntry[]): string | undefined {
 	let last: { role: string; text: string } | undefined;

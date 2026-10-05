@@ -1526,7 +1526,7 @@ try {
 		const project = async (name, config = {}) => {
 			const root = await mkdtemp(path.join(os.tmpdir(), `pi-${name}-`));
 			await mkdir(path.join(root, ".agents/memory"), { recursive: true });
-			await writeFile(path.join(root, ".agents/memory/project-context.json"), `${JSON.stringify({ autoConsolidate: true, ...config })}\n`);
+			await writeFile(path.join(root, ".agents/memory/project-context.json"), `${JSON.stringify({ memoryEnabled: true, ...config })}\n`);
 			const pi = makePi({ cwd: root });
 			await (await loadDefault(`${PC}/index.ts`))(pi);
 			return { root, pi };
@@ -1594,7 +1594,7 @@ try {
 				const { toasts } = await pass(handle, () => toolReply({ memory: { project: [""], invariants: [" "], pitfalls: ["\u200b"], index: ["##"] }, context: CONTEXT }));
 				check("an all-empty reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
 				check("the same pass still writes the context", (await readFile(path.join(handle.root, ".agents/memory/CONTEXT.md"), "utf8")).includes("summary text"));
-				check("the reply does not claim the memory was updated", !toasts.some((message) => message.includes("Project memory updated")));
+				check("the reply does not claim the memory was updated", !toasts.some((message) => /Memory: updated /.test(message)));
 				check("the reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
 				check("no removal warning is raised for an unwritten memory", !toasts.some((message) => message.includes("no longer carries")));
 				check("the gate leaves an ordinary diagnostic", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
@@ -1716,7 +1716,7 @@ try {
 				}));
 				check("a heading-only opaque reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
 				check("the skeleton is reported, not silently accepted", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
-				check("the skeleton does not claim an update", !toasts.some((message) => message.includes("Project memory updated")));
+				check("the skeleton does not claim an update", !toasts.some((message) => /Memory: updated /.test(message)));
 				check("the semantic-empty toast does say the reply carried no entries", toasts.some((message) => message.includes("carried no entries")));
 			} finally {
 				await rmTemp(handle.root);
@@ -1792,7 +1792,7 @@ try {
 				await writeFile(memoryFile(handle.root), before);
 				const { toasts } = await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: "Short note.", context: CONTEXT }) }], stopReason: "stop" }));
 				check("a too-short reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("a too-short reply does not claim a memory update", !toasts.some((message) => message.includes("Project memory and context updated")));
+				check("a too-short reply does not claim a memory update", !toasts.some((message) => /Memory: (updated|were updated)/.test(message)));
 				check("a too-short reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
 				// The reply DID carry text, so the semantic-empty wording would be a false cause. Assert on the
 				// toast, which is where the reply lands: the handler returns nothing.

@@ -180,7 +180,7 @@ try {
 	check("no injection", disabledInject.every((result) => result === undefined));
 
 	console.log("\n=== the umbrella on|off is the target-less batch ===");
-	const FEATURE_KEYS = ["archiveEnabled", "autoConsolidate", "autoLearn", "handoffEnabled"];
+	const FEATURE_KEYS = ["archiveEnabled", "memoryEnabled", "autolearnEnabled", "handoffEnabled"];
 	// One name, one path: a target (the old `<feature|all>`) and a per-feature toggle now belong to the
 	// layer commands, so the batch refuses the token instead of silently doing the same thing.
 	const beforeBatch = await readConfig();
@@ -200,7 +200,7 @@ try {
 	await writeFile(path.join(tmp, ".agents/memory/autolearn.json"), `${JSON.stringify({ at: 123, enabled: false })}\n`);
 	const { getConfig, takeConfigMigrationNotice } = await loadNamespace(`${PC}/shared/config.ts`);
 	const legacy = await getConfig(tmp);
-	check("legacy enabled=false maps to the switch", legacy.autoLearn === false);
+	check("legacy enabled=false maps to the switch", legacy.autolearnEnabled === false);
 	check("legacy throttle timestamp kept", legacy.autolearnAt === 123);
 	// The migration is a write, so it says what it moved instead of rewriting the file silently.
 	const movedFrom = takeConfigMigrationNotice(tmp);
@@ -219,9 +219,9 @@ try {
 	}, null, 2)}\n`);
 	const { getConfig: getNested, takeConfigMigrationNotice: takeNestedNotice, setFeature: setNested } = await loadNamespace(`${PC}/shared/config.ts`);
 	const nested = await getNested(tmp);
-	check("nested switches mapped", nested.archiveEnabled === false && nested.autoConsolidate === false && nested.handoffEnabled === false && nested.autoLearn === true);
-	check("nested threshold maps to adaptive=false + ratio", nested.handoffAdaptive === false && nested.handoffThresholdRatio === 0.6);
-	check("nested handoff settings mapped", nested.handoffTargetTokens === 32_000 && nested.handoffKeepTokens === 1_000 && nested.handoffSummaryThinking === "session" && nested.handoffMode === "draft" && nested.handoffGuard === "skip");
+	check("nested switches mapped", nested.archiveEnabled === false && nested.memoryEnabled === false && nested.handoffEnabled === false && nested.autolearnEnabled === true);
+	check("nested threshold maps to adaptive=false + ratio", nested.handoffThresholdAuto === false && nested.handoffThresholdRatio === 0.6);
+	check("nested handoff settings mapped", nested.handoffBudgetSummaryTokens === 32_000 && nested.handoffBudgetRecentTokens === 1_000 && nested.handoffThinking === "session" && nested.handoffMode === "draft" && nested.handoffGuard === "skip");
 	check("nested autolearn state mapped", nested.autolearnAt === 456 && nested.autolearnTurns === 7 && nested.autolearnIntervalMs === 60_000);
 	check("flat consolidation cadence read", nested.consolidateTurns === 9 && nested.consolidateIntervalMs === 300_000 && nested.forceDedupeMs === 15_000);
 	check("a key added after the unification gets no legacy term", nested.maxTokens === 8192);
@@ -229,19 +229,62 @@ try {
 	await setNested(tmp, "archive", true);
 	const upgraded = await readConfig();
 	check("file rewritten flat on save", upgraded.archiveEnabled === true && upgraded.features === undefined && upgraded.autolearn === undefined && upgraded.handoff === undefined);
-	check("upgraded flat values kept", upgraded.handoffAdaptive === false && upgraded.handoffThresholdRatio === 0.6 && upgraded.autolearnAt === 456 && upgraded.autolearnTurns === 7);
+	check("upgraded flat values kept", upgraded.handoffThresholdAuto === false && upgraded.handoffThresholdRatio === 0.6 && upgraded.autolearnAt === 456 && upgraded.autolearnTurns === 7);
 	check("upgraded cadence kept", upgraded.consolidateTurns === 9 && upgraded.consolidateIntervalMs === 300_000);
+	console.log("\n=== v0.4.0 key renames migrate once ===");
+	// A file written before the rename carries the old flat names. They fold into the new ones the same
+	// one-time way a legacy layout does, and the rewrite drops them; a project that never had them is untouched.
+	await rm(configPath, { force: true });
+	await writeFile(configPath, `${JSON.stringify({
+		autoLearn: false,
+		autoConsolidate: false,
+		handoffTargetTokens: 48_000,
+		handoffKeepTokens: 12_000,
+		handoffAdaptive: false,
+		handoffLanguage: "zh",
+		handoffSummaryThinking: "session",
+	}, null, 2)}\n`);
+	const { getConfig: getRenamed, takeConfigMigrationNotice: takeRenamedNotice } = await loadNamespace(`${PC}/shared/config.ts`);
+	const renamedConfig = await getRenamed(tmp);
+	check("old switch names fold into the new ones", renamedConfig.autolearnEnabled === false && renamedConfig.memoryEnabled === false);
+	check("old budget names fold into the new ones", renamedConfig.handoffBudgetSummaryTokens === 48_000 && renamedConfig.handoffBudgetRecentTokens === 12_000);
+	check("old threshold/thinking/lang names fold in", renamedConfig.handoffThresholdAuto === false && renamedConfig.handoffThinking === "session" && renamedConfig.handoffLang === "zh");
+	check("the rename migration names itself", (takeRenamedNotice(tmp) ?? []).some((item) => String(item).includes("pre-v0.4")));
+	const rewritten = JSON.parse(await readFile(configPath, "utf8"));
+	check(
+		"the old names are gone from the file",
+		["autoLearn", "autoConsolidate", "handoffTargetTokens", "handoffKeepTokens", "handoffAdaptive", "handoffLanguage", "handoffSummaryThinking"].every(
+			(key) => rewritten[key] === undefined,
+		),
+	);
+	check("the new names are written", rewritten.memoryEnabled === false && rewritten.autolearnEnabled === false && rewritten.handoffBudgetSummaryTokens === 48_000);
+
+	// Each case needs a fresh module instance: `getConfig` caches per project for the life of the module, so a
+	// second call in the same instance would answer from memory and the file rewrite below would go unseen.
+	const freshConfig = async () => (await loadNamespace(`${PC}/shared/config.ts`)).getConfig;
+	await rm(configPath, { force: true });
+	await writeFile(configPath, `${JSON.stringify({ autoLearn: false, autolearnEnabled: true, handoffTargetTokens: 64_000, handoffBudgetSummaryTokens: 32_000 }, null, 2)}\n`);
+	const bothNames = await (await freshConfig())(tmp);
+	check("the new name wins when both are present", bothNames.autolearnEnabled === true && bothNames.handoffBudgetSummaryTokens === 32_000);
+
+	// A junk old value falls back to the default instead of entering the config unchecked.
+	await rm(configPath, { force: true });
+	await writeFile(configPath, `${JSON.stringify({ handoffTargetTokens: "nope", handoffKeepTokens: -5 }, null, 2)}\n`);
+	const junk = await (await freshConfig())(tmp);
+	check("a junk old value falls back to the default", junk.handoffBudgetSummaryTokens === 64_000 && junk.handoffBudgetRecentTokens === 20_000);
+
+
 	console.log("\n=== a handoff save must not revert another writer's switch ===");
 	// The whole-snapshot writer `saveConfig(projectRoot, config)` (removed in ed2704c) wrote this
 	// module's entire session-start snapshot, and `/project-context off memory` publishes a NEW cached
 	// object, so the next `/handoff` command silently turned the memory switch back on. One
 	// process, no crash, no notice.
 	await pi.commands.get("memory").handler("off", ctx);
-	check("memory is off before the handoff save", (await readConfig())?.autoConsolidate === false);
+	check("memory is off before the handoff save", (await readConfig())?.memoryEnabled === false);
 	await pi.commands.get("handoff").handler("lang zh", ctx);
 	const afterHandoff = await readConfig();
-	check("the memory switch survives a handoff save", afterHandoff?.autoConsolidate === false);
-	check("the handoff key is still persisted", afterHandoff?.handoffLanguage === "zh");
+	check("the memory switch survives a handoff save", afterHandoff?.memoryEnabled === false);
+	check("the handoff key is still persisted", afterHandoff?.handoffLang === "zh");
 	await pi.commands.get("memory").handler("on", ctx);
 
 	console.log("\n=== the config write takes the cross-process lock ===");
@@ -255,7 +298,7 @@ try {
 		await utimes(lockFile, longAgo, longAgo);
 		await pi.commands.get("memory").handler("off", ctx);
 		check("the config write consumed and released the stale lock", await stat(lockFile).then(() => false).catch(() => true));
-		check("the write still landed", (await readConfig())?.autoConsolidate === false);
+		check("the write still landed", (await readConfig())?.memoryEnabled === false);
 	}
 } finally {
 	await rmTemp(tmp);

@@ -93,7 +93,7 @@ try {
 		await writeFile(path.join(logs, "sess-a/session.jsonl"), `${JSON.stringify(messageEntry("s1", "user", "hello", "2026-09-12T10:00:00.000Z"))}\n`);
 		await writeFile(path.join(autoTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- Auto project.\n");
 		await writeFile(path.join(autoTmp, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\n\nAuto project.\n");
-		await writeFile(path.join(autoTmp, ".agents/memory/project-context.json"), `${JSON.stringify({ autoLearn: true, autolearnAt: 0, autoConsolidate: false, handoffEnabled: false })}\n`);
+		await writeFile(path.join(autoTmp, ".agents/memory/project-context.json"), `${JSON.stringify({ autolearnEnabled: true, autolearnAt: 0, memoryEnabled: false, handoffEnabled: false })}\n`);
 		const pi = makePi({ cwd: autoTmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(autoTmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hi", "2026-09-12T10:00:00.000Z")], "auto-session") });
@@ -119,7 +119,7 @@ try {
 		const memoryFile = path.join(memTmp, ".agents/memory/MEMORY.md");
 		const previous = "# Project Memory\n\n## Project\n- Old memory.\n";
 		await writeFile(memoryFile, previous);
-		await writeFile(path.join(memTmp, ".agents/memory/project-context.json"), `${JSON.stringify({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, consolidateTurns: 1 })}\n`);
+		await writeFile(path.join(memTmp, ".agents/memory/project-context.json"), `${JSON.stringify({ memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false, consolidateTurns: 1 })}\n`);
 		const pi = makePi({ cwd: memTmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(memTmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "mem-session") });
@@ -128,7 +128,7 @@ try {
 			calls += 1;
 			throw new Error("model call error: Connection error.");
 		};
-		const failureToasts = () => ctx.notifications.filter(([message]) => String(message).includes("memory update"));
+		const failureToasts = () => ctx.notifications.filter(([message]) => String(message).includes("update failed"));
 		// Each pass runs on a new user turn; without one the throttle's turn gate parks it too, and the
 		// probe would prove the wrong gate.
 		const nextTurn = (id) => ctx.sessionManager.entries.push(messageEntry(id, "user", "more", "2026-09-12T10:01:00.000Z"));
@@ -160,7 +160,7 @@ try {
 		await writeFile(path.join(resetTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- Old.\n");
 		await writeFile(
 			path.join(resetTmp, ".agents/memory/project-context.json"),
-			`${JSON.stringify({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 })}\n`,
+			`${JSON.stringify({ memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false, consolidateTurns: 1, consolidateIntervalMs: 1000, forceDedupeMs: 0 })}\n`,
 		);
 		const pi = makePi({ cwd: resetTmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);

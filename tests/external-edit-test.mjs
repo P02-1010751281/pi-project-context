@@ -222,7 +222,7 @@ try {
 		check(`${sub.name}: the command reply does not claim a cap`, !reply.includes("maxMemoryChars"));
 		check(
 			`${sub.name}: the context claim matches what happened`,
-			sub.claimsContext ? reply.startsWith("Project context updated; ") : !reply.includes("Project context updated"),
+			sub.claimsContext ? reply.startsWith("Memory: context updated; ") : !reply.includes("context updated"),
 		);
 		if (!sub.claimsContext) {
 			check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);

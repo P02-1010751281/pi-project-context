@@ -177,7 +177,7 @@ try {
 		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- a fact.\n");
 		await writeFile(
 			path.join(tmp, ".agents/memory/project-context.json"),
-			`${JSON.stringify({ autoConsolidate: true, autoLearn: false, handoffEnabled: false, forceDedupeMs: 0 })}\n`,
+			`${JSON.stringify({ memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false, forceDedupeMs: 0 })}\n`,
 		);
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);

@@ -157,7 +157,7 @@ export async function consolidateProjectState(
 		if (!force && modelBlocked("memory", projectRoot)) return cached?.outcome;
 		const auxModel = resolveAuxModel(ctx, config);
 		if (!auxModel) {
-			notify(ctx, "Project state update skipped: no authenticated model available", "warning");
+			notify(ctx, "Memory: skipped — no authenticated model available", "warning");
 			return undefined;
 		}
 

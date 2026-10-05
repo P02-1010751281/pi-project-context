@@ -263,18 +263,18 @@ try {
 		await writeFile(configPath, JSON.stringify(raw));
 		return (await loadNamespace(`${PC}/shared/config.ts`)).getConfig(tmp);
 	};
-	const flat = await parseConfig({ handoffLanguage: "zh" });
-	check("flat handoffLanguage loads", flat.handoffLanguage === "zh");
-	const flatWins = await parseConfig({ handoffLanguage: "zh", handoff: { language: "en" } });
-	check("flat value beats the nested legacy key", flatWins.handoffLanguage === "zh");
+	const flat = await parseConfig({ handoffLang: "zh" });
+	check("flat handoffLang loads", flat.handoffLang === "zh");
+	const flatWins = await parseConfig({ handoffLang: "zh", handoff: { language: "en" } });
+	check("flat value beats the nested legacy key", flatWins.handoffLang === "zh");
 	const nestedInvalid = await parseConfig({ handoff: { language: "fr" } });
-	check("invalid nested value falls back to auto", nestedInvalid.handoffLanguage === "auto");
+	check("invalid nested value falls back to auto", nestedInvalid.handoffLang === "auto");
 	const nested = await parseConfig({ handoff: { language: "en" } });
-	check("nested legacy handoff.language loads", nested.handoffLanguage === "en");
-	const invalid = await parseConfig({ handoffLanguage: "fr" });
-	check("unknown language falls back to auto", invalid.handoffLanguage === "auto");
+	check("nested legacy handoff.language loads", nested.handoffLang === "en");
+	const invalid = await parseConfig({ handoffLang: "fr" });
+	check("unknown language falls back to auto", invalid.handoffLang === "auto");
 	const defaults = await parseConfig({});
-	check("defaults to auto", defaults.handoffLanguage === "auto");
+	check("defaults to auto", defaults.handoffLang === "auto");
 	// Legacy global file (`~/.pi/agent/auto-handoff.json`); redirect the agent dir instead.
 	const agentDir = path.join(tmp, "agentdir");
 	await mkdir(agentDir, { recursive: true });
@@ -284,7 +284,7 @@ try {
 	try {
 		await writeFile(configPath, JSON.stringify({}));
 		const globalLegacy = await (await loadNamespace(`${PC}/shared/config.ts`)).getConfig(tmp);
-		check("global legacy language loads", globalLegacy.handoffLanguage === "en");
+		check("global legacy language loads", globalLegacy.handoffLang === "en");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -299,17 +299,17 @@ try {
 	const command = pi.commands.get("handoff");
 	check("command registered", command !== undefined);
 	await command.handler("lang zh", ctx);
-	check("lang zh persists", (await readConfig())?.handoffLanguage === "zh");
+	check("lang zh persists", (await readConfig())?.handoffLang === "zh");
 	await command.handler("lang fr", ctx);
-	check("invalid language warns and leaves the config", (await readConfig())?.handoffLanguage === "zh" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto|zh|en"));
+	check("invalid language warns and leaves the config", (await readConfig())?.handoffLang === "zh" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto|zh|en"));
 	await command.handler("lang auto", ctx);
-	check("lang auto persists", (await readConfig())?.handoffLanguage === "auto");
+	check("lang auto persists", (await readConfig())?.handoffLang === "auto");
 	await command.handler("language zh", ctx);
-	check("the language alias works", (await readConfig())?.handoffLanguage === "zh");
+	check("the language alias works", (await readConfig())?.handoffLang === "zh");
 	await command.handler("lang EN", ctx);
-	check("the language value is case-insensitive", (await readConfig())?.handoffLanguage === "en");
+	check("the language value is case-insensitive", (await readConfig())?.handoffLang === "en");
 	await command.handler("lang", ctx);
-	check("a missing value warns and leaves the config", (await readConfig())?.handoffLanguage === "en" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto|zh|en"));
+	check("a missing value warns and leaves the config", (await readConfig())?.handoffLang === "en" && String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto|zh|en"));
 	await command.handler("lang auto", ctx);
 	await command.handler("status", ctx);
 	check("status reports the language", String(ctx.notifications.at(-1)?.[0] ?? "").includes("lang auto"));
@@ -319,28 +319,28 @@ try {
 	console.log("\n=== /handoff threshold | budget | mode ===");
 	await command.handler("threshold 0.55", ctx);
 	let verbs = await readConfig();
-	check("threshold <ratio> pins a fixed share", verbs?.handoffAdaptive === false && verbs?.handoffThresholdRatio === 0.55);
+	check("threshold <ratio> pins a fixed share", verbs?.handoffThresholdAuto === false && verbs?.handoffThresholdRatio === 0.55);
 	await command.handler("threshold 40%", ctx);
 	check("threshold accepts a percentage", (await readConfig())?.handoffThresholdRatio === 0.4);
 	await command.handler("threshold 0.9", ctx);
 	await command.handler("threshold auto", ctx);
 	verbs = await readConfig();
-	check("threshold auto restores adaptive mode and keeps the ratio aside", verbs?.handoffAdaptive === true && verbs?.handoffThresholdRatio === 0.9);
+	check("threshold auto restores adaptive mode and keeps the ratio aside", verbs?.handoffThresholdAuto === true && verbs?.handoffThresholdRatio === 0.9);
 	await command.handler("threshold nope", ctx);
 	check(
 		"an invalid threshold warns and leaves the config",
 		(await readConfig())?.handoffThresholdRatio === 0.9 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff threshold"),
 	);
 	await command.handler("budget summary 48k", ctx);
-	check("budget summary sets the summary target", (await readConfig())?.handoffTargetTokens === 48_000);
+	check("budget summary sets the summary target", (await readConfig())?.handoffBudgetSummaryTokens === 48_000);
 	await command.handler("budget recent 12k", ctx);
-	check("budget recent sets the recent window", (await readConfig())?.handoffKeepTokens === 12_000);
+	check("budget recent sets the recent window", (await readConfig())?.handoffBudgetRecentTokens === 12_000);
 	await command.handler("budget recent off", ctx);
-	check("budget recent off carries nothing verbatim", (await readConfig())?.handoffKeepTokens === 0);
+	check("budget recent off carries nothing verbatim", (await readConfig())?.handoffBudgetRecentTokens === 0);
 	await command.handler("budget summary 1", ctx);
 	check(
 		"a below-floor summary budget warns and leaves the config",
-		(await readConfig())?.handoffTargetTokens === 48_000 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff budget"),
+		(await readConfig())?.handoffBudgetSummaryTokens === 48_000 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff budget"),
 	);
 	await command.handler("mode draft", ctx);
 	check("mode draft persists", (await readConfig())?.handoffMode === "draft");
@@ -361,7 +361,7 @@ try {
 
 	console.log("\n=== /handoff now (nothing to hand off) ===");
 	// A no-op handoff must explain itself: both bail-outs used to return without any notify.
-	await writeFile(configPath, JSON.stringify({ handoffKeepTokens: 50 }));
+	await writeFile(configPath, JSON.stringify({ handoffBudgetRecentTokens: 50 }));
 	const quiet = makePi({ cwd: tmp });
 	await (await loadDefault(`${PC}/index.ts`))(quiet);
 	const emptyCtx = makeCtx(tmp, { sessionManager: makeSessionManager([], "handoff-empty") });
@@ -393,7 +393,7 @@ try {
 	// maybeTrigger fires on every settle; the trigger must not stack on the next one. Auto now sits at
 	// the window boundary, so the mock conversation must fill most of the window — a tiny conversation
 	// against a huge baseline leaves no usable threshold at all.
-	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 50, handoffTargetTokens: 8_000, autoConsolidate: false }));
+	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 50, handoffBudgetSummaryTokens: 8_000, memoryEnabled: false }));
 	const auto = makePi({ cwd: tmp });
 	await (await loadDefault(`${PC}/index.ts`))(auto);
 	const filler = "documentation line repeated to give the session real context weight. ".repeat(700);
@@ -425,10 +425,10 @@ try {
 	// Auto hands off at the **two-term** guardrail: the lower of the model's conservative quality knee
 	// (honest windows keep their own boundary, large ones saturate at the population-median knee) and
 	// the last usable point before pi's own compaction reserve, minus the tier margin. The caps then
-	// only lower it — the summarizer window and the first pricing tier. `handoffTargetTokens` is a
+	// only lower it — the summarizer window and the first pricing tier. `handoffBudgetSummaryTokens` is a
 	// manual **request**, not a term on that line: it cannot lift the trigger, and when the guardrail
 	// lands below what it asked for the receipt names it (checked below).
-	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 20_000, handoffTargetTokens: 64_000 }));
+	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 20_000, handoffBudgetSummaryTokens: 64_000 }));
 	// `handoff` here is a direct namespace load: it reads the module defaults (keep 20k / target 64k /
 	// ratio 0.4, same as the config written above). The extension-driven checks below load their own
 	// instance and go through the project config.
@@ -476,7 +476,7 @@ try {
 		"the heavy-baseline refusal blames the quality knee, not the target or the window",
 		handoff.thresholdRefusal(heavyCtx, heavyCtx.getContextUsage()) === "below-quality-knee",
 	);
-	// `handoffTargetTokens` is a manual request the guardrail may refuse. Raising it must not move the
+	// `handoffBudgetSummaryTokens` is a manual request the guardrail may refuse. Raising it must not move the
 	// trigger — pi's old `max(boundary, targetValue)` lifted this one to 232k — and the refusal must be
 	// visible: a user who raises the target and reads the same threshold has been sent to a dead control.
 	// This needs a project config (the direct `handoff` namespace above holds the module defaults).
@@ -485,7 +485,7 @@ try {
 		await mkdir(path.join(targetTmp, ".agents/memory"), { recursive: true });
 		await writeFile(
 			path.join(targetTmp, ".agents/memory/project-context.json"),
-			JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 20_000, handoffTargetTokens: 200_000 }),
+			JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 20_000, handoffBudgetSummaryTokens: 200_000 }),
 		);
 		const targetPi = makePi({ cwd: targetTmp });
 		await (await loadDefault(`${PC}/index.ts`))(targetPi);
@@ -567,12 +567,12 @@ try {
 		"a resolved threshold has no refusal cause",
 		handoff.thresholdRefusal(floorCtx, floorCtx.getContextUsage()) === undefined,
 	);
-	const tierReceipt = handoff.statusText(tierBelowCtx);
+	const tierReceipt = handoff.handoffStatusLine(tierBelowCtx);
 	check(
 		"the status line does not blame the window for a billing refusal",
 		/auto \(/.test(tierReceipt) && !/no room at this window/.test(tierReceipt) && !/window too small/.test(tierReceipt),
 	);
-	const smallReceipt = handoff.statusText(tinyCtx);
+	const smallReceipt = handoff.handoffStatusLine(tinyCtx);
 	check("the status line explains the tier refusal", /pricing tier/.test(tierReceipt));
 	check(
 		"the two refusals do not render as the same sentence",
@@ -584,7 +584,7 @@ try {
 		await mkdir(path.join(fixedTmp, ".agents/memory"), { recursive: true });
 		await writeFile(
 			path.join(fixedTmp, ".agents/memory/project-context.json"),
-			JSON.stringify({ handoffEnabled: true, handoffAdaptive: false, handoffThresholdRatio: 0.6 }),
+			JSON.stringify({ handoffEnabled: true, handoffThresholdAuto: false, handoffThresholdRatio: 0.6 }),
 		);
 		const fixedPi = makePi({ cwd: fixedTmp });
 		await (await loadDefault(`${PC}/index.ts`))(fixedPi);
@@ -604,7 +604,7 @@ try {
 		const persisted = JSON.parse(await readFile(path.join(fixedTmp, ".agents/memory/project-context.json"), "utf8"));
 		check(
 			"adaptive mode does not persist the rejected ratio",
-			persisted.handoffAdaptive === true && persisted.handoffThresholdRatio === 0.6,
+			persisted.handoffThresholdAuto === true && persisted.handoffThresholdRatio === 0.6,
 		);
 	} finally {
 		await rmTemp(fixedTmp);
@@ -750,7 +750,7 @@ try {
 	);
 	const stubAlias = { "@earendil-works/pi-coding-agent": sdkStub };
 
-	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffKeepTokens: 50, handoffTargetTokens: 8_000, autoConsolidate: false }));
+	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 50, handoffBudgetSummaryTokens: 8_000, memoryEnabled: false }));
 	const toolOutput = "tool output line that was read earlier in this turn. ".repeat(200);
 	const pinEntries = [
 		contentEntry("p1", "user", [{ type: "text", text: "Please make the memory journal append-only and add tests for it." }], "2026-09-16T00:50:00.000Z"),
@@ -988,7 +988,7 @@ try {
 	check("a recent foreign switch leaves the stage for its own successor", await markerExists());
 	check(
 		"the skipped restore is reported, not silent",
-		replacementCtx.notifications.some((entry) => String(entry?.[0] ?? "").includes("not the handoff successor")),
+		replacementCtx.notifications.some((entry) => String(entry?.[0] ?? "").includes("not the successor the staged settings belong to")),
 	);
 
 	// An older foreign marker is the leftover of a crash between staging and the switch: dropped now
@@ -1081,7 +1081,7 @@ try {
 	check("a failed switch clears its stage", !(await markerExists()));
 	check(
 		"a failed switch is reported to the user",
-		throwCtx.notifications.some(([message, type]) => type === "error" && message.includes("Auto handoff failed")),
+		throwCtx.notifications.some(([message, type]) => type === "error" && message.includes("Handoff: failed")),
 	);
 } finally {
 	delete globalThis.__handoffStub;

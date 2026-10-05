@@ -24,10 +24,10 @@ import { replayEntries, replayMessagesFor } from "./text.ts";
 import { type Threshold, capSuffix, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
-export function statusText(ctx: ExtensionContext): string {
-	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent carried` : "summary only";
+export function handoffStatusLine(ctx: ExtensionContext): string {
+	const keep = config.handoffBudgetRecentTokens > 0 ? `~${fmtTokens(config.handoffBudgetRecentTokens)} recent carried` : "summary only";
 	const usage = ctx.getContextUsage();
-	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
+	let thresholdLabel = config.handoffThresholdAuto ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	let threshold: Threshold | undefined;
 	if (usage && usage.tokens !== null) {
 		threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
@@ -36,7 +36,7 @@ export function statusText(ctx: ExtensionContext): string {
 			// A manual target the guardrail landed below must be named, not silently ignored: a user who
 			// raised it and sees the same trigger has been sent to a control that does nothing.
 			if (threshold.override) thresholdLabel += ` · ${thresholdOverrideText(threshold.override, usage.contextWindow)}`;
-		} else if (config.handoffAdaptive) {
+		} else if (config.handoffThresholdAuto) {
 			// Never render every refusal as a claim about the window: name the term that refused.
 			const refusal = thresholdRefusal(ctx, usage, resolveAuxModel(ctx, config));
 			thresholdLabel = refusal === undefined ? "auto" : thresholdRefusalText(refusal, ctx, usage);
@@ -45,15 +45,15 @@ export function statusText(ctx: ExtensionContext): string {
 	// With a usable threshold the status reports the projected prefix after caps, so a cap cannot be
 	// misread as the configured minimum; the real cut can only be shorter. Without usage it echoes the
 	// configured target.
-	const target = config.handoffAdaptive
+	const target = config.handoffThresholdAuto
 		? threshold?.summarizeTokens !== undefined
 			? ` · summarize ${fmtTokens(threshold.summarizeTokens)}`
-			: ` · summary budget ${fmtTokens(config.handoffTargetTokens)}`
+			: ` · summary budget ${fmtTokens(config.handoffBudgetSummaryTokens)}`
 		: "";
-	const language = config.handoffLanguage === "auto"
-		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLanguage)})`
-		: config.handoffLanguage;
-	return `Auto handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
+	const language = config.handoffLang === "auto"
+		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLang)})`
+		: config.handoffLang;
+	return `Handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
 }
 
 /**
@@ -68,14 +68,14 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 	const autoTriggered = trigger === "force-auto";
 	try {
 		if (!ctx.isIdle()) {
-			notify(ctx, "Auto handoff skipped: the agent is busy.", "warning");
+			notify(ctx, "Handoff: skipped — the agent is busy.", "warning");
 			return;
 		}
 		// The threshold uses the session model's window/pricing tier and caps the summarized prefix
 		// against the configured auxiliary route's window.
 		const model = resolveAuxModel(ctx, config);
 		if (!model) {
-			notify(ctx, "Auto handoff skipped: no authenticated model available.", "warning");
+			notify(ctx, "Handoff: skipped — no authenticated model available.", "warning");
 			return;
 		}
 
@@ -90,20 +90,20 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 
 		const allEntries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 		if (allEntries.length === 0) {
-			notify(ctx, "Auto handoff skipped: this session has no messages yet.", "warning");
+			notify(ctx, "Handoff: skipped — this session has no messages yet.", "warning");
 			return;
 		}
 
 		// Older context gets summarized; the recent tail is carried over verbatim.
 		let firstKeptIndex = allEntries.length;
-		if (config.handoffKeepTokens > 0) {
+		if (config.handoffBudgetRecentTokens > 0) {
 			// Cut where the keep budget runs out, mid-turn included: pi cuts at conversation
 			// boundaries and never at a tool result, so the replay stays parseable — a result whose call
 			// was summarized is folded into the summary, and a slice opening on an assistant message is
 			// marked by SPLIT_TURN_MARKER. Backing the cut up to the turn start instead (the old
 			// behavior) kept the whole turn, which left nothing older to summarize whenever one turn
 			// exceeded the keep window and blocked the handoff entirely.
-			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffKeepTokens);
+			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffBudgetRecentTokens);
 			firstKeptIndex = cut.firstKeptEntryIndex;
 		}
 		// Stale continuation prompts are replaced by a marker on replay: verbatim they read as a
@@ -131,7 +131,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			// Auto can land here on every settle while the session fits the keep window; back off
 			// so the warning does not repeat with each turn.
 			if (autoTriggered) armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
-			notify(ctx, "Auto handoff skipped: nothing older than the recent window to summarize.", "warning");
+			notify(ctx, "Handoff: skipped — nothing older than the recent window to summarize.", "warning");
 			return;
 		}
 
@@ -148,20 +148,20 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		const guardApplies = autoTriggered && pendingQuestion !== undefined;
 		if (guardApplies && config.handoffGuard === "skip") {
 			armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
-			notify(ctx, "Auto handoff skipped: the session is waiting for your answer (guard=skip).", "warning");
+			notify(ctx, "Handoff: skipped — the session is waiting for your answer (guard=skip).", "warning");
 			return;
 		}
 
-		notify(ctx, `Auto handoff: summarizing ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
+		notify(ctx, `Handoff: summarizing ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
 
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) {
-			notify(ctx, `Auto handoff skipped: ${auth.error}`, "error");
+			notify(ctx, `Handoff: skipped — ${auth.error}`, "error");
 			return;
 		}
 		const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 
-		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLanguage);
+		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLang);
 		const summary = await generateHandoffSummary(ctx, requestModel, auth, olderMessages, previousCompaction?.summary, language);
 
 		const { readFiles, modifiedFiles } = computeFileLists(collectFileOps(olderEntries));
@@ -175,7 +175,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			if (estimatedAfter >= threshold.tokens) {
 				notify(
 					ctx,
-					`Auto handoff skipped: the fresh session would start at ~${fmtTokens(estimatedAfter)}, too close to the ${threshold.label} threshold to help.`,
+					`Handoff: skipped — the fresh session would start at ~${fmtTokens(estimatedAfter)}, too close to the ${threshold.label} threshold to help.`,
 					"warning",
 				);
 				return;
@@ -208,7 +208,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// agent_settled retrigger once the session is idle again.
 		if (!ctx.isIdle()) {
 			armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
-			notify(ctx, "Auto handoff skipped: the agent became busy while summarizing. It will retry when idle.", "warning");
+			notify(ctx, "Handoff: skipped — the agent became busy while summarizing. It will retry when idle.", "warning");
 			return;
 		}
 
@@ -273,8 +273,8 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 							notify(
 								replacementCtx,
 								guardDraft
-									? `Auto handoff: fresh session prepared, but left for your review because the previous session was waiting on your answer (${percentText} full). Answer in the prompt, then press Enter.`
-									: `Auto handoff: fresh session prepared (previous was ${percentText} full). Review the prompt, then press Enter to continue.`,
+									? `Handoff: fresh session prepared, but left for your review because the previous session was waiting on your answer (${percentText} full). Answer in the prompt, then press Enter.`
+									: `Handoff: fresh session prepared (previous was ${percentText} full). Review the prompt, then press Enter to continue.`,
 								"info",
 							);
 						} else {
@@ -282,13 +282,13 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 							notify(
 								replacementCtx,
 								guardWaiting
-									? `Auto handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
-									: `Auto handoff: continued in a fresh session (previous was ${percentText} full, summary ~${fmtTokens(summaryTokens)}, kept ~${fmtTokens(keptTokens)} recent).`,
+									? `Handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
+									: `Handoff: continued in a fresh session (previous was ${percentText} full, summary ~${fmtTokens(summaryTokens)}, kept ~${fmtTokens(keptTokens)} recent).`,
 								"info",
 							);
 						}
 					} catch (error) {
-						notify(replacementCtx, `Auto handoff: failed to start the continuation — ${errorText(error)}`, "error");
+						notify(replacementCtx, `Handoff: failed to start the continuation — ${errorText(error)}`, "error");
 					}
 				},
 			})
@@ -299,13 +299,13 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			});
 		if (result.cancelled) {
 			if (handoffRoot) await clearHandoffSessionSettings(handoffRoot).catch(() => {});
-			notify(ctx, "Auto handoff cancelled by another extension.", "warning");
+			notify(ctx, "Handoff: cancelled by another extension.", "warning");
 			return;
 		}
 		armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
 	} catch (error) {
 		armHandoffFailureBackoff(FAILURE_BACKOFF_MS);
-		notify(ctx, `Auto handoff failed: ${errorText(error)}. Staying in this session; pi auto-compaction still applies.`, "error");
+		notify(ctx, `Handoff: failed — ${errorText(error)}. Staying in this session; pi auto-compaction still applies.`, "error");
 	} finally {
 		setHandoffInFlight(false);
 	}
@@ -331,7 +331,7 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 			pi.sendUserMessage("/handoff force-auto", { expandPromptTemplates: true });
 		} catch (error) {
 			setHandoffInFlight(false);
-			notify(ctx, `Auto handoff trigger failed: ${errorText(error)}`, "error");
+			notify(ctx, `Handoff: trigger failed — ${errorText(error)}`, "error");
 		}
 	}, 0);
 }
@@ -339,7 +339,7 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 export function registerHandoff(pi: ExtensionAPI): void {
 	pi.registerFlag("handoff-ratio", {
 		type: "string",
-		description: "Auto handoff threshold: fixed ratio (0.4, 40%), auto, or off",
+		description: "Handoff threshold: fixed ratio (0.4, 40%), auto, or off",
 	});
 	pi.registerFlag("no-auto-handoff", {
 		type: "boolean",
@@ -354,12 +354,12 @@ export function registerHandoff(pi: ExtensionAPI): void {
 		const ratioFlag = pi.getFlag("handoff-ratio");
 		if (typeof ratioFlag === "string") {
 			const flag = ratioFlag.trim().toLowerCase();
-			if (flag === "auto") config.handoffAdaptive = true;
+			if (flag === "auto") config.handoffThresholdAuto = true;
 			else if (flag === "off") setFlagEnabled(false);
 			else {
 				const ratio = parseRatio(flag);
 				if (ratio !== undefined) {
-					config.handoffAdaptive = false;
+					config.handoffThresholdAuto = false;
 					config.handoffThresholdRatio = ratio;
 				}
 			}
@@ -388,7 +388,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			const arg = args.trim().toLowerCase();
 			const [head, value, extra] = arg.split(/\s+/);
 			if (!head || head === "status") {
-				notify(ctx, statusText(ctx));
+				notify(ctx, handoffStatusLine(ctx));
 				return;
 			}
 			if (head === "budget") {
@@ -400,28 +400,28 @@ export function registerHandoff(pi: ExtensionAPI): void {
 						notify(ctx, "Usage: /handoff budget summary <tokens> (e.g. budget summary 64k)", "warning");
 						return;
 					}
-					config.handoffTargetTokens = tokens;
+					config.handoffBudgetSummaryTokens = tokens;
 					await saveConfig();
-					notify(ctx, `Summary budget: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
+					notify(ctx, `Handoff: summary budget ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
 					return;
 				}
 				if (value === "recent") {
 					if (extra === "off") {
-						config.handoffKeepTokens = 0;
+						config.handoffBudgetRecentTokens = 0;
 					} else {
 						const tokens = parseTokenCount(extra ?? "");
 						if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
 							notify(ctx, "Usage: /handoff budget recent <tokens|off> (e.g. budget recent 20k)", "warning");
 							return;
 						}
-						config.handoffKeepTokens = tokens;
+						config.handoffBudgetRecentTokens = tokens;
 					}
 					await saveConfig();
 					notify(
 						ctx,
-						config.handoffKeepTokens > 0
-							? `Auto handoff will carry ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
-							: "Auto handoff will use summary only (no recent carry-over).",
+						config.handoffBudgetRecentTokens > 0
+							? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens verbatim.`
+							: "Handoff: summary only, no recent carry-over.",
 					);
 					return;
 				}
@@ -433,7 +433,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /handoff thinking off|session", "warning");
 					return;
 				}
-				config.handoffSummaryThinking = value;
+				config.handoffThinking = value;
 				await saveConfig();
 				notify(
 					ctx,
@@ -446,13 +446,13 @@ export function registerHandoff(pi: ExtensionAPI): void {
 			if (head === "threshold") {
 				// One verb for both modes: `auto` keeps the adaptive threshold, a ratio pins a fixed share.
 				if (value === "auto") {
-					config.handoffAdaptive = true;
+					config.handoffThresholdAuto = true;
 					await saveConfig();
 					if (extra) {
-						notify(ctx, "Adaptive mode takes no ratio; use /handoff threshold 0.4 for a fixed share.", "warning");
+						notify(ctx, "Handoff: adaptive mode takes no ratio; use /handoff threshold 0.4 for a fixed share.", "warning");
 						return;
 					}
-					notify(ctx, statusText(ctx));
+					notify(ctx, handoffStatusLine(ctx));
 					return;
 				}
 				const ratio = parseRatio(value ?? "");
@@ -460,17 +460,17 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /handoff threshold <auto|0.1-0.95|10-95%> (e.g. threshold 0.6)", "warning");
 					return;
 				}
-				config.handoffAdaptive = false;
+				config.handoffThresholdAuto = false;
 				config.handoffThresholdRatio = ratio;
 				await saveConfig();
-				notify(ctx, `Auto handoff threshold set to ${fmtPct(ratio * 100)} of the window.`);
+				notify(ctx, `Handoff: threshold ${fmtPct(ratio * 100)} of the window.`);
 				return;
 			}
 			if (head === "on" || head === "off") {
 				if (!getConfigRoot()) setConfigRoot(await getProjectRoot(pi, ctx.cwd).catch(() => undefined));
 				const root = getConfigRoot();
 				if (root) await setFeature(root, "handoff", head === "on");
-				notify(ctx, head === "on" ? statusText(ctx) : "Auto handoff disabled.");
+				notify(ctx, head === "on" ? handoffStatusLine(ctx) : "Handoff: disabled.");
 				return;
 			}
 			if (head === "mode") {
@@ -480,7 +480,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				}
 				config.handoffMode = value;
 				await saveConfig();
-				notify(ctx, `Auto handoff mode: ${value}.`);
+				notify(ctx, `Handoff: mode ${value}.`);
 				return;
 			}
 			if (head === "guard") {
@@ -507,7 +507,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(ctx, "Usage: /handoff lang auto|zh|en", "warning");
 					return;
 				}
-				config.handoffLanguage = value;
+				config.handoffLang = value;
 				await saveConfig();
 				notify(
 					ctx,

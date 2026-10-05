@@ -5,7 +5,7 @@ import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, M
 import { completeValues, completeVerbs } from "./shared/complete.ts";
 import { capCeilingWarning, memoryCapUnsatisfiable } from "./shared/output-budget.ts";
 import { registerConsolidation } from "./memory/report.ts";
-import { contextStatusLine, memoryStatusMessage } from "./memory/status.ts";
+import { contextStatusLine, memoryStatusLine } from "./memory/status.ts";
 import { registerHandoff } from "./handoff/run.ts";
 import { restoreHandoffSessionSettings } from "./handoff/session-settings.ts";
 import { getProjectRoot, loadMemory, notify } from "./shared/project-state.ts";
@@ -88,7 +88,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Features: ${featuresText(config)}`,
 					`Auxiliary calls: ${auxText(config)}`,
 					`Config: ${configFile(projectRoot)}`,
-					`Memory: ${memoryStatusMessage(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
+					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
 					`Context file: ${await contextStatusLine(projectRoot)}`,
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.

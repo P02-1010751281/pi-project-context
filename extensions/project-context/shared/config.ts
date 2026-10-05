@@ -11,7 +11,7 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * tuned without touching global config.
  *
  * Field names are shared with the dsh plugin (the two repos keep the same config
- * surface; only the storage and the pi-only `handoffMode`/`handoffGuard`/`handoffLanguage` differ).
+ * surface; only the storage and the pi-only `handoffMode`/`handoffGuard`/`handoffLang` differ).
  *
  * Backward compatibility is a **one-time migration**, not a permanent read path: the pre-unification
  * nested layout (`features.*`, `autolearn.*`, `handoff.*`), the split `<project>/.agents/memory/
@@ -19,42 +19,48 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * `migrateLegacyConfig`, folded into the flat keys and written back as a flat document; nothing on the
  * read path consults them again. Only `legacyConfigPatch` knows those layouts, so a new key cannot
  * pick up a legacy fallback term by accident — the eight keys added after the unification never had one.
+ *
+ * v0.4.0 renamed seven flat keys so a key mirrors the command path that changes it (`budget summary` ⇒
+ * `handoffBudgetSummaryTokens`); the same one-time migration folds an old name into the new one. Six of
+ * the renamed keys were shared with dsh, so the two config surfaces now differ: dsh reads its own
+ * spellings and ignores the new ones, and it has to adopt them (the mapping is the table in
+ * `legacyConfigPatch`, mirrored in `.codestable/reference/vocabulary-conventions.md`).
  */
 
 export type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
 export const FEATURE_NAMES: FeatureName[] = ["archive", "memory", "autolearn", "handoff"];
 
 /** Command verb → config field. The verbs are pi-side copy; the fields are shared with dsh. */
-export const FEATURE_FIELDS: Record<FeatureName, "archiveEnabled" | "autoConsolidate" | "autoLearn" | "handoffEnabled"> = {
+export const FEATURE_FIELDS: Record<FeatureName, "archiveEnabled" | "memoryEnabled" | "autolearnEnabled" | "handoffEnabled"> = {
 	archive: "archiveEnabled",
-	memory: "autoConsolidate",
-	autolearn: "autoLearn",
+	memory: "memoryEnabled",
+	autolearn: "autolearnEnabled",
 	handoff: "handoffEnabled",
 };
 
 export type HandoffSettings = {
 	/** Adaptive threshold (dsh `handoffAdaptive`); false uses `handoffThresholdRatio`. */
-	handoffAdaptive: boolean;
-	/** Context-window fraction (0.1–0.95) used when `handoffAdaptive` is false. */
+	handoffThresholdAuto: boolean;
+	/** Context-window fraction (0.1–0.95) used when `handoffThresholdAuto` is false. */
 	handoffThresholdRatio: number;
 	/** Adaptive mode: conversation tokens to summarize per handoff. */
-	handoffTargetTokens: number;
+	handoffBudgetSummaryTokens: number;
 	/** Recent raw tokens replayed into the new session; 0 = summary only. */
-	handoffKeepTokens: number;
+	handoffBudgetRecentTokens: number;
 	/** Thinking for the summary call: "off" (fast) or the session level. */
-	handoffSummaryThinking: "off" | "session";
+	handoffThinking: "off" | "session";
 	/** pi-only: "send" dismisses the handoff into a new session, "draft" leaves it in the editor. */
 	handoffMode: "send" | "draft";
 	/** pi-only: behavior when the last assistant message asks the user a question. */
 	handoffGuard: "wait" | "draft" | "send" | "skip";
 	/** pi-only: language of the handoff prompt scaffolding; "auto" follows the conversation language. */
-	handoffLanguage: "auto" | "zh" | "en";
+	handoffLang: "auto" | "zh" | "en";
 };
 
 export type ProjectContextConfig = HandoffSettings & {
 	archiveEnabled: boolean;
-	autoConsolidate: boolean;
-	autoLearn: boolean;
+	memoryEnabled: boolean;
+	autolearnEnabled: boolean;
 	handoffEnabled: boolean;
 	/** Last completed automatic autolearn pass (epoch ms); persisted so a restart does not re-run. */
 	autolearnAt: number;
@@ -83,8 +89,8 @@ export type ProjectContextConfig = HandoffSettings & {
 /** Defaults match the dsh plugin's `DEFAULT_CONFIG`. */
 export const DEFAULT_CONFIG: ProjectContextConfig = {
 	archiveEnabled: true,
-	autoConsolidate: true,
-	autoLearn: true,
+	memoryEnabled: true,
+	autolearnEnabled: true,
 	handoffEnabled: true,
 	autolearnAt: 0,
 	autolearnTurns: 20,
@@ -97,14 +103,14 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	maxMemoryChars: 32_000,
 	provider: "",
 	model: "",
-	handoffAdaptive: true,
+	handoffThresholdAuto: true,
 	handoffThresholdRatio: 0.4,
-	handoffTargetTokens: 64_000,
-	handoffKeepTokens: 20_000,
-	handoffSummaryThinking: "off",
+	handoffBudgetSummaryTokens: 64_000,
+	handoffBudgetRecentTokens: 20_000,
+	handoffThinking: "off",
 	handoffMode: "send",
 	handoffGuard: "wait",
-	handoffLanguage: "auto",
+	handoffLang: "auto",
 };
 
 /** Don't hand off unless at least this much context is actually replaced by the summary. */
@@ -188,11 +194,11 @@ function guardOf(value: unknown): HandoffSettings["handoffGuard"] | undefined {
 	return value === "wait" || value === "draft" || value === "send" || value === "skip" ? value : undefined;
 }
 
-function languageOf(value: unknown): HandoffSettings["handoffLanguage"] | undefined {
+function languageOf(value: unknown): HandoffSettings["handoffLang"] | undefined {
 	return value === "auto" || value === "zh" || value === "en" ? value : undefined;
 }
 
-function thinkingOf(value: unknown): HandoffSettings["handoffSummaryThinking"] | undefined {
+function thinkingOf(value: unknown): HandoffSettings["handoffThinking"] | undefined {
 	return value === "session" || value === "off" ? value : undefined;
 }
 
@@ -210,6 +216,21 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 	const globalHandoff = await readJson(join(getAgentDir(), "auto-handoff.json"));
 	const global = globalHandoff ?? {};
 	const sources: string[] = [];
+	// v0.4.0 renames: a flat key now mirrors the command path that changes it. A file still carrying an old
+	// name is migrated the same one-time way as a legacy layout - the new name wins when both are present, and
+	// the rewrite drops the old one. Validators are the same readers `parseConfig` uses, so a hand-edited bad
+	// value falls back to the default instead of entering the config unchecked.
+	const RENAMED_KEYS: Array<[string, keyof ProjectContextConfig, (value: unknown) => unknown]> = [
+		["autoConsolidate", "memoryEnabled", bool],
+		["autoLearn", "autolearnEnabled", bool],
+		["handoffTargetTokens", "handoffBudgetSummaryTokens", (v) => bounded(v, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)],
+		["handoffKeepTokens", "handoffBudgetRecentTokens", (v) => bounded(v, 0, MAX_KEEP_RECENT_TOKENS)],
+		["handoffSummaryThinking", "handoffThinking", thinkingOf],
+		["handoffAdaptive", "handoffThresholdAuto", bool],
+		["handoffLanguage", "handoffLang", languageOf],
+	];
+	const renamed = RENAMED_KEYS.filter(([old]) => raw[old] !== undefined);
+	if (renamed.length > 0) sources.push("the pre-v0.4 key names");
 	if (Object.keys(features).length > 0 || Object.keys(autolearn).length > 0 || Object.keys(handoff).length > 0) {
 		sources.push("the nested features/autolearn/handoff layout");
 	}
@@ -226,22 +247,23 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 		(patch as Record<string, unknown>)[key] = value;
 	};
 	put("archiveEnabled", bool(features.archive));
-	put("autoConsolidate", bool(features.memory));
-	put("autoLearn", bool(features.autolearn) ?? (autolearnFile ? bool(autolearnFile.enabled) : undefined));
+	put("memoryEnabled", bool(features.memory));
+	put("autolearnEnabled", bool(features.autolearn) ?? (autolearnFile ? bool(autolearnFile.enabled) : undefined));
 	put("handoffEnabled", bool(features.handoff) ?? (globalHandoff ? bool(globalHandoff.enabled) : undefined));
 	put("autolearnAt", positive(autolearn.at, 0) ?? (autolearnFile ? positive(autolearnFile.at, 0) : undefined));
 	put("autolearnTurns", positive(autolearn.turns, 1));
 	put("autolearnIntervalMs", positive(autolearn.intervalMs, 1000));
-	put("handoffAdaptive", adaptiveOf(nestedThreshold) ?? adaptiveOf(globalThreshold));
+	put("handoffThresholdAuto", adaptiveOf(nestedThreshold) ?? adaptiveOf(globalThreshold));
 	put("handoffThresholdRatio", ratio(nestedThreshold) ?? ratio(globalThreshold));
-	put("handoffTargetTokens", bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
+	put("handoffBudgetSummaryTokens", bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
 		?? bounded(global.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS));
-	put("handoffKeepTokens", bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
+	put("handoffBudgetRecentTokens", bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
 		?? bounded(global.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS));
-	put("handoffSummaryThinking", thinkingOf(handoff.summaryThinking) ?? thinkingOf(global.summaryThinking));
+	put("handoffThinking", thinkingOf(handoff.summaryThinking) ?? thinkingOf(global.summaryThinking));
 	put("handoffMode", modeOf(handoff.mode) ?? modeOf(global.mode));
 	put("handoffGuard", guardOf(handoff.guard) ?? guardOf(global.guard));
-	put("handoffLanguage", languageOf(handoff.language) ?? languageOf(global.language));
+	put("handoffLang", languageOf(handoff.language) ?? languageOf(global.language));
+	for (const [old, key, read] of renamed) put(key, read(raw[old]));
 	return { patch, sources };
 }
 
@@ -278,8 +300,8 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 
 	const config: ProjectContextConfig = {
 		archiveEnabled: bool(raw.archiveEnabled) ?? DEFAULT_CONFIG.archiveEnabled,
-		autoConsolidate: bool(raw.autoConsolidate) ?? DEFAULT_CONFIG.autoConsolidate,
-		autoLearn: bool(raw.autoLearn) ?? DEFAULT_CONFIG.autoLearn,
+		memoryEnabled: bool(raw.memoryEnabled) ?? DEFAULT_CONFIG.memoryEnabled,
+		autolearnEnabled: bool(raw.autolearnEnabled) ?? DEFAULT_CONFIG.autolearnEnabled,
 		handoffEnabled: bool(raw.handoffEnabled) ?? DEFAULT_CONFIG.handoffEnabled,
 
 		autolearnAt: positive(raw.autolearnAt, 0) ?? DEFAULT_CONFIG.autolearnAt,
@@ -294,14 +316,14 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 		provider: route.provider,
 		model: route.model,
 
-		handoffAdaptive: bool(raw.handoffAdaptive) ?? DEFAULT_CONFIG.handoffAdaptive,
+		handoffThresholdAuto: bool(raw.handoffThresholdAuto) ?? DEFAULT_CONFIG.handoffThresholdAuto,
 		handoffThresholdRatio: ratio(raw.handoffThresholdRatio) ?? DEFAULT_CONFIG.handoffThresholdRatio,
-		handoffTargetTokens: bounded(raw.handoffTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffTargetTokens,
-		handoffKeepTokens: bounded(raw.handoffKeepTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffKeepTokens,
-		handoffSummaryThinking: thinkingOf(raw.handoffSummaryThinking) ?? DEFAULT_CONFIG.handoffSummaryThinking,
+		handoffBudgetSummaryTokens: bounded(raw.handoffBudgetSummaryTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetSummaryTokens,
+		handoffBudgetRecentTokens: bounded(raw.handoffBudgetRecentTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetRecentTokens,
+		handoffThinking: thinkingOf(raw.handoffThinking) ?? DEFAULT_CONFIG.handoffThinking,
 		handoffMode: modeOf(raw.handoffMode) ?? DEFAULT_CONFIG.handoffMode,
 		handoffGuard: guardOf(raw.handoffGuard) ?? DEFAULT_CONFIG.handoffGuard,
-		handoffLanguage: languageOf(raw.handoffLanguage) ?? DEFAULT_CONFIG.handoffLanguage,
+		handoffLang: languageOf(raw.handoffLang) ?? DEFAULT_CONFIG.handoffLang,
 	};
 	return config;
 }

@@ -50,7 +50,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 			loggedScopes.add("session-log");
 			await logError(projectRoot, "session-log", error);
 		}
-		if (!silent) notify(ctx, `Session log update failed: ${errorText(error)}`, "warning");
+		if (!silent) notify(ctx, `Session log: update failed — ${errorText(error)}`, "warning");
 	}
 
 	/**
@@ -114,7 +114,7 @@ export function registerArchive(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (runIsDisabled()) return;
 		const projectRoot = await getProjectRoot(pi, ctx.cwd);
-		if (!(await getConfig(projectRoot)).autoConsolidate) return;
+		if (!(await getConfig(projectRoot)).memoryEnabled) return;
 		const context = (await readOptional(contextFile(projectRoot))).trim();
 		if (!context) return;
 		return {
@@ -165,18 +165,18 @@ export function registerArchive(pi: ExtensionAPI): void {
 					skipped > 0 ? `skipped ${skipped} existing` : "",
 					failed.length > 0 ? `failed ${failed.length}: ${failed.map((outcome) => `${outcome.source} (${outcome.error})`).join("; ")}` : "",
 				].filter(Boolean).join("; ");
-				notify(ctx, `Imported ${created} archive(s) into ${logsDir(projectRoot)}${detail ? ` (${detail})` : ""}`, failed.length > 0 ? "warning" : "info");
+				notify(ctx, `Session log: imported ${created} archive(s) into ${logsDir(projectRoot)}${detail ? ` (${detail})` : ""}`, failed.length > 0 ? "warning" : "info");
 				return;
 			}
 			if (verb === "on" || verb === "off") {
 				await setFeature(projectRoot, "archive", verb === "on");
-				notify(ctx, `Session archiving: ${verb}.`);
+				notify(ctx, `Session log: archiving ${verb}.`);
 				return;
 			}
 			if (verb === "write") {
 				const result = await writeSessionArtifacts(projectRoot, ctx);
 				await updateSessionIndex(ctx, projectRoot);
-				notify(ctx, `Session log written: ${result.dir}`);
+				notify(ctx, `Session log: written ${result.dir}`);
 				return;
 			}
 			if (verb) {

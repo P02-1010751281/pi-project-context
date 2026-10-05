@@ -214,7 +214,7 @@ try {
 	check("the inventory marks it as learned", prompts[0].includes("(project, learned)"));
 	check("a hand-written body is not offered for merging", !prompts[0].includes("Hand-written procedure for the temp project."));
 	check("a learned skill is superseded in place", updatedDoc.includes("node merged.mjs") && !updatedDoc.includes("Step one with an exact command"));
-	check("the update is announced as an update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
+	check("the update is announced as an update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Autolearn: updated project skill"));
 	check("the marker survives as exactly one copy", (updatedDoc.match(/autolearn-generated/g) ?? []).length === 1);
 
 	// The cap on how many bodies one round may ask for lives in code: `maxItems` is not guaranteed to be enforced.
@@ -262,7 +262,7 @@ try {
 	await writeFile(path.join(candidateDir, "alpha-workflow.md"), `---\nname: alpha-workflow\ndescription: "alpha workflow, approved"\n---\n\n${longBody("## Steps\n\n1. `node approved.mjs`")}\n`);
 	await command.handler("approve alpha-workflow", ctx);
 	check("approve supersedes a learned skill", (await readFile(alphaFile, "utf8")).includes("node approved.mjs"));
-	check("approve announces the update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
+	check("approve announces the update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Autolearn: updated project skill"));
 	// Approving never ran the prompt, so an overwrite there is blind by construction and the message says so.
 	check("approve says the overwrite is blind", String(ctx.notifications.at(-1)?.[0] ?? "").includes("never showed its body"));
 	await writeFile(path.join(candidateDir, "handmade-workflow.md"), `---\nname: handmade-workflow\ndescription: "handmade, approved"\n---\n\n${longBody("## Steps\n\n1. `node nope.mjs`")}\n`);
@@ -273,11 +273,11 @@ try {
 	console.log("\n=== F. switch lives in project-context.json ===");
 	const configFile = path.join(tmp, ".agents/memory/project-context.json");
 	const config = JSON.parse(await readFile(configFile, "utf8"));
-	check("autolearn enabled by default", config.autoLearn === true);
+	check("autolearn enabled by default", config.autolearnEnabled === true);
 	check("throttle timestamp recorded", typeof config.autolearnAt === "number" && config.autolearnAt > 0);
 	await command.handler("off", ctx);
 	const off = JSON.parse(await readFile(configFile, "utf8"));
-	check("off persisted", off.autoLearn === false);
+	check("off persisted", off.autolearnEnabled === false);
 	await pi.commands.get("project-context").handler("status", ctx);
 	check("status shows autolearn=off", String(ctx.notifications.at(-1)?.[0] ?? "").includes("autolearn=off"));
 
@@ -312,7 +312,7 @@ try {
 	const tmp2 = await mkdtemp(path.join(os.tmpdir(), "pi-autolearn-empty-"));
 	try {
 		await mkdir(path.join(tmp2, ".agents/memory"), { recursive: true });
-		await writeFile(path.join(tmp2, ".agents/memory/project-context.json"), `${JSON.stringify({ autoLearn: true, autolearnAt: 0 }, null, 2)}\n`);
+		await writeFile(path.join(tmp2, ".agents/memory/project-context.json"), `${JSON.stringify({ autolearnEnabled: true, autolearnAt: 0 }, null, 2)}\n`);
 		await writeFile(path.join(tmp2, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- Fresh project with no archived sessions.\n");
 		await writeFile(path.join(tmp2, ".agents/memory/CONTEXT.md"), "# Project Context\n\n## Summary\n\nFresh project.\n");
 		const ctx2 = makeCtx(tmp2);

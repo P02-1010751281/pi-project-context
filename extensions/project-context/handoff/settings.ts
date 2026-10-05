@@ -62,14 +62,14 @@ export async function syncConfig(root: string | undefined): Promise<void> {
 export async function saveConfig(): Promise<void> {
 	if (!configRoot) return;
 	const patch: Partial<ProjectContextConfig> = {
-		handoffAdaptive: config.handoffAdaptive,
+		handoffThresholdAuto: config.handoffThresholdAuto,
 		handoffThresholdRatio: config.handoffThresholdRatio,
-		handoffTargetTokens: config.handoffTargetTokens,
-		handoffKeepTokens: config.handoffKeepTokens,
-		handoffSummaryThinking: config.handoffSummaryThinking,
+		handoffBudgetSummaryTokens: config.handoffBudgetSummaryTokens,
+		handoffBudgetRecentTokens: config.handoffBudgetRecentTokens,
+		handoffThinking: config.handoffThinking,
 		handoffMode: config.handoffMode,
 		handoffGuard: config.handoffGuard,
-		handoffLanguage: config.handoffLanguage,
+		handoffLang: config.handoffLang,
 	};
 	try {
 		// Adopt the merged result **in place**. Reassigning this exported `let` did not reach the

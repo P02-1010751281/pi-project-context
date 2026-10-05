@@ -13,7 +13,7 @@ import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getP
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
-import { memoryStatusLevel, memoryStatusMessage, contextStatusLine } from "./status.ts";
+import { memoryStatusLevel, memoryStatusLine, contextStatusLine } from "./status.ts";
 
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = {
@@ -101,7 +101,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		if (runIsDisabled()) return { enabled: false };
 		try {
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			return { enabled: (await getConfig(projectRoot)).autoConsolidate, root: projectRoot };
+			return { enabled: (await getConfig(projectRoot)).memoryEnabled, root: projectRoot };
 		} catch {
 			return { enabled: false };
 		}
@@ -258,29 +258,29 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				} else if (!memoryChanged) {
 					// The memory was not written, so nothing here may claim it was — not even the clipped notice,
 					// which describes a rewrite that did not happen. This is decision 6's wording rule.
-					notify(ctx, `Project context updated; project memory was kept unchanged.${clippedNote}`);
+					notify(ctx, `Memory: context updated; memory was kept unchanged.${clippedNote}`);
 				} else if (storedPoisoned) {
 					const capNote = cappedMemory
 						? ` It also hit its ${maxMemoryChars}-character cap; both ends were kept and the middle was dropped on a line boundary.`
 						: cappedSections
 							? ` It also exceeded its section budget: ${sectionCapSentence(outcome)}.`
 							: "";
-					notify(ctx, `Project memory was raw JSON from the old bug and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
+					notify(ctx, `Memory: was raw JSON from the old bug, and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
 				} else if (cappedSections) {
 					notify(
 						ctx,
-						`Project memory exceeded its section budget: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`,
+						`Memory: exceeded its section budget: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`,
 						"warning",
 					);
 				} else if (cappedMemory) {
 					notify(
 						ctx,
-						`Project memory hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.${overflowPath ? ` The unclipped reply is kept at ${overflowPath}.` : ""}`,
+						`Memory: hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.${overflowPath ? ` The unclipped reply is kept at ${overflowPath}.` : ""}`,
 						"warning",
 					);
 				} else if (report === "clipped") {
 					notify(ctx, backup ? `${CLIPPED_NOTICE} Previous file: ${backup}.` : CLIPPED_NOTICE_NO_WRITE, "warning");
-				} else notify(ctx, `Project memory updated: ${memoryFile(projectRoot)}`);
+				} else notify(ctx, `Memory: updated ${memoryFile(projectRoot)}`);
 			}
 			if (!silent && !memoryRefused && outcome.removed && outcome.removed.count > 0 && !memoryRemovalWarned.has(projectRoot)) {
 				// The guard cannot tell a deliberate rewrite from a silent loss, so it reports and never blocks;
@@ -288,7 +288,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				memoryRemovalWarned.add(projectRoot);
 				notify(
 					ctx,
-					`Project memory no longer carries ${outcome.removed.count} Invariants/Pitfalls entry(ies), e.g. ${outcome.removed.samples.join(" | ")}. Review .agents/memory/errors.log if that was not intended.`,
+					`Memory: no longer carries ${outcome.removed.count} Invariants/Pitfalls entry(ies), e.g. ${outcome.removed.samples.join(" | ")}. Review .agents/memory/errors.log if that was not intended.`,
 					"warning",
 				);
 			}
@@ -304,7 +304,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				// The class-specific wording fits a provider failure while the route policy is armed; a
 				// local failure (a lock timeout, an unreadable path) leaves it unarmed.
 				const armed = projectRoot !== undefined && (modelCooldownRemaining("memory", projectRoot) > 0 || modelAutoDisabled("memory", projectRoot));
-				notify(ctx, armed ? memoryFailureNotice(headline) : `Project memory update failed: ${headline}`, "warning");
+				notify(ctx, armed ? memoryFailureNotice(headline) : `Memory: update failed — ${headline}`, "warning");
 				if (projectRoot && modelAutoDisabled("memory", projectRoot) && !disablesAnnounced.has(projectRoot)) {
 					disablesAnnounced.add(projectRoot);
 					notify(ctx, MEMORY_PAUSED_NOTICE, "warning");
@@ -321,21 +321,21 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// `getConfig` migrated a legacy layout on this first load; say so instead of rewriting the file silently.
 			const migratedSources = takeConfigMigrationNotice(projectRoot);
 			if (migratedSources) {
-				notify(ctx, `project-context config written in the flat layout (migrated from ${migratedSources.join(", ")}).`);
+				notify(ctx, `Memory: config written in the flat layout (migrated from ${migratedSources.join(", ")}).`);
 			}
 			const result = await migrateProjectState(projectRoot, maxMemoryChars);
 			const details: string[] = [];
 			if (result.moved.length > 0) details.push(`moved ${result.moved.join(", ")}`);
 			if (result.importedSkills > 0) details.push(`imported ${result.importedSkills} skill${result.importedSkills === 1 ? "" : "s"}`);
 			if (result.importedMemory) details.push("imported legacy OMP memory");
-			if (details.length > 0) notify(ctx, `Project memory in ${memoryDir(projectRoot)}: ${details.join("; ")}`);
+			if (details.length > 0) notify(ctx, `Memory: files in ${memoryDir(projectRoot)}: ${details.join("; ")}`);
 			// The legacy counterpart was older, so the current file won and the legacy bytes are gone.
 			// The migration used to report these as "moved", which is false.
 			if (result.superseded.length > 0) {
-				notify(ctx, `Legacy files superseded and discarded (the current file was newer): ${result.superseded.join(", ")}`);
+				notify(ctx, `Memory: legacy files superseded and discarded (the current file was newer): ${result.superseded.join(", ")}`);
 			}
 			if (result.conflicts.length > 0) {
-				notify(ctx, `Legacy layout left in place (a newer legacy copy or a file/directory type conflict; merge it by hand): ${result.conflicts.join(", ")}`, "warning");
+				notify(ctx, `Memory: legacy layout left in place (a newer legacy copy or a file/directory type conflict; merge it by hand): ${result.conflicts.join(", ")}`, "warning");
 			}
 		} catch (error) {
 			await logError(projectRoot, "migration", error);
@@ -380,7 +380,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			}
 			if (verb === "on" || verb === "off") {
 				await setFeature(projectRoot, "memory", verb === "on");
-				notify(ctx, `Automatic consolidation: ${verb}.`);
+				notify(ctx, `Memory: automatic consolidation ${verb}.`);
 				return;
 			}
 			if (verb === "max-memory") {
@@ -410,7 +410,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						"warning",
 					);
 				} else {
-					notify(ctx, `Memory cap: ${config.maxMemoryChars} characters.`);
+					notify(ctx, `Memory: cap ${config.maxMemoryChars} characters.`);
 				}
 				return;
 			}
@@ -425,7 +425,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// this command now owns both lines.
 			notify(
 				ctx,
-				`Project memory: ${memoryStatusMessage(memory, maxMemoryChars)}\nContext file: ${await contextStatusLine(projectRoot)}`,
+				`Memory: ${memoryStatusLine(memory, maxMemoryChars)}\nContext file: ${await contextStatusLine(projectRoot)}`,
 				memoryStatusLevel(memory),
 			);
 		},
@@ -445,34 +445,34 @@ export type ConsolidateReport = "updated" | "clipped" | "unchanged" | "deduped" 
 
 /** Shown when the pass had to shorten stored content to fit the model output budget. */
 const CLIPPED_NOTICE =
-	"Project memory and context updated, but existing content was shortened to fit the model output budget; the previous MEMORY.md is kept as a backup in .agents/memory — review it if older details matter.";
+	"Memory: updated, but existing content was shortened to fit the model output budget; the previous MEMORY.md is kept as a backup in .agents/memory — review it if older details matter.";
 
 /** The same notice for command replies, which cannot know whether a backup was written. */
 const CLIPPED_NOTICE_NO_WRITE =
-	"Project memory and context were updated, but existing content was shortened to fit the model output budget; review MEMORY.md, CONTEXT.md and the .agents/memory backups if older details matter.";
+	"Memory: were updated, but existing content was shortened to fit the model output budget; review MEMORY.md, CONTEXT.md and the .agents/memory backups if older details matter.";
 
 /** Shown once when repeated auxiliary-model failures park the automatic pass for the session. */
 const MEMORY_PAUSED_NOTICE =
-	"Project memory updates are paused for this session after repeated auxiliary-model failures. Fix the route with /project-context model, or retry by hand with /memory update.";
+	"Memory: updates are paused for this session after repeated auxiliary-model failures. Fix the route with /project-context model, or retry by hand with /memory update.";
 
 /** A toast headline that names the failure class instead of repeating a raw provider string. */
 function memoryFailureNotice(headline: string): string {
 	switch (classifyModelFailure(headline)) {
 		case "quota":
-			return `Project memory update paused: the auxiliary model is out of quota (${headline}). Configure a dedicated model with /project-context model, or wait for the quota to reset.`;
+			return `Memory: update paused — the auxiliary model is out of quota (${headline}). Configure a dedicated model with /project-context model, or wait for the quota to reset.`;
 		case "auth":
-			return `Project memory update paused: the auxiliary model rejected the credentials (${headline}). Fix them, or point the pass elsewhere with /project-context model.`;
+			return `Memory: update paused — the auxiliary model rejected the credentials (${headline}). Fix them, or point the pass elsewhere with /project-context model.`;
 		case "transient":
-			return `Project memory update failed: ${headline} It will retry with backoff instead of on every turn.`;
+			return `Memory: update failed — ${headline} It will retry with backoff instead of on every turn.`;
 		default:
-			return `Project memory update failed: ${headline}`;
+			return `Memory: update failed — ${headline}`;
 	}
 }
 
 /** The one sentence for a refused publish: the toast and the command reply both use it, so the two
  * cannot drift. `contextWritten` says whether CONTEXT.md was written anyway. */
 function staleKeepSentence(contextWritten: boolean): string {
-	return `${contextWritten ? "Project context updated; " : ""}project memory kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).`;
+	return `${contextWritten ? "Memory: context updated; " : "Memory: "}kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).`;
 }
 
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
@@ -480,19 +480,19 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	// A command-triggered pass is silent, so the guard's own toast never fires there: the reply has to
 	// carry it, or removing entries from memory would be invisible on `/memory update`.
 	const guard = info?.removed && info.removed.count > 0
-		? ` Project memory no longer carries ${info.removed.count} Invariants/Pitfalls entry(ies), e.g. ${info.removed.samples.join(" | ")}; review .agents/memory/errors.log if that was not intended.`
+		? `; no longer carries ${info.removed.count} Invariants/Pitfalls entry(ies), e.g. ${info.removed.samples.join(" | ")}; review .agents/memory/errors.log if that was not intended.`
 		: "";
-	if (report === "failed") return "Project memory update failed; see .agents/memory/errors.log.";
+	if (report === "failed") return "Memory: update failed; see .agents/memory/errors.log.";
 	// Decision 6's wording rule, and it outranks the clipped notice: the memory was not written, so
 	// nothing may say it was — including "the rewrite shortened it".
 	if (info?.memoryKept && report !== "unchanged") {
 		if (info.keepReason === "stale") return `${staleKeepSentence(Boolean(info.contextWritten))}${guard}`;
 		const clippedNote = report === "clipped" ? " The prompt also had to be shortened to fit the model output budget." : "";
 		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply carried no entries";
-		return `Project context updated; project memory was kept unchanged (${why}).${clippedNote}${guard}`;
+		return `Memory: context updated; memory was kept unchanged (${why}).${clippedNote}${guard}`;
 	}
 	if (report === "clipped") return `${info?.backup ? `${CLIPPED_NOTICE} Previous file: ${info.backup}.` : CLIPPED_NOTICE_NO_WRITE}${guard}`;
-	if (report === "deduped") return "Project memory and context are already up to date (deduped recently); nothing was rewritten.";
+	if (report === "deduped") return "Memory: already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
 	if (info?.repaired && info.backup) {
 		const capNote = info.capped
@@ -500,11 +500,11 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 			: info.sectionsCapped
 				? " It also exceeded its section budget, so entries beyond it were dropped whole."
 				: "";
-		return `Project memory and context updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}${guard}`;
+		return `Memory: updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}${guard}`;
 	}
 	if (info?.sectionsCapped) {
-		return `Project memory and context updated, but it exceeded its section budget: ${info.capNote ?? "a section lost entries to its budget"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`;
+		return `Memory: updated, but it exceeded its section budget: ${info.capNote ?? "a section lost entries to its budget"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`;
 	}
-	if (info?.capped) return `Project memory updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.${guard}`;
-	return `Project memory and context updated.${guard}`;
+	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.${guard}`;
+	return `Memory: updated.${guard}`;
 }

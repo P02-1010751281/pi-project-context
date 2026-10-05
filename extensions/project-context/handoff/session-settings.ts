@@ -111,7 +111,7 @@ export async function restoreHandoffSessionSettings(
 				"handoff:stage-session-settings",
 				`a staged handoff marker for ${staged.previousSessionFile} was left for its own successor (this session replaced ${String(event.previousSessionFile)}); if it is a leftover it expires with the ${Math.round(HANDOFF_SETTINGS_TTL_MS / 60_000)}-minute TTL`,
 			).catch(() => {});
-			notify(ctx, "This session is not the handoff successor the staged settings belong to; the model and thinking level were not restored.", "warning");
+			notify(ctx, "Handoff: this session is not the successor the staged settings belong to; the model and thinking level were not restored.", "warning");
 		}
 		return;
 	}
@@ -127,7 +127,7 @@ export async function restoreHandoffSessionSettings(
 			model = undefined;
 		}
 		if (!model) {
-			notify(ctx, `Auto handoff: ${wanted.provider}/${wanted.id} is not available; staying on the default model.`, "warning");
+			notify(ctx, `Handoff: ${wanted.provider}/${wanted.id} is not available; staying on the default model.`, "warning");
 		} else {
 			let failure: unknown;
 			let applied = false;
@@ -137,10 +137,10 @@ export async function restoreHandoffSessionSettings(
 				failure = error;
 			}
 			if (failure) {
-				notify(ctx, `Auto handoff: could not switch to ${wanted.provider}/${wanted.id} (${errorText(failure)}); staying on the default model.`, "warning");
+				notify(ctx, `Handoff: could not switch to ${wanted.provider}/${wanted.id} (${errorText(failure)}); staying on the default model.`, "warning");
 				await logError(projectRoot, "handoff:restore-model", failure).catch(() => {});
 			} else if (!applied) {
-				notify(ctx, `Auto handoff: no authentication for ${wanted.provider}/${wanted.id}; staying on the default model.`, "warning");
+				notify(ctx, `Handoff: no authentication for ${wanted.provider}/${wanted.id}; staying on the default model.`, "warning");
 			}
 		}
 	}

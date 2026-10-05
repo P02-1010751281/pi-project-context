@@ -114,7 +114,7 @@ export function languageMessagesFor(olderMessages: AgentMessage[], carriedMessag
 }
 
 /** Resolve the scaffolding language: explicit config wins, `auto` follows the user's own messages. */
-export function resolveLanguage(messages: AgentMessage[], configured: ProjectContextConfig["handoffLanguage"]): HandoffLanguage {
+export function resolveLanguage(messages: AgentMessage[], configured: ProjectContextConfig["handoffLang"]): HandoffLanguage {
 	if (configured !== "auto") return configured;
 	const samples = languageSamples(messages);
 	if (detectHandoffLanguage(samples) === "zh") return "zh";

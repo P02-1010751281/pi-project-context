@@ -56,12 +56,12 @@ export interface Threshold {
 	bound?: ThresholdBound;
 	/** Projected summary input after the guardrails: `tokens - baseline - keep`. The cut at handoff time can only be shorter (a single turn can hold the whole window), never longer. */
 	summarizeTokens?: number;
-	/** A manually configured `handoffTargetTokens` the guardrail landed below, when there is one. */
+	/** A manually configured `handoffBudgetSummaryTokens` the guardrail landed below, when there is one. */
 	override?: ThresholdOverride;
 }
 
 /**
- * A manually-set `handoffTargetTokens` that the guardrail overrode, and the term that bound below it.
+ * A manually-set `handoffBudgetSummaryTokens` that the guardrail overrode, and the term that bound below it.
  *
  * The trigger has two sources — what the model actually supports (the knee curve, then the usable
  * window) and what the user set by hand (`/handoff threshold 0.6`) — and the guardrail owns the trigger.
@@ -69,7 +69,7 @@ export interface Threshold {
  * nothing change has been sent to a control that does nothing.
  */
 export interface ThresholdOverride {
-	/** The threshold the configured target asked for: `baseline + keep + handoffTargetTokens`. */
+	/** The threshold the configured target asked for: `baseline + keep + handoffBudgetSummaryTokens`. */
 	asked: number;
 	/** What the guardrail resolved instead. */
 	tokens: number;
@@ -100,7 +100,7 @@ function firstCostTierEdge(model: NonNullable<ExtensionContext["model"]>): numbe
  * - fixed: ratio * contextWindow.
  * - adaptive: `min(knee(window), usable - TIER_EDGE_MARGIN)` — the quality knee and the last usable
  *   point, two terms only — lowered further by the summarizer's window and by the first cost tier so
- *   neither the aux input limit nor a surcharge is crossed. `handoffTargetTokens` does **not** take
+ *   neither the aux input limit nor a surcharge is crossed. `handoffBudgetSummaryTokens` does **not** take
  *   part: a manual preference must not lift the trigger above the honest knee, because distrusting a
  *   declared window is what the curve is for. When the guardrail lands below what the target asked
  *   for, the returned `override` says so and the status line names it.
@@ -113,7 +113,7 @@ export function resolveThreshold(
 ): Threshold | undefined {
 	const window = usage.contextWindow;
 	if (window <= 0) return undefined;
-	if (!config.handoffAdaptive) {
+	if (!config.handoffThresholdAuto) {
 		const tokens = Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN);
 		return tokens > 0 ? { tokens, label: `${fmtPct(config.handoffThresholdRatio * 100)} of window` } : undefined;
 	}
@@ -121,14 +121,14 @@ export function resolveThreshold(
 	if (!model || usage.tokens === null) return undefined;
 
 	const baseline = baselineTokens(ctx, usage);
-	const keep = config.handoffKeepTokens;
+	const keep = config.handoffBudgetRecentTokens;
 	const floor = baseline + keep + MIN_SUMMARIZE_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return undefined; // window too small for this configuration
 
 	// Auto hands off at the guardrail alone: the lower of the model's conservative quality knee (honest
 	// windows keep their own boundary, large ones saturate at the population-median knee) and the last
-	// usable point before pi's own compaction reserve, minus the tier margin. `handoffTargetTokens` is a
+	// usable point before pi's own compaction reserve, minus the tier margin. `handoffBudgetSummaryTokens` is a
 	// **manual request**, not a term on this line: a local preference must not lift the trigger above the
 	// honest knee. What the request asked for is reported instead (`override`) so the status line can
 	// name it. `handoffThresholdRatio` belongs to fixed mode.
@@ -137,7 +137,7 @@ export function resolveThreshold(
 	const qualityBinds = knee <= windowRoom;
 	let tokens = qualityBinds ? knee : windowRoom;
 	let bound: ThresholdBound = "adaptive";
-	const asked = baseline + keep + config.handoffTargetTokens;
+	const asked = baseline + keep + config.handoffBudgetSummaryTokens;
 	// A cap only takes over when it really is lower; recording which one decided is what lets the
 	// status line explain an apparently low threshold instead of contradicting the floor.
 	const cap = (value: number, name: ThresholdBound): void => {
@@ -168,7 +168,7 @@ export function resolveThreshold(
 	if (tokens < floor) return undefined;
 	// The status line reports the projected summary input after caps, not the configured minimum: the
 	// cut at handoff time can only be shorter (a single huge turn can hold the whole window), never
-	// longer. A cap (summarizer/tier) can leave less than `handoffTargetTokens` droppable.
+	// longer. A cap (summarizer/tier) can leave less than `handoffBudgetSummaryTokens` droppable.
 	return {
 		tokens,
 		label: `auto ${fmtTokens(tokens)} (${fmtPct((tokens / window) * 100)})`,
@@ -212,10 +212,10 @@ export function thresholdRefusal(
 	if (resolveThreshold(ctx, usage, summaryModel) !== undefined) return undefined;
 	const window = usage.contextWindow;
 	if (window <= 0) return "no-window";
-	if (!config.handoffAdaptive) return "fixed-ratio-rounds-to-zero";
+	if (!config.handoffThresholdAuto) return "fixed-ratio-rounds-to-zero";
 	const model = ctx.model;
 	if (!model || usage.tokens === null) return "no-model-or-usage";
-	const floor = baselineTokens(ctx, usage) + config.handoffKeepTokens + MIN_SUMMARIZE_TOKENS;
+	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_SUMMARIZE_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return "window-too-small";
 	const tierEdge = firstCostTierEdge(model);
@@ -234,7 +234,7 @@ export function thresholdRefusal(
  */
 export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionContext, usage: ContextUsage): string {
 	const window = usage.contextWindow;
-	const floor = baselineTokens(ctx, usage) + config.handoffKeepTokens + MIN_SUMMARIZE_TOKENS;
+	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_SUMMARIZE_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	switch (reason) {
 		case "no-window":
@@ -274,5 +274,5 @@ export function thresholdOverrideText(override: ThresholdOverride, window: numbe
 			: override.by === "summarizer"
 				? `the summarizer window leaves ${fmtTokens(override.tokens)}`
 				: `the first pricing tier leaves ${fmtTokens(override.tokens)}`;
-	return `handoff budget summary ${fmtTokens(config.handoffTargetTokens)} is not applied in full: it needs a ${fmtTokens(override.asked)}-token threshold and ${guardrail}, so the auto guardrail decides — lower /handoff budget summary`;
+	return `handoff budget summary ${fmtTokens(config.handoffBudgetSummaryTokens)} is not applied in full: it needs a ${fmtTokens(override.asked)}-token threshold and ${guardrail}, so the auto guardrail decides — lower /handoff budget summary`;
 }

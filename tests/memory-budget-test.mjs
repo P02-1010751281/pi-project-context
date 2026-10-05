@@ -113,7 +113,7 @@ try {
 		tmpDirs.push(tmp);
 		await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), small);
-		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, autoConsolidate: true, autoLearn: false, handoffEnabled: false })}\n`);
+		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false })}\n`);
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "budget-session") });
@@ -147,7 +147,7 @@ try {
 		tmpDirs.push(tmp);
 		await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), small);
-		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, autoConsolidate: true, autoLearn: false, handoffEnabled: false })}\n`);
+		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false })}\n`);
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "condense-fail-session") });
@@ -172,7 +172,7 @@ try {
 		tmpDirs.push(tmp);
 		await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 		await writeFile(path.join(tmp, ".agents/memory/MEMORY.md"), small);
-		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, autoConsolidate: true, autoLearn: false, handoffEnabled: false })}\n`);
+		await writeFile(path.join(tmp, ".agents/memory/project-context.json"), `${JSON.stringify({ maxMemoryChars: cap, memoryEnabled: true, autolearnEnabled: false, handoffEnabled: false })}\n`);
 		const pi = makePi({ cwd: tmp });
 		await (await loadDefault(`${PC}/index.ts`))(pi);
 		const ctx = makeCtx(tmp, { sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "marker-session") });

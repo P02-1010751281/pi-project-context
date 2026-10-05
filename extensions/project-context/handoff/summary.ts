@@ -34,7 +34,7 @@ export async function generateHandoffSummary(
 	previousSummary: string | undefined,
 	language: HandoffLanguage,
 ): Promise<string> {
-	const primary: NonNullable<ExtensionContext["thinkingLevel"]> = config.handoffSummaryThinking === "session"
+	const primary: NonNullable<ExtensionContext["thinkingLevel"]> = config.handoffThinking === "session"
 		? (ctx.thinkingLevel ?? "off")
 		: "off";
 	const attempts: Array<{ thinking: NonNullable<ExtensionContext["thinkingLevel"]>; reserveTokens: number }> = [
@@ -64,7 +64,7 @@ export async function generateHandoffSummary(
 			// Retry only token-cap truncations; aborts/provider errors should surface as-is.
 			if (!/token cap|incomplete/i.test(errorText(error))) throw error;
 			if (index < attempts.length - 1) {
-				notify(ctx, `Auto handoff: summary hit the token cap (thinking=${attempt.thinking}), retrying with more room...`, "warning");
+				notify(ctx, `Handoff: summary hit the token cap (thinking=${attempt.thinking}), retrying with more room...`, "warning");
 			}
 		}
 	}
