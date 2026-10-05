@@ -106,7 +106,7 @@ MEMORY.md 各节占比（用于判断「哪些常驻、哪些可披露」）：
 
 ## 7. 实验：只给指针，模型会按需去 read 吗？
 
-**结论：不会。** 这是「memory 混注」能否成立的关键现场事实，可复现。
+**结论（`deepseek-v4-pro` 上）：不会。** 但换模型后翻转 —— 见 §8。这是「memory 混注」能否成立的关键现场事实，可复现。
 
 设置：合成项目 `.agents/memory/MEMORY.md`，`## Invariants` 放一条行为约束，`## Pitfalls` 放唯一事实
 （`widget.manifest` 的版本字段名是 `specVersion`）。`/tmp` 副本把注入改成 **只给 `## Project` + `## Invariants`，
@@ -131,3 +131,25 @@ MEMORY.md 各节占比（用于判断「哪些常驻、哪些可披露」）：
 **顺带发现的文档错误**：`.agents/skills/pi-project-context-headless-runs` 把 `-nt` 标成「prompt templates」，
 而 CLI 里 `-nt` = `--no-tools`。第一轮实验因此**没有工具**、结果无效 —— 与该技能自己写的
 「Do not record a failed probe as a review round」同一条纪律。
+
+## 8. 实验二：同一注入换模型（`deepseek/deepseek-flash`）会读
+
+§7 的结论**不能外推**：同一份 `/tmp` 副本、同一提示、同一 `--tools read,grep,find,ls`，
+只把模型换成 `deepseek/deepseek-flash`：
+
+| 变体（均 flash） | 注入 | 工具执行次数 | 答案(1) | 答案(2) |
+| --- | --- | --- | --- | --- |
+| A′ index-only + 指针 | Invariants + 指针 | **4** | 对（`specVersion`） | 对 |
+| B′ 全量 | 全部 | 0 | 对 | 对 |
+| S index-only + 强指令 | Invariants + 「不确定必须先 read」 | **2** | 对 | 对 |
+
+**综合两条实验**：按需读取是**模型相关**的，不是**机制相关**的 —— `v4-pro` 在指针下 0 次工具调用并编造字段名，
+`flash` 在同样指针下读 4 次并答对；而两者在显式指令下都会读。
+
+对设计的含义（比 §7 更准）：指针式渐进披露**能工作，但不能保证**——危险不在「读不到」，而在
+**不读的模型不会告诉你它在猜**（v4-pro 用「或 `apiVersion`，取决于规范」的对冲掩盖了编造）。
+因此对一个**决策级**事实（字段名、路径、阈值、约束），要么常驻，要么把「不确定必须先读」写成强指令，
+要么用强制取回；纯指针只适合「读错代价低」的内容。
+
+未测的格子（本次因路由选择未跑）：**失败模型 + 强指令**（`v4-pro` + §8 的 S 变体）。这是判定
+「强指令能否救回不读的模型」的唯一缺口；若要关掉它，需要额外一次该路由的运行。
