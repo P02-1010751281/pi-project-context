@@ -25,7 +25,7 @@ import { type Threshold, capSuffix, resolveThreshold, thresholdOverrideText, thr
 
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function statusText(ctx: ExtensionContext): string {
-	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent kept` : "summary only";
+	const keep = config.handoffKeepTokens > 0 ? `~${fmtTokens(config.handoffKeepTokens)} recent carried` : "summary only";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffAdaptive ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	let threshold: Threshold | undefined;
@@ -152,7 +152,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			return;
 		}
 
-		notify(ctx, `Auto handoff: summarizing ~${fmtTokens(olderTokens)} of context, keeping ~${fmtTokens(keptTokens)} recent...`, "info");
+		notify(ctx, `Auto handoff: summarizing ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
 
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) {
@@ -402,7 +402,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					}
 					config.handoffTargetTokens = tokens;
 					await saveConfig();
-					notify(ctx, `Auto summarize target: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
+					notify(ctx, `Summary budget: ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
 					return;
 				}
 				if (value === "recent") {
@@ -420,7 +420,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(
 						ctx,
 						config.handoffKeepTokens > 0
-							? `Auto handoff will keep ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
+							? `Auto handoff will carry ~${fmtTokens(config.handoffKeepTokens)} recent tokens verbatim.`
 							: "Auto handoff will use summary only (no recent carry-over).",
 					);
 					return;
@@ -536,7 +536,7 @@ const HANDOFF_VERBS = [
 	{ value: "on" },
 	{ value: "off" },
 	{ value: "threshold", description: "adaptive, or a fixed share of the window" },
-	{ value: "budget", description: "token amounts: the summary target and the recent window" },
+	{ value: "budget", description: "token amounts: the summary budget and the recent window" },
 	{ value: "thinking", description: "thinking level for the summary" },
 	{ value: "mode", description: "dismiss the handoff into a new session, or leave it in the editor" },
 	{ value: "guard", description: "what to do while a question is pending" },
@@ -547,7 +547,7 @@ const HANDOFF_VERBS = [
 /** Second-argument completions, keyed by the verb that takes them. */
 const HANDOFF_VALUE_COMPLETIONS = [
 	{ head: "threshold", values: [{ value: "auto", description: "adaptive threshold (the default)" }] },
-	{ head: "budget", values: [{ value: "summary", description: "summary target tokens before caps" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
+	{ head: "budget", values: [{ value: "summary", description: "summary budget tokens before caps" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
 	{ head: "thinking", values: [{ value: "off" }, { value: "session" }] },
 	{ head: "mode", values: [{ value: "send" }, { value: "draft" }] },
 	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },
