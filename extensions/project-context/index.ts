@@ -21,8 +21,8 @@ import { getProjectRoot, loadMemory, notify } from "./shared/project-state.ts";
  *    ├─ memory       (1 LLM)   consolidation pass → MEMORY.md + CONTEXT.md, both injected
  *    ├─ autolearn    (1 LLM, ≥6h) reads memory/context/index, backtracks for evidence,
  *    │                         writes .agents/skills/<name>/SKILL.md or a candidate
- *    └─ handoff      (1 LLM)   context-window valve: summarize the old span, replay recent
- *                              messages verbatim, continue in a fresh session
+ *    └─ handoff      (no LLM)  context-window valve: drop the old span, replay recent messages
+ *                              verbatim, point at the session log, continue in a fresh session
  *
  * Every feature has a switch in `<project>/.agents/memory/project-context.json`. Each layer command owns
  * its own (`/memory on|off`, `/session-log on|off`, `/handoff on|off`, `/autolearn on|off`) and the bare

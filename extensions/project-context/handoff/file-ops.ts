@@ -1,5 +1,5 @@
 /**
- * File operations tracked from the conversation, and their rendering into the summarizer prompt.
+ * File operations tracked from the conversation, and their rendering into the continuation prompt.
  */
 
 import path from "node:path";
@@ -12,7 +12,7 @@ interface FileOps {
 	edited: Set<string>;
 }
 
-/** Mirror pi's compaction file tracking so the handoff summary carries the same file index. */
+/** Mirror pi's compaction file tracking so the continuation carries the same file index. */
 function createFileOps(): FileOps {
 	return { read: new Set(), written: new Set(), edited: new Set() };
 }

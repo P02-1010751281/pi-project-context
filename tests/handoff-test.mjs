@@ -7,7 +7,8 @@ import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, conten
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
  * (`auto`), an explicit `lang` config wins, carried-over continuation prompts are replaced
  * by an omission marker in the verbatim replay slice, and the `runHandoff` call sites are pinned
- * through a stubbed summarizer plus a `newSession` mock (review round 5, F3/F5).
+ * through a `newSession` mock (review round 5, F3/F5). The handoff makes no model call, so the
+ * integration block also pins that no model call happens.
  */
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-"));
@@ -18,8 +19,8 @@ function check(label, value) {
 }
 const configPath = path.join(tmp, ".agents/memory/project-context.json");
 const readConfig = () => readFile(configPath, "utf8").then((raw) => JSON.parse(raw)).catch(() => undefined);
-/** Verbatim reply for the stubbed summarizer: English template headings, localized by the code. */
-const PINNED_SUMMARY = ["## Goal", "- 做完了。", "", "## Critical Context", "- pinned summary body."].join("\n");
+/** Verbatim reply the "no model call" checks reject: the handoff must never reach a model. */
+const UNEXPECTED_MODEL_CALL = "the handoff must not call a model";
 
 try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
@@ -42,13 +43,15 @@ try {
 		percent: 16,
 		keptTokens: 20_000,
 		guardWaiting: false,
-		summaryWithIndex: "## Goal\n- 收尾。\n\n<read-files>\na.ts\n</read-files>",
+		fileOperations: "<read-files>\na.ts\n</read-files>",
 		previousSessionId: "01a0a58e-7ef4-7763-95f3-5bcf04fdc388",
 		previousSessionFile: "/home/user/.pi/agent/sessions/x.jsonl",
 	};
 	const zh = handoff.buildHandoffPrompt({ ...base, language: "zh" });
 	check("zh preamble carries the percent", zh.startsWith("本会话接手上一会话（其上下文窗口已用 16%）。"));
-	check("zh headings", zh.includes("## 交接摘要") && zh.includes("## 上一会话信息"));
+	// No generated summary section: the details heading, the pointer and the file list are the payload.
+	check("zh carries the details heading and no summary section", zh.includes("## 上一会话信息") && !zh.includes("## 交接摘要"));
+	check("zh carries the file list", zh.includes("<read-files>") && zh.includes("a.ts"));
 	check("zh details", zh.includes("- 上一会话 id：01a0a58e") && zh.includes("- 原始记录（JSONL）：/home/user/.pi/agent/sessions/x.jsonl"));
 	check("zh detail lookup merges index and how-to", zh.includes(".agents/memory/session-logs/INDEX.md 指向的会话日志里查"));
 	check("zh closing", zh.trimEnd().endsWith("从上次中断处继续。"));
@@ -56,15 +59,15 @@ try {
 
 	const en = handoff.buildHandoffPrompt({ ...base, language: "en" });
 	check(
-		"en keeps the legacy shape",
+		"en keeps the scaffolding shape",
 		en.startsWith("This session continues work handed off from a previous session (16% of its context window had been used).") &&
-			en.includes("## Handoff Summary") &&
 			en.includes("## Previous session details") &&
+			!en.includes("## Handoff Summary") &&
 			en.trimEnd().endsWith("Continue the task from where it left off."),
 	);
 
 	const zhSummaryOnly = handoff.buildHandoffPrompt({ ...base, language: "zh", keptTokens: 0 });
-	check("zh summary-only carry line", zhSummaryOnly.includes("上一会话只留下下面的交接摘要"));
+	check("zh no-carry line says nothing was carried", zhSummaryOnly.includes("上一会话没有原文带入本会话"));
 
 	const zhGuarded = handoff.buildHandoffPrompt({ ...base, language: "zh", guardWaiting: true, pendingQuestion: "选 1 还是 2？" });
 	check("zh guarded prompt carries the question", zhGuarded.includes("## 待用户回答的问题") && zhGuarded.includes("选 1 还是 2？"));
@@ -142,13 +145,13 @@ try {
 		previousSessionId: "01a0a7a9-7235-7763-95f3-5bdc121f5eff",
 		projectRoot: "/tmp/proj",
 		sessionLogRel: ".agents/memory/session-logs/01a0a7a9/session.md",
-		summaryWithIndex: "## Goal\n- 收尾。",
+		fileOperations: "<modified-files>\na.ts\n</modified-files>",
 		createdAt: "2026-09-16T00:50:03.901Z",
 	};
 	const zhDoc = handoff.buildHandoffDocument({ ...docParts, language: "zh" });
 	check("zh document header", zhDoc.startsWith("# pi 会话 01a0a7a9-7235-7763-95f3-5bdc121f5eff 的交接文档") && zhDoc.includes("- 生成时间：2026-09-16T00:50:03.901Z"));
 	check("zh document fields", zhDoc.includes("- 项目：/tmp/proj") && zhDoc.includes("- 会话日志：.agents/memory/session-logs/01a0a7a9/session.md") && zhDoc.includes("- 会话索引：.agents/memory/session-logs/INDEX.md"));
-	check("document carries the summary", zhDoc.trimEnd().endsWith("- 收尾。"));
+	check("document carries the file list and no summary", zhDoc.includes("<modified-files>") && zhDoc.includes("a.ts") && !zhDoc.includes("## 交接摘要"));
 	const enDoc = handoff.buildHandoffDocument({ ...docParts, language: "en" });
 	check(
 		"en document keeps the legacy header",
@@ -198,67 +201,6 @@ try {
 	check(
 		"substantive English still flips to en",
 		handoff.resolveLanguage([msg("user", zh), msg("user", "please implement item 2 and run the tests")], "auto") === "en",
-	);
-
-	console.log("\n=== summary headings ===");
-	// Verbatim headings from a real deepseek-flash summary captured during the TUI auto-handoff run
-	// (2026-09-16): pi's EXACT-format prompt keeps the English template headings even when the
-	// focus line asks for Chinese, so the fixed set is mapped deterministically.
-	const realSummary = [
-		"## Goal",
-		"- 记录本次真机验证的相关要点（目标与检查点）。",
-		"",
-		"## Constraints & Preferences",
-		"- 一切确认语句均使用一句话中文，且不要提问。",
-		"",
-		"## Progress",
-		"### Done",
-		"- [x] 记录第一条：本次真机验证的目标是 TUI 自动交臂。",
-		"",
-		"### In Progress",
-		"- [ ] (无明确进行中的任务)",
-		"",
-		"### Blocked",
-		"- (无)",
-		"",
-		"## Key Decisions",
-		"- **概括方式统一**：两文件均以一句话中文概括。",
-		"",
-		"## Next Steps",
-		"1. 等待用户后续指令。",
-		"",
-		"## Critical Context",
-		"- 两次读取的 tool result 均有大段内容被截断。",
-	].join("\n");
-	const localized = handoff.localizeSummaryHeadings(realSummary, "zh");
-	check(
-		"zh maps every template heading",
-		["## 目标", "## 约束与偏好", "## 进展", "### 已完成", "### 进行中", "### 受阻", "## 关键决策", "## 下一步", "## 关键上下文"].every((heading) =>
-			localized.includes(heading),
-		),
-	);
-	check(
-		"zh leaves no template heading behind",
-		!["## Goal", "## Constraints & Preferences", "## Progress", "### Done", "### In Progress", "### Blocked", "## Key Decisions", "## Next Steps", "## Critical Context"].some(
-			(heading) => localized.includes(heading),
-		),
-	);
-	check("zh keeps the summary body", localized.includes("- [x] 记录第一条：本次真机验证的目标是 TUI 自动交臂。"));
-	check("a heading word inside a line is not rewritten", handoff.localizeSummaryHeadings("- 参见 ## Goal 一节", "zh") === "- 参见 ## Goal 一节");
-	check("a heading inside a code fence is not rewritten", handoff.localizeSummaryHeadings("```md\n## Goal\n```\n## Progress", "zh") === "```md\n## Goal\n```\n## 进展");
-	check(
-		"fences close with their own marker",
-		handoff.localizeSummaryHeadings("~~~\n## Goal\n~~~\n## Goal", "zh") === "~~~\n## Goal\n~~~\n## 目标",
-	);
-	check("an indented heading keeps its indent", handoff.localizeSummaryHeadings("  ## Goal\n- x", "zh") === "  ## 目标\n- x");
-	check("already localized headings are left alone", handoff.localizeSummaryHeadings("## 目标\n- x", "zh") === "## 目标\n- x");
-	check(
-		"en maps the localized headings back",
-		handoff.localizeSummaryHeadings("## 目标\n### 已完成\n- x", "en") === "## Goal\n### Done\n- x",
-	);
-	check(
-		"en also maps the variants real models produced",
-		handoff.localizeSummaryHeadings("## 进度\n### 阻塞", "en") === "## Progress\n### Blocked",
 	);
 
 	console.log("\n=== config parsing ===");
@@ -427,8 +369,8 @@ try {
 	console.log("\n=== adaptive threshold: the conservative knee, with a physical floor ===");
 	// Auto hands off at the **two-term** guardrail: the lower of the model's conservative quality knee
 	// (honest windows keep their own boundary, large ones saturate at the population-median knee) and
-	// the last usable point before pi's own compaction reserve, minus the tier margin. The caps then
-	// only lower it — the summarizer window and the first pricing tier. `handoffBudgetSummaryTokens` is a
+	// the last usable point before pi's own compaction reserve, minus the tier margin. The only cap is
+	// the first pricing tier. `handoffBudgetSummaryTokens` is a
 	// manual **request**, not a term on that line: it cannot lift the trigger, and when the guardrail
 	// lands below what it asked for the receipt names it (checked below).
 	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 20_000, handoffBudgetSummaryTokens: 64_000 }));
@@ -444,7 +386,7 @@ try {
 	const wide = handoff.resolveThreshold(floorCtx, floorCtx.getContextUsage());
 	check("a wide window hands off at the conservative knee", wide?.tokens === 157_000);
 	check("the label reports the knee it triggers at", String(wide?.label ?? "").includes("auto 157k (16%)"));
-	check("the knee threshold reports the effective summarize amount", wide?.summarizeTokens === 125_076);
+	check("the knee threshold reports the effective drop amount", wide?.dropTokens === 125_076);
 	check("a knee threshold reports the adaptive bound", wide?.bound === "adaptive");
 	// The conservative curve keeps honest windows on their own boundary and saturates for inflated ones.
 	const midCtx = makeCtx(tmp, {
@@ -509,22 +451,9 @@ try {
 	} finally {
 		await rmTemp(targetTmp);
 	}
-	// The dropped prefix is the summary call's input and pi does not clip it to a model window.
-	const smallAux = handoff.resolveThreshold(
-		floorCtx,
-		floorCtx.getContextUsage(),
-		{ provider: "test", id: "small-summarizer", contextWindow: 128_000 },
-	);
-	check(
-		"a smaller summarizer window caps the threshold below the knee",
-		smallAux?.tokens === 127_156,
-	);
-	check("a summarizer-capped threshold names the cap", smallAux?.bound === "summarizer");
-	// A summarizer whose window cannot even hold the output reserve must not silently disable the
-	// bound: the threshold stays at the minimum prefix instead of the full window share.
-	const tinyAux = handoff.resolveThreshold(floorCtx, floorCtx.getContextUsage(), { provider: "test", id: "tiny-summarizer", contextWindow: 16_000 });
-	check("a summarizer below the output reserve still bounds the threshold", (tinyAux?.tokens ?? 0) < 100_000 && (tinyAux?.tokens ?? 0) > 0);
-	// A window that cannot hold baseline + keep + the minimum summary is not a threshold at all.
+	// The dropped prefix costs nothing to produce now, so no auxiliary window bounds the threshold and
+	// `resolveThreshold` takes no summary model.
+	// A window that cannot hold baseline + keep + the minimum drop is not a threshold at all.
 	const tinyCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-tiny"),
 		getContextUsage: () => ({ tokens: 24_000, percent: 60, contextWindow: 40_000 }),
@@ -547,7 +476,7 @@ try {
 	});
 	const tierEdge = handoff.resolveThreshold(tierEdgeCtx, tierEdgeCtx.getContextUsage());
 	check("a tier edge exactly at floor + margin caps to the floor", tierEdge?.bound === "tier" && tierEdge?.tokens === 39_924);
-	check("the floor-level tier cap still reports the minimum summarize amount", tierEdge?.summarizeTokens === 8_000);
+	check("the floor-level tier cap still reports the minimum drop amount", tierEdge?.dropTokens === 8_000);
 	const tierBelowCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-tier-below"),
 		model: { provider: "test", id: "tier-below", cost: { tiers: [{ inputTokensAbove: 43_000 }] } },
@@ -630,7 +559,7 @@ try {
 		const usableReceipt = String(usableCtx.notifications.at(-1)?.[0] ?? "");
 		check("status reports the adaptive value at the usable-window limit", usableReceipt.includes("auto 43.6k (68%)"));
 		check("the usable window is not reported as a bolt-on cap", !usableReceipt.includes("capped by"));
-		check("status reports the effective summarize amount under the guardrail", usableReceipt.includes("summarize 23.6k"));
+		check("status reports the effective drop amount under the guardrail", usableReceipt.includes("drop 23.6k"));
 	} finally {
 		await rmTemp(usableTmp);
 	}
@@ -738,20 +667,11 @@ try {
 	// that the replay is the post-cut slice. The summarizer lives in pi's SDK, so it is shadowed by
 	// a stub that re-exports the real module. (The raw-vs-marker distinction inside the carried slice
 	// is behaviourally equivalent here, so it is deliberately not asserted; see analysis R2.)
-	const stubCalls = [];
-	globalThis.__handoffStub = (messages, meta) => {
-		stubCalls.push({ messages, ...meta });
-		return { text: PINNED_SUMMARY, usage: undefined };
+	let modelCalls = 0;
+	const countModelCall = async () => {
+		modelCalls += 1;
+		throw new Error(UNEXPECTED_MODEL_CALL);
 	};
-	const sdkStub = path.join(tmp, "sdk-stub.mjs");
-	await writeFile(
-		sdkStub,
-		`export * from ${JSON.stringify(path.join(PI, "dist", "index.js"))};\n` +
-			"export async function generateSummaryWithUsage(messages, model, reserve, apiKey, headers, signal, focus, previousSummary, thinking) {\n" +
-			"\treturn globalThis.__handoffStub(messages, { focus, previousSummary, thinking });\n" +
-			"}\n",
-	);
-	const stubAlias = { "@earendil-works/pi-coding-agent": sdkStub };
 
 	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 50, handoffBudgetSummaryTokens: 8_000, memoryEnabled: false }));
 	const toolOutput = "tool output line that was read earlier in this turn. ".repeat(200);
@@ -782,7 +702,7 @@ try {
 	};
 	const captured = { replay: [], prompt: undefined };
 	const pinPi = makePi({ cwd: tmp });
-	await (await loadDefault(`${PC}/index.ts`, stubAlias))(pinPi);
+	await (await loadDefault(`${PC}/index.ts`))(pinPi);
 	const pinCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager(pinEntries, "handoff-pin"),
 		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
@@ -790,9 +710,7 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	pinCtx.newSession = captureNewSession(captured);
@@ -800,14 +718,18 @@ try {
 	await pinPi.commands.get("handoff").handler("now", pinCtx);
 
 	check("the forced handoff switches sessions", captured.replay.length > 0 && captured.prompt !== undefined);
+	check("the handoff reaches no model at all", modelCalls === 0);
+	check("the continuation follows the conversation language", String(captured.prompt).startsWith("本会话接手上一会话（"));
 	check(
-		"the summarizer receives the cut-off turn prefix",
-		stubCalls.length === 1 && stubCalls[0].messages.some((message) => JSON.stringify(message.content ?? "").includes("tool output line")),
+		"the prompt carries no summary section",
+		!String(captured.prompt).includes("## 交接摘要") && !String(captured.prompt).includes("## Handoff Summary"),
 	);
-	check("the carried slice is not re-summarized", !stubCalls[0]?.messages.some((message) => JSON.stringify(message.content ?? "").includes("我来改")));
-	check("the summary call carries the conversation language", String(stubCalls[0]?.focus ?? "").includes("Simplified Chinese"));
-	check("the model's headings are localized before they reach the prompt", String(captured.prompt).includes("## 目标") && !String(captured.prompt).includes("## Goal"));
-	check("the prompt carries the summary body and the previous session", String(captured.prompt).includes("- 做完了。") && String(captured.prompt).includes("handoff-pin"));
+	check(
+		"the prompt points at the previous session and the log index",
+		String(captured.prompt).includes("handoff-pin") &&
+			String(captured.prompt).includes("session-logs/INDEX.md") &&
+			String(captured.prompt).includes("不确定的事实不得凭印象作答"),
+	);
 	check(
 		"the split turn's opening question is anchored into the replay",
 		captured.replay[0]?.role === "user" &&
@@ -817,10 +739,13 @@ try {
 	check("the dropped tool output never enters the replay", !JSON.stringify(captured.replay).includes("tool output line"));
 	check("the continuation is announced", String(captured.notifications?.at(-1)?.[0] ?? "").includes("continued in a fresh session"));
 	const handoffDoc = await readFile(path.join(tmp, ".agents/memory/HANDOFF.md"), "utf8").catch(() => "");
-	check("the archived handoff document carries the localized summary", handoffDoc.includes("## 目标") && handoffDoc.includes("- 做完了。"));
+	check(
+		"the archived handoff document points at the log and carries no summary",
+		handoffDoc.includes("session-logs/handoff-pin/session.md") && !handoffDoc.includes("## 交接摘要"),
+	);
 
-	// An orphan result (its call left in the summary prefix) must not vanish: it leaves the replay
-	// but its content is folded into the summary input.
+	// An orphan result (its call left in the dropped prefix) cannot be replayed; it leaves the replay and
+	// stays reachable through the session log.
 	const orphanEntries = [
 		contentEntry("o1", "user", [{ type: "text", text: "先看实现，再改。" }], "2026-09-16T01:00:00.000Z"),
 		contentEntry(
@@ -843,24 +768,20 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	orphanCtx.newSession = captureNewSession(orphanCaptured);
-	const stubsBefore = stubCalls.length;
 	await runHandlers(pinPi, "session_start", orphanCtx);
 	await pinPi.commands.get("handoff").handler("now", orphanCtx);
 	check("the orphan scenario still hands off", orphanCaptured.prompt !== undefined);
-	check("the orphan result reaches the summary", stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("ORPHAN_SECRET")));
-	check("the orphan cut keeps only the tail of the turn", !stubCalls.slice(stubsBefore).some((call) => JSON.stringify(call.messages).includes("继续改")));
+	check("the kept tail is in the replay", JSON.stringify(orphanCaptured.replay).includes("继续改"));
 	check("the orphan replay carries the kept tail", orphanCaptured.replay.map((message) => message.role).join(",") === "user,assistant,user");
 	check("the orphan result never enters the replay", !JSON.stringify(orphanCaptured.replay).includes("ORPHAN_SECRET"));
 	check("the orphan replay opens user-first", orphanCaptured.replay[0]?.role === "user" && orphanCaptured.replay[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER);
 
 	// A split turn whose cut-off prefix fits inside one window is snapped to the turn start: the whole last
-	// turn is then replayed verbatim and only the older side is summarized.
+	// turn is then replayed verbatim and only the older side is dropped.
 	const snapEntries = [
 		contentEntry("sn1", "user", [{ type: "text", text: "OLDER_QUESTION 先把旧逻辑读完。" }], "2026-09-16T01:10:00.000Z"),
 		contentEntry("sn2", "assistant", [{ type: "text", text: "旧回合的答复。" }], "2026-09-16T01:10:01.000Z", "sn1"),
@@ -881,25 +802,18 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	snapCtx.newSession = captureNewSession(snapCaptured);
-	const stubsBeforeSnap = stubCalls.length;
 	await runHandlers(pinPi, "session_start", snapCtx);
 	await pinPi.commands.get("handoff").handler("now", snapCtx);
 	check("a turn whose prefix fits the window snaps to the turn start", snapCaptured.replay[0]?.content?.[0]?.text === "SNAP_QUESTION 把 A 改成 B。");
-	check(
-		"the snapped turn is replayed whole and stays out of the summary",
-		JSON.stringify(snapCaptured.replay).includes("SNAP_KEEP_MARKER") &&
-			!stubCalls.slice(stubsBeforeSnap).some((call) => JSON.stringify(call.messages).includes("SNAP_KEEP_MARKER")),
-	);
-	check("the older side still reaches the summarizer", stubCalls.slice(stubsBeforeSnap).some((call) => JSON.stringify(call.messages).includes("OLDER_QUESTION")));
+	check("the snapped turn is replayed whole", JSON.stringify(snapCaptured.replay).includes("SNAP_KEEP_MARKER"));
+	check("the older side is dropped, not replayed", !JSON.stringify(snapCaptured.replay).includes("OLDER_QUESTION"));
 
 	// A session that is a single turn cannot snap (the older side would be empty); the handoff must keep
-	// running on the mid-turn cut instead of reporting "nothing older to summarize".
+	// running on the mid-turn cut instead of reporting "nothing older to drop".
 	const singleTurnEntries = [
 		contentEntry("sg1", "user", [{ type: "text", text: "SINGLE_QUESTION 只有这一轮。" }], "2026-09-16T01:20:00.000Z"),
 		contentEntry(
@@ -918,19 +832,17 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	singleCtx.newSession = captureNewSession(singleCaptured);
 	await runHandlers(pinPi, "session_start", singleCtx);
 	await pinPi.commands.get("handoff").handler("now", singleCtx);
-	check("a single-turn session still hands off instead of snapping into an empty summary", singleCaptured.prompt !== undefined);
+	check("a single-turn session still hands off instead of snapping to an empty older side", singleCaptured.prompt !== undefined);
 	check("the single turn replays its opening question", singleCaptured.replay[0]?.content?.[0]?.text === "SINGLE_QUESTION 只有这一轮。");
 
 	// A split turn whose cut-off prefix overruns the window must not be snapped whole: the bulky middle
-	// stays in the summary and only the turn's opening question is anchored.
+	// stays in the dropped prefix and only the turn's opening question is anchored.
 	const bigPrefixEntries = [
 		contentEntry("bp1", "user", [{ type: "text", text: "BIGPREFIX_OLDER 更早的那一轮。" }], "2026-09-16T01:30:00.000Z"),
 		contentEntry("bp2", "assistant", [{ type: "text", text: "更早的答复。" }], "2026-09-16T01:30:01.000Z", "bp1"),
@@ -953,9 +865,7 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	bigCtx.newSession = captureNewSession(bigCaptured);
@@ -1021,9 +931,7 @@ try {
 			hasConfiguredAuth: () => true,
 			find: () => undefined,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }),
-			complete: async () => {
-				throw new Error("the stub must serve the summary");
-			},
+			complete: countModelCall,
 		},
 	});
 	const settingsCaptured = { parentSession: undefined, replay: [], prompt: undefined };
@@ -1059,13 +967,13 @@ try {
 	// fresh extension instance's session_start (after the replay, before the continuation prompt).
 	console.log("\n=== restoreHandoffSessionSettings ===");
 	const restorePi = makePi({ cwd: tmp, thinkingLevel: "max" });
-	await (await loadDefault(`${PC}/index.ts`, stubAlias))(restorePi);
+	await (await loadDefault(`${PC}/index.ts`))(restorePi);
 	const restoredModel = { provider: "deepseek", id: "deepseek-flash", name: "deepseek flash" };
 	const replacementCtx = makeCtx(tmp, {
 		sessionManager: makeSessionManager([], "settings-next"),
 		model: { provider: "deepseek", id: "deepseek-lite" },
 		thinkingLevel: "max",
-		modelRegistry: { hasConfiguredAuth: () => true, find: () => restoredModel, complete: async () => { throw new Error("no model call expected"); } },
+		modelRegistry: { hasConfiguredAuth: () => true, find: () => restoredModel, complete: countModelCall },
 	});
 	await runHandlers(restorePi, "session_start", replacementCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
 	check("the replacement switches to the outgoing model", restorePi.modelCalls[0] === restoredModel);
@@ -1128,7 +1036,7 @@ try {
 	const ghostCtx = makeCtx(tmp, {		sessionManager: makeSessionManager([], "settings-next"),
 		model: { provider: "deepseek", id: "deepseek-lite" },
 		thinkingLevel: "max",
-		modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined, complete: async () => { throw new Error("no model call expected"); } },
+		modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined, complete: countModelCall },
 	});
 	await stageFor({ model: { provider: "ghost", id: "gone" }, thinkingLevel: "low" });
 	await runHandlers(restorePi, "session_start", ghostCtx, { reason: "new", previousSessionFile: sessionFile("leaf") });
@@ -1198,8 +1106,7 @@ try {
 		throwCtx.notifications.every(([message]) => !String(message).includes("auto-compaction")),
 	);
 } finally {
-	delete globalThis.__handoffStub;
-	await rmTemp(tmp);
+		await rmTemp(tmp);
 }
 
 console.log(failures === 0 ? "\nhandoff: all checks passed." : `\nhandoff: ${failures} check(s) failed.`);

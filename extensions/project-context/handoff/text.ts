@@ -15,10 +15,10 @@ import { isHandoffPromptText } from "./language.ts";
 export const REPLAY_MARKER = "[handoff prompt omitted]";
 
 /**
- * Stand-in for the summarized prefix of a split turn. The keep-budget cut can land inside a turn,
+ * Stand-in for the dropped prefix of a split turn. The keep-budget cut can land inside a turn,
  * and the replay block must open with a user message for Anthropic/Gemini routes to accept it.
  */
-export const SPLIT_TURN_MARKER = "[turn prefix summarized during handoff]";
+export const SPLIT_TURN_MARKER = "[turn prefix dropped during handoff]";
 
 /**
  * Roles a provider renders as a user message: a replay block may open with one of these.
@@ -40,12 +40,12 @@ function toolCallIds(message: AgentMessage): string[] {
  * Messages carried into the replacement session: stale continuation prompts become
  * {@link REPLAY_MARKER}, and a slice that opens mid-turn gets a {@link SPLIT_TURN_MARKER}
  * stand-in. Replayed verbatim a prompt reads as a fresh instruction and opens the new session
- * with a summary of an already-superseded state; dropping it entirely would let the block start
+ * with an already-superseded state; dropping it entirely would let the block start
  * with an assistant message, which some providers reject.
  *
  * Tool results whose call is not part of the slice (a mid-turn cut can separate them) cannot be
  * replayed — providers reject a result without its call. They are handed back through
- * `droppedOrphans` so the caller can fold their content into the summary instead of losing it.
+ * `droppedOrphans` so the caller can tell them apart from the replay itself.
  */
 export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: AgentMessage[]): AgentMessage[] {
 	const messages: AgentMessage[] = [];

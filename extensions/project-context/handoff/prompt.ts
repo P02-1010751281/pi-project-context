@@ -1,76 +1,20 @@
 /**
- * The two texts a handoff emits: the summarizer prompt and the continuation document, both
- * localized through the scaffolding.
+ * The two texts a handoff emits: the continuation prompt and the archived document, both localized
+ * through the scaffolding. Neither carries a generated summary: the replacement session gets the last
+ * turns verbatim, the file list, and a pointer to the previous session's log, which holds every detail
+ * the dropped prefix had.
  */
 
 import { fmtPct } from "./format.ts";
 import { type HandoffLanguage } from "./language.ts";
-
-/**
- * pi's summarization prompt demands an EXACT section format, so models keep copying its English
- * headings even when the focus line asks for another language (observed on deepseek-flash). Map the
- * fixed heading set deterministically instead of relying on the model to translate the template.
- */
-const SUMMARY_HEADINGS: Record<HandoffLanguage, Record<string, string>> = {
-	zh: {
-		"## Goal": "## 目标",
-		"## Constraints & Preferences": "## 约束与偏好",
-		"## Progress": "## 进展",
-		"### Done": "### 已完成",
-		"### In Progress": "### 进行中",
-		"### Blocked": "### 受阻",
-		"## Key Decisions": "## 关键决策",
-		"## Next Steps": "## 下一步",
-		"## Critical Context": "## 关键上下文",
-	},
-	en: {
-		"## 目标": "## Goal",
-		"## 约束与偏好": "## Constraints & Preferences",
-		"## 进展": "## Progress",
-		// Model-side translations observed in real summaries (TUI run, 2026-09-16).
-		"## 进度": "## Progress",
-		"### 已完成": "### Done",
-		"### 进行中": "### In Progress",
-		"### 受阻": "### Blocked",
-		"### 阻塞": "### Blocked",
-		"## 关键决策": "## Key Decisions",
-		"## 下一步": "## Next Steps",
-		"## 关键上下文": "## Critical Context",
-	},
-};
-
-/** Localize the headings pi's template prescribes; only exact heading lines outside code fences are touched. */
-export function localizeSummaryHeadings(text: string, language: HandoffLanguage): string {
-	const headings = SUMMARY_HEADINGS[language];
-	let fence: string | undefined;
-	return text
-		.split("\n")
-		.map((line) => {
-			const trimmed = line.trim();
-			const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
-			if (fenceMatch) {
-				// Track fenced code blocks so heading-shaped lines inside them stay untouched.
-				if (fence === undefined) fence = fenceMatch[1][0];
-				else if (trimmed.startsWith(fence)) fence = undefined;
-				return line;
-			}
-			if (fence !== undefined) return line;
-			const mapped = headings[trimmed];
-			if (!mapped) return line;
-			const indent = line.slice(0, line.indexOf(trimmed));
-			return `${indent}${mapped}`;
-		})
-		.join("\n");
-}
 
 /** Localized scaffolding for the continuation prompt and the archived handoff document. */
 interface HandoffScaffolding {
 	preamble: (percentText: string) => string;
 	percentUnknown: string;
 	carryKept: string;
-	carrySummaryOnly: string;
+	carryNothing: string;
 	verify: string;
-	summaryHeading: string;
 	detailsHeading: string;
 	detailSessionId: (sessionId: string) => string;
 	detailTranscript: (file: string) => string;
@@ -89,14 +33,13 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 	en: {
 		preamble: (percentText) => `This session continues work handed off from a previous session (${percentText} of its context window had been used).`,
 		percentUnknown: "over threshold",
-		carryKept: "The handoff summary below covers the earlier part of that session; its most recent messages were carried over verbatim.",
-		carrySummaryOnly: "The handoff summary below is the only context carried from that session.",
+		carryKept: "The most recent messages of that session were carried over verbatim.",
+		carryNothing: "No message of that session was carried over; every detail is in the session log.",
 		verify: "Verify the current state of files with tools before re-applying changes, and do not redo completed work.",
-		summaryHeading: "## Handoff Summary",
 		detailsHeading: "## Previous session details",
 		detailSessionId: (sessionId) => `- Previous session id: ${sessionId}`,
 		detailTranscript: (file) => `- Raw transcript (JSONL): ${file}`,
-		detailLookup: "- A missing detail can be looked up in the session log linked by .agents/memory/session-logs/INDEX.md (grep; do not load whole files).",
+		detailLookup: "- A detail that is not in this session must be looked up in the session log linked by .agents/memory/session-logs/INDEX.md (grep; do not load whole files); a fact you are not sure of must not be answered from memory.",
 		pendingHeading: "## Pending question (waiting for the user)",
 		closingContinue: "Continue the task from where it left off.",
 		closingPaused: "The task is paused on the pending question above. Do not choose an option or start work on the user's behalf; wait for their answer.",
@@ -109,14 +52,13 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 	zh: {
 		preamble: (percentText) => `本会话接手上一会话（其上下文窗口已用 ${percentText}）。`,
 		percentUnknown: "阈值以上",
-		carryKept: "下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。",
-		carrySummaryOnly: "上一会话只留下下面的交接摘要，没有原文带入。",
+		carryKept: "上一会话最近的消息已原文带入本会话。",
+		carryNothing: "上一会话没有原文带入本会话，细节都在它的会话日志里。",
 		verify: "动手前先用工具核对文件当前状态，不要重做已完成的工作。",
-		summaryHeading: "## 交接摘要",
 		detailsHeading: "## 上一会话信息",
 		detailSessionId: (sessionId) => `- 上一会话 id：${sessionId}`,
 		detailTranscript: (file) => `- 原始记录（JSONL）：${file}`,
-		detailLookup: "- 缺的细节去 .agents/memory/session-logs/INDEX.md 指向的会话日志里查（用 grep，不要把整个文件读进来）。",
+		detailLookup: "- 本会话里没有的细节，必须在 .agents/memory/session-logs/INDEX.md 指向的会话日志里查（用 grep，不要把整个文件读进来）；不确定的事实不得凭印象作答。",
 		pendingHeading: "## 待用户回答的问题",
 		closingContinue: "从上次中断处继续。",
 		closingPaused: "任务停在上面的问题上。不要替用户选选项或开工，等用户回答。",
@@ -134,7 +76,7 @@ export interface HandoffPromptParts {
 	keptTokens: number;
 	guardWaiting: boolean;
 	pendingQuestion?: string;
-	summaryWithIndex: string;
+	fileOperations: string;
 	previousSessionId: string;
 	previousSessionFile?: string;
 }
@@ -148,21 +90,20 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 		...(parts.previousSessionFile ? [text.detailTranscript(parts.previousSessionFile)] : []),
 		text.detailLookup,
 	];
-	const pendingLines = parts.guardWaiting ? ["", text.pendingHeading, "", parts.pendingQuestion ?? "", ""] : [];
-	return [
+	const body = [
 		text.preamble(percentText),
-		parts.keptTokens > 0 ? text.carryKept : text.carrySummaryOnly,
+		parts.keptTokens > 0 ? text.carryKept : text.carryNothing,
 		text.verify,
 		"",
-		text.summaryHeading,
-		"",
-		parts.summaryWithIndex,
-		"",
 		text.detailsHeading,
+		"",
 		...detailLines,
-		...pendingLines,
-		parts.guardWaiting ? text.closingPaused : text.closingContinue,
-	].join("\n");
+	];
+	const files = parts.fileOperations.trim();
+	if (files) body.push("", files);
+	if (parts.guardWaiting) body.push("", text.pendingHeading, "", parts.pendingQuestion ?? "", "");
+	body.push(parts.guardWaiting ? text.closingPaused : text.closingContinue);
+	return body.join("\n");
 }
 
 export interface HandoffDocumentParts {
@@ -170,22 +111,23 @@ export interface HandoffDocumentParts {
 	previousSessionId: string;
 	projectRoot: string;
 	sessionLogRel: string;
-	summaryWithIndex: string;
+	fileOperations: string;
 	createdAt?: string;
 }
 
 /** The archived `.agents/memory/HANDOFF.md` document (pure; unit-tested). */
 export function buildHandoffDocument(parts: HandoffDocumentParts): string {
 	const doc = SCAFFOLDING[parts.language];
-	return [
+	const body = [
 		doc.documentTitle(parts.previousSessionId),
 		"",
 		doc.documentCreated(parts.createdAt ?? new Date().toISOString()),
 		doc.documentProject(parts.projectRoot),
 		doc.documentLog(parts.sessionLogRel),
 		doc.documentIndex,
-		"",
-		parts.summaryWithIndex.trim(),
-		"",
-	].join("\n");
+	];
+	const files = parts.fileOperations.trim();
+	if (files) body.push("", files);
+	body.push("");
+	return body.join("\n");
 }

@@ -8,7 +8,6 @@ import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, setFeature } from "../shared/config.ts";
 import { completeSubValues, completeValues, completeVerbs } from "../shared/complete.ts";
-import { resolveAuxModel } from "../shared/llm.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
 import { clearHandoffSessionSettings, stageHandoffSessionSettings } from "./session-settings.ts";
@@ -19,18 +18,17 @@ import { buildHandoffDocument, buildHandoffPrompt } from "./prompt.ts";
 import { findPendingQuestion } from "./question.ts";
 import { config, getConfigRoot, handoffEnabled, parseRatio, parseTokenCount, saveConfig, setConfigRoot, setFlagEnabled, syncConfig, usageText } from "./settings.ts";
 import { FAILURE_BACKOFF_MS, RETRIGGER_COOLDOWN_MS, armHandoffCooldown, armHandoffFailureBackoff, handoffCooldownUntil, handoffFailureBackoffUntil, handoffInFlight, setHandoffInFlight } from "./state.ts";
-import { generateHandoffSummary } from "./summary.ts";
 import { replayEntries, replayMessagesFor } from "./text.ts";
 import { type Threshold, capSuffix, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function handoffStatusLine(ctx: ExtensionContext): string {
-	const keep = config.handoffBudgetRecentTokens > 0 ? `~${fmtTokens(config.handoffBudgetRecentTokens)} recent carried` : "summary only";
+	const keep = config.handoffBudgetRecentTokens > 0 ? `~${fmtTokens(config.handoffBudgetRecentTokens)} recent carried` : "no recent carry-over";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffThresholdAuto ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	let threshold: Threshold | undefined;
 	if (usage && usage.tokens !== null) {
-		threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
+		threshold = resolveThreshold(ctx, usage);
 		if (threshold) {
 			thresholdLabel = threshold.label + capSuffix(threshold.bound);
 			// A manual target the guardrail landed below must be named, not silently ignored: a user who
@@ -38,7 +36,7 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 			if (threshold.override) thresholdLabel += ` · ${thresholdOverrideText(threshold.override, usage.contextWindow)}`;
 		} else if (config.handoffThresholdAuto) {
 			// Never render every refusal as a claim about the window: name the term that refused.
-			const refusal = thresholdRefusal(ctx, usage, resolveAuxModel(ctx, config));
+			const refusal = thresholdRefusal(ctx, usage);
 			thresholdLabel = refusal === undefined ? "auto" : thresholdRefusalText(refusal, ctx, usage);
 		}
 	}
@@ -46,9 +44,9 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 	// misread as the configured minimum; the real cut can only be shorter. Without usage it echoes the
 	// configured target.
 	const target = config.handoffThresholdAuto
-		? threshold?.summarizeTokens !== undefined
-			? ` · summarize ${fmtTokens(threshold.summarizeTokens)}`
-			: ` · summary budget ${fmtTokens(config.handoffBudgetSummaryTokens)}`
+		? threshold?.dropTokens !== undefined
+			? ` · drop ${fmtTokens(threshold.dropTokens)}`
+			: ` · drop budget ${fmtTokens(config.handoffBudgetSummaryTokens)}`
 		: "";
 	const language = config.handoffLang === "auto"
 		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLang)})`
@@ -57,7 +55,8 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 }
 
 /**
- * Summarize the older context and continue in a fresh session.
+ * Drop the older context, carry the recent tail into a fresh session and point the successor at the
+ * session log that still holds everything dropped.
  * Must run with an ExtensionCommandContext, because newSession() is command-only.
  */
 async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -71,20 +70,14 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			notify(ctx, "Handoff: skipped — the agent is busy.", "warning");
 			return;
 		}
-		// The threshold uses the session model's window/pricing tier and caps the summarized prefix
-		// against the configured auxiliary route's window.
-		const model = resolveAuxModel(ctx, config);
-		if (!model) {
-			notify(ctx, "Handoff: skipped — no authenticated model available.", "warning");
-			return;
-		}
-
+		// The threshold uses the session model's window and pricing tier. The handoff itself needs no
+		// model call: the replacement gets the carried tail plus a pointer to the session log.
 		const usage = ctx.getContextUsage();
 		let threshold: Threshold | undefined;
 		if (!force) {
 			if (!handoffEnabled()) return;
 			if (!usage || usage.tokens === null || usage.percent === null) return;
-			threshold = resolveThreshold(ctx, usage, model);
+			threshold = resolveThreshold(ctx, usage);
 			if (!threshold || usage.tokens < threshold.tokens) return;
 		}
 
@@ -94,10 +87,12 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			return;
 		}
 
-		// Older context gets summarized; the recent tail is carried over verbatim.
+		// Older context is dropped; the recent tail is carried over verbatim, and the dropped part stays
+		// reachable through the session log the continuation points at.
 		let firstKeptIndex = allEntries.length;
-		// pi reports the turn start of a mid-turn cut; the successor cannot do without that message, since
-		// the summary only carries it as prose. -1 means the cut starts a turn.
+		// pi reports the turn start of a mid-turn cut; the successor cannot do without that message and
+		// nothing carries it as prose, so its opening is anchored into the kept tail below. -1 means the
+		// cut starts a turn.
 		let splitTurnStart = -1;
 		if (config.handoffBudgetRecentTokens > 0) {
 			// Cut where the keep budget runs out, mid-turn included: pi cuts at conversation
@@ -110,8 +105,8 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 		// A split turn exists only when that turn alone overruns the keep window, so keeping it whole
 		// always overshoots the budget. Snap to its start while the overshoot stays inside one extra window
-		// and the older side still holds something to summarize; snapping unconditionally is what used to
-		// leave nothing to summarize and block a handoff whose session was a single turn.
+		// and the older side still holds something to drop; snapping unconditionally is what used to
+		// leave nothing older to drop and block a handoff whose session was a single turn.
 		if (splitTurnStart >= 0) {
 			const prefixTokens = allEntries
 				.slice(splitTurnStart, firstKeptIndex)
@@ -125,46 +120,43 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		}
 		// Stale continuation prompts are replaced by a marker on replay: verbatim they read as a
 		// fresh instruction and open the new session with an already-superseded state.
-		// When the turn cannot be kept whole, anchor its opening message ahead of the kept tail: the summary
-		// carries it as prose, and the successor needs what was asked verbatim. The middle stays in the
-		// summarized prefix (clipped, with the file index the summary already carries).
+		// When the turn cannot be kept whole, anchor its opening message ahead of the kept tail: nothing
+		// else carries it and the successor needs what was asked verbatim. The middle stays in the dropped
+		// prefix, reachable through the session log whose file list the continuation carries.
 		const anchorEntry = splitTurnStart >= 0 && splitTurnStart < firstKeptIndex ? allEntries[splitTurnStart] : undefined;
 		const keptSlice = anchorEntry ? [anchorEntry, ...allEntries.slice(firstKeptIndex)] : allEntries.slice(firstKeptIndex);
 		const olderEntries = allEntries.slice(0, firstKeptIndex);
-		// If the older span starts with a previous compaction, let the summarizer update it
-		// instead of feeding the old summary in as ordinary conversation.
-		const previousCompaction = [...olderEntries].reverse().find((entry) => entry.type === "compaction");
 		// Language sampling sees the raw slice (prompts included; `languageSamples` filters them
 		// itself), while the replay and its token budget use the marker-substituted messages.
 		const carriedMessages = keptSlice.flatMap(sessionEntryToContextMessages);
-		// A result whose call was summarized cannot be replayed; the summary takes it over so the
-		// content is not lost. It stays in the raw carried slice for accounting (usage held it), while
-		// `olderTokens` counts the prefix only, so the subtraction below never double-counts it.
+		// A result whose call is not in the slice cannot be replayed. It stays in the raw carried slice
+		// for accounting (usage held it), while `olderTokens` counts the prefix only, so the subtraction
+		// below never double-counts it.
 		const droppedOrphans: AgentMessage[] = [];
 		const keptMessages = replayMessagesFor(keptSlice, droppedOrphans);
 		const olderPrefixMessages = olderEntries.filter((entry) => entry.type !== "compaction").flatMap(sessionEntryToContextMessages);
 		const olderMessages = [...olderPrefixMessages, ...droppedOrphans];
 
-		// Skip when there is nothing real to summarize (e.g. only a previous compaction summary,
-		// or a session that already fits the keep window). The command path is
+		// Skip when there is nothing real to drop (e.g. only a previous compaction entry, or a
+		// session that already fits the keep window). The command path is
 		// user-initiated, so say why instead of returning silently.
 		if (!olderMessages.some((message) => message.role === "user" || message.role === "assistant")) {
 			// Auto can land here on every settle while the session fits the keep window; back off
 			// so the warning does not repeat with each turn.
 			if (autoTriggered) armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
-			notify(ctx, "Handoff: skipped — nothing older than the recent window to summarize.", "warning");
+			notify(ctx, "Handoff: skipped — nothing older than the recent window to drop.", "warning");
 			return;
 		}
 
 		const olderTokens = olderPrefixMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		// The anchor is already counted by `olderTokens` (it sits in the summarized prefix), so the usage
+		// The anchor is already counted by `olderTokens` (it sits in the dropped prefix), so the usage
 		// baseline subtracts only the raw kept tail and never counts it twice.
 		const sliceTokens = allEntries
 			.slice(firstKeptIndex)
 			.flatMap(sessionEntryToContextMessages)
 			.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		// Floor: below this the summary saves too little and drops too much detail.
+		// Floor: below this dropping the prefix saves too little and loses too much detail.
 		if (!force && olderTokens < MIN_SUMMARIZE_TOKENS) return;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
@@ -178,35 +170,12 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			return;
 		}
 
-		notify(ctx, `Handoff: summarizing ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
-
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
-			notify(ctx, `Handoff: skipped — ${auth.error}`, "error");
-			return;
-		}
-		const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+		notify(ctx, `Handoff: dropping ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
 
 		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLang);
-		const summary = await generateHandoffSummary(ctx, requestModel, auth, olderMessages, previousCompaction?.summary, language);
 
 		const { readFiles, modifiedFiles } = computeFileLists(collectFileOps(olderEntries));
-		const summaryWithIndex = `${summary}${formatFileOperations(readFiles, modifiedFiles)}`;
-		const summaryTokens = Math.ceil(summaryWithIndex.length / 4);
-		if (!force && usage && usage.tokens !== null && threshold) {
-			// Baseline = system prompt, tool schemas, and injected memory/context. The stale prompts
-			// replaced by markers are still part of the measured usage, so subtract the raw slice.
-			const baselineNow = Math.max(0, usage.tokens - olderTokens - sliceTokens);
-			const estimatedAfter = baselineNow + keptTokens + summaryTokens + 1_500;
-			if (estimatedAfter >= threshold.tokens) {
-				notify(
-					ctx,
-					`Handoff: skipped — the fresh session would start at ~${fmtTokens(estimatedAfter)}, too close to the ${threshold.label} threshold to help.`,
-					"warning",
-				);
-				return;
-			}
-		}
+		const fileOperations = formatFileOperations(readFiles, modifiedFiles);
 
 		// "wait" (default) keeps the continuation automatic but hands the open
 		// question to the new session with a do-not-answer instruction; "draft"
@@ -223,18 +192,34 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			keptTokens,
 			guardWaiting,
 			pendingQuestion,
-			summaryWithIndex,
+			fileOperations,
 			previousSessionId,
 			previousSessionFile: previousSessionFile || undefined,
 		});
+		// The prompt is built before the guardrail so its own length is what the estimate counts.
+		const promptTokens = Math.ceil(handoffPrompt.length / 4);
+		if (!force && usage && usage.tokens !== null && threshold) {
+			// Baseline = system prompt, tool schemas, and injected memory/context. The stale prompts
+			// replaced by markers are still part of the measured usage, so subtract the raw slice.
+			const baselineNow = Math.max(0, usage.tokens - olderTokens - sliceTokens);
+			const estimatedAfter = baselineNow + keptTokens + promptTokens + 1_500;
+			if (estimatedAfter >= threshold.tokens) {
+				notify(
+					ctx,
+					`Handoff: skipped — the fresh session would start at ~${fmtTokens(estimatedAfter)}, too close to the ${threshold.label} threshold to help.`,
+					"warning",
+				);
+				return;
+			}
+		}
 
-		// A new prompt can arrive while the handoff summary is being generated.
+		// A new prompt can arrive while the handoff is being prepared.
 		// Replacing the session now would abort that run and leave its user message
 		// unanswered (and the TUI stuck on "Working"), so skip and let the next
 		// agent_settled retrigger once the session is idle again.
 		if (!ctx.isIdle()) {
 			armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
-			notify(ctx, "Handoff: skipped — the agent became busy while summarizing. It will retry when idle.", "warning");
+			notify(ctx, "Handoff: skipped — the agent became busy while preparing the replacement. It will retry when idle.", "warning");
 			return;
 		}
 
@@ -249,7 +234,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 					previousSessionId,
 					projectRoot: handoffRoot,
 					sessionLogRel: logRel,
-					summaryWithIndex,
+					fileOperations,
 				});
 				await writeAtomic(path.join(memoryDir(handoffRoot), "HANDOFF.md"), document);
 			} catch {
@@ -309,7 +294,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 								replacementCtx,
 								guardWaiting
 									? `Handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
-									: `Handoff: continued in a fresh session (previous was ${percentText} full, summary ~${fmtTokens(summaryTokens)}, kept ~${fmtTokens(keptTokens)} recent).`,
+									: `Handoff: continued in a fresh session (previous was ${percentText} full, kept ~${fmtTokens(keptTokens)} recent; the dropped prefix stays in its session log).`,
 								"info",
 							);
 						}
@@ -346,7 +331,7 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 
 	const usage = ctx.getContextUsage();
 	if (!usage || usage.tokens === null) return;
-	const threshold = resolveThreshold(ctx, usage, resolveAuxModel(ctx, config));
+	const threshold = resolveThreshold(ctx, usage);
 	if (!threshold || usage.tokens < threshold.tokens) return;
 
 	setHandoffInFlight(true);

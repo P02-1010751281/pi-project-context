@@ -9,10 +9,6 @@ import { SCAFFOLDING } from "./prompt.ts";
 import { REPLAY_MARKER, messageText } from "./text.ts";
 import { countCjk, LANGUAGE_CJK_MIN } from "../shared/lang.ts";
 
-const SUMMARY_FOCUS =
-	"This summary covers the older part of the previous session; its most recent messages are carried over separately. " +
-	"Preserve exact file paths, function names, commands, error messages, and unfinished work. Keep it concise.";
-
 /** Languages the handoff scaffolding can be rendered in; `auto` resolves from the conversation. */
 export type HandoffLanguage = "zh" | "en";
 
@@ -45,20 +41,13 @@ function promptLanguage(messages: AgentMessage[]): HandoffLanguage | undefined {
 	return undefined;
 }
 
-/** The summary focus passed to pi's compaction summarizer, in the resolved language. */
-export function summaryFocus(language: HandoffLanguage): string {
-	return language === "zh"
-		? `${SUMMARY_FOCUS} Write the whole summary in Simplified Chinese, including the section headings.`
-		: `${SUMMARY_FOCUS} Write the whole summary in English, including the section headings.`;
-}
-
 /** Preamble prefixes of generated continuation prompts (one per scaffolding language). */
 const HANDOFF_PROMPT_PREFIXES = [
 	"This session continues work handed off from a previous session (",
 	"本会话接手上一会话（",
 ];
 
-/** Section headings that only generated continuation prompts contain. */
+/** Section headings that only generated continuation prompts contain (kept for prompts written before the summary chain was removed, which must still be recognized on replay). */
 const HANDOFF_PROMPT_HEADINGS = ["## Handoff Summary", "## Previous session details", "## 交接摘要", "## 上一会话信息"];
 
 /** Closing lines every generated prompt ends with. */
