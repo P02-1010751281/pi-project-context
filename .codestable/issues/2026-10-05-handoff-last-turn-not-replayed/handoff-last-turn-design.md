@@ -2,8 +2,9 @@
 doc_type: design
 issue: handoff-last-turn-not-replayed
 date: 2026-10-05
-status: draft
+status: design-frozen
 revision: 1
+implemented_in: f19dc93536ba
 ---
 
 # handoff 保住「最后一轮」：A+B 设计与裁切+索引
@@ -37,16 +38,25 @@ revision: 1
 在 `findCutPoint` 之后：
 
 - 若 `cut.isSplitTurn && cut.turnStartIndex >= 0`，候选切点 `snap = cut.turnStartIndex`；
-- **仅当** `allEntries.slice(0, snap)` 里仍存在 user/assistant 的上下文消息（即有东西可摘要）时采用 `snap`；
+- **两个条件同时成立**才采用 `snap`：
+  1. **前缀溢出量在一窗内**：`tokens(allEntries[turnStartIndex, firstKeptEntryIndex)) <= handoffBudgetRecentTokens`；
+  2. **老侧仍有东西可摘要**：`allEntries.slice(0, snap)` 里存在 user/assistant 的上下文消息。
 - 否则退回 `cut.firstKeptEntryIndex`，保持现状（不阻塞交接）。
-- 效果：整轮装得下时，最近一个回合（含起始 user 消息）**整轮原文重放**，占位标记不再出现。
+- 效果：前缀不大时，最近一个回合（含起始 user 消息）**整轮原文重放**，占位标记不再出现。
+
+**为什么条件 1 不是「整轮装得下」**：split turn 之所以存在，正是因为该回合自身的 token 量已经超过 keep 窗口
+（否则回扫会在上一个回合内停下），所以「整轮装得下」这个条件**恒假**、是空条件。能守住的是**溢出上界**：
+吸附后保留片最多比预算多一个窗口。
 
 ### A —— 硬保最近一个完整回合的用户侧原文（装不下时的兜底）
 
 当 B 无法吸附（该回合本身超过 keep 窗口）：
 
-- 在该回合内向前找**该回合的起始 user 消息**（真实用户文本，非交接提示词），把它锚定进重放切片首部；
+- `cut.turnStartIndex` 本身就指向**该回合的起始条目**（pi 的 `isTurnStartMessage` 只认
+  user/bashExecution/custom/branchSummary/compactionSummary，不认 assistant/toolResult），把它锚定进重放切片首部；
   于是重放块以真实 user 消息开头，`SPLIT_TURN_MARKER` 不再需要。
+- 该条目**同时仍在摘要输入里**（`olderEntries` 含它），即「摘要散文 + 原文锚点」双份。这是有意为之：
+  摘要给上下文，锚点保证「最后问了什么」以原文出现；成本是一小段重复。
 - 该回合末尾的 assistant 文本本来就在 `firstKeptEntryIndex` 之后的保留片里，因此
   「user 原文 + assistant 收束」两端都在，中间工具交换按下面的索引规则处理。
 - 悬空 toolResult 仍由现有 `droppedOrphans` 机制折进摘要（语义不变）。
@@ -73,22 +83,26 @@ revision: 1
 
 ## 4. 断言与单侧变异计划
 
-断言（新增）：
+断言（新增 8 条，已实现）：
 
-1. 整轮装得下 → 切点吸附到回合起点，重放块首条是**真实 user 文本**，且不含 `SPLIT_TURN_MARKER`。
-2. 整轮装不下（单回合超预算）→ 重放块首条仍是**该回合起始 user 文本**（A），且**不返回 skipped**。
-3. 吸附会使老侧为空（整个会话就是一轮）→ **不吸附**，交接照常进行（守住 B 的反阻塞条件）。
-4. 摘要文本含 `**Turn Context (split turn):**` 且其内容只有索引/标题级信息，不含全量工具输出。
-5. 现有 82 条 handoff 断言全绿（回归）。
+1. 「the split turn's opening question is anchored into the replay」——A：前缀超窗时锚定起始 user 文本，且角色序列保持 `user,assistant,user`。
+2. 「a turn whose prefix fits the window snaps to the turn start」——B：前缀在一窗内时吸附。
+3. 「the snapped turn is replayed whole and stays out of the summary」——吸附后整轮原文进重放、不进摘要输入。
+4. 「the older side still reaches the summarizer」——吸附不吞掉老侧摘要。
+5. 「an overrun prefix is not snapped whole」+「the bulky prefix stays out of the replay」——裁切：超窗前缀不进重放。
+6. 「a single-turn session still hands off…」+「the single turn replays its opening question」——守卫：单回合会话不因吸附而中止。
+7. 全量回归：handoff 189 条 + `run-all.mjs` 15/15 绿。
 
-单侧变异（每项只改一侧，验证"恰好变红"）：
+单侧变异（每项只改一侧，**实测**结果）：
 
-| 变异 | 预期变红的断言 |
+| 变异 | 实测变红的断言 |
 | --- | --- |
-| 去掉 `isSplitTurn` 判定（回到只用 `firstKeptEntryIndex`） | 1（吸附不再发生） |
-| 去掉吸附前的「老侧非空」守卫 | 3 |
-| 去掉起始 user 消息锚定 | 2 |
-| turn prefix 段改为灌入全量工具输出 | 4 |
+| 去掉前缀预算条件（只留老侧非空） | 1 条：「the bulky prefix stays out of the replay」 |
+| 去掉老侧非空守卫（只留前缀预算） | 2 条：「a single-turn session still hands off…」「the single turn replays its opening question」 |
+| 去掉起始 user 消息锚定 | 2 条：「the split turn's opening question is anchored into the replay」「the single turn replays its opening question」 |
+| 去掉两个守卫（无条件吸附） | 19 条级联 |
+
+实测入口：`node tests/handoff-test.mjs` 基线 189 OK / 0 FAIL，`node tests/run-all.mjs` 15/15 绿。
 
 ## 5. 非目标与残留
 
