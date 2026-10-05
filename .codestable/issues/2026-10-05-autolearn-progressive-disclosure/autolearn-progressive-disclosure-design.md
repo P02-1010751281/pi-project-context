@@ -2,13 +2,13 @@
 doc_type: design
 issue: autolearn-progressive-disclosure
 status: draft
-revision: 1
+revision: 2
 date: 2026-10-05
-decides: 生产者侧按需取正文（inspectSkill ＋ 代码层「展示过才可覆盖」）与技能分层（SKILL.md ＋ references/）一并设计；单位上限、守卫严格度、存量迁移口径见 §0 待答表
-supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.3.1 的「整篇正文注入」在此被 §3 替换
+decides: 生产者侧按需取正文（inspectSkill ＋ 代码层「展示过才可覆盖」）与技能分层（SKILL.md ＋ references/）一并设计；外部调研已把入口上限从 2500 放宽到 6000、新增「引用只一层深」、并把 B 降级为「只对大技能外置长细节」；单位上限、守卫严格度、存量迁移口径见 §0 待答表
+supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.3.1 的「整篇正文注入」在此被 §3 替换；revision 1 的「入口 ≤2500」「B 面向全部技能」被 §1.5 的外部证据修正
 ---
 
-# autolearn 渐进披露设计（revision 1，draft）
+# autolearn 渐进披露设计（revision 2，draft）
 
 ## 0. owner 已答 / 待答
 
@@ -19,10 +19,11 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 | 1 | `inspectSkill` 一次允许点名几条 | 待答（§3.2 推荐 2） |
 | 2 | 代码层守卫严格度：未展示就不能覆盖（G1）／只记日志（G2） | 待答（§3.3 推荐 G1） |
 | 3 | `candidate` 与 `approve` 是否也受「展示过」约束 | 待答（§3.4 推荐：候选受、approve 不受但明确告知盲写） |
-| 4 | 合并时 references 可否增删改（B1 只改入口／B2 放开） | 待答（§4.3 推荐 B1） |
-| 5 | 分层上限：入口 ≤2500、单篇引用 ≤20000、引用 ≤5 | 待答（§4.4 推荐值） |
-| 6 | 存量 17 条是否强制分层 | 待答（§4.6 推荐：新生成按分层规则，存量按需） |
-| 7 | 发布节奏：a 发 v0.3.2、b 发 v0.4.0，还是一次发 | 待答（§10 推荐分两次） |
+| 4 | 合并时 references 可否增删改（B1 只改入口／B2 放开） | 待答（§4.3 推荐 B1；外部证据见 §1.5） |
+| 5 | 分层上限：入口 ≤6000（r1 为 2500）、单篇引用 ≤20000、引用 ≤5、只一层 | 待答（§4.4 推荐值，入口已按规范与生态实测上调） |
+| 6 | 存量 17 条是否分层 | 待答（§4.6 推荐：**只对 ≥8000 字符的技能**分层一次，其余不动） |
+| 7 | 发布节奏：a 发 v0.3.2、b 发 v0.4.0，还是一次发 | 待答（§10 推荐：A 单独发 v0.3.2，B 观察后再定） |
+| 8 | B 是否降级（外部证据对递归分层不利） | 待答（§1.5：建议 B 缩为「只外置长细节、关键步骤留入口」） |
 
 ## 1. 现场事实（本机可复现，探针见 §11）
 
@@ -41,6 +42,54 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 - 已有的往返机制可复用：`pass.ts:151-153` 在「没提案且 `inspect` 非空」时取原始证据并**重建提示词**跑第二轮。
 - pi 原生支持分层技能：技能可带 `references/`，启动只注入 name/description/path，模型用到才读 `SKILL.md`，
   引用按技能目录相对路径解析（pi `docs/skills.md:5,18,34,39,45`）。本仓 CodeStable 侧技能即此形态。
+
+## 1.5 外部调研（2026-10-05；链接见 §12）
+
+### 官方规范怎么定分层与上限
+
+- 三层：**metadata**（`name`/`description`，约 100 tokens，启动即常驻）→ **instructions**（`SKILL.md` 正文，规范建议 **<5,000 tokens**，技能被激活时**整篇**加载）
+  → **resources**（`scripts/`、`references/`、`assets/`，只在需要时加载）。
+- 结构硬规则：**正文 <500 行**（「超过就拆到单独文件」）、**引用只一层深**（原文："Keep file references one level deep from `SKILL.md`.
+  Avoid deeply nested reference chains."）、`name` ≤64、`description` ≤1,024。
+- `SKILL.md` 被定义为「总览/目录页，指向按需加载的细节材料」。
+
+### 生态实测（138,133 条技能的实证研究 ＋ GitSkills 数据集）
+
+- 138,133 条去重技能、20,556 个仓；98.8% 有 frontmatter；**正文中位数 169 行 / 687 词**（≈4.1–4.5 KB）。
+- 缺陷普遍：**94.6% 至少命中一个检出缺陷**（另一处口径 91.8%，Tier-1 89.3%）；论文表格里「正文 <500 行」占 **10.4%**、
+  「把代码/样例外置到资源」占 **37.0%**（原始行：`| G6. Keep body under 500 lines. | R2.1 | 10.4% |`、
+  `| G7. Externalize code (60%) and examples (8 blocks). | R3.1–R3.3 | 37.0% |`）。
+- 结构不合规很常见：**46 条把文件放在技能根目录**而不是规范目录、**54 条用非标准目录名**、13 条深嵌套；复制是主要复用机制（重复率约 **50.5%**）。
+  → 本设计 §4.2/§4.5 的路径约束与死链/孤儿校验不是洁癖，是这类数据集里最高频的坑。
+- 本仓对照：17 条**全部单文件**，入口中位 4,139 字节（≈生态中位）、最大 13,207 —— 体型处在生态中位偏上，不是异常值。
+
+### 分层真的更好吗（受控研究对我方不利的一半）
+
+arXiv 2607.17598 是首个受控研究（raw 文档导航 / flat 技能包 / hierarchical 递归技能包 / hybrid 检索 × Codex、Pi、Claude-Code）：
+
+> "On a single book, flat disclosure helps only to the extent that the agent cannot already navigate the document: it matches or exceeds
+> raw-document navigation under Pi and Claude-Code, but adds nothing under Codex... **The hierarchical pack never beats the flat one, and
+> sometimes collapses accuracy outright**... At library scale the picture flips: bundling twenty books sinks even Codex under raw navigation...
+> while flat disclosure holds it at..."（数字在抓取时被截断，故留空）
+
+- 含义：**「入口 → 引用」这一跳本身就是失败点**（模型可能不去读引用）；单文档场景下递归分层无收益、有时显著变差。
+  pi 自己的文档写明同一风险：「A model might fail to load a relevant skill」（`docs/skills.md`）。
+- 所以 B 的正当理由**不能**写成「分层提升可用性」，只能写成：① 合并单元变小（模型重写 6k 而不是 13k，丢内容概率更低）；
+  ② 生产者注入成本（但那是 A 解决的）；③ 把**长细节**（逐条命令表、边界情况、历史证据）搬出入口，**关键步骤必须留在入口**。
+
+### 生产者侧的外部先例
+
+- SkillRevise（arXiv 2606.01139）把「修订既有技能」建模为独立算子：`Revision Operator` 的输入是**当前技能** ＋ 诊断 ＋ 修复原则，
+  产出修订稿与修订轨迹 —— 即「改之前必须把旧文本给模型」，与本设计 A 的核心要求一致（A 只是把它变成**按需**取）。
+- **没被文献解决的一环**：没有公开证据能预测「模型会不会主动点名要正文」。规范给的是机制，不是模型的自律；
+  所以 §3.3 的代码层守卫是必须的，真实路由下的点名率（E1）仍需实现期用真实调用测。
+
+### 调研直接带来的修改
+
+1. §4.4 入口上限 **2,500 → 6,000**（规范 <500 行 / <5,000 tokens、生态中位 4.1–4.5 KB；6,000 给 procedure 型技能留余量，仍只有最大现状的一半）。
+2. 新增硬约束：**引用只一层深**（`references/*.md`，不许再嵌套），直接采用规范措辞。
+3. B 降级：默认**只对 ≥8,000 字符的技能**分层，且只外置长细节；其余保持单文件（A 已解决覆盖率）。
+4. §4.2 的路径/死链/孤儿校验升级为「有外部数据支撑的必要项」。
 
 ## 2. 目标与非目标
 
@@ -140,8 +189,9 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 
 ### 4.2 提案形状与写盘
 
-- 提案增加 `references: [{path, content}]`；`body` 变为**入口**（上限 `MAX_SKILL_ENTRY_CHARS`，推荐 2,500）。
-- `path` 约束：必须匹配 `references/<kebab>.md`（禁 `..`、绝对路径、点文件、嵌套目录、非 `.md`）；条数 ≤ `MAX_SKILL_REFERENCES`（推荐 5）；
+- 提案增加 `references: [{path, content}]`；`body` 变为**入口**（上限 `MAX_SKILL_ENTRY_CHARS`，推荐 **6,000**，依据见 §1.5）。
+- `path` 约束：必须匹配 `references/<kebab>.md`（禁 `..`、绝对路径、点文件、嵌套目录、非 `.md`）；**只允许一层**（规范原文 "one level deep"）；
+  条数 ≤ `MAX_SKILL_REFERENCES`（推荐 5）；
   单篇 ≤ `MAX_SKILL_REFERENCE_CHARS`（推荐沿用 20,000）。
 - 写盘顺序：**先写 references，最后写 `SKILL.md`**。`SKILL.md` 是发布点：在它更新之前，消费者读到的旧入口只会引到旧集合。
 - 初建（无既有目录）：`mkdir -p` 目录与 `references/`，写 references，再写入口。
@@ -151,6 +201,7 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 ### 4.3 合并语义（B1：合并只重写入口）
 
 - 合并一轮：模型拿到既有**入口**正文（经 §3 按需取），整篇重写；`references/` **原样不动**。
+- 风险（§1.5）：递归分层在受控研究里**从未胜过单文件**，所以只允许把长细节外置；入口必须自己把步骤走通，不许「详见 references/x.md」这类把关键判断推走的写法。
 - 入口必须仍指向所有**存在**的引用文件（§4.5 校验），所以入口重写时要保留索引表——提示词写明这一点。
 - 想改引用文件时：把该文件作为点名单位（§0 第 4 项的另一半），例如
   `inspectSkill: ["pi-project-context-memory-recovery/references/triage.md"]`，第二轮注入该文件内容，模型只重写该文件。
@@ -161,7 +212,8 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 
 | 常量 | 推荐 | 理由 |
 | --- | --- | --- |
-| `MAX_SKILL_ENTRY_CHARS` | 2,500 | 入口是每次触发都要吃的上下文；一屏之内 |
+| `MAX_SKILL_ENTRY_CHARS` | 6,000 | 规范 <500 行 / <5,000 tokens、生态中位 4.1–4.5 KB；6,000 留余量（r1 的 2,500 偏紧） |
+| 引用深度 | 只一层（`references/*.md`） | 规范原文 "one level deep"；深嵌套是生态高频缺陷 |
 | `MAX_SKILL_REFERENCE_CHARS` | 20,000 | 沿用现 `MAX_SKILL_BODY_CHARS`，不引入新上限 |
 | `MAX_SKILL_REFERENCES` | 5 | 与本仓最大技能章节数（`memory-recovery` 6 节）相称 |
 | `MAX_INSPECT_SKILLS` | 2 | 一轮往返只跑一次，避免成本叠加 |
@@ -239,6 +291,8 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 ## 9. 非目标与残留
 
 - 不做入口与引用的**内容**一致性校验（§4.5）；不做引用文件的自动删除；不做 B2（合并改引用）。
+- B 的风险已知未消：受控研究（§1.5）显示递归分层不比单文件好、有时更差；本仓若观察到「模型读了入口但不读引用」，
+  就应把该技能回退为单文件（这是 B1 之后要盯的现场指标）。
 - 未分层技能的第二轮成本仍可达 20,000（单条上限内）；若某条超过 `MAX_SKILL_REFERENCE_CHARS`，点名它时整条注入会被跳过，
   该条无法被合并（回到「不可见」）——`memory-recovery` 13,207 仍在限内，尚不触发。
 - 展示集合以「本轮渲染」为准：若模型点名后改主意，该名字本轮仍算已见（不撤回），这与「看到过就能改」的语义一致。
@@ -247,9 +301,25 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 ## 10. 实施切片与发布
 
 1. 切片 A1：schema ＋ prompt ＋ 展示集合 ＋ gate/写盘/候选守卫 ＋ 测试（可独立发布，解决覆盖率与 59% 成本）。
-2. 切片 B1：分层提案形状 ＋ 路径/上限/死链与孤儿校验 ＋ 多文件写盘 ＋ 候选分节与 approve 拆分 ＋ 测试。
-3. 发布建议：A1 → v0.3.2（feat），B1 → v0.4.0（技能形态变化，minor）。两者都需 **重启 pi**（行为在 `extensions/`）。
+2. 切片 B1′（已按 §1.5 降级）：分层提案形状 ＋ 路径/深度/上限/死链与孤儿校验 ＋ 多文件写盘 ＋ 候选分节与 approve 拆分 ＋ 测试；
+   适用范围限「≥8,000 字符的技能」与「新生成的长技能」。
+3. 发布建议：A1 → v0.3.2（feat）；B1′ 观察 A 的现场表现后再定版（预计 v0.4.0，技能形态变化）。两者都需 **重启 pi**（行为在 `extensions/`）。
 4. 每片独立提交（行为／文档／技能各一片），保持「一次提交可自证」。
+
+## 12. 外部资料（2026-10-05 抓取）
+
+| 来源 | 要点 |
+| --- | --- |
+| [Agent Skills Specification](https://agentskills.io/specification) | 三层加载；正文 <5,000 tokens 建议；**<500 行**；引用**只一层深** |
+| [Claude 平台 best-practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices) | 检查表：`SKILL.md` 正文 <500 行、细节放单独文件；description 讲清做什么与何时用 |
+| [Anthropic 工程博客：Equipping agents with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) | 渐进披露是核心设计原则；`SKILL.md` 当作目录页 |
+| [Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) | 运行时检索优于预载（JIT context） |
+| [What Keeps Agent Skills from Being Reusable?（138K 技能实证）](https://arxiv.org/html/2608.08453v1) | 中位正文 169 行/687 词；94.6% 至少一个缺陷；复制式复用 ~50.5% |
+| [GitSkills 数据集](https://www.alphaxiv.org/abs/2608.10906) | 7.26M 附带文件；结构不合规的具体形态（根目录放文件、非标准目录名、深嵌套） |
+| [Is Progressive Disclosure All You Need for Long-Context Agents?](https://arxiv.org/html/2607.17598v1) | 受控研究：**hierarchical 从未胜过 flat**，有时准确率崩；库规模下 flat 更稳 |
+| [SkillRevise: Trace-Conditioned Skill Revision](https://arxiv.org/html/2606.01139v2) | 修订算子以**当前技能**为输入 —— 改之前必须给旧文本 |
+
+抓取方式：`tvly search/extract`（Tavily CLI），只把过滤后的片段带入上下文；受控研究那段数字被截断，文中已留空而**未臆补**。
 
 ## 11. 附录：本设计的现场数字怎么复现
 
