@@ -70,12 +70,10 @@ interface HandoffScaffolding {
 	carryKept: string;
 	carrySummaryOnly: string;
 	verify: string;
-	guardWaiting: string;
 	summaryHeading: string;
 	detailsHeading: string;
 	detailSessionId: (sessionId: string) => string;
 	detailTranscript: (file: string) => string;
-	detailIndex: string;
 	detailLookup: string;
 	pendingHeading: string;
 	closingContinue: string;
@@ -94,13 +92,11 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		carryKept: "The handoff summary below covers the earlier part of that session; its most recent messages were carried over verbatim.",
 		carrySummaryOnly: "The handoff summary below is the only context carried from that session.",
 		verify: "Verify the current state of files with tools before re-applying changes, and do not redo completed work.",
-		guardWaiting: "The previous session stopped while waiting for the user's answer, so the decision is still open.",
 		summaryHeading: "## Handoff Summary",
 		detailsHeading: "## Previous session details",
 		detailSessionId: (sessionId) => `- Previous session id: ${sessionId}`,
 		detailTranscript: (file) => `- Raw transcript (JSONL): ${file}`,
-		detailIndex: "- The project session index (.agents/memory/session-logs/INDEX.md) links the Markdown log for that id.",
-		detailLookup: "If a needed detail is missing from this summary, look it up there (grep, do not load whole files).",
+		detailLookup: "- A missing detail can be looked up in the session log linked by .agents/memory/session-logs/INDEX.md (grep; do not load whole files).",
 		pendingHeading: "## Pending question (waiting for the user)",
 		closingContinue: "Continue the task from where it left off.",
 		closingPaused: "The task is paused on the pending question above. Do not choose an option or start work on the user's behalf; wait for their answer.",
@@ -116,13 +112,11 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		carryKept: "下面的交接摘要覆盖上一会话较早的部分；其最近的消息已原文带入本会话。",
 		carrySummaryOnly: "上一会话只留下下面的交接摘要，没有原文带入。",
 		verify: "动手前先用工具核对文件当前状态，不要重做已完成的工作。",
-		guardWaiting: "上一会话停在等你回答的问题上，这个决定仍未决。",
 		summaryHeading: "## 交接摘要",
 		detailsHeading: "## 上一会话信息",
 		detailSessionId: (sessionId) => `- 上一会话 id：${sessionId}`,
 		detailTranscript: (file) => `- 原始记录（JSONL）：${file}`,
-		detailIndex: "- 项目会话索引 .agents/memory/session-logs/INDEX.md 里有该 id 的 Markdown 日志。",
-		detailLookup: "摘要里缺的细节去那里查（用 grep，不要把整个文件读进来）。",
+		detailLookup: "- 缺的细节去 .agents/memory/session-logs/INDEX.md 指向的会话日志里查（用 grep，不要把整个文件读进来）。",
 		pendingHeading: "## 待用户回答的问题",
 		closingContinue: "从上次中断处继续。",
 		closingPaused: "任务停在上面的问题上。不要替用户选选项或开工，等用户回答。",
@@ -152,7 +146,6 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 	const detailLines = [
 		text.detailSessionId(parts.previousSessionId),
 		...(parts.previousSessionFile ? [text.detailTranscript(parts.previousSessionFile)] : []),
-		text.detailIndex,
 		text.detailLookup,
 	];
 	const pendingLines = parts.guardWaiting ? ["", text.pendingHeading, "", parts.pendingQuestion ?? "", ""] : [];
@@ -160,7 +153,6 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 		text.preamble(percentText),
 		parts.keptTokens > 0 ? text.carryKept : text.carrySummaryOnly,
 		text.verify,
-		...(parts.guardWaiting ? [text.guardWaiting] : []),
 		"",
 		text.summaryHeading,
 		"",

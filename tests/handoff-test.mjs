@@ -50,6 +50,7 @@ try {
 	check("zh preamble carries the percent", zh.startsWith("本会话接手上一会话（其上下文窗口已用 16%）。"));
 	check("zh headings", zh.includes("## 交接摘要") && zh.includes("## 上一会话信息"));
 	check("zh details", zh.includes("- 上一会话 id：01a0a58e") && zh.includes("- 原始记录（JSONL）：/home/user/.pi/agent/sessions/x.jsonl"));
+	check("zh detail lookup merges index and how-to", zh.includes(".agents/memory/session-logs/INDEX.md 指向的会话日志里查"));
 	check("zh closing", zh.trimEnd().endsWith("从上次中断处继续。"));
 	check("zh has no English scaffolding", !zh.includes("## Handoff Summary") && !zh.includes("Continue the task from where it left off."));
 
@@ -68,7 +69,9 @@ try {
 	const zhGuarded = handoff.buildHandoffPrompt({ ...base, language: "zh", guardWaiting: true, pendingQuestion: "选 1 还是 2？" });
 	check("zh guarded prompt carries the question", zhGuarded.includes("## 待用户回答的问题") && zhGuarded.includes("选 1 还是 2？"));
 	check("zh guarded prompt waits for the user", zhGuarded.trimEnd().endsWith("任务停在上面的问题上。不要替用户选选项或开工，等用户回答。"));
-	check("guarded prompt notes the open decision", zhGuarded.includes("这个决定仍未决"));
+	// The pending state is announced once, by the pending block plus the closing line; the old early
+	// announcement duplicated it. Single-sided pin: re-adding that line reddens this assertion.
+	check("zh guarded prompt announces the pending state once", !zhGuarded.includes("这个决定仍未决"));
 
 	const noFile = handoff.buildHandoffPrompt({ ...base, language: "zh", previousSessionFile: undefined });
 	check("no transcript line without a session file", !noFile.includes("原始记录"));
