@@ -18,7 +18,6 @@ import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries }
 import { memoryStatusLevel, memoryStatusLine, contextStatusLine } from "./status.ts";
 import { buildMemoryInjection } from "./injection.ts";
 
-
 /**
  * Which root may take the error log when a `session_shutdown` write fails: the project root when it is
  * known, and the session cwd only when the memory layer is already there. The check names the directory

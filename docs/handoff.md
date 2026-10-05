@@ -85,6 +85,9 @@ E-4000
   （`cost.tiers`，如 272K → 268K）能再压低；档位边界低于 `floor + 4000` 时返回
   undefined（不静默跨档）。
 - `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`）；`/handoff threshold auto` 不接受比例参数。
+  固定比例模式**不经过**上面那条物理下限：阈值完全由比例与窗口决定，用户给的比例就是决定，所以很小的比例配上
+  很大的窗口可以产生「丢弃量很小」的交接——这是既定语义，不是缺口。v0.4.2 删除的 `runHandoff` 事后下限与
+  `estimatedAfter` 预检自 v0.4.1 起就不可达，删除没有改变这条语义。
 - `/handoff status` 在能解析阈值时显示 **guardrail 之后的预计丢弃量**（`tokens − baseline − keep`；`auto 157k (16%) · drop 125k`，
   Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`drop budget 64.0k`）。
   实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to drop`。

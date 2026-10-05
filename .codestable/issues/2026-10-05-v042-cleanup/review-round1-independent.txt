@@ -1,0 +1,72 @@
+# lane A 独立审查报告（v0.4.2，HEAD 15b65cb3fd25，判定模型 deepseek/deepseek-flash）
+
+## 复测方法与环境
+
+- 全程只读工作区；测试、变异、探针都在 `/tmp` 的副本/临时目录跑。
+- 基线：`node tests/run-all.mjs` → **15/15 全绿**（HEAD 原样副本）。
+- 用 `git archive v0.4.1` 解出对照树跑同一批探针，避免只读 HEAD 空口断言。
+
+## 逐项核验结果（对应你的 1–8）
+
+1. **不可达断言成立**：`git grep -n runHandoff` 全仓只有 2 个调用点（`run.ts:499` 传字面量 `"force"`、`run.ts:503` 传字面量 `"force-auto"`），`runHandoff` 未导出，测试只能经命令 handler 进入；handler 的 `now/run/force` 全落到同一个 `"force"`（`run.ts:498-504`）。**没有第三条入口**。v0.4.1 源码同样确认（v0.4.1 `run.ts:64/545/549`）。三处 `!force` 删除不丢行为。
+2. **语义等价**：`maybeTrigger`（`run.ts:307-321`）保有 enabled、in-flight、TUI、idle、冷却、failure backoff、usage null、`resolveThreshold`、`usage.tokens < threshold` 全部闸门；v0.4.1 中 `force` 恒真，所以 `usage=null` 时旧代码也走 force 路径（`percentText="over threshold"`），与 HEAD 一致。没有可达路径的结局被删除改变。
+3. **`shutdownErrorRoot`**：仅被 `report.ts:383` 调用，传入的是 `ctx.cwd`；cwd 不是记忆层时新代码拒绝落日志。变异实测：在副本把 `join(cwd, ".agents", "memory")` 改回 `join(cwd, ".agents")` 后跑 `node tests/consolidation-test.mjs` → **恰好红 1 条**：`FAIL a cwd that only has .agents is not the memory layer`，另两条 OK。断言非空转。
+4. **死导出/降级无真实消费者**：`cleanHeaders`、`newestMemoryArchiveSync` 全仓（含 `.codestable/`、`.agents/`）除冻结档案/记忆/技能示例外零引用；32 个降级符号在 extensions/tests/docs 中定义文件之外零引用，且每个在定义文件内仍有使用（`splitSections` 除外：它被 `scanDocument` 取代，CHANGELOG 已记录）。唯一沾边的活动面是 `pi-project-context-memory-recovery/SKILL.md:66` 的 grep 诊断点名 `clipToLineBoundaryBothEnds`——不是 import/反射，不受降级影响。
+5. **测试面**：15/15；新增三条是直接调用生产同款 helper（`report.ts:383` 真用它，无影子 API），判定型断言。无新影子 API。
+6. **文档数字复测**：
+   - 旋钮读者数逐键复现：`maxMemoryChars 43、maxTokens 34、provider 48、handoffBudgetSummaryTokens 11、handoffBudgetRecentTokens 12、handoffLang 7、handoffGuard 6、handoffMode 4、autolearnTurns/autolearnIntervalMs/consolidateIntervalMs/forceDedupeMs 各 1`，22/22 有 config.ts 外读者。
+   - 现场 13 个 `project-context.json` 逐一比对：除 `autolearnAt` 状态戳外，**唯一非默认值 = UniField 的 `maxMemoryChars=36000`**（我找到 4 个 HOME 内 + 9 个挂载盘 Projects，共 13 个，与审计一致）。
+   - 导出普查复现：v0.4.1 **34 个零外部引用**（=2 删除+32 降级，名单逐一对上），**2 个连定义文件内也无**（`cleanHeaders`、`newestMemoryArchiveSync`）；HEAD 剩余导出零外部引用 = **0**。声明数 314 = 312 唯一名 + `export default projectContext` + 重名 `buildPrompt`×2。
+   - `AUTOLEARN_INVENTORY_CHARS=8000`：本仓 18 技能/3,810 字符、全域 51/6,353、合并文本 **7,892**（69 条中只装下 50 行）余量 108，逐字复现。
+   - `migrateProjectState` 已迁移临时项目 5 次平均 **0.491 ms**（审计 0.78 ms；同一量级，时序数不可逐位复现）。
+   - 残留 grep：`handoffThinking`/`MIN_SUMMARIZE_TOKENS`/`estimatedAfter`/`sliceTokens`/`cleanHeaders`/`newestMemoryArchiveSync` 在代码/文档/技能中均无活动引用（只剩记忆渲染与冻结档案的历史提及）。
+7. **词汇终态**：`vocabulary-conventions.md` 的 D2、K 表与代码/补全/文档一致（键、动词、二级补全、迁移项、`docs/` 全部移除）。
+8. **旋钮判据**：读者面与现场面都复现；审计自己也写明「本机没人改过 ≠ 机制没用」，判据边界没问题。
+
+## 分桶结论
+
+### blocking
+- 无。
+
+### important
+1. **`handoffThinking` 退役理由写反了（文档级事实错误，已实证）** — `CHANGELOG.md:11-12`、`docs/configuration.md:117-118`、`.codestable/reference/vocabulary-conventions.md:128`、`extensions/project-context/shared/config.ts:217-220`、`.codestable/issues/2026-10-05-memory-progressive-disclosure/v0.4.1-fix-note.md:47` 均称「它写下的值活不过任何一次 pi 写」。
+   - 影响：v0.4.1 里 `handoffThinking` 是**已知键**（v0.4.1 `config.ts:52/111/202/229/263/324`，`settings.ts:69` 的 `saveConfig` patch 也写它），`parseConfig` 读、`updateConfig` 写回，值会随 pi 写持久化。实测：给 v0.4.1 写 `{handoffThinking:"session"}` 后 `updateConfig` → 文件里仍在（`true/"session"`）；HEAD 同样操作 → 键消失。也就是说 v0.4.2 才让它「活不过下一次写」。dsh 用户据此无法判断这次是真正的兼容性变化。
+   - 修复边界：只改这 5 处文字 + 记忆渲染（`CONTEXT.md:11-12` 同错），改成「v0.4.1 它是已知键、会随 pi 写持久化；v0.4.2 退役后它才成为未知键并在下次写回时消失；退役依据是 pi 侧零行为读者 + D2 硬切」。**不改代码**。
+2. **CHANGELOG 对 fence 旧 bug 的描述不实** — `CHANGELOG.md:20-22` 说块内 `## X`「既截断前言、又变成一个假小节」；`tests/sections-test.mjs:505-507` 注释沿用「会变成第二条 pointer 行」。
+   - 实测（v0.4.1 树跑同一 fixture）：旧 `splitSections` 本来就 fence-aware，块内 `## X` **从未**成为小节，pointer 数 = 1；真实损害是 preamble 的 fence-blind 扫描把前言切在假标题处，丢掉围栏内容 `- 围栏内是内容。` 并留下悬空开栅行。「假小节」是第二个 bug（弱关闭规则，短 fence 提前闭块）的现象。修复与测试本身正确，测试也确实能红（靠内容断言）。
+   - 修复边界：只改 CHANGELOG 与 `sections-test.mjs` 的这段叙述，**不动 scanDocument/断言**。
+
+### nit
+- `extensions/project-context/handoff/run.ts:72-74`：注释「……was decided by `maybeTrigger`……before it sent its message」对手动 `/handoff now` 不成立（手动路径是用户决定、故意绕过闸门）；建议改成「调度路径由 maybeTrigger 决定，手动 now 由用户决定」。
+- `extensions/project-context/memory/report.ts:26-27`、`memory/journal.ts:181-182`：删除后各留一个多余空行。
+- `.codestable/audits/...:247` 标题「现场 0 个非默认值」与 :257 正文「唯一的非默认值是 UniField…」自相矛盾。
+- `extensions/project-context/shared/config.ts:24-28`：仍写「seven flat keys …… mapping is the table in legacyConfigPatch」，但表已只剩 6 条（`handoffSummaryThinking` 退役）；指向已不完整。
+- `CHANGELOG.md:26-27`「精度修正而非行为修正」：对「cwd 有 `.agents` 无 `.agents/memory`」这一输入，旧代码会写日志并创建目录、新代码放弃日志，确有可感差异；建议改「精度修正，唯一差异是该边角不再落日志」。
+- `docs/handoff.md` 未提「固定比例模式不经过 MIN_DROP 下限」（见 residual-risk）。
+
+### suggestion
+- 把 `runHandoff(pi, args: string, ...)`（`run.ts:62`）的参数收窄为 `"force" | "force-auto"`：本次删除把安全性建立在「两个调用点都传 force」这条隐式不变量上，字面量联合类型可让其变成编译期约束，未来第三条入口无法静默绕过已删闸门。或者补一条「`handoffEnabled:false` + `/handoff now` 仍交接」的测试把该不变量钉住。
+- 若 owner 想要固定比例模式也有最小可丢下限，改点在 `threshold.ts:111-118`（fixed 分支提前返回）或 `maybeTrigger`，而不是回到 `runHandoff`。
+
+### learning
+- 导出探针必须把 `export { X } from` barrel 视为「外部消费者」；我第一版探针把 barrel 当定义文件，误报 11 个 pseudo-zero（`AGENTS_DIR`、`ThresholdBound` 等），修正后 34/2/32 与审计逐一对上。
+- `getProjectRoot`（`paths.ts:23-32`）自己吞掉 `pi.exec` 失败并回退 cwd，正常几乎不会 reject；`shutdownErrorRoot` 的 cwd 分支是纯防御路径，这正是不经 handler、直接断言 helper 是唯一 pin 法的原因。
+- 现场事实：13 个配置里唯一手改旋钮是 UniField `maxMemoryChars=36000`；本仓 `project-context.json` 仍带 `handoffThinking`（宿主仍是 v0.4.1），与「未发布、无 tag/无 pin」一致。
+- 审计 0.78 ms/会话是时序数；本机 0.49 ms，量级复现、数字不逐位复现。
+
+### praise
+- `consolidation-test` 的三条断言单侧可红且只红一条（已实测），且测的是生产同款 `shutdownErrorRoot`，不是抄实现。
+- 不可达分支删除取证完整：v0.4.1 与 HEAD 双源码、调用点、handler 解析、测试注入面全部核过，无第三条入口。
+- 导出清扫干净：HEAD 剩余导出零外部引用 = 0，两个删除符号零引用，32 个降级全部仍在模块内使用。
+- `handoffThinking` 退役覆盖面完整（键、动词、一/二级补全、迁移项、持久化 patch、文档、测试），补全面退役检查是行为断言。
+- fence 关闭规则是 CommonMark 正确的实现，两个回归都被 fixture 钉住；套件 15/15。
+
+### residual-risk
+- **固定比例模式没有「最小可丢前缀」下限**：`resolveThreshold` 在 `threshold.ts:111-118` 直接返回阈值，MIN_DROP 只在自适应分支 `threshold.ts:120-122/156` 作为拒绝门。可设组合复现（HEAD 与 v0.4.1 结果**完全一致**）：`handoffThresholdAuto:false, handoffThresholdRatio:0.1`、window 1,000,000、usage 100,000、会话可丢前缀 ~2.0k（<8000）→ `maybeTrigger` 发出 `/handoff force-auto`，`runHandoff` 执行交接，回执 `dropping ~2.0k`。**本轮不修**：它是 v0.4.1 就有的既存行为，不是这次删除引入的回归；修它需要 owner 决策与新的判定点。
+- 被删的 `estimatedAfter` 预检本可防「新会话一开就在阈值附近」的抖动；它在 v0.4.1 起就恒不可达，本轮只是把「死闸门」正式删除。若未来出现非 force 调用点，需要重新引入（上面 suggestion 的字面量签名可降低该风险）。
+- 旋钮结论的现场证据边界、0.78 ms 时序数字：已在审计里写明，不再挂账。
+
+### 对抗性一遍
+最可能藏着生产 bug 的删除就是 `MIN_DROP_TOKENS` 下限：它是唯一按「本次实际丢弃量」拒绝交接的门。复现（`/tmp/fixed-ratio-probe.mjs`）：临时项目写 `{handoffEnabled:true, handoffThresholdAuto:false, handoffThresholdRatio:0.1, handoffBudgetRecentTokens:20000}`，会话 older≈2k + recent≈21.5k，`getContextUsage()=100k/1M`，跑 `agent_settled` → 发出 `/handoff force-auto` → handler 执行 `newSession`。**判别关键**：把同一脚本指向 v0.4.1 树，输出与新代码逐字相同（`maybeTrigger sent: true`，`dropping ~2.0k`，`newSession ran: true`）。所以对「旧代码会跳过、新代码会执行」的回答是：**不存在这种组合**——旧代码的 `!force` 让下限从未参与；固定比例模式的无下限是既存事实。自适应模式挡住类似情况的门在 `threshold.ts:120-122` 与 `threshold.ts:156`；固定比例模式没有任何 MIN_DROP 门，唯一事后门是 `run.ts:136-141` 的「没有任何更老内容可丢」（本例有 2k，故不触发）。
+
+VERDICT: CHANGES-REQUESTED（代码与测试面通过、15/15 绿；阻塞仅在两处发布文档的事实性描述——`handoffThinking` 退役理由与 fence 旧 bug 叙述——需按上述边界改正）。

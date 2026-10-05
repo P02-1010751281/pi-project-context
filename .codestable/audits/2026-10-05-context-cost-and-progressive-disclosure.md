@@ -232,8 +232,10 @@ A 形态端到端（真实交接一次）留待发布后；9.2 成本只测了�
 
 v0.4.1 的 tag 停在审3 判定通过的那一版，五条 nit 按停止规则留作残留；owner 随后决定「全修，无用就退役」，
 本片即该决定。五条 nit 全修（其中一条是不可 pin 的精度修正），并退役 `handoffThinking` 键与 `/handoff thinking` 动词
-——它在本仓零行为读者，而 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值活不过任何一次
-pi 写（回执里「stored for the dsh profile」的承诺因此本就不成立）；常量 `MIN_SUMMARIZE_TOKENS` 随之更名
+——它在本仓零行为读者（回执里「stored for the dsh profile」的承诺因此本就不成立，dsh 读的是它自己的
+`handoffPendingQuestion`）。**下方原文曾把退役理由写成「它写下的值活不过任何一次 pi 写」，该说法经 v0.4.2 校验轮
+实测证伪**（v0.4.1 的 `config.ts:52/111/229/263/324` 显示它当时是已知键，读回+写回，值会持久化；退役才是把它
+变成未知键的那一步），已按「硬切不是改名」改写见 §9.11；常量 `MIN_SUMMARIZE_TOKENS` 随之更名
 `MIN_DROP_TOKENS`（语义=最小可丢弃前缀），代码里最后一个 `summarize` 词消失。
 
 单侧变异 8 格（每格只改回一处）：M1 标题判定退回 fence 盲目扫描 → 3 条具名红；M2 关闭 fence 不再比较长度 → 1 条；
@@ -244,7 +246,11 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 同类，记为不可 pin。套件 15/15。发布事实与三审三校证据见
 `.codestable/issues/2026-10-05-memory-progressive-disclosure/release-v0.4.1-evidence.md`。
 
-### 9.8 旋钮体检：22/22 有活读者，现场 0 个非默认值（2026-10-05，owner 令「旋钮没用就删」后的实测）
+### 9.8 旋钮体检：22/22 有活读者，现场仅 1 处被手改的值（2026-10-05，owner 令「旋钮没用就删」后的实测）
+
+> 口径（v0.4.2 校验轮补写）：键存在 ≠ 被改过。下面的比对必须先把 v0.4.0 之前的旧键名按 `legacyConfigPatch` 的
+> 映射折算，再与 `DEFAULT_CONFIG` 逐值比；直接按字面键名比会把 8 个**仍未被 v0.4.x 重写过**的文件里的旧默认值
+> 误报成「非默认」。这也是现场事实：读时折算不写回，只有 `updateConfig` 才重写文档。
 
 判据只有两条，都可复测：**代码里有没有读者**（`git grep -n <键> -- extensions/`，除 `shared/config.ts` 自身），
 以及**本机现场有没有被改过**（`DEFAULT_CONFIG` 由 `tests/harness.mjs` 的 `loadNamespace` 取权威值，再与全域
@@ -264,6 +270,9 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 ### 9.9 死代码与不可达分支清扫（2026-10-05）
 
 **导出面**：对全部 314 个导出符号做「定义文件之外全仓（extensions/tests/docs）出现次数」探针，34 个为 0。
+（口径复核，v0.4.2 校验轮：换一种收集法得 347 个导出符号——差异来自是否把 `export { … }` barrel 与重名计入；
+在 extensions+tests 口径下 HEAD 剩余导出零外部引用 = **0**，与「2 删 + 32 降级」的结论一致。数字随收集口径浮动，
+结论不变。）
 其中 2 个连定义文件内也无引用——`handoff/format.ts::cleanHeaders`（handoff.ts 拆分时留下的孤儿）与
 `memory/journal.ts::newestMemoryArchiveSync`（旧审计 D2 那条死导出，其 JSDoc 还引着已不存在的 `loadMemorySync`，
 且是 journal.ts 唯一使用 `readdirSync`/`statSync` 的地方）——直接删除；其余 32 个只在定义模块内使用，
@@ -291,4 +300,39 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 | `AUTOLEARN_INVENTORY_CHARS = 8000` 截断不可观测 | 本仓清单 **3,810 字符 / 18 技能**；全域清单 **6,353 / 51**；**合并 7,892 / 69，余量仅 108 字符** | 截断在本机已贴边（更别说技能更多的消费仓），但它**不是新机制级缺陷**：被截掉的名字进不了提示词，模型若据此重建，写盘门会以 `already exists` 拒绝（`shapeRejection`/gate 两道），损害被限制为一次被拒的写入噪音。可观测性（截断时留一条记录）会成为一次提示词/回执面变更，属需 owner 点头的范围，因此记为**已量化的残留**而不是「未证」 |
 
 两处数字都取自 `tests/harness.mjs` 的 `loadNamespace`（与生产同一条加载路径），不是估读。
+
+### 9.11 校验轮 R1（2026-10-05）：审 1 判定与两条 important 的证伪
+
+冻结版 `15b65cb`，沙箱 `/tmp/pc-v042-r1`（byte-identical `cp -a`，基线 status + mtime/size 双快照），
+判定模型 **deepseek/deepseek-flash**（owner 指定；v4-pro 路线的第一次发起在 12 分钟后无声死亡——0 字节输出、
+沙箱零写入，属该 skill 记过的「未成轮」，非阻塞）。**VERDICT: CHANGES-REQUESTED —— 0 blocking / 2 important /
+6 nit / 2 suggestion**。零写入证明：status 与文件 mtime/size 双 diff 皆空（按 skill 剪掉扩展自身启动写的
+`.agents/memory`）。记录：`.codestable/issues/2026-10-05-v042-cleanup/review-round1-independent.txt`。
+
+两条 important 都是**发布文档的事实性错误**，不涉代码，且我都独立复核过：
+
+| # | 断言 | 证伪证据（本仓可复测） | 修法 |
+| --- | --- | --- | --- |
+| I1 | 「`handoffThinking` 写下的值活不过任何一次 pi 写」 | **假**。`git show v0.4.1:extensions/project-context/shared/config.ts` 的 `:52/111/229/263/324` 显示它在 v0.4.1 是**已知键**（类型、默认值、旧名映射、`put`、`parseConfig` 读），值会随 `updateConfig` 持久化；是 v0.4.2 的退役才把它变成未知键 | 改 6 处措辞为「硬切不是改名：v0.4.1 它会持久化，v0.4.2 起被忽略、下次写回消失」，退役依据改回真正的理由（pi 侧零行为读者 + dsh 读自己的 `handoffPendingQuestion`） |
+| I2 | 「块内 `## X` 既截断前言、又变成一个假小节」 | **半假**。v0.4.1 的 `splitSections`（`inject.ts:59-69`）本来就 fence 感知，块内 `## X` 从未成为小节；真实损害是**前言**那次 fence 盲目扫描把前言切在假标题处并丢掉围栏内容 | 只改 CHANGELOG 的叙述，不动 `scanDocument` 与断言（断言靠内容判定，本身正确） |
+
+nits 全修：`run.ts` 调用点注释（手动 `/handoff now` 不经 `maybeTrigger`）、`journal.ts` 与 `report.ts` 的多余空行、
+审计标题「现场 0 个非默认值」与正文自相矛盾、`config.ts` 头部「seven flat keys」在退役后只剩 6 条的指向、
+CHANGELOG「精度修正而非行为修正」补上唯一的可感差异（cwd 只有 `.agents` 时旧代码落日志并建目录）。
+suggestion 采纳一条：`runHandoff` 的 `args: string` 收窄为 `"force" | "force-auto"`，把「只有两个 force 调用点」
+这条隐式不变量变成编译期约束——它是本次三处删除的安全前提。另一条（给固定比例模式加最小可丢下限）**不采纳**，
+降级为文档化语义 + 记名残留，理由见下。
+
+**记名残留 R-1：固定比例模式没有最小可丢下限。** 实测（评审脚本 `/tmp/fixed-ratio-probe.mjs`，本轮复算）：
+`handoffThresholdAuto:false, handoffThresholdRatio:0.1`、window 1M、usage 100k、可丢前缀 ~2.0k 时，
+`maybeTrigger` 照样发 `/handoff force-auto`，交接执行、回执写 `dropping ~2.0k`。**同一脚本指向 v0.4.1 树输出逐字相同**
+（`maybeTrigger sent: true` / `newSession ran: true`），即这是 v0.4.1 就有的既存行为，不是本轮删除引入的回归；
+本次删掉的事后下限在 v0.4.1 起就不可达。修它要新增判定点（`threshold.ts` 固定分支或 `maybeTrigger`），
+需 owner 决策，故按「既定语义」写进 `docs/handoff.md` 而不是改机制。
+
+**矩阵重跑（本轮 7 格，冻结 `15b65cb`，每格只单侧改回一处）**：M1 标题判定退回 fence 盲目扫描 → **3 红**；
+M2 关闭 fence 不再比较长度 → **1 红**；M3 补回退役动词补全 → **1 红**；M4 补回退役二级补全 → **1 红**；
+M5 补回退役动词分支 → **1 红**；M6 `parseConfig` 补回退役键 → **3 红**；M7 shutdown 回退只查 `.agents` →
+**2 红**（v0.4.2 时该格是全绿负向对照，见 §9.7/§9.9）。格定义与 §9.7 的旧矩阵不同（本轮每格是「补回/退回一处」，
+落点与红数不可与旧表逐格对齐），负向对照是同一棵未改动的树跑全套件 15/15。脚本：`/tmp/matrix-v042.py`。
 

@@ -7,10 +7,11 @@
 
 ### 变更
 
-- **`handoffThinking` 与 `/handoff thinking` 退役**：该键在本仓没有行为读者——它只被那个动词写进
-  `project-context.json`，而 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值本来也活不过
-  任何一次 pi 写，回执里「stored for the dsh profile」的承诺从一开始就不成立。键、动词、二级补全、旧名迁移项与
-  文档一并移除；没有别名，文件里留下的旧键按未知键处理（忽略，下次写回时消失）。保留同拼写的
+- **`handoffThinking` 与 `/handoff thinking` 退役**：该键在本仓没有行为读者（只有那个动词写它），回执里
+  「stored for the dsh profile」的承诺从一开始就不成立——dsh 读的是它自己的 `handoffPendingQuestion`，不是这个
+  拼写。兼容性上这是一次**硬切**，不是改名：v0.4.1 里它仍是已知键（`parseConfig` 读回、`updateConfig` 写回，
+  值会随写持久化），退役后它才成为未知键——按本仓规则被忽略，并在下一次写回时随整份重写消失。键、动词、二级
+  补全、旧名迁移项与文档一并移除；没有别名。保留同拼写的
   `handoffBudgetSummaryTokens` / `/handoff budget summary` 仍有活读者（触发公式）。同一片把常量
   `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`（语义=最小可丢弃前缀，无行为变化），摘要链删除后
   代码里最后一个 `summarize` 词随之消失。
@@ -18,13 +19,15 @@
 ### 修复
 
 - **注入的前言与分节改为同一次 fence 感知遍历**（`splitSections` → `scanDocument`）：此前前言用一次不看 fence
-  的扫描找第一个标题、分节用另一次看 fence 的扫描，一段以 fenced 代码块开头的文档会让块内的 `## X` 既截断
-  前言、又变成一个假小节。
+  的扫描找第一个标题、分节用另一次看 fence 的扫描，同一份文档因此有两份互相矛盾的视图——一段以 fenced
+  代码块开头的文档里，块内的 `## X` 会被前言那次扫描当成标题，前言被截在假标题处、连同围栏内容一起丢掉；
+  分节那次扫描（本来就看 fence）从不把那行当小节，所以真正被破坏的只有前言。
 - **fence 关闭按 CommonMark 判定**：关闭行必须是同字符、不短于开启行、且除空白外无内容；此前只比较首字符，
   一个三反引号行会提前关掉四反引号块。
 - `session_shutdown` 的失败回退把根选择抽成 `shutdownErrorRoot`，存在性检查精确到 `.agents/memory`（与该处
-  注释一致）：该分支只在 `getProjectRoot` 拒绝时才可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为
-  修正。该判定无法经由处理器触达（pass 已吞掉能注入的所有失败形态），因此改为对 `shutdownErrorRoot` 的
+  注释一致）：该分支只在 `getProjectRoot` 拒绝时才可达，而它自身的回退就是会话 cwd，所以这是精度修正——唯一
+  可感差异是「cwd 里有 `.agents` 却没有 `.agents/memory`」这个边角：旧代码会在那里落一条日志并顺带建出
+  `.agents/memory/`，新代码放弃落日志。该判定无法经由处理器触达（pass 已吞掉能注入的所有失败形态），因此改为对 `shutdownErrorRoot` 的
   直接断言固定：单侧变异（`.agents/memory` → `.agents`）现在精确红一条「只有 `.agents` 的 cwd 不是记忆层」。
 
 ## v0.4.1 — 2026-10-05

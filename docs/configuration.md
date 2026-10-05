@@ -114,8 +114,9 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 `threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
 取值：`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
-`handoffThinking` 与 `/handoff thinking` 已在 v0.4.2 退役：它在本仓没有行为读者，而 `parseConfig` 只保留已知键、
-`updateConfig` 整份重写，所以它写下的值本来也活不过任何一次 pi 写；dsh 侧的同拼写由 dsh 自己维护。`mode`/`guard`/`lang` 照旧生效。
+`handoffThinking` 与 `/handoff thinking` 已在 v0.4.2 退役：它在本仓没有行为读者（只有那个动词写它），回执里
+「stored for the dsh profile」的承诺不成立——dsh 读的是它自己的 `handoffPendingQuestion`。这是硬切而非别名：
+v0.4.1 里它仍是已知键、值会随写持久化，退役后它按未知键处理（忽略，下次写回时消失）。`mode`/`guard`/`lang` 照旧生效。
 
 说明：`/handoff threshold auto` 是自适应模式（阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升）
 ，`threshold <比例>` 是固定比例模式（`handoffThresholdRatio` 只用于固定模式；`threshold 40`、`threshold 0.4`、`threshold 40%` 等价，都读作 40%），

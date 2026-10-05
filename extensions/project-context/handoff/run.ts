@@ -59,7 +59,7 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
  * session log that still holds everything dropped.
  * Must run with an ExtensionCommandContext, because newSession() is command-only.
  */
-async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): Promise<void> {
+async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: ExtensionCommandContext): Promise<void> {
 	const trigger = args.trim();
 	// "force-auto" marks the scheduled agent_settled trigger; only it applies the
 	// pending-question guard, so /handoff now keeps the configured mode.
@@ -70,8 +70,9 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			return;
 		}
 		// Both call sites pass a force trigger (`force` for now/run, `force-auto` for the scheduled one),
-		// so "is a handoff wanted at all" was decided by `maybeTrigger` (enabled, mode, window, knee)
-		// before it sent its message; the usage is read here for the receipt text only.
+		// so "is a handoff wanted at all" belongs to the caller: `maybeTrigger` answers it (enabled, mode,
+		// window, knee) for the scheduled path, the user answers it for `/handoff now`. The usage is read
+		// here for the receipt text only.
 		const usage = ctx.getContextUsage();
 
 		const allEntries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());

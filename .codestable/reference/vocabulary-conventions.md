@@ -125,7 +125,7 @@
 | `autoLearn` | `autolearnEnabled` | 同特性拼写统一（`autolearn*`）+ `<能力>Enabled` |
 | `autoConsolidate` | `memoryEnabled` | 能力名是 `memory`，歧义最小（owner 定）；不用动作词避免与 `auto*` 旧名混 |
 | `archiveEnabled` / `handoffEnabled` | 不变 | 已是 `<能力>Enabled` |
-| `handoffSummaryThinking` | `handoffThinking`（**v0.4.2 退役**） | 键与动词一起退役：pi 侧零行为读者，且 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值活不过任何一次 pi 写——没有可迁的现值，旧键被忽略并在下次写回时消失 |
+| `handoffSummaryThinking` | `handoffThinking`（**v0.4.2 退役**） | 键与动词一起退役：pi 侧零行为读者（dsh 的对应物是它自己的 `handoffPendingQuestion`），所以没有可迁的现值。这是**硬切不是改名**：v0.4.1 里它仍是已知键（读回+写回，值会持久化），v0.4.2 起旧键被忽略并在下次写回时消失 |
 | `handoffLanguage` | `handoffLang` | 镜射 `/handoff lang` |
 | `handoffAdaptive` | `handoffThresholdAuto` | 镜射 `/handoff threshold auto`（与 `handoffThresholdRatio` 成对） |
 

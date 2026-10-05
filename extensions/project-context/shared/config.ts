@@ -23,9 +23,10 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  *
  * v0.4.0 renamed seven flat keys so a key mirrors the command path that changes it (`budget summary` ⇒
  * `handoffBudgetSummaryTokens`); the same one-time migration folds an old name into the new one. All
- * seven of those names are shared with dsh, which renamed the same seven and reads no alias by design —
- * a dsh profile still storing an old spelling has to adopt the new one (the mapping is the table in
- * `legacyConfigPatch`, mirrored in `.codestable/reference/vocabulary-conventions.md`).
+ * seven were shared with dsh, which renamed the same seven and reads no alias by design — a dsh profile
+ * still storing an old spelling has to adopt the new one. Six of the seven are still in the table in
+ * `legacyConfigPatch`; the seventh (`handoffSummaryThinking` → `handoffThinking`) retired with its key in
+ * v0.4.2. That table and `.codestable/reference/vocabulary-conventions.md` are mirrors.
  */
 
 type FeatureName = "archive" | "memory" | "autolearn" | "handoff";
@@ -215,9 +216,11 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 	// the rewrite drops the old one. Validators are the same readers `parseConfig` uses, so a hand-edited bad
 	// value falls back to the default instead of entering the config unchecked.
 	// A **retired** name (`handoffThinking`/`handoffSummaryThinking`, dropped in v0.4.2) is deliberately not
-	// listed: it has no live key to migrate to, and since `parseConfig` keeps only known keys while
-	// `updateConfig` rewrites the whole document, an unknown key is already ignored and removed by the next
-	// write - which is why its "stored for the dsh profile" receipt could not have held anyway.
+	// listed: it has no live key to migrate to and no reader on either side (dsh's counterpart is its own
+	// `handoffPendingQuestion`). The retirement is a hard cut, not a rename: up to v0.4.1 the key was known
+	// and written back, while from v0.4.2 on it is unknown - and since `parseConfig` keeps only known keys
+	// while `updateConfig` rewrites the whole document, an unknown key is ignored and removed by the next
+	// write.
 	const RENAMED_KEYS: Array<[string, keyof ProjectContextConfig, (value: unknown) => unknown]> = [
 		["autoConsolidate", "memoryEnabled", bool],
 		["autoLearn", "autolearnEnabled", bool],

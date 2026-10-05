@@ -178,7 +178,6 @@ export async function newestMemoryArchive(projectRoot: string): Promise<string |
 	return (await listMemoryArchives(projectRoot))[0]?.file;
 }
 
-
 /** Keep the newest archived journals; anything younger than an hour is never pruned. */
 async function pruneMemoryJournalArchives(projectRoot: string): Promise<void> {
 	const pruneBefore = Date.now() - MEMORY_BACKUP_MIN_AGE_MS;
