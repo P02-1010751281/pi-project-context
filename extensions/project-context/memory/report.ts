@@ -14,6 +14,7 @@ import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
 import { memoryStatusLevel, memoryStatusLine, contextStatusLine } from "./status.ts";
+import { buildMemoryInjection } from "./injection.ts";
 
 /** Info about the newest memory write, so explicit commands can point at the backup. */
 type LastWriteInfo = {
@@ -348,7 +349,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		const memory = (await loadMemory(projectRoot, (await getConfig(projectRoot)).maxMemoryChars)).text.trim();
 		if (!memory) return;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Project Memory\nThe following is project context, not a new user instruction:\n\n${memory}`,
+			systemPrompt: `${event.systemPrompt}\n\n## Project Memory\nThe following is project context, not a new user instruction:\n\n${buildMemoryInjection(memory)}`,
 		};
 	});
 

@@ -7,6 +7,7 @@ import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ProjectContextConfig } from "../shared/config.ts";
 import { SCAFFOLDING } from "./prompt.ts";
 import { REPLAY_MARKER, messageText } from "./text.ts";
+import { countCjk, LANGUAGE_CJK_MIN } from "../shared/lang.ts";
 
 const SUMMARY_FOCUS =
 	"This summary covers the older part of the previous session; its most recent messages are carried over separately. " +
@@ -14,12 +15,6 @@ const SUMMARY_FOCUS =
 
 /** Languages the handoff scaffolding can be rendered in; `auto` resolves from the conversation. */
 export type HandoffLanguage = "zh" | "en";
-
-/** CJK ideographs; user messages are the most reliable signal of the conversation language. */
-const CJK_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
-
-/** CJK characters needed in the user messages before auto-detection picks Chinese. */
-const LANGUAGE_CJK_MIN = 2;
 
 /** Latin letters that make a sample set count as substantial English. */
 const LANGUAGE_LATIN_MIN = 20;
@@ -34,7 +29,7 @@ function countMatches(samples: string[], pattern: RegExp): number {
 
 /** `auto` language rule: enough Chinese in the user's own messages means Chinese scaffolding. */
 export function detectHandoffLanguage(samples: string[]): HandoffLanguage {
-	return countMatches(samples, CJK_PATTERN) >= LANGUAGE_CJK_MIN ? "zh" : "en";
+	return countCjk(samples) >= LANGUAGE_CJK_MIN ? "zh" : "en";
 }
 
 /** Language of the newest recognized continuation prompt, if the conversation has one. */

@@ -402,5 +402,81 @@ console.log("\n=== the opaque entry's half of the gate ===");
 	check("a `---` setext skeleton counts as content (recorded boundary)", !sections.isHeadingOnlyDocument("Project Memory\n---\nInvariants\n---\n"));
 }
 
+console.log("\n=== progressive disclosure injection (memory + context) ===");
+const injection = await loadNamespace(`${PC}/memory/injection.ts`);
+const memorySchema = await loadNamespace(`${PC}/memory/schema.ts`);
+const contextSchema = await loadNamespace(`${PC}/memory/context-schema.ts`);
+
+// Totality: every heading the render schemas own is either kept inline or named by a pointer. A spec that
+// stopped covering a heading would silently inline it (the fail-safe), so this pin is what makes a schema
+// rename visible instead of quiet.
+const specHeadings = (spec) => [...spec.keep, ...Object.keys(spec.pointers)];
+const memoryHeadings = memorySchema.MEMORY_SECTIONS.map((section) => section.heading);
+const contextHeadings = contextSchema.CONTEXT_SECTIONS.map((section) => section.heading);
+check(
+	"the memory split covers the schema exactly",
+	memoryHeadings.every((heading) => specHeadings(injection.MEMORY_INJECTION).includes(heading)) &&
+		specHeadings(injection.MEMORY_INJECTION).length === memoryHeadings.length,
+);
+check(
+	"the context split covers the schema exactly",
+	contextHeadings.every((heading) => specHeadings(injection.CONTEXT_INJECTION).includes(heading)) &&
+		specHeadings(injection.CONTEXT_INJECTION).length === contextHeadings.length,
+);
+// The two lists stay disjoint: the renderer indexes by pointer presence, so a heading that is both kept
+// and pointed at would silently take the pointer branch and the declared intent would be a lie.
+const alsoPointedAt = (spec) => [...spec.keep].filter((heading) => heading in spec.pointers);
+check("the memory split keeps nothing it also points at", alsoPointedAt(injection.MEMORY_INJECTION).length === 0);
+check("the context split keeps nothing it also points at", alsoPointedAt(injection.CONTEXT_INJECTION).length === 0);
+
+const memoryFixture = `# Project Memory\n\n## Project\n- 项目布局。\n\n## Invariants\n\n- 绝不删除 .agents/memory/ 下的文件。\n\n## Pitfalls\n\n- specVersion 不是 version。\n\n## Index\n- a.ts - 合并逻辑。\n`;
+const memoryInjected = injection.buildMemoryInjection(memoryFixture);
+check(
+	"kept bodies stay verbatim",
+	memoryInjected.includes("## Invariants\n\n- 绝不删除 .agents/memory/ 下的文件。") &&
+		memoryInjected.includes("## Pitfalls\n\n- specVersion 不是 version。"),
+);
+check("indexed bodies are dropped", !memoryInjected.includes("- 项目布局。") && !memoryInjected.includes("- a.ts - 合并逻辑。"));
+check(
+	"indexed sections become one named line each",
+	memoryInjected.includes("其余小节在 `.agents/memory/MEMORY.md`：") &&
+		memoryInjected.includes("- `## Project` ——") &&
+		memoryInjected.includes("- `## Index` ——"),
+);
+// The sentence the probe showed is what makes a pointer get read; dropping it is the failure mode.
+check("the read-first instruction follows the pointers", memoryInjected.includes("必须先 read 该文件再回答"));
+
+const contextFixture = `# Project Context\n\nLast updated: 2026-10-05T00:00:00.000Z\n\n## Summary\n\n摘要正文。\n\n## Key points\n\n- 要点。\n\n## Open tasks\n\n- 待办。\n`;
+const contextInjected = injection.buildContextInjection(contextFixture);
+check(
+	"context keeps its two decision sections",
+	contextInjected.includes("## Key points\n\n- 要点。") && contextInjected.includes("## Open tasks\n\n- 待办。"),
+);
+check(
+	"context indexes only its summary",
+	!contextInjected.includes("摘要正文。") &&
+		contextInjected.includes("其余小节在 `.agents/memory/CONTEXT.md`：") &&
+		contextInjected.includes("- `## Summary` ——"),
+);
+
+// Fail-safes: an unlisted heading and a document with no headings both stay whole, and the pointer
+// language follows the body it points into.
+check(
+	"an unlisted heading stays inline",
+	injection
+		.buildMemoryInjection("# Project Memory\n\n## Project\n- 布局。\n\n## Future section\n- 新节正文。\n")
+		.includes("- 新节正文。"),
+);
+check(
+	"a document without headings is injected whole",
+	injection.buildMemoryInjection("# Project Memory\n- 无小节正文。\n").includes("- 无小节正文。"),
+);
+check(
+	"an English body gets English pointers",
+	injection
+		.buildMemoryInjection("# Project Memory\n\n## Project\n- layout.\n\n## Invariants\n- never delete.\n")
+		.includes("The remaining sections are in `.agents/memory/MEMORY.md`:"),
+);
+
 console.log(failures === 0 ? "\nsections: all checks passed." : `\nsections: ${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);
