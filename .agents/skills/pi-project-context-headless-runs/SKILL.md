@@ -77,11 +77,15 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
    ```bash
    sandbox=$(mktemp -d)
    cd "$sandbox"
-   pi --mode rpc -ne -ns -nt --thinking off \
+   pi --mode rpc -ne -ns -np --thinking off \
      -e <repo>/extensions/project-context/index.ts -- <prompt-file-or-stdin>
    ```
 
-   `-ne`/`-ns`/`-nt` disable extensions, skills, prompt templates so only the `-e` extension loads; `--thinking off` keeps output deterministic.
+   `-ne` = `--no-extensions`, `-ns` = `--no-skills`, `-np` = `--no-prompt-templates`, so only the `-e` extension loads;
+   `--thinking off` keeps output deterministic.
+   **Flag trap (found 2026-10-05, after a whole invalid round): `-nt` is `--no-tools`, not prompt templates.**
+   A run that passes `-nt` has no `read`/`bash` at all, so any test of "does the agent consult a file" measures nothing;
+   use `--tools read,grep,find,ls` when the run needs tools, and keep `-nt` only when it must not act.
 
 2. Drive the session far enough to cross the handoff threshold (or temporarily lower `handoffKeepTokens` in `.agents/memory/project-context.json` in the sandbox) so `runHandoff` actually fires.
 
@@ -98,4 +102,8 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
 - Replay blocks must not open with `assistant(toolCall)` — Anthropic/Gemini routes reject it with 400. Verify the omitted-marker substitution preserved `findCutPoint` slicing and toolCall/toolResult pairing.
 - `session_shutdown` always runs a forced silent consolidation pass, so replacing a session produces extra `MEMORY.md` + backup writes — that is expected, not a bug.
 - Known pre-existing gap: when the whole session fits in `handoffKeepTokens`, `runHandoff` returns before any notify and the user sees a silent no-op. Do not mistake that for a failure of your change.
+- `--mode json` does **not** emit the system prompt, so an injected-memory experiment cannot be verified from the transcript;
+  infer it from the answer's shape (a fact from a kept section present, a fact from a dropped section absent).
+- The consolidation pass runs at `agent_settled` and writes `CONTEXT.md` + `session-logs/` into the sandbox, so one sandbox per
+  variant is mandatory: in the 2026-10-05 progressive-disclosure probe a run's own hallucination came back as CONTEXT.md bait.
 - The keep budget is an upper bound; do not back-fill old prompts to "use" the budget — refilling breaks turn alignment.
