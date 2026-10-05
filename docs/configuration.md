@@ -115,12 +115,13 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 `threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
 取值：`thinking off|session`、`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
+`thinking` 在 v0.4.1 起对本仓无效（摘要调用已删除；键与动词保留为与 dsh 配置面同拼写），`mode`/`guard`/`lang` 照旧生效。
 
 说明：`/handoff threshold auto` 是自适应模式（阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升）
 ，`threshold <比例>` 是固定比例模式（`handoffThresholdRatio` 只用于固定模式；`threshold 40`、`threshold 0.4`、`threshold 40%` 等价，都读作 40%），
 两种模式共用一个动词、切换即覆盖一个字段。
-`budget summary <n>` 是手动设定的**目标摘要量**（不参与触发公式，被护栏压掉时 `status` 会点名），`budget recent <n|off>` 是逐字带回新会话的近期窗口（`off` 等价 `0`，即只带摘要）；
-两个数一个量摘要、一个量近期窗口，所以名字各自说出自己量的是什么。`/handoff` 写入时只提交自己拥有的 handoff 键，
+`budget summary <n>` 是手动设定的**触发请求量**（不参与触发公式，被护栏压掉时 `status` 会点名；v0.4.1 起没有任何摘要调用读它），
+`budget recent <n|off>` 是逐字带回新会话的近期窗口（`off` 等价 `0`，即不带原文，只留文件清单与会话日志指针）。`/handoff` 写入时只提交自己拥有的 handoff 键，
 因此不会覆盖 `/memory off` 之类的开关、另一个实例的改动或手改的字段。
 
 **入口关系**（v0.3.0 起重排）：一个参数住在**改变它的那一层**。每个特性有自己的 `on|off`（`/memory`、`/session-log`、`/handoff`、`/autolearn`），
@@ -143,10 +144,10 @@ flags 只影响当前运行；`--no-project-context` 不改项目配置。功能
 
 ## 路由与输出预算
 
-整理、沉淀、handoff 摘要默认使用会话模型。配置 `provider` 与 `model` 后使用指定路由；路由解析失败或未授权时退回会话模型，并按进程去重告警。`maxTokens` 可按 artifact token 率自适应抬高，
+整理与沉淀默认使用会话模型（handoff 不再调用模型）。配置 `provider` 与 `model` 后使用指定路由；路由解析失败或未授权时退回会话模型，并按进程去重告警。`maxTokens` 可按 artifact token 率自适应抬高，
 但不超过模型上限和 `maxOutputTokens`。reasoning 模型（`reasoning: true`）会额外预留隐藏思考 token，正文预算相应收紧；若回复被输出上限截断，会自动按更高预算重试一次，仍失败则显式报告截断并保留旧 memory。
 
-pi 的 handoff 摘要使用宿主 `generateSummaryWithUsage`，其输出 reserve 不随 `maxTokens` 改变；具体预算和小 aux 模型 cap 见 [handoff 预算与恢复](handoff.md)。
+handoff 自 v0.4.1 起不调用任何模型，也不再依赖辅助路由，因此 `maxTokens`/`maxOutputTokens` 与它无关；阈值与预算见 [handoff 预算与恢复](handoff.md)。
 
 ## 兼容迁移
 

@@ -15,7 +15,7 @@ session.jsonl ──► session.md ──► INDEX.md
    │       └─► skills/<name>/SKILL.md 或 skill-candidates/<name>.md
    │
    └─ ④ 交接：当前会话
-           └─► 新会话（旧段摘要 + 最近原文 + 存档指针）+ HANDOFF.md
+           └─► 新会话（最近原文 + 文件清单 + 会话日志指针）+ HANDOFF.md
 ```
 
 | 阶段 | 自动触发 | 主要产物 |
@@ -26,9 +26,9 @@ session.jsonl ──► session.md ──► INDEX.md
 | 交接 | 上下文达到阈值，或手动 `/handoff now` | successor session、`HANDOFF.md` |
 
 交接的切点由 pi 的 `findCutPoint` 选定，它同时给出 `turnStartIndex` 与 `isSplitTurn`：本扩展据此在
-**前缀不超一窗且老侧仍可摘要**时吸附到回合起点（整轮原文保留），否则把该回合的起始 user 消息**锚定进重放**、
-其余进摘要（裁切 + 既有文件索引），所以「最后问了什么」始终以原文到达 successor，而不是只剩摘要散文。
-被切回合的悬空 tool 结果仍折进摘要，不丢内容。
+**前缀不超一窗且老侧仍有内容可丢**时吸附到回合起点（整轮原文保留），否则把该回合的起始 user 消息**锚定进重放**、
+其余丢给旧会话日志（裁切 + 既有文件索引），所以「最后问了什么」始终以原文到达 successor。交接不调用模型：
+较早的部分以指针而不是摘要进入 successor，被切回合的悬空 tool 结果只留在旧会话日志里。
 
 ## 数据布局
 
@@ -39,7 +39,7 @@ session.jsonl ──► session.md ──► INDEX.md
     ├── MEMORY.md                   # journal 的人读渲染
     ├── memory.jsonl                # append-only 唯一权威（replace / append）
     ├── CONTEXT.md                  # 当前工作态
-    ├── HANDOFF.md                  # 最近一次交接摘要
+    ├── HANDOFF.md                  # 最近一次交接的头部与文件清单
     ├── project-context.json        # 项目配置
     ├── skill-candidates/<name>.md
     ├── errors.log                  # 脱敏后的阶段错误
@@ -143,11 +143,10 @@ extensions/project-context/
 │   ├── parse.ts            #    回复 → 提案
 │   ├── schema.ts           #    `record_skill` 工具 schema（always-object 决策形状）
 │   └── skill.ts            #    技能形状、SKILL.md 渲染（含来源标记）、安全校验
-├── handoff/                # ④ 交接（1 次 LLM）
+├── handoff/                # ④ 交接（无 LLM）
 │   ├── run.ts              #    交接事务、自动触发、命令注册
-│   ├── threshold.ts        #    阈值：膝曲线与窗口末点两项、两个 cap、拒绝原因与护栏覆盖回执
-│   ├── summary.ts          #    摘要调用
-│   ├── prompt.ts           #    摘要提示词与续接文档
+│   ├── threshold.ts        #    阈值：膝曲线与窗口末点两项、计价档位 cap、拒绝原因与护栏覆盖回执
+│   ├── prompt.ts           #    续接提示与交接文档
 │   ├── language.ts         #    语言判定与提示词识别
 │   ├── text.ts             #    消息渲染与 replay 标记
 │   ├── format.ts           #    数字 / 百分比 / token 格式化

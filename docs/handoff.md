@@ -9,7 +9,7 @@ handoff 有两种阈值模式：
   与窗口末点取小），**两项**：`min(knee(W), U − 4000)`；caps 只降不升。`handoffBudgetSummaryTokens`
   **不在触发线上**——它是手动设定的请求量，护栏决定触发点；被护栏压掉时 `/handoff status`
   点名它，不静默（见下）。
-- **固定**（`handoffThresholdAuto=false`，`/handoff threshold 0.6`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的摘要模型 cap。
+- **固定**（`handoffThresholdAuto=false`，`/handoff threshold 0.6`）：使用配置比例乘窗口，保留 4000-token 的 pi 安全边界；不套用自适应的计价档位 cap。
 
 手动 `/handoff now` 不等待阈值；自动触发只在宿主允许的 TUI 模式中运行。
 
@@ -21,10 +21,10 @@ handoff 有两种阈值模式：
 - `U`：可用于交接的窗口，预留 16384 token。
 - `B`：system、工具 schema、注入 memory/context 等非 conversation token。
 - `K`：`handoffBudgetRecentTokens`，最近内容原文保留预算。
-- `S`：`handoffBudgetSummaryTokens`，用户手动设定的**目标摘要量**（配置钳制 ≥ 8000）。它**不进入触发公式**：
+- `S`：`handoffBudgetSummaryTokens`，用户手动设定的**触发请求量**（配置钳制 ≥ 8000）。它**不进入触发公式**：
   护栏决定触发点；`B + K + S` 高于护栏时，状态行点名这个请求没有被完整采纳。
+  v0.4.1 起没有任何摘要调用读它，名字保留是因为它与 dsh 的配置面共享（改名/删旋钮需要单独决定）。
 - `r`：`handoffThresholdRatio`，仅固定模式使用。
-- `A`：摘要模型的 context window。
 
 ```text
 U = W - 16384
@@ -37,16 +37,16 @@ T0 = min(KNEE, U - 4000)
 如果 `U <= F`，不触发。否则依次应用上界：
 
 ```text
-T1 = min(T0, B + K + max(8000, A - 32768))
-T2 = min(T1, firstTierEdge - 4000)  # 仅当该 tier 有意义时（tierEdge - 4000 >= F）
-threshold = T2 >= F ? T2 : undefined
+T1 = min(T0, firstTierEdge - 4000)  # 仅当该 tier 有意义时（tierEdge - 4000 >= F）
+threshold = T1 >= F ? T1 : undefined
 ```
 
-`F` 是**拒绝门，不是抬升**：`T2 < F` 时不触发，而不是把触发点抬到 `F`——抬高正是
+`F` 是**拒绝门，不是抬升**：`T1 < F` 时不触发，而不是把触发点抬到 `F`——抬高正是
 `max(T0, B + K + S)` 会做的事，也正是质量护栏存在的理由所要禁止的（那会让声明 1M 的模型跑到
 157K 拐点之外）。
 
-其中 `32768` 是 `SUMMARY_OUTPUT_RESERVE_TOKENS`，`8000` 是最小可摘要前缀，`4000` 是 `TIER_EDGE_MARGIN`。这些值是 token 预算，不是字符数；不同模型 tokenizer 会使 prefix 预算成为保守近似。
+其中 `8000` 是最小可丢弃前缀（`MIN_SUMMARIZE_TOKENS`，名带旧词），`4000` 是 `TIER_EDGE_MARGIN`。
+这些值是 token 预算，不是字符数；不同模型 tokenizer 会使 prefix 预算成为保守近似。
 
 等价的 LaTeX 表达（GitHub 等支持 MathJax 的 Markdown 渲染器会渲染；不支持数学扩展的渲染器以文档前面的纯文本公式为准）：
 
@@ -63,13 +63,12 @@ T_0 = \min\!\left(U - 4000,\ \operatorname{round}(\text{knee}(W))\right)
 \[
 T = \min\left(
 T_0,
-B+K+\max(8000,A-32768),
 E-4000
 \right),\qquad
 \text{trigger iff } T\ge F
 \]
 
-`E` 是首个计价档位边界；没有有效档位时省略该项。若摘要模型没有显式配置，`A=W`。
+`E` 是首个计价档位边界；没有有效档位时省略该项。
 
 ## 公式的实际含义
 
@@ -83,15 +82,13 @@ E-4000
 - 物理下限 `B + K + 8000` 是**拒绝门**：`T` 低于它就不触发（而不是被抬到它）。`S` 只是手动请求量，
   不参与这条线；当 `B + K + S` 高于护栏（质量拐点或窗口末点）时，`/handoff status` 会显示
   `handoff budget summary 64k is not applied in full: …` 并点名压住它的那条护栏与可用的杆杆。计价档位
-  （`cost.tiers`，如 272K → 268K）与摘要模型窗口只能再压低；档位边界低于 `floor + 4000` 时返回
+  （`cost.tiers`，如 272K → 268K）能再压低；档位边界低于 `floor + 4000` 时返回
   undefined（不静默跨档）。
 - `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`）；`/handoff threshold auto` 不接受比例参数。
-- 辅助摘要模型可以比会话模型小；此时摘要输入 cap 可以把阈值压低到 auto 目标以下，这是安全约束。
-- `/handoff status` 在能解析阈值时显示 **guardrail 之后的预计摘要输入量**（`tokens − baseline − keep`；`auto 157k (16%) · summarize 125k`，
-  Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`summary budget 64.0k`）。
-  实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to summarize`。
-- 如果最终 cap 压低了阈值，状态行会显示 `capped by the summarizer window` 或
-  `capped by the first pricing tier`；窗口末点是 auto 的两个项之一，不再作为「事后 cap」出现。
+- `/handoff status` 在能解析阈值时显示 **guardrail 之后的预计丢弃量**（`tokens − baseline − keep`；`auto 157k (16%) · drop 125k`，
+  Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`drop budget 64.0k`）。
+  实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to drop`。
+- 如果最终 cap 压低了阈值，状态行会显示 `capped by the first pricing tier`；窗口末点是 auto 的两个项之一，不再作为「事后 cap」出现。
 - 如果门槛拒绝，状态行点名真正的原因：`window too small`、`pricing tier`、
   `the model's quality knee of … is below the … floor`、或窗口最后 4000 token 留下的量不足——
   不再统一渲染成「窗口没空间」。
@@ -99,17 +96,19 @@ E-4000
 
 ## 交接内容与 replay
 
-successor 接收：
+交接**不调用任何模型**（v0.4.1 起）：successor 收到的是机械载荷，没有任何生成物。successor 接收：
 
-1. 旧会话较早部分的模型摘要；
-2. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文；
-3. `HANDOFF.md` 中的摘要和旧 session log 指针。
+1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
+2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`）；
+3. `HANDOFF.md` 与续接提示里的旧 session log 指针，以及一条「缺的细节必须先查该日志、不确定不得凭印象作答」的强指令。
+
+较早的部分不再以摘要散文进入 successor，而是留在旧会话日志里按需取回：日志是原文，不会像摘要那样二次压缩。
 
 为保证不同 provider 都能接受 replay block：
 
 - 旧 handoff continuation prompt 替换为 `[handoff prompt omitted]`，不会把上一代交接提示当作新指令重复执行。
-- keep cut 若落在一个 turn 中，开头插入 `[turn prefix summarized during handoff]`，保证 user-first 形状。
-- 没有对应 assistant tool call 的 orphan `toolResult` 不重放，而是并入摘要输入。
+- keep cut 若落在一个 turn 中，开头插入 `[turn prefix dropped during handoff]`，保证 user-first 形状。
+- 没有对应 assistant tool call 的 orphan `toolResult` 不重放，也不会进入任何载荷；它的内容只留在旧会话日志里。
 - keep budget 是上限，不会为了填满预算回补更旧 prompt；空预算场景是设计上的静默 no-op。
 
 ## 语言
@@ -118,7 +117,7 @@ successor 接收：
 
 - `en`：英文 scaffold 与 continuation。
 - `zh`：中文 scaffold 与 continuation。
-- `auto`：从最近用户消息判断中/英；摘要正文也使用该语言。
+- `auto`：从最近用户消息判断中/英；续接文档（scaffolding）也使用该语言。
 
 ## successor 模型与 thinking 恢复
 

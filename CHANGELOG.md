@@ -5,7 +5,33 @@
 
 ## v0.4.1 — 未发布
 
+### 变更
+
+- **memory / CONTEXT 注入改为渐进披露**：每轮固定前缀不再整篇注入这两个文件——决策与踩坑相关的小节
+  （`MEMORY.md` 的 `## Invariants`、`## Pitfalls`，`CONTEXT.md` 的 `## Key points`、`## Open tasks`）保持逐字常驻，
+  其余小节（`## Project`、`## Index`、`## Summary`）压成一行「文件 + 节名 + 何时读它」的指针，并附一条强指令
+  「不确定的具体事实必须先 read 该文件再回答，不得凭印象作答」。指针语言跟随正文语言（同一个 CJK 判定 owner）；
+  未知或新增节名默认常驻，没有任何可索引小节时整篇注入。当前渲染下两个文件合计减少约一万字符/轮，
+  且服从度可测（真实会话 JSONL 里会出现对应的 `read` 工具执行）。
+  设计：`.codestable/issues/2026-10-05-memory-progressive-disclosure/`。
+- **交接不再生成摘要**：删除整条摘要链（模型调用、token-cap 重试、九节标题本地化、`summaryFocus`、
+  `SUMMARY_OUTPUT_RESERVE_TOKENS` 与摘要模型窗口 cap）。successor 现在只拿到机械载荷：最近回合原文、文件清单，
+  以及旧会话日志指针加一条「缺的细节必须先去日志里查」的强指令；较早的部分留在日志里按需取回。
+  依据是两条现场事实：把一份真实对话转写折进 prompt 会让 successor 完全跑偏；而「指针 + 真尾 + 强指令」在同样模型
+  与一份真实日志上三问全对（实测见 `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md` §9）。
+  用户可见文案随之改成事实描述（开始提示 `dropping ~X`、成功提示说明被丢弃部分留在会话日志、状态行 `drop N` /
+  `drop budget N`、拒绝句用 handoff 而非 summary）；旋钮名与动词拼写未改（`handoffBudgetSummaryTokens`、
+  `/handoff budget summary`），因为它们与 dsh 面共享、改名或删除需要单独决定，因此 `handoffThinking` 在 pi 侧
+  目前只剩写路径。
+
 ### 修复
+
+- **`session_shutdown` 里的整理失败不再逃进 pi**：该事件中的 consolidation 失败此前会冒泡到 pi 的
+  `ExtensionRunner`（`errors.log` 2026-09-22 那条链的栈穿过 `emitSessionShutdownEvent`），而交接正在同一个事件里
+  `await ctx.newSession`。现在失败被捕获并记到 `errors.log` 的 `shutdown:consolidate` 键下。该守卫在测试面上不可达
+  （pass 已吞掉能注入的所有失败形态），因此按「有现场依据的防御」记录，不写成已验证。
+- **交接失败提示不再承诺 pi 的自动压缩**：`Handoff: failed — …` 去掉了 `pi auto-compaction still applies`，
+  这一层从不控制 pi 的压缩。
 
 - **交接保住「最后一轮」**：pi 的 `findCutPoint` 本来就返回 `turnStartIndex`/`isSplitTurn`，本扩展此前只取
   `firstKeptEntryIndex`，于是被切开的那个回合（连同它的起始 user 消息）只以摘要散文进入 successor，
