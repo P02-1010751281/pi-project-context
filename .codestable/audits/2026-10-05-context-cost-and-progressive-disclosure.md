@@ -281,3 +281,14 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 `session_shutdown` 的 catch 在机具里够不到（pass 自己吞掉失败）。把 root 选择抽成 `shutdownErrorRoot` 后，
 三条直接断言钉住了它，单侧变异**精确红一条**（`a cwd that only has .agents is not the memory layer`）。
 
+### 9.10 两条「未证残留」的实测收口（2026-10-05）
+
+探针 `migrateProjectState` 与 autolearn 清单各量一次，把两条一直以「未证/不可观测」记账的残留换成数字：
+
+| 残留 | 实测 | 收口 |
+| --- | --- | --- |
+| D4：`migrateProjectState` 每次 `session_start` 都跑的持续成本 | 在「已迁移」的临时项目上 5 次取平均 = **0.78 ms/会话** | 成本可忽略，不是缺陷；是否退役旧形态兼容层改为「等一条 0 命中以外的现场事实」再定，不再以「有成本」为由挂账 |
+| `AUTOLEARN_INVENTORY_CHARS = 8000` 截断不可观测 | 本仓清单 **3,810 字符 / 18 技能**；全域清单 **6,353 / 51**；**合并 7,892 / 69，余量仅 108 字符** | 截断在本机已贴边（更别说技能更多的消费仓），但它**不是新机制级缺陷**：被截掉的名字进不了提示词，模型若据此重建，写盘门会以 `already exists` 拒绝（`shapeRejection`/gate 两道），损害被限制为一次被拒的写入噪音。可观测性（截断时留一条记录）会成为一次提示词/回执面变更，属需 owner 点头的范围，因此记为**已量化的残留**而不是「未证」 |
+
+两处数字都取自 `tests/harness.mjs` 的 `loadNamespace`（与生产同一条加载路径），不是估读。
+
