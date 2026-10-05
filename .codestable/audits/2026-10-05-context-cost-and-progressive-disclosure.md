@@ -243,3 +243,41 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 `getProjectRoot` 拒绝时可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为修正，与 §9.4 的 shutdown 守卫
 同类，记为不可 pin。套件 15/15。发布事实与三审三校证据见
 `.codestable/issues/2026-10-05-memory-progressive-disclosure/release-v0.4.1-evidence.md`。
+
+### 9.8 旋钮体检：22/22 有活读者，现场 0 个非默认值（2026-10-05，owner 令「旋钮没用就删」后的实测）
+
+判据只有两条，都可复测：**代码里有没有读者**（`git grep -n <键> -- extensions/`，除 `shared/config.ts` 自身），
+以及**本机现场有没有被改过**（`DEFAULT_CONFIG` 由 `tests/harness.mjs` 的 `loadNamespace` 取权威值，再与全域
+`project-context.json` 逐键比对）。
+
+- 读者普查：22 个键**全部**有本文件之外的读者站点（`maxMemoryChars` 43、`maxTokens` 34、`provider` 48、
+  `handoffBudgetSummaryTokens` 11、`handoffBudgetRecentTokens` 12、`handoffLang` 7、`handoffGuard` 6、
+  `handoffMode` 4、`autolearnTurns`/`autolearnIntervalMs`/`consolidateIntervalMs`/`forceDedupeMs` 各 1 ……）。
+- 现场普查：13 个 `project-context.json`（含 `~/.pi`、`~/.agents`、Trash 副本）里，**唯一的非默认值是
+  UniField 的 `maxMemoryChars=36000`**；`autolearnAt` 是状态戳不算旋钮；其余 21 个键在所有文件里都等于默认值。
+- 结论：**没有任何旋钮满足「没用」**——「本机没人改过」是使用量证据，不是机制证据，而扩展是双远端公开发布品，
+  旧审计已把这条证据边界写明（「停止再加旋钮，别再为此扩面」，不是「删掉」）。因此 `handoffBudgetSummaryTokens`
+  与 `/handoff budget summary` 的命名分叉按同一份证据结案：**保留**（键名镜射命令路径 `budget summary`，有活读者
+  `threshold.ts:135`，改名要动 11 处站点 + dsh 共享拼写，而现场无任何需求信号）。本结论如需推翻，请给出一条
+  现场事实（而非「我没用过」）。
+
+### 9.9 死代码与不可达分支清扫（2026-10-05）
+
+**导出面**：对全部 314 个导出符号做「定义文件之外全仓（extensions/tests/docs）出现次数」探针，34 个为 0。
+其中 2 个连定义文件内也无引用——`handoff/format.ts::cleanHeaders`（handoff.ts 拆分时留下的孤儿）与
+`memory/journal.ts::newestMemoryArchiveSync`（旧审计 D2 那条死导出，其 JSDoc 还引着已不存在的 `loadMemorySync`，
+且是 journal.ts 唯一使用 `readdirSync`/`statSync` 的地方）——直接删除；其余 32 个只在定义模块内使用，
+`export` 关键字承诺了一个无人消费的接口，一并降级（`8f4eab7`）。
+
+**不可达分支（比死代码更硬的一条）**：`handoff/run.ts` 的 `runHandoff` 只有两个调用点，分别传 `"force"` 与
+`"force-auto"`，所以 `const force` 恒为真，三处 `!force` 分支**从未执行**：阈值/启用复检、`MIN_DROP_TOKENS`
+下限（含锚点减法）、以及 `estimatedAfter` 预检。调度路径的门（enabled、TUI、idle、冷却、阈值）都在
+`maybeTrigger` 里，它在发 `/handoff force-auto` 之前就做完了判断；2026-09-16 的第四轮评审早已记下
+「`estimatedAfter` / `baselineNow` 对孤儿结果双重扣减（minor；**当前路径不可达**）」，而 v0.4.2 的矩阵也正因此
+无法 pin「floor 的锚点减法」——**不可达的代码用删除收尾，不用测试**（`8f4eab7` 之后的第二片）。`force`、
+`threshold`、`sliceTokens`、`promptTokens`、`baselineNow`、`estimatedAfter` 随之一并退场。
+
+**最后一处 blind spot 转正**：v0.4.2 矩阵里 M7（`.agents/memory` → `.agents`）全绿，因为
+`session_shutdown` 的 catch 在机具里够不到（pass 自己吞掉失败）。把 root 选择抽成 `shutdownErrorRoot` 后，
+三条直接断言钉住了它，单侧变异**精确红一条**（`a cwd that only has .agents is not the memory layer`）。
+
