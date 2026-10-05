@@ -22,9 +22,10 @@
   前言、又变成一个假小节。
 - **fence 关闭按 CommonMark 判定**：关闭行必须是同字符、不短于开启行、且除空白外无内容；此前只比较首字符，
   一个三反引号行会提前关掉四反引号块。
-- `session_shutdown` 的失败回退把存在性检查精确到 `.agents/memory`（与该处注释一致）：该分支只在
-  `getProjectRoot` 拒绝时才可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为修正
-  （单侧变异全绿，与 shutdown 守卫同类）。
+- `session_shutdown` 的失败回退把根选择抽成 `shutdownErrorRoot`，存在性检查精确到 `.agents/memory`（与该处
+  注释一致）：该分支只在 `getProjectRoot` 拒绝时才可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为
+  修正。该判定无法经由处理器触达（pass 已吞掉能注入的所有失败形态），因此改为对 `shutdownErrorRoot` 的
+  直接断言固定：单侧变异（`.agents/memory` → `.agents`）现在精确红一条「只有 `.agents` 的 cwd 不是记忆层」。
 
 ## v0.4.1 — 2026-10-05
 
