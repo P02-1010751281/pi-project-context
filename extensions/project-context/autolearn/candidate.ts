@@ -40,7 +40,13 @@ export function shapeRejection(description: string, body: string): string | unde
 	return undefined;
 }
 
-export function rejectionReason(skill: ProposedSkill, verified: Set<string>, skills: SkillInfo[], candidateExists: boolean): string | undefined {
+export function rejectionReason(
+	skill: ProposedSkill,
+	verified: Set<string>,
+	skills: SkillInfo[],
+	candidateExists: boolean,
+	shownNames: Set<string> = new Set(),
+): string | undefined {
 	if (!validSkillName(skill.name)) return "invalid kebab-case name";
 	const shape = shapeRejection(skill.description, skill.body);
 	if (shape !== undefined) return shape;
@@ -49,10 +55,14 @@ export function rejectionReason(skill: ProposedSkill, verified: Set<string>, ski
 	if (cited.length < required) {
 		return skill.candidate ? "needs at least one verified session id" : "needs evidence from at least two different sessions";
 	}
-	// A name this pipeline generated may be reused to supersede that skill; every other existing name
-	// (hand-written, imported, or global) belongs to someone else and is left alone.
+	// A name this pipeline generated may be reused to supersede that skill - and only when this pass showed its
+	// body, because the merge has to be over the text being replaced rather than a blind rewrite. Every other
+	// existing name (hand-written, imported, global, or learned but not shown) is left alone.
 	const collision = skills.find((existing) => existing.name === skill.name);
-	if (collision && !(collision.scope === "project" && collision.autolearn)) return `skill "${skill.name}" already exists`;
+	if (collision) {
+		if (collision.scope !== "project" || !collision.autolearn) return `skill "${skill.name}" already exists`;
+		if (!shownNames.has(collision.name)) return "body not shown this pass";
+	}
 	if (candidateExists) return `candidate "${skill.name}" already exists`;
 	return undefined;
 }
@@ -100,7 +110,12 @@ export async function approveCandidate(pi: ExtensionAPI, ctx: ExtensionContext, 
 	}
 	await writeAtomic(destination, promotedDocument(name, description, body));
 	await rm(file, { force: true });
-	notify(ctx, `${existing ? "Updated" : "Activated"} project skill: ${name} → ${destination}`);
+	// Approving is a human decision that never ran the prompt, so an overwrite here is blind by construction and
+	// the message says so instead of implying the body was merged.
+	notify(
+		ctx,
+		`${existing ? "Updated" : "Activated"} project skill: ${name} → ${destination}${existing ? " — approved by hand; this pass never showed its body" : ""}`,
+	);
 }
 
 export async function rejectCandidate(pi: ExtensionAPI, ctx: ExtensionContext, name: string | undefined): Promise<void> {

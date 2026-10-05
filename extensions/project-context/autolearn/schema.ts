@@ -16,7 +16,7 @@ export const RECORD_SKILL_TOOL: AuxTool = {
 	parameters: {
 		type: "object",
 		additionalProperties: false,
-		required: ["skill", "inspect"],
+		required: ["skill", "inspect", "inspectSkill"],
 		properties: {
 			skill: {
 				type: "object",
@@ -53,6 +53,14 @@ export const RECORD_SKILL_TOOL: AuxTool = {
 				type: "array",
 				items: { type: "string" },
 				description: "Up to four archived session ids whose raw transcripts you want to read before deciding.",
+			},
+			inspectSkill: {
+				type: "array",
+				items: { type: "string" },
+				// The count cap lives in code (inventory.ts): `maxItems` is not guaranteed to be enforced, and the
+				// pass slices the list itself before it decides which bodies to show.
+				description:
+					"Up to two learned project skill names whose current body you want to see before merging them. A learned skill's name may only be reused after its body has been shown.",
 			},
 		},
 	},

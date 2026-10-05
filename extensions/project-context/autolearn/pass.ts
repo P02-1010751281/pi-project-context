@@ -12,7 +12,7 @@ import { type AuxCallState, type CompletionOutcome, callAux, pickToolCall, resol
 import { MAX_SKILL_BODY_CHARS, contextFile, errorText, fileMtimeMs, getProjectRoot, globalSkillsDir, loadMemory, logError, memoryFile, notify, readOptional, sessionIndexFile, skillsDir, writeAtomic } from "../shared/project-state.ts";
 import { approveCandidate, candidateFile, candidateNames, rejectCandidate, rejectionReason } from "./candidate.ts";
 import { AUTOLEARN_CONTEXT_CHARS, AUTOLEARN_INDEX_LINES, AUTOLEARN_MEMORY_CHARS, archivedSessionIds, collectEvidence, countUserTurns, indexedSessions, parseSessionIndex } from "./evidence.ts";
-import { collectSkills } from "./inventory.ts";
+import { collectSkills, learnedBodies } from "./inventory.ts";
 import { parseDecision, type Decision } from "./parse.ts";
 import { buildPrompt } from "./prompt.ts";
 import { RECORD_SKILL_TOOL } from "./schema.ts";
@@ -138,7 +138,9 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return decideFrom(completion, true);
 			};
 
-			// First look: consolidated artifacts + session index decide whether there is something to learn.
+			// First look: consolidated artifacts + session index decide whether there is something to learn. It
+			// carries no skill body at all: a learned name becomes reusable only after the model asks for that body,
+			// so the base prompt stops growing with the learned population.
 			let decision = await ask(buildPrompt(projectRoot, memory, context, skills, sessions));
 			await updateConfig(projectRoot, { autolearnAt: Date.now() });
 			throttle.set(projectRoot, { session: sessionId, sessionTurns: turns, turns: 0 });
@@ -147,10 +149,20 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				return;
 			}
 
-			// Backtrack: fetch the raw evidence the first look asked for, then decide.
-			if (!decision.skill && decision.inspect.length > 0) {
-				const evidence = await collectEvidence(projectRoot, decision.inspect);
-				decision = await ask(buildPrompt(projectRoot, memory, context, skills, sessions, { evidence }));
+			// What this pass showed is exactly what the follow-up prompt rendered. One computation feeds both the
+			// gate and the write path, so "not shown" and "may not be superseded" cannot drift apart.
+			const shownNames = new Set<string>();
+			// Backtrack: attach the raw evidence and/or the learned skill bodies the first look asked for, then decide.
+			if (!decision.skill && (decision.inspect.length > 0 || decision.inspectSkill.length > 0)) {
+				const bodies = learnedBodies(skills, decision.inspectSkill);
+				for (const name of bodies.names) shownNames.add(name);
+				const notShown = decision.inspectSkill.filter((name) => !shownNames.has(name));
+				const evidence = decision.inspect.length > 0 ? await collectEvidence(projectRoot, decision.inspect) : undefined;
+				decision = await ask(buildPrompt(projectRoot, memory, context, skills, sessions, {
+					evidence,
+					learnedBodies: bodies.text || undefined,
+					notShown,
+				}));
 				if (!decision) {
 					if (force) notify(ctx, "Autolearn: the model did not return the expected JSON; nothing written", "warning");
 					return;
@@ -163,7 +175,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			}
 			const skill = decision.skill;
 			const candidateExists = !!(await readOptional(candidateFile(projectRoot, skill.name)));
-			const reason = rejectionReason(skill, archived, skills, candidateExists);
+			const reason = rejectionReason(skill, archived, skills, candidateExists, shownNames);
 			if (reason) {
 				if (force) notify(ctx, `Autolearn: rejected "${skill.name}" (${reason})`, "warning");
 				return;
@@ -178,6 +190,13 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 			// The boundary is read off the artifact itself: only a skill this pipeline wrote may be superseded.
 			if (existing && !autolearnProvenance(existing)) {
 				if (force) notify(ctx, `Autolearn: rejected "${skill.name}" (already exists)`, "warning");
+				return;
+			}
+			// The second, independent read of the same boundary: the inventory decided above whether the proposal may
+			// be made at all, this reads the file that a write would replace (they can disagree if the skill appeared
+			// between the two).
+			if (existing && !shownNames.has(skill.name)) {
+				if (force) notify(ctx, `Autolearn: rejected "${skill.name}" (body not shown this pass)`, "warning");
 				return;
 			}
 			await writeAtomic(destination, skillDocument(skill, false));
@@ -211,7 +230,7 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("autolearn", {
-		description: "Learn a project skill now; also: list | approve <name> | reject <name> | on | off",
+		description: "Learn or update a project skill now; also: list | approve <name> | reject <name> | on | off",
 		getArgumentCompletions: (prefix) => completeVerbs(prefix, AUTOLEARN_VERBS),
 		handler: async (args, ctx) => {
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);

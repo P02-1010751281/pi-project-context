@@ -10,11 +10,17 @@ import { type SkillInfo, autolearnProvenance, skillBody, skillDescription, witho
 const AUTOLEARN_INVENTORY_CHARS = 8000;
 
 /**
- * How much of a learned skill's own body the merge prompt may carry. Whole bodies only: a truncated
- * body invites a lossy "merge", so a skill that does not fit is left out entirely (and then the
- * prompt's rule forbids reusing its name this pass).
+ * How much of the requested learned skills' bodies one round may carry. Whole bodies only: a truncated body
+ * invites a lossy "merge", so a skill that does not fit is left out entirely - and then the prompt forbids
+ * reusing its name this pass, because the write path only allows names this round actually showed.
  */
-const AUTOLEARN_LEARNED_BODY_CHARS = MAX_SKILL_BODY_CHARS;
+const AUTOLEARN_SHOWN_BODY_CHARS = MAX_SKILL_BODY_CHARS;
+
+/**
+ * How many skill bodies one round may ask for. Enforced here rather than in the schema: `maxItems` is not
+ * guaranteed to be enforced by the provider, so the slice has to live in code.
+ */
+export const MAX_INSPECT_SKILLS = 2;
 
 export async function collectSkills(dir: string, scope: "project" | "global"): Promise<SkillInfo[]> {
 	const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -48,16 +54,23 @@ export function inventoryText(skills: SkillInfo[]): string {
 	return lines.join("\n") || "(none)";
 }
 
-/** The learned project skills' own bodies, so an update can merge instead of rewriting blind. */
-export function learnedBodiesText(skills: SkillInfo[]): string {
+/**
+ * The bodies of the *requested* learned project skills, so an update merges instead of rewriting blind.
+ * Returns the rendered text and the names it managed to include: "shown" is what the write path reads, so
+ * both have to come out of one computation.
+ */
+export function learnedBodies(skills: SkillInfo[], requested: string[]): { text: string; names: string[] } {
+	const wanted = new Set(requested.slice(0, MAX_INSPECT_SKILLS));
 	const sections: string[] = [];
+	const names: string[] = [];
 	let used = 0;
 	for (const skill of skills) {
-		if (!skill.autolearn || skill.scope !== "project" || !skill.body) continue;
+		if (!wanted.has(skill.name) || !skill.autolearn || skill.scope !== "project" || !skill.body) continue;
 		const section = `### ${skill.name}\n\n${skill.body}`;
-		if (used + section.length > AUTOLEARN_LEARNED_BODY_CHARS) continue;
+		if (used + section.length > AUTOLEARN_SHOWN_BODY_CHARS) continue;
 		sections.push(section);
+		names.push(skill.name);
 		used += section.length + 1;
 	}
-	return sections.join("\n\n");
+	return { text: sections.join("\n\n"), names };
 }

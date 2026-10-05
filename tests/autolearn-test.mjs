@@ -5,7 +5,8 @@ import { loadDefault, loadNamespace, makeCtx, makePi, messageEntry, PC, rmTemp, 
 
 /**
  * Autolearn tests against a temp project with synthetic archived sessions:
- *  - backtrack: the first look requests session ids, the follow-up decides with evidence
+ *  - backtrack: the first look requests session ids and/or learned skill bodies, the follow-up decides
+ *  - a learned skill may only be superseded after the model asked for its body (inspectSkill)
  *  - candidate → list → approve / reject
  *  - evidence gate and dedupe
  *  - the feature switch lives in project-context.json
@@ -101,6 +102,8 @@ try {
 	const pi = makePi({ cwd: tmp });
 	await factory(pi);
 	const command = pi.commands.get("autolearn");
+	// The capability covers updates, so the one user-visible line that describes the command has to say so.
+	check("the command description mentions updating", String(command.description ?? "").includes("or update"));
 	const ctx = makeCtx(tmp);
 
 	const body = "## When to use\n\nUse this when refactoring the temp project.\n\n## Steps\n\n1. Step one with an exact command: `node test.mjs`.\n2. Step two with a path: `.agents/memory/MEMORY.md`.\n3. Verify the result.\n\n## Gotchas\n\n- None recorded yet.\n";
@@ -111,7 +114,7 @@ try {
 	ctx.modelRegistry.complete = async (_model, context) => {
 		const prompt = context.messages[0].content[0].text;
 		prompts.push(prompt);
-		const reply = prompt.includes("<session-evidence>") ? phase2 : phase1;
+		const reply = prompt.includes("Follow-up:") ? phase2 : phase1;
 		return { content: [{ type: "text", text: JSON.stringify(reply) }] };
 	};
 
@@ -185,7 +188,7 @@ try {
 	check("a clean candidate still activates", await exists(path.join(tmp, ".agents/skills/clean-workflow/SKILL.md")));
 	check("a clean candidate is consumed", !(await exists(path.join(candidateDir, "clean-workflow.md"))));
 
-	console.log("\n=== E3. only a learned skill may be superseded ===");
+	console.log("\n=== E3. only a learned skill may be superseded, and only after its body was shown ===");
 	// The marker travels in the skill's own body, so the boundary is read off the artifact: a name
 	// freed by deleting a learned skill cannot make a later hand-written skill overwritable.
 	const alphaFile = path.join(tmp, ".agents/skills/alpha-workflow/SKILL.md");
@@ -194,18 +197,51 @@ try {
 	check("a learned skill carries the provenance marker", alphaDoc.includes("autolearn-generated"));
 	check("the marker stays out of the frontmatter", !frontmatter.includes("autolearn-generated") && frontmatter.includes("description:"));
 
+	// A1: the first look carries no skill body at all; the model has to ask for one by name, and the follow-up is
+	// the only round that can show it. Before this, every learned body that fit the budget was pushed whether or
+	// not it was wanted, which left whichever skills fell past the budget permanently invisible.
 	const mergedBody = "## When to use\n\nMerged alpha workflow for the temp project: every still-valid step kept.\n\n## Steps\n\n1. `node merged.mjs`\n2. Verify the render under `.agents/memory/MEMORY.md` before publishing.\n";
-	phase1 = { skill: null, inspect: ["sess-a", "sess-b"], reason: "merge the learned skill" };
+	phase1 = { skill: null, inspect: ["sess-a", "sess-b"], inspectSkill: ["alpha-workflow"], reason: "merge the learned skill" };
 	phase2 = { skill: { name: "alpha-workflow", description: "alpha workflow merged", body: mergedBody, evidence: ["sess-a", "sess-b"], candidate: false } };
 	prompts = [];
 	await command.handler("", ctx);
 	const updatedDoc = await readFile(alphaFile, "utf8");
+	// The rules text names the tag, so a block test has to look for the tag on its own line.
+	const hasBodyBlock = (prompt) => prompt.includes("<learned-skill-bodies>\n");
+	check("the first look carries no learned body", !hasBodyBlock(prompts[0]) && !prompts[0].includes("Step one with an exact command"));
+	check("the first look offers the ask instead", prompts[0].includes('inspectSkill'));
+	check("the follow-up carries the body that was asked for", hasBodyBlock(prompts[1]) && prompts[1].includes("Step one with an exact command"));
+	check("the inventory marks it as learned", prompts[0].includes("(project, learned)"));
+	check("a hand-written body is not offered for merging", !prompts[0].includes("Hand-written procedure for the temp project."));
 	check("a learned skill is superseded in place", updatedDoc.includes("node merged.mjs") && !updatedDoc.includes("Step one with an exact command"));
 	check("the update is announced as an update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
-	check("the merge prompt carried the learned skill's body", prompts[0].includes("Step one with an exact command"));
-	check("the merge prompt marks it as learned", prompts[0].includes("(project, learned)"));
-	check("a hand-written body is not offered for merging", !prompts[0].includes("Hand-written procedure for the temp project."));
 	check("the marker survives as exactly one copy", (updatedDoc.match(/autolearn-generated/g) ?? []).length === 1);
+
+	// The cap on how many bodies one round may ask for lives in code: `maxItems` is not guaranteed to be enforced.
+	const { collectSkills, learnedBodies, MAX_INSPECT_SKILLS } = await loadNamespace(`${PC}/autolearn/inventory.ts`);
+	const liveSkills = await collectSkills(path.join(tmp, ".agents/skills"), "project");
+	const asked = learnedBodies(liveSkills, ["alpha-workflow", "beta-workflow", "clean-workflow"]);
+	check("the ask is capped at two skills", MAX_INSPECT_SKILLS === 2 && asked.names.length === 2 && !asked.names.includes("clean-workflow"));
+	check("a body is only rendered when it was asked for", learnedBodies(liveSkills, []).text === "");
+
+	// Reusing a learned name without asking for its body is refused by code, not by hope: the gate knows what this
+	// pass showed, so a blind rewrite cannot slip through even if the prompt's rule is ignored.
+	const beforeRefusal = await readFile(alphaFile, "utf8");
+	phase1 = { skill: { name: "alpha-workflow", description: "blind merge", body: mergedBody, evidence: ["sess-a", "sess-b"], candidate: false } };
+	prompts = [];
+	await command.handler("", ctx);
+	check("an unrequested learned name is refused", String(ctx.notifications.at(-1)?.[0] ?? "").includes("body not shown this pass"));
+	check("the refused merge changed nothing", (await readFile(alphaFile, "utf8")) === beforeRefusal);
+	check("a proposal needs no follow-up round", prompts.length === 1);
+
+	// Asking for a name that is not a learned project skill comes back as "not shown", so the model cannot believe
+	// it saw a body it never got (and the name stays off limits in the follow-up's rules).
+	phase1 = { skill: null, inspect: [], inspectSkill: ["handmade-workflow"] };
+	phase2 = { skill: null, inspect: [], inspectSkill: [] };
+	prompts = [];
+	await command.handler("", ctx);
+	check("a hand-written name comes back as not shown", prompts[1].includes("no body was shown") && prompts[1].includes("handmade-workflow"));
+	check("a not-shown ask injects no body block", !hasBodyBlock(prompts[1]));
 
 	// The gate guards the candidate path too: a candidate may not be stored for a name that belongs to a
 	// hand-written skill (approve would refuse it, but the file would sit there as a trap).
@@ -214,12 +250,21 @@ try {
 	check("no candidate is stored for a hand-written name", !(await exists(path.join(candidateDir, "handmade-workflow.md"))));
 	check("the candidate proposal named the collision", String(ctx.notifications.at(-1)?.[0] ?? "").includes("already exists"));
 
+	// The candidate path runs through the same gate: a candidate for a learned name this pass never showed is
+	// refused as well, because approving it later would be a blind overwrite by another route.
+	phase1 = { skill: { name: "alpha-workflow", description: "blind candidate", body: mergedBody, evidence: ["sess-a"], candidate: true } };
+	await command.handler("", ctx);
+	check("no candidate is stored for an unshown learned name", !(await exists(path.join(candidateDir, "alpha-workflow.md"))));
+	check("the candidate refusal names the rule", String(ctx.notifications.at(-1)?.[0] ?? "").includes("body not shown this pass"));
+
 	// The approve path shares the boundary: a candidate may supersede a learned skill, never a hand-written one.
 	const longBody = (line) => `${line}\n\n${"Keep the merged steps that still hold. ".repeat(6)}`;
 	await writeFile(path.join(candidateDir, "alpha-workflow.md"), `---\nname: alpha-workflow\ndescription: "alpha workflow, approved"\n---\n\n${longBody("## Steps\n\n1. `node approved.mjs`")}\n`);
 	await command.handler("approve alpha-workflow", ctx);
 	check("approve supersedes a learned skill", (await readFile(alphaFile, "utf8")).includes("node approved.mjs"));
 	check("approve announces the update", String(ctx.notifications.at(-1)?.[0] ?? "").includes("Updated project skill"));
+	// Approving never ran the prompt, so an overwrite there is blind by construction and the message says so.
+	check("approve says the overwrite is blind", String(ctx.notifications.at(-1)?.[0] ?? "").includes("never showed its body"));
 	await writeFile(path.join(candidateDir, "handmade-workflow.md"), `---\nname: handmade-workflow\ndescription: "handmade, approved"\n---\n\n${longBody("## Steps\n\n1. `node nope.mjs`")}\n`);
 	await command.handler("approve handmade-workflow", ctx);
 	check("approve refuses a hand-written collision", String(ctx.notifications.at(-1)?.[0] ?? "").includes("already exists"));
@@ -296,6 +341,19 @@ try {
 	console.log("\n=== D. the decision shape (record_skill) ===");
 	{
 		const { parseDecision } = await loadNamespace(`${PC}/autolearn/parse.ts`);
+		// The strict-ready checklist: every property listed in `required`, `additionalProperties: false`, and the
+		// count cap NOT expressed as `maxItems` (pi-ai does not guarantee the provider enforces it).
+		{
+			const { RECORD_SKILL_TOOL } = await loadNamespace(`${PC}/autolearn/schema.ts`);
+			const root = RECORD_SKILL_TOOL.parameters;
+			check(
+				"the tool schema stays strict-ready with the body ask",
+				root.additionalProperties === false &&
+					["skill", "inspect", "inspectSkill"].every((key) => root.required.includes(key)) &&
+					root.properties.inspectSkill.items.type === "string" &&
+					root.properties.inspectSkill.maxItems === undefined,
+			);
+		}
 		const empty = { name: "", description: "", body: "", evidence: [], candidate: false, reason: "" };
 		check("an always-object reply with a name proposes a skill", parseDecision({ skill: { ...empty, name: "n", description: "d", body: "b", evidence: ["sess-a"] }, inspect: [] })?.skill?.name === "n");
 		// "" is the sentinel for "nothing to propose": the shape has no null and no object union.
@@ -303,6 +361,9 @@ try {
 		check("an empty name means no skill", none !== undefined && none.skill === null);
 		const wants = parseDecision({ skill: empty, inspect: ["sess-a", "sess-b"] });
 		check("an empty name with an inspect list asks for evidence", wants !== undefined && wants.skill === null && wants.inspect.length === 2);
+		const wantsBody = parseDecision({ skill: empty, inspect: [], inspectSkill: ["alpha-workflow"] });
+		check("an empty name with an inspectSkill list asks for a body", wantsBody !== undefined && wantsBody.skill === null && wantsBody.inspectSkill.length === 1);
+		check("a reply without the new field parses as no ask", parseDecision({ skill: null, inspect: [] })?.inspectSkill.length === 0);
 		// A model answering the old shape out of habit still works.
 		check("the legacy null skill is still accepted", parseDecision({ skill: null, inspect: [] })?.skill === null);
 		check("the legacy missing skill is still accepted", parseDecision({ inspect: ["sess-a"] })?.skill === null);
