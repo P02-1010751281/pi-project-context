@@ -249,8 +249,10 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 ### 9.8 旋钮体检：22/22 有活读者，现场仅 1 处被手改的值（2026-10-05，owner 令「旋钮没用就删」后的实测）
 
 > 口径（v0.4.2 校验轮补写）：键存在 ≠ 被改过。下面的比对必须先把 v0.4.0 之前的旧键名按 `legacyConfigPatch` 的
-> 映射折算，再与 `DEFAULT_CONFIG` 逐值比；直接按字面键名比会把 8 个**仍未被 v0.4.x 重写过**的文件里的旧默认值
-> 误报成「非默认」。这也是现场事实：读时折算不写回，只有 `updateConfig` 才重写文档。
+> 映射折算，再与 `DEFAULT_CONFIG` 逐值比；直接按字面键名比会把**仍未被 v0.4.x 重写过**的文件里的旧默认值
+> 误报成「非默认」。计数随扫描口径变：本机 `Projects`（深度 9）+ `$HOME` 下可复现 11 个文件、其中 8 个仍带
+> v0.4.0 前的旧键名（审 2 在 13 文件口径下数到 10 个）。这也是现场事实：读时折算不写回，只有 `updateConfig`
+> 才重写文档。
 
 判据只有两条，都可复测：**代码里有没有读者**（`git grep -n <键> -- extensions/`，除 `shared/config.ts` 自身），
 以及**本机现场有没有被改过**（`DEFAULT_CONFIG` 由 `tests/harness.mjs` 的 `loadNamespace` 取权威值，再与全域
@@ -330,9 +332,18 @@ suggestion 采纳一条：`runHandoff` 的 `args: string` 收窄为 `"force" | "
 本次删掉的事后下限在 v0.4.1 起就不可达。修它要新增判定点（`threshold.ts` 固定分支或 `maybeTrigger`），
 需 owner 决策，故按「既定语义」写进 `docs/handoff.md` 而不是改机制。
 
-**矩阵重跑（本轮 7 格，冻结 `15b65cb`，每格只单侧改回一处）**：M1 标题判定退回 fence 盲目扫描 → **3 红**；
-M2 关闭 fence 不再比较长度 → **1 红**；M3 补回退役动词补全 → **1 红**；M4 补回退役二级补全 → **1 红**；
-M5 补回退役动词分支 → **1 红**；M6 `parseConfig` 补回退役键 → **3 红**；M7 shutdown 回退只查 `.agents` →
-**2 红**（v0.4.2 时该格是全绿负向对照，见 §9.7/§9.9）。格定义与 §9.7 的旧矩阵不同（本轮每格是「补回/退回一处」，
-落点与红数不可与旧表逐格对齐），负向对照是同一棵未改动的树跑全套件 15/15。脚本：`/tmp/matrix-v042.py`。
+**矩阵重跑（本轮 7 格，冻结 `15b65cb`，每格只单侧改回一处；只数具名 `FAIL ` 行，不把 `FAILURES: N`
+汇总行算进去）**：M1 标题判定退回 fence 盲目扫描 → **3 红**（`a heading-shaped line inside a fence does not
+split the document`、`a heading-shaped line in a fenced preamble does not become a section`、`a shorter fence
+run inside a block does not close it`）；M2 关闭 fence 不再比较长度 → **1 红**（`a shorter fence run inside a
+block does not close it`）；M3 补回退役动词补全 → **1 红**、M4 补回退役二级补全 → **1 红**（两者都红
+`the retired thinking verb is gone from the completion surface`）；M5 补回退役动词分支 → **1 红**
+（`the retired thinking verb is refused as an unknown option`）；M6 `parseConfig` 补回退役键 → **2 红**
+（`a retired key is not resurrected by the nested layout`、`the retired thinking name folds into nothing`）；
+M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents is not the memory layer`）——抽取
+`shutdownErrorRoot` 之前该格是全绿（§9.7 的负向对照），抽取后同一次变异精确红一条，与 CHANGELOG、§9.9 一致。
+
+首轮记录曾把 `FAILURES: N` 汇总行也计入，写成 M6=3、M7=2；审 2 指出 M7 实为 1 红，脚本改为只数具名行并重跑，
+这里是订正后的数字。格定义与 §9.7 的旧矩阵不同（本轮每格是「补回/退回一处」，落点与红数不可与旧表逐格对齐），
+负向对照是同一棵未改动的树跑全套件 15/15。脚本：`/tmp/matrix-v042.py`。
 

@@ -500,8 +500,9 @@ check(
 	(fencedInjected.match(/- `## /g) ?? []).length === 2 && fencedInjected.includes("## Invariants\n\n- 铁律。"),
 );
 // The preamble is found by the same fence-aware traversal as the sections, so a heading-shaped line inside
-// a fenced block at the top is content: with a fence-blind preamble scan the fake `## Project` would become
-// a second pointer line and the real section's body would be indexed away with it.
+// a fenced block at the top stays content. A fence-blind preamble scan instead cut the preamble at the fake
+// heading - the fenced content was lost with it - while the section scan (already fence-aware) never treated
+// that line as a section, so the two views of the document disagreed about where it starts.
 const fencedPreambleFixture = `# Project Memory\n\n\`\`\`md\n## Project\n- 围栏内是内容。\n\`\`\`\n\n## Project\n- 真实布局。\n\n## Invariants\n\n- 铁律。\n\n## Index\n- a.ts - 合并。\n`;
 const fencedPreambleInjected = injection.buildMemoryInjection(fencedPreambleFixture);
 check(

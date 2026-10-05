@@ -12,9 +12,10 @@
   拼写。兼容性上这是一次**硬切**，不是改名：v0.4.1 里它仍是已知键（`parseConfig` 读回、`updateConfig` 写回，
   值会随写持久化），退役后它才成为未知键——按本仓规则被忽略，并在下一次写回时随整份重写消失。键、动词、二级
   补全、旧名迁移项与文档一并移除；没有别名。保留同拼写的
-  `handoffBudgetSummaryTokens` / `/handoff budget summary` 仍有活读者（触发公式）。同一片把常量
-  `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`（语义=最小可丢弃前缀，无行为变化），摘要链删除后
-  代码里最后一个 `summarize` 词随之消失。
+  `handoffBudgetSummaryTokens` / `/handoff budget summary` 仍有活读者（`threshold.ts` 把它读进 override 回执；
+  auto 触发公式本身不含它）。同一片把常量 `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`（语义=最小可丢弃
+  前缀，无行为变化）——代码里最后一个 `MIN_SUMMARIZE_*` 标识符随之消失（`summarized`/`summarizer` 是别的机制、
+  别的词形）。
 
 ### 修复
 

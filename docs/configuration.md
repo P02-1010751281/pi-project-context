@@ -159,7 +159,8 @@ handoff 自 v0.4.1 起不调用任何模型，也不再依赖辅助路由，因�
 
 v0.4.0 的**改名**走同一台机器：`autoConsolidate`→`memoryEnabled`、`autoLearn`→`autolearnEnabled`、
 `handoffTargetTokens`→`handoffBudgetSummaryTokens`、`handoffKeepTokens`→`handoffBudgetRecentTokens`、
-`handoffThresholdAuto`、`handoffLanguage`→`handoffLang`。
+`handoffSummaryThinking`→`handoffThinking`（该目标键已于 v0.4.2 退役，见下）、`handoffAdaptive`→`handoffThresholdAuto`、
+`handoffLanguage`→`handoffLang`。
 旧名与新名并存时**新名优先**，写回后旧名消失；唯一认识这些旧名的地方仍是 `legacyConfigPatch()`。
 `handoffThinking` 及其旧名 `handoffSummaryThinking` 在 v0.4.2 **退役**（不是改名）：没有现值可迁，文件里留下的旧键会被忽略，
 并在下次写回时随整份重写消失。

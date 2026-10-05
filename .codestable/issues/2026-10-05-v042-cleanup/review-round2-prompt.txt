@@ -1,0 +1,58 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 2）。工作目录（沙箱，冻结版）：/tmp/pc-v042-r2
+
+严格只读：不得写工作区任何文件、不得 git add/commit/checkout/stash、不得改配置；临时文件只能放 /tmp。
+你只有 read 与 bash 两个工具。判定模型（记入本次记录）：deepseek/deepseek-flash。
+请独立判断，不要继承仓库文档或上一轮的结论；假设它们可能有错，自己复测。
+
+## 本次发布范围
+v0.4.2 = `git diff v0.4.1..HEAD`，冻结于 HEAD 1553151。它是一轮「应修尽修」的清扫：删除死符号与不可达分支、
+退役一个无读者的配置键与动词、把 shutdown 回退的根选择抽成可测函数、以及一批文档/审计更正。
+
+## 上一轮（审 1）已经发生的事
+审 1 在冻结版 15b65cb 上判定 CHANGES-REQUESTED：0 blocking、2 important（都是**发布文档的事实性错误**）、
+6 nit、2 suggestion。记录：`.codestable/issues/2026-10-05-v042-cleanup/review-round1-independent.txt`。
+本轮（审 2）的第一要务是**核验这些修复是否真的落地、边界是否按审 1 说的来、并且没有引入新问题**：
+
+1. I1「`handoffThinking` 退役理由写反」：审 1 用 v0.4.1 的 `config.ts`（`:52/111/229/263/324`）证明它在 v0.4.1
+   是已知键、值会随写持久化，是 v0.4.2 的退役才让它成为未知键。请**自己** `git show v0.4.1:...config.ts` 复核，
+   并检查所有描述此事的活动面是否已改成「硬切不是改名」且不再残留旧说法：`CHANGELOG.md`、`docs/configuration.md`、
+   `.codestable/reference/vocabulary-conventions.md`、`extensions/project-context/shared/config.ts`（两处注释）、
+   `tests/handoff-test.mjs`、`.agents/memory/{MEMORY,CONTEXT}.md`、以及 `.codestable/` 下的记录（冻结档案里
+   出现旧说法不算缺陷，但**活动引用/活文档**里出现就算）。请给出你 grep 到的残留清单（file:line + 是否可接受）。
+2. I2「fence 旧 bug 的描述不实」：请自己读 v0.4.1 的 `splitSections`（`git show v0.4.1:.../shared/inject.ts`）
+   确认它当时是否 fence 感知，再判断新的 CHANGELOG 叙述（前言那份视图被假标题截断并丢围栏内容、分节视图不把块内
+   `## X` 当小节）是否准确。断言本身（`tests/sections-test.mjs`）不用改，但请确认它的失败信息不会误导。
+3. nits：`run.ts` 调用点注释、`journal.ts`/`report.ts` 空行、审计 §9.8 标题与正文、`config.ts` 的「seven flat keys」
+   与表只剩 6 条、CHANGELOG 的 shutdown「精度修正」是否补上了唯一的可感差异。逐条核。
+4. suggestion 采纳项：`runHandoff` 的 `args` 收窄成 `"force" | "force-auto"`。请核：两个调用点是否都能通过类型；
+   有没有第三条调用路径（含测试注入、动态字符串拼出 `/handoff …`）；类型收窄是否在任何运行时路径引入行为差
+   （本仓用类型剥离加载，类型不出现在运行时）。
+
+## 还要独立复核（不只看修复）
+5. 整轮清扫的代码面：`git diff v0.4.1..HEAD -- extensions tests`。重点仍是「删除是否丢行为」与「新抽出的函数
+   是否被生产路径真的用到、断言是否在断言判定而非抄实现」。
+6. 文档与代码一致：CHANGELOG v0.4.2 每一句、审计 §9.6–§9.11 每个数字。特别是：
+   - §9.8 的旋钮口径：先把 v0.4.0 之前的旧键名按 `legacyConfigPatch` 的映射折算再与 `DEFAULT_CONFIG` 逐值比，
+     现场文件里唯一被手改的值应只有 UniField 的 `maxMemoryChars=36000`；请自己复算，并判断「22/22 有读者」
+     与「无旋钮可删」的结论是否站得住。
+   - §9.11 的矩阵与残留 R-1（固定比例模式无最小可丢下限，v0.4.1 同行为）：请自己跑一次固定比例探针（临时项目，
+     只写 /tmp），确认新代码与 v0.4.1 对同一输入结局一致；若不一致，那是新回归，属 blocking。
+   - `docs/handoff.md` 新增的「固定比例模式不经过物理下限」这句是否与 `threshold.ts` 的实际代码一致。
+7. `node tests/run-all.mjs` 在沙箱里跑（只写 /tmp）应 15/15；并挑 3 格做单侧变异验证断言真的可红（自己选格，
+   说明你改了什么、红了几条、是否具名）。
+
+## 对抗性一遍
+假设本轮修复里藏着一个新 bug（文档修复也可能引入自相矛盾）：最可能是哪一种？给最小复现与判据。
+特别检查：把退役理由改成「硬切」之后，`CHANGELOG`、`docs/configuration.md`、词汇表、`config.ts` 注释、
+记忆渲染五处对同一件事的说法是否**互相一致**（包括「旧键是否会被忽略」「值在 v0.4.1 是否持久化」这两个子断言）。
+
+## 输出格式
+按严重级别分桶，每条含 `file:line`、影响、修复边界（一句话说清「改哪里、不改哪里」）：
+- blocking（出错 / 丢数据 / 误导用户）
+- important
+- nit
+- suggestion
+- learning（值得写进记忆的现场事实）
+- praise（确实做对的地方，简短）
+- residual-risk（知道但本轮不修，写明为什么不修）
+最后一行必须是三者之一：`VERDICT: PASSED` / `VERDICT: CHANGES-REQUESTED` / `VERDICT: BLOCKED`（附一句理由）。

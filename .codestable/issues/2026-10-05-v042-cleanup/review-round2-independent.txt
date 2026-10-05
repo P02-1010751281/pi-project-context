@@ -1,0 +1,57 @@
+# lane A 独立审查报告（v0.4.2 / HEAD `1553151`，判定模型 deepseek/deepseek-flash）
+
+## 复测环境与方法
+- 只读工作区；测试与变异都在 `/tmp` 的副本（`/tmp/pcA-run1`）与 `git archive v0.4.1/15b65cb` 树上跑。
+- 基线 `node tests/run-all.mjs` → **15/15 全绿**。
+- 冻结区未被写入：`git status` 与起始一致，HEAD 仍 `1553151`。
+
+## 逐项核验摘要
+- **I1 复核**：`git show v0.4.1:.../config.ts` 确认 `:52/111/202/229/263/324` 均为该键的活代码（类型、默认、`thinkingOf`、旧名映射、`put`、`parseConfig`）；`v0.4.1 settings.ts:69` 的 `saveConfig` patch 也写它。五处活动面（CHANGELOG、configuration、词汇表、config.ts 两注释、记忆渲染）已一致改为「硬切不是改名」。**但残留一处活文档旧说法**（见 important-2），且 I1 修复在 configuration.md 里改出一个新错（important-1）。
+- **I2 复核**：在 v0.4.1 树上实跑同一 fixture：旧 `splitSections` 本就 fence 感知（假标题**从未**成 pointer），旧前言扫描把前言切在假标题处、丢掉 `- 围栏内是内容。` 并留下悬空 ```` ```md ````；新 CHANGELOG 叙述准确。「fence 关闭只比首字符」也属实，CommonMark 关闭规则实现正确。
+- **nits**：`run.ts:72` 注释、`journal.ts:181`/`report.ts:26` 空行、审计 §9.8 标题、`config.ts:24-28`「seven flat keys」、CHANGELOG shutdown 可感差异——五条都已按边界修好。
+- **suggestion**：`runHandoff` 只有 `run.ts:500/504` 两个调用点（v0.4.1 同）；`maybeTrigger` 是唯一内部动态发 `/handoff force-auto` 的路径；类型被 jiti 剥离，运行时零差异。
+- **代码清扫**：`!force` 三处确为不可达（`force` 恒真）；`MIN_DROP_TOKENS` 与旧值逐点等价；`shutdownErrorRoot` 被 `report.ts:383` 生产调用；导出探针在 extensions+tests+docs 口径下 HEAD 零外部引用 = 0。
+- **§9.8 旋钮**：13 个现场文件，按 `legacyConfigPatch` 折算旧名后唯一非默认值 = UniField `maxMemoryChars=36000`；22/22 键在 `shared/config.ts` 之外有读者（`provider` 用裸 `git grep` = 48，与审计一致）。「无旋钮可删」成立。
+- **§9.10**：清单 18/3810、51/6353、合并 69/7892/50 行、余量 108——逐字复现。
+- **R-1 固定比例探针**：同一输入下 HEAD 与 v0.4.1 输出逐字一致（`sent: true`、`newSessionRan: true`、`dropping ~2.1k`）→ 非本轮回归。
+- **变异复测**：M1 fence 盲目 → sections 3 条具名红；退役键整组补回 → switches 2 + handoff 1 共 3 条具名红；shutdown `.agents/memory`→`.agents` → consolidation **恰好 1 条**具名红（HEAD 与 15b65cb 均如此）。
+
+## blocking
+- 无。
+
+## important
+1. **`docs/configuration.md:162` — I1 修复删错半句话，改名清单现在悬空**。现文：`…handoffKeepTokens→handoffBudgetRecentTokens、handoffThresholdAuto、handoffLanguage→handoffLang。`。修 I1 时把 `handoffSummaryThinking→handoffThinking、handoffAdaptive→` 整段删掉，只留下新名 `handoffThresholdAuto`。影响：发布文档不再告诉读者 `handoffAdaptive` 会被折算（`config.ts:225` 仍在 `RENAMED_KEYS`，`switches-test` 仍覆盖），并把一个现名光杆列进「改名」清单；与同文件 `:6`「七个改名」、`:49` 键表、词汇表 K 表互相矛盾。**修复边界**：只把该处改回 `handoffAdaptive`→`handoffThresholdAuto`，不动退役段与其他迁移项。
+   - 最小复现：`sed -n '160,162p' docs/configuration.md` 对比 `sed -n '221,229p' extensions/project-context/shared/config.ts`。
+2. **`.codestable/issues/2026-10-05-memory-progressive-disclosure/v0.4.1-fix-note.md:47` — I1 被证伪的旧说法原样留在 v0.4.2 更新 banner**：`（pi 侧零行为读者，且 pi 的写本来就会丢弃它）`。影响：与 CHANGELOG/docs/config.ts/记忆渲染五处的「硬切」叙述直接冲突；v0.4.1 它是已知键、写回会持久化，是 v0.4.2 退役才让它成为未知键。**修复边界**：只改这一句括号内理由（零读者 + v0.4.1 会持久化 + D2 硬切），不动下方非目标正文与别处记录。
+
+## nit
+3. **`.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:335-336`（§9.11 矩阵）**：M7「shutdown 回退只查 `.agents` → **2 红**（v0.4.2 时该格是全绿负向对照）」两处都不准。实测在冻结 `15b65cb` 与 HEAD 上把 `shutdownErrorRoot` 的 `join(cwd, ".agents", "memory")` 退回 `join(cwd, ".agents")`，`run-all` 均**恰好 1 红**，具名 `a cwd that only has .agents is not the memory layer`；与 §9.9「精确红一条」及 CHANGELOG「精确红一条」矛盾。M1（3 红）、M6（3 红）、M8（2 红）我已复现，仅 M7 数错。**修复边界**：M7 改 1 红并删掉「全绿负向对照」括注（那句只适用抽取前的 §9.7），其余格子不动。
+4. **同文件 `:252`（§9.8 口径注）**：「8 个仍未被 v0.4.x 重写过的文件」；按它自己声明的 13 文件集合复算，携带 v0.4.0 前旧键名的是 **10 个**（Watermarking…、Quantum_Matrix、UniField、形式化证明、HWCup-Math-A、奖学金、2026 年新青马班、`~/.pi/.agents`、`~/.agents`、Trash 副本）。**修复边界**：8→10（或注明只统计 Projects+Trash 口径）。
+5. **`tests/sections-test.mjs:503-504` 注释仍在描述旧 bug 的错误机制**：`with a fence-blind preamble scan the fake ## Project would become a second pointer line…`。v0.4.1 假标题从未成 pointer；真实损害是前言被切、围栏内容被丢。已修正的 CHANGELOG 与此注释互相矛盾。失败标签本身（`…does not become a section`）在变异下不误导。**修复边界**：只改注释措辞，不动 fixture 与断言。
+6. **`CHANGELOG.md:17`**：「代码里最后一个 `summarize` 词随之消失」字面不成立——`archive/session-log.ts:8` 仍有 `summarized`、`autolearn/skill.ts:65` 仍有 `summarizer`（不同机制、不同词形）。**修复边界**：改为「最后一个 `MIN_SUMMARIZE_*` 标识符」或删去该从句。
+7. **`CHANGELOG.md:15`**：`handoffBudgetSummaryTokens`「仍有活读者（触发公式）」不精确——`threshold.ts:135` 只把它读进 `asked`/override 回执，auto 触发公式明确不含它（docs/handoff.md：「`S` 不参与这条线」）。**修复边界**：括注改为「状态行/override」。
+
+## suggestion
+- `tests/sections-test.mjs:500-510`：把 fenced-preamble 断言拆成「pointer 计数」与「围栏内容仍在」两条，让「假标题成节」与「内容被丢」两类回归各自具名；本轮不必须。
+- 若 owner 想给固定比例模式补最小可丢下限，改点在 `threshold.ts:111-118`（fixed 分支）或 `maybeTrigger`，不要回 `runHandoff`。
+
+## learning
+- 固定比例探针（`/tmp/a-fixed-ratio-probe.mjs`）：`auto:false, ratio:0.1, keep:20k`、1M 窗、usage 100k、可丢前缀 ~2.1k → HEAD 与 v0.4.1 输出逐字相同（R-1 是既存语义）。
+- 本轮变异复测皆具名：M1 fence 盲目 = 3 红；退役键整组补回 = 3 红（switches×2 + handoff×1）；shutdown 回退 = 1 红。
+- 旋钮复算方法论：必须先把旧名按 `legacyConfigPatch` 折算再比 `DEFAULT_CONFIG`，否则 10 个旧形态文件会误报。
+- `getProjectRoot`（`paths.ts:23-32`）自己吞掉 `pi.exec` 失败并回退 cwd，`shutdownErrorRoot` 的 `undefined` 分支近乎纯防御，直接断言 helper 是唯一 pin 法。
+- 现场本仓 `project-context.json` 仍带 `handoffThinking`（宿主仍是 v0.4.1），与「未发布、无 tag/pin」一致。
+
+## praise
+- I1 的实质结论修对了，且 CHANGELOG/configuration/词汇表/config.ts 两注释/记忆渲染五处口径一致（v0.4.1 已知且持久化、v0.4.2 硬切、无别名）。
+- fence 叙述现在与旧代码逐字对得上（我用 v0.4.1 渲染器实跑 fixture 验证），CommonMark 关闭规则与两个回归 fixture 正确。
+- `shutdownErrorRoot` 抽得有据：生产路径真调用，三条断言测判定，单侧变异精确红一条。
+- `runHandoff` 收窄安全：只有两个字面量调用点，运行时零差异；`cleanHeaders`/`newestMemoryArchiveSync` 确为零引用；套件 15/15。
+
+## residual-risk
+- **R-1** 固定比例无最小可丢下限：v0.4.1 同行为，已写进 `docs/handoff.md`；修它需 owner 决策与新判定点，本轮不修。
+- 本仓无 `tsc`/package.json：`"force" | "force-auto"` 是编辑器级约束，CI 不执行类型检查；新调用点只会在类型层面（而非测试）暴露。
+- §9.6 的渲染丢失数字（`memory.jsonl` 442,700 B、6 份备份）在冻结工作区不可复测：现为 122,194 B/4 条、5 份备份，journal 已被重写；该节自称同日历史测量，属 `.agents/memory` 震荡预期。
+- `CONTEXT.md:7` 仍是 `master=2a7f7d0`、「Seven commits」实列 8 个的会话快照；记忆渲染由扩展再生成，不手改。
+
+VERDICT: CHANGES-REQUESTED — 代码/测试面通过（15/15，变异具名可红，R-1 无回归），但 I1 的文档修复在 `docs/configuration.md:162` 新引入一处迁移映射事实错误，且同一被证伪理由仍留在活动的 `v0.4.1-fix-note.md:47`；另有 §9.11 的 M7 红数不准。
