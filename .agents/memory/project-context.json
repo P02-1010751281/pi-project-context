@@ -1,9 +1,9 @@
 {
   "archiveEnabled": true,
-  "autoConsolidate": true,
-  "autoLearn": true,
+  "memoryEnabled": true,
+  "autolearnEnabled": true,
   "handoffEnabled": true,
-  "autolearnAt": 1791110070664,
+  "autolearnAt": 1791170667165,
   "autolearnTurns": 20,
   "autolearnIntervalMs": 1800000,
   "consolidateTurns": 6,
@@ -14,12 +14,12 @@
   "maxMemoryChars": 32000,
   "provider": "",
   "model": "",
-  "handoffAdaptive": true,
+  "handoffThresholdAuto": true,
   "handoffThresholdRatio": 0.4,
-  "handoffTargetTokens": 64000,
-  "handoffKeepTokens": 20000,
-  "handoffSummaryThinking": "off",
+  "handoffBudgetSummaryTokens": 64000,
+  "handoffBudgetRecentTokens": 20000,
+  "handoffThinking": "off",
   "handoffMode": "send",
   "handoffGuard": "wait",
-  "handoffLanguage": "auto"
+  "handoffLang": "auto"
 }

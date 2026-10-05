@@ -57,8 +57,9 @@
 
 ## 已知影响与残留
 
-- **与 dsh 的配置面分叉**：7 个改名键里有 6 个原先与 dsh 共享（`handoffLang` 本就是 pi 侧差异）。dsh 忽略新名并回落默认值 →
-  两仓同时读写同一项目文件时，dsh 侧会看不到这些设置。映射已发布在 `docs/configuration.md` 兼容迁移段、`config.ts` 头部与规范 §5 K，dsh 需同步改名。
+- **与 dsh 的关系（口径已订正，见 `1a958ce`／`0f424b9`）**：这 **7 个改名两仓同名** —— dsh 改的是同样七个拼写，两仓配置面**不在拼写上分叉**。
+  差别在**回退**：本项目旧名在首次读配置时一次性迁移（`legacyConfigPatch`），而 dsh **不读别名**，所以 dsh profile 里残留的旧拼写必须自行改掉（在宿主重启前）。
+  pi 侧与 dsh 真正不同的键是 `handoffMode`／`handoffGuard`／`autolearnAt`（对应 dsh 的 `handoffPendingQuestion`），与本次改名无关。
 - `docs/` 与 `README.md` 的示例、`docs/handoff.md` 的预算公式用词已同步；CHANGELOG 记 v0.4.0 为破坏性变更。
 - 规范 `.codestable/reference/vocabulary-conventions.md` §5 K/P 已从「待落地」改为「已落地」，审计历史补一条。
 - 现场待观察：`/memory` 与 `/project-context status` 的 memory 行是否逐字一致（断言已钉，现场再确认一次即可）。
