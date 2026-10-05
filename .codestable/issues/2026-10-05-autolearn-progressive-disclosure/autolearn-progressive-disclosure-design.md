@@ -25,6 +25,36 @@ supersedes: 不改 v0.3.1 的取代语义，只补它的覆盖率与成本；v0.
 | 7 | 发布节奏：a 发 v0.3.2、b 发 v0.4.0，还是一次发 | 待答（§10 推荐：A 单独发 v0.3.2，B 观察后再定） |
 | 8 | B 是否降级（外部证据对递归分层不利） | 待答（§1.5：建议 B 缩为「只外置长细节、关键步骤留入口」） |
 
+### 0.1 命名与词汇决议（owner 已答，2026-10-05）
+
+| # | 项 | 决议 |
+| --- | --- | --- |
+| N1 | `/autolearn` 命令描述 | 改为 `Learn or update a project skill now; …` |
+| N2 | 新的拒绝理由 | `body not shown this pass`（与 `body too short` 同形） |
+| N3 | approve 盲写提示 | `Updated project skill: X → path` 后追加 `— approved by hand; this pass never showed its body` |
+| N4 | `docs/configuration.md` | 补半句：「且必须先在本轮提示词里展示过它的正文」 |
+| N5 | 工具字段名 | **`inspectSkill`**（与 `inspect` 同构，最多 2 条，数量在**代码**里截断） |
+| N6 | 提示词小节 | `<learned-skill-bodies>` 保留；「点名未给」不新增小节，规则区一行 `Without a body this pass (do not reuse these names): …` |
+| N7 | 三个动词定死 | **show 展示**／**merge 合并**／**supersede 取代**，prompt、CHANGELOG、docs、MEMORY 一律用这三个 |
+| N8 | 预算常量 | `AUTOLEARN_LEARNED_BODY_CHARS` → **`AUTOLEARN_SHOWN_BODY_CHARS`**（语义改为「本轮点名展示总量」） |
+| N9 | 正文收集函数 | `learnedBodiesText(skills)` → **`learnedBodies(skills, requested?)` 返回 `{ text, names }`** |
+| N10 | 展示集合变量 | **`shownNames: Set<string>`** |
+| N11 | Decision 字段 | `inspect` ＋ `inspectSkill` |
+| N12 | 分层目录名 | 直接用规范词 **`references/`** |
+| N13 | B 的拒绝理由 | `reference path must be references/<kebab>.md`／`reference file is missing`／`reference file is not linked from the body`／`too many references`／`reference too long` |
+| N14 | `body` 上限语义 | **乙**：`body` 上限改为 6,000（entry），单篇引用另设 `MAX_SKILL_REFERENCE_CHARS = 20000`；存量 >6,000 的四条靠「触发式分层」豁免 |
+
+### 0.2 词汇审计遗留（2026-10-05 扫出，待 owner 拍；详见 §13）
+
+| # | 项 | 建议 |
+| --- | --- | --- |
+| V1 | `/handoff` 通知仍写 `Auto summarize target:`，命令词已是 `budget summary` | 顺手修（v0.3.0 已决未落） |
+| V2 | 持久化键 `handoffTargetTokens`／`handoffKeepTokens` 滞后于 `budget summary`／`budget recent` | 单独立项（破坏性 + 迁移 + 10 处测试） |
+| V3 | 同特性键拼写不一：`autoLearn` vs `autolearnAt`／`Turns`／`IntervalMs`；`archiveEnabled`/`handoffEnabled` vs `autoConsolidate`/`autoLearn` | 同 V2 一并做 |
+| V4 | 四层「立即执行」动词各异：`update`／`write`／`now`／裸调用 | 建议记为「已决：各层动词描述各自动作」 |
+| V5 | 通知前缀四种风格（memory 一层内部就有三个） | 单独立项 |
+| V6 | 跨层状态渲染器名：`statusText` vs `memoryStatusMessage`/`contextStatusLine` | 纯内部改名，可顺手 |
+
 ## 1. 现场事实（本机可复现，探针见 §11）
 
 - `.agents/skills/` 共 **17** 条项目技能，**全部带 v0.3.1 的来源标记**；目录里除 `SKILL.md` **没有任何其它文件**（`find -type f` = 17）。
@@ -320,6 +350,30 @@ arXiv 2607.17598 是首个受控研究（raw 文档导航 / flat 技能包 / hie
 | [SkillRevise: Trace-Conditioned Skill Revision](https://arxiv.org/html/2606.01139v2) | 修订算子以**当前技能**为输入 —— 改之前必须给旧文本 |
 
 抓取方式：`tvly search/extract`（Tavily CLI），只把过滤后的片段带入上下文；受控研究那段数字被截断，文中已留空而**未臆补**。
+
+## 13. 词汇审计（2026-10-05，扫全仓）
+
+问题：v0.3.0 的「一个事实一个名字」到底收束到哪一层？结论：它收束的是**命令面**（动词/参数/二级词/状态行）与**配置布局**（扁平键 + 一次性迁移），
+下面三类没做，且能举出实例。
+
+| # | 面 | 现场证据 | 判断 |
+| --- | --- | --- | --- |
+| V1 | 用户可见文案 | `handoff/run.ts:405` 通知 `Auto summarize target: ~${fmtTokens(...)} per handoff before caps`；同一文件的 status 行（`run.ts:51`）已写 `summary budget` | **v0.3.0 已决未落**：命令词改了，通知没改 |
+| V2 | 持久化键 vs 命令词 | 命令是 `budget summary`／`budget recent`，键仍为 `handoffTargetTokens`／`handoffKeepTokens`（`shared/config.ts:41,43`）；`tests/handoff-test.mjs` 与 `switches-test.mjs` 共 10 处钉住；`config.ts:100` 注释也写 "keep budget" | 实际错位；改名 = 破坏性 + 迁移 + 测试改动 |
+| V3 | 同特性键拼写 | `autoLearn`（大写 L）vs `autolearnAt`／`autolearnTurns`／`autolearnIntervalMs`（小写 l）；开关四种拼法：`archiveEnabled`／`handoffEnabled` vs `autoConsolidate`／`autoLearn`（`config.ts:55-64`） | 同一事实两种拼法 |
+| V4 | 四层「立即执行」动词 | `/memory update`、`/session-log write`、`/handoff now`、`/autolearn`（裸）：`memory/report.ts:376`、`archive/archive.ts:176`、`handoff/run.ts:375`、`autolearn/pass.ts` 命令体 | 未统一；也可辩护（动词描述各层自己的动作）—— v0.3.0 没讨论过 |
+| V5 | 通知前缀 | 实测前缀：`Autolearn:`、`Auto handoff:`、`Automatic consolidation:`、`Project memory updated:`、`Memory cap:`、`Session log written:`／`Session archiving:`、`Auxiliary calls:`、`Features:` —— memory 一层内部就有三个 | 未统一 |
+| V6 | 跨层状态渲染器名 | handoff = `statusText(ctx)`（`handoff/run.ts:27`）；memory = `memoryStatusMessage`／`memoryStatusLevel`／`contextStatusLine`（`memory/status.ts`） | 内部名，未统一 |
+| V7 | 函数/变量名抽检 | 全仓导出函数基本为 verb+noun（`collectSkills`／`buildPrompt`／`parseDecision`／`resolveAuxModel`…）；`clip*` 家族 5 个成员（`clipTo`／`clipText`／`clipTailToLineBoundary`／`clipToLineBoundary`／`clipToLineBoundaryBothEnds`）各自锁不同边 | 不算残留 |
+
+处置建议：
+
+1. A1 内联做：§0.1 的 N1–N14（本主题自己的词）＋ **V1**（一行文案，先查测试是否钉）。
+2. 单独立项「词汇一致性」（建议 v0.4.0 级别）：**V2+V3**（配置键改名，一次做完，带迁移与文档；方向待 owner：`handoffTargetTokens`→`handoffSummaryTokens`？`autoLearn`→`autolearnEnabled`？）、
+   **V5**（通知前缀）、**V6**（渲染器名）。
+3. **V4** 建议**记为已决**（四层动词各自描述本层动作），写进 MEMORY 不变式，不再当残留看。
+
+不把 V2/V3 的破坏性改名夹进 A1：A1 是 feat（autolearn 要发 v0.3.2），配置键改名是另一件事，混在一起会让「一次提交可自证」失效，也难回退。
 
 ## 11. 附录：本设计的现场数字怎么复现
 
