@@ -130,9 +130,12 @@
 原 `Automatic consolidation:`／`Project memory updated:`／`Memory cap:` 归 `Memory:`，`Auto handoff*` 归 `Handoff:`，
 `Session archiving:`／`Session log written:`／`Session log update failed:` 归 `Session log:`。
 
-### X. 例外
+### X. 例外与约定
 
 - 内部变量名（如 `keep`、`target`）只要不出现在用户可见文案与配置键里，可保留；改了更好，但不是规范要求。
+- **项目级技能一律视为 autolearn 产物**（owner 2026-10-05 两次裁定）：本仓 `.agents/skills/` 与**任何消费仓**的 `.agents/skills/` 下的技能，
+  正文都带 `<!-- autolearn-generated: … -->` 标记，从而可被该仓的 pass 合并。作用域外的只有 `~/.agents/skills/`（全局技能，只读，永不写、也不标记）。
+  标记必须与 `autolearn/skill.ts` 的 `PROVENANCE_COMMENT` **逐字节相同**，否则 pass 认不出来。
 
 ## 6. 执行与核验
 
