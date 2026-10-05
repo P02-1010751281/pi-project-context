@@ -92,7 +92,7 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 4. 「the older side still reaches the summarizer」——吸附不吞掉老侧摘要。
 5. 「an overrun prefix is not snapped whole」+「the bulky prefix stays out of the replay」——裁切：超窗前缀不进重放。
 6. 「a single-turn session still hands off…」+「the single turn replays its opening question」——守卫：单回合会话不因吸附而中止。
-7. 全量回归：handoff 189 条 + `run-all.mjs` 15/15 绿。
+7. 全量回归：handoff 178 条（`grep -c '^OK  '` 口径，删摘要链后的值）+ `run-all.mjs` 15/15 绿。
 
 单侧变异（每项只改一侧，**实测**结果）：
 
@@ -103,7 +103,7 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 | 去掉起始 user 消息锚定 | 2 条：「the split turn's opening question is anchored into the replay」「the single turn replays its opening question」 |
 | 去掉两个守卫（无条件吸附） | 19 条级联 |
 
-实测入口：`node tests/handoff-test.mjs` 基线 189 OK / 0 FAIL，`node tests/run-all.mjs` 15/15 绿。
+实测入口：`node tests/handoff-test.mjs` 基线 178 OK / 0 FAIL（删摘要链前是 189；口径为打印的 OK 行数），`node tests/run-all.mjs` 15/15 绿。
 
 ## 5. 非目标与残留
 

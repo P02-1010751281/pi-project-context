@@ -14,7 +14,7 @@
 import { renderProgressiveBody, type InjectionSpec } from "../shared/inject.ts";
 import { documentLanguage } from "../shared/lang.ts";
 
-/** Shown to the reader; the injected prompt runs with the project root as its working directory. */
+/** Shown to the reader; rendered against the project root so the reader's `read` resolves it from any cwd. */
 export const MEMORY_INJECTION_PATH = ".agents/memory/MEMORY.md";
 export const CONTEXT_INJECTION_PATH = ".agents/memory/CONTEXT.md";
 
@@ -54,12 +54,15 @@ export const CONTEXT_INJECTION: InjectionSpec = {
 	path: CONTEXT_INJECTION_PATH,
 };
 
-/** MEMORY.md as it enters the system prompt: kept sections inline, the rest behind one read-first pointer. */
-export function buildMemoryInjection(text: string): string {
-	return renderProgressiveBody(text, MEMORY_INJECTION, documentLanguage(text));
+/**
+ * MEMORY.md as it enters the system prompt: kept sections inline, the rest behind one read-first pointer.
+ * `projectRoot` makes the pointer an absolute path, which is what the reader's `read` tool can resolve.
+ */
+export function buildMemoryInjection(text: string, projectRoot?: string): string {
+	return renderProgressiveBody(text, MEMORY_INJECTION, documentLanguage(text), projectRoot);
 }
 
 /** CONTEXT.md as it enters the system prompt, same shape as the memory injection. */
-export function buildContextInjection(text: string): string {
-	return renderProgressiveBody(text, CONTEXT_INJECTION, documentLanguage(text));
+export function buildContextInjection(text: string, projectRoot?: string): string {
+	return renderProgressiveBody(text, CONTEXT_INJECTION, documentLanguage(text), projectRoot);
 }

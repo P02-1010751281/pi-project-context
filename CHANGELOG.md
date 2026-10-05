@@ -34,10 +34,11 @@
   这一层从不控制 pi 的压缩。
 
 - **交接保住「最后一轮」**：pi 的 `findCutPoint` 本来就返回 `turnStartIndex`/`isSplitTurn`，本扩展此前只取
-  `firstKeptEntryIndex`，于是被切开的那个回合（连同它的起始 user 消息）只以摘要散文进入 successor，
-  重放块以 assistant 工具调用/工具结果开头（`[turn prefix summarized during handoff]` 占位）。
-  现在：前缀不超一窗且老侧仍可摘要时**吸附到回合起点**（整轮原文保留）；否则把该回合的起始 user 消息
-  **锚定进重放**，中间体积留在摘要（裁切 + 既有文件索引）。单回合会话不会因吸附而变成「无可摘要」而中止。
+  `firstKeptEntryIndex`，于是被切开的那个回合（连同它的起始 user 消息）会整段丢出重放，
+  重放块以 assistant 工具调用/工具结果开头（`[turn prefix summarized during handoff]` 占位；v0.4.1 起该占位改名为
+  `[turn prefix dropped during handoff]`）。
+  现在：前缀不超一窗且老侧仍有内容可丢时**吸附到回合起点**（整轮原文保留）；否则把该回合的起始 user 消息
+  **锚定进重放**，中间体积留在旧会话日志里（裁切 + 既有文件索引）。单回合会话不会因吸附而变成「无可丢内容」而中止。
   现场与设计：`.codestable/issues/2026-10-05-handoff-last-turn-not-replayed/`。
 
 ## v0.4.0 — 2026-10-05

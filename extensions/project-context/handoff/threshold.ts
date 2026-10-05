@@ -144,7 +144,7 @@ export function resolveThreshold(
 	const tierEdge = firstCostTierEdge(model);
 	if (tierEdge !== undefined) {
 		// The first pricing tier is the other surcharge guard. It can only bind at or above the
-		// physical floor; below that a handoff that both summarizes and stays in the cheap tier is
+		// physical floor; below that a handoff that both drops a prefix and stays in the cheap tier is
 		// impossible, so fail closed instead of silently crossing the paid boundary (the old
 		// `tierEdge > floor + margin` gate skipped the cap exactly in that case).
 		if (tierEdge - TIER_EDGE_MARGIN < floor) return undefined;
@@ -174,7 +174,7 @@ export function resolveThreshold(
  * The receipt used to render every refusal as "auto (no room at this window)" — an assertion about
  * the window. Only one of these causes is about the window; the others are an unknown window, an
  * unknown model/usage, a fixed ratio that rounds to zero, a **pricing tier** that would be crossed,
- * and the adaptive guardrail itself sitting below the floor a worthwhile summary needs (the knee, or
+ * and the adaptive guardrail itself sitting below the floor a worthwhile drop needs (the knee, or
  * the window's last tier margin). Sending a user to change the model or the target when the cause is
  * billing (or when nothing is known yet) is the misattribution this names away.
  */

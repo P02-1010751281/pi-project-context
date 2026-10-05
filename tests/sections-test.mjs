@@ -458,6 +458,38 @@ check(
 		contextInjected.includes("其余小节在 `.agents/memory/CONTEXT.md`：") &&
 		contextInjected.includes("- `## Summary` ——"),
 );
+// The preamble and any document-level note are not section content, so indexing the sections must not
+// index them away: the freshness timestamp and the truncation marker are what keep the injected view honest.
+check(
+	"the document preamble stays inline",
+	memoryInjected.includes("# Project Memory") && contextInjected.includes("Last updated: 2026-10-05T00:00:00.000Z"),
+);
+const truncatedFixture = `# Project Memory\n\n## Project\n- 布局。\n\n## Invariants\n\n- 铁律。\n\n## Pitfalls\n\n- 坑。\n\n## Index\n- a.ts - 合并。\n\n_[memory truncated at 4000 characters: 120 dropped]_\n`;
+const truncatedInjected = injection.buildMemoryInjection(truncatedFixture);
+check(
+	"a document-level note stays inline next to the pointers",
+	truncatedInjected.includes("_[memory truncated at 4000 characters: 120 dropped]_") &&
+		!truncatedInjected.includes("- a.ts - 合并。"),
+);
+check(
+	"the pointer path resolves against the project root when it is known",
+	injection.buildMemoryInjection(memoryFixture, "/tmp/proj").includes("其余小节在 `/tmp/proj/.agents/memory/MEMORY.md`："),
+);
+// Recorded boundary: the language is counted over the whole document, so two CJK characters anywhere (a
+// filename, a quoted word) flip every pointer line to Chinese and one does not. Pinned as-is so a future
+// change of the heuristic shows up as a red assertion instead of a silent prompt-language flip.
+check(
+	"two CJK characters anywhere flip the pointers to Chinese (recorded boundary)",
+	injection
+		.buildMemoryInjection("# Project Memory\n\n## Project\n- note\n\n## Invariants\n\n- x\n\n## Index\n- 中文.ts - a\n")
+		.includes("其余小节在"),
+);
+check(
+	"one CJK character keeps the pointers English (recorded boundary)",
+	injection
+		.buildMemoryInjection("# Project Memory\n\n## Project\n- note\n\n## Invariants\n\n- x\n\n## Index\n- 中.ts - a\n")
+		.includes("The remaining sections are in"),
+);
 
 // Fail-safes: an unlisted heading and a document with no headings both stay whole, and the pointer
 // language follows the body it points into.

@@ -48,6 +48,9 @@
   `body looks like an instruction injection`、`body not shown this pass`、`skill "<name>" already exists`、
   `candidate "<name>" already exists`、`needs at least one verified session id`、`needs evidence from at least two different sessions`。
 - **状态行**：` · <事实> <值>` 片段；事实词与命令面同词（`summary budget 64k`，不是 `summarize 64k`）。
+  v0.4.1 分叉（记录在案，不是新的通用规则）：摘要链删除后状态行说 ` · drop N` / ` · drop budget N`，
+  而命令面仍是 `/handoff budget summary`、键名仍是 `handoffBudgetSummaryTokens`（保留拼写是与 dsh 的共享面）；
+  这个分叉只属于 handoff 一层，改名或删除旋钮需要单独决定。
 - **用法提示**：`Usage: /<命令> <动词> <二级词> <参数>`，照抄命令面，不另起同义写法。
 
 ### 2.4 模型可见词汇（提示词与工具 schema）

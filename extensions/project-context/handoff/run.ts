@@ -96,9 +96,9 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		let splitTurnStart = -1;
 		if (config.handoffBudgetRecentTokens > 0) {
 			// Cut where the keep budget runs out, mid-turn included: pi cuts at conversation
-			// boundaries and never at a tool result, so the replay stays parseable — a result whose call
-			// was summarized is folded into the summary, and a slice opening on an assistant message is
-			// marked by SPLIT_TURN_MARKER.
+			// boundaries and never at a tool result, so the replay stays parseable — a result whose call is
+			// not in the slice is not replayed (its content stays in the session log), and a slice opening
+			// on an assistant message is marked by SPLIT_TURN_MARKER.
 			const cut = findCutPoint(allEntries, 0, allEntries.length, config.handoffBudgetRecentTokens);
 			firstKeptIndex = cut.firstKeptEntryIndex;
 			splitTurnStart = cut.isSplitTurn ? cut.turnStartIndex : -1;
@@ -170,7 +170,17 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			return;
 		}
 
-		notify(ctx, `Handoff: dropping ~${fmtTokens(olderTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`, "info");
+		// The anchor entry is counted by `olderTokens` (it sits at the end of the dropped prefix) and is
+		// also carried verbatim, so the dropped side shown here subtracts it: the two numbers then describe
+		// the middle and the tail, and neither counts the anchored turn start twice.
+		const anchorTokens = anchorEntry
+			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
+			: 0;
+		notify(
+			ctx,
+			`Handoff: dropping ~${fmtTokens(olderTokens - anchorTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`,
+			"info",
+		);
 
 		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLang);
 
@@ -403,8 +413,8 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				return;
 			}
 			if (head === "budget") {
-				// The two token amounts are different quantities, so each name says what it sizes: the summary
-				// the pass asks for, and the recent window carried over verbatim.
+				// The two token amounts are different quantities: one is the trigger request the pass reports
+				// (no summary call reads it since v0.4.1), the other is the recent window carried over verbatim.
 				if (value === "summary") {
 					const tokens = parseTokenCount(extra ?? "");
 					if (tokens === undefined || tokens < MIN_SUMMARIZE_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
@@ -432,7 +442,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 						ctx,
 						config.handoffBudgetRecentTokens > 0
 							? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens verbatim.`
-							: "Handoff: summary only, no recent carry-over.",
+							: "Handoff: no recent carry-over; the file list and the session-log pointer are all that carry.",
 					);
 					return;
 				}
@@ -449,8 +459,8 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				notify(
 					ctx,
 					value === "off"
-						? "Handoff summaries will run without thinking (faster, avoids the shared token cap)."
-						: "Handoff summaries will use the session thinking level (may hit the shared token cap).",
+						? "Handoff: thinking off — stored for the dsh profile; this side calls no model."
+						: "Handoff: thinking follows the session — stored for the dsh profile; this side calls no model.",
 				);
 				return;
 			}
@@ -547,8 +557,8 @@ const HANDOFF_VERBS = [
 	{ value: "on" },
 	{ value: "off" },
 	{ value: "threshold", description: "adaptive, or a fixed share of the window" },
-	{ value: "budget", description: "token amounts: the summary budget and the recent window" },
-	{ value: "thinking", description: "thinking level for the summary" },
+	{ value: "budget", description: "token amounts: the trigger request and the recent window" },
+	{ value: "thinking", description: "thinking level kept for the dsh profile (this side calls no model)" },
 	{ value: "mode", description: "dismiss the handoff into a new session, or leave it in the editor" },
 	{ value: "guard", description: "what to do while a question is pending" },
 	{ value: "lang", description: "handoff scaffolding language" },
@@ -558,7 +568,7 @@ const HANDOFF_VERBS = [
 /** Second-argument completions, keyed by the verb that takes them. */
 const HANDOFF_VALUE_COMPLETIONS = [
 	{ head: "threshold", values: [{ value: "auto", description: "adaptive threshold (the default)" }] },
-	{ head: "budget", values: [{ value: "summary", description: "summary budget tokens before caps" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
+	{ head: "budget", values: [{ value: "summary", description: "the trigger request the pass reports (no model call)" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
 	{ head: "thinking", values: [{ value: "off" }, { value: "session" }] },
 	{ head: "mode", values: [{ value: "send" }, { value: "draft" }] },
 	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },

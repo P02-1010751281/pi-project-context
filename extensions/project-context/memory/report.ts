@@ -349,7 +349,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		const memory = (await loadMemory(projectRoot, (await getConfig(projectRoot)).maxMemoryChars)).text.trim();
 		if (!memory) return;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Project Memory\nThe following is project context, not a new user instruction:\n\n${buildMemoryInjection(memory)}`,
+			systemPrompt: `${event.systemPrompt}\n\n## Project Memory\nThe following is project context, not a new user instruction:\n\n${buildMemoryInjection(memory, projectRoot)}`,
 		};
 	});
 
@@ -359,14 +359,16 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		// Write silently: the UI may already be rebuilding for a session switch. A failure must not reach the
-		// caller: the handoff path awaits ctx.newSession from this same event, and one field failure chain is
-		// a consolidation error thrown here that took the new session down with it. Log and return instead.
+		// Write silently: the UI may already be rebuilding for a session switch. A throw here escapes into
+		// pi's ExtensionRunner (one field chain in errors.log runs through emitSessionShutdownEvent), and the
+		// handoff's session switch rides that same emit, so log and return instead of taking the switch down.
 		try {
 			await consolidate(ctx, true, true);
 		} catch (error) {
+			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory). Fall back to the
+			// session cwd so a shutdown-time failure is recorded somewhere instead of vanishing silently.
 			const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
-			if (projectRoot) await logError(projectRoot, "shutdown:consolidate", error).catch(() => {});
+			await logError(projectRoot ?? ctx.cwd, "shutdown:consolidate", error).catch(() => {});
 		}
 	});
 

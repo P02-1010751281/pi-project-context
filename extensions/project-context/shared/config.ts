@@ -44,11 +44,11 @@ export type HandoffSettings = {
 	handoffThresholdAuto: boolean;
 	/** Context-window fraction (0.1–0.95) used when `handoffThresholdAuto` is false. */
 	handoffThresholdRatio: number;
-	/** Adaptive mode: conversation tokens to summarize per handoff. */
+	/** Trigger request: conversation tokens the pass reports as the droppable prefix; no call reads it. */
 	handoffBudgetSummaryTokens: number;
-	/** Recent raw tokens replayed into the new session; 0 = summary only. */
+	/** Recent raw tokens replayed into the new session; 0 = no verbatim carry-over (file list + log pointer only). */
 	handoffBudgetRecentTokens: number;
-	/** Thinking for the summary call: "off" (fast) or the session level. */
+	/** Thinking kept for dsh profile parity; the pi-side handoff calls no model since v0.4.1. */
 	handoffThinking: "off" | "session";
 	/** pi-only: "send" dismisses the handoff into a new session, "draft" leaves it in the editor. */
 	handoffMode: "send" | "draft";
@@ -75,7 +75,7 @@ export type ProjectContextConfig = HandoffSettings & {
 	consolidateIntervalMs: number;
 	/** Suppress an almost-immediate duplicate forced pass. */
 	forceDedupeMs: number;
-	/** Output cap for the auxiliary model calls (`llm.ts`); the handoff summary keeps its own reserve math. */
+	/** Output cap for the auxiliary model calls (`llm.ts`); the handoff calls no model. */
 	maxTokens: number;
 	/** Hard ceiling for the adaptive output cap when the model reports no limit of its own. */
 	maxOutputTokens: number;
@@ -114,7 +114,7 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	handoffLang: "auto",
 };
 
-/** Don't hand off unless at least this much context is actually replaced by the summary. */
+/** Don't hand off unless at least this much context is actually dropped. */
 export const MIN_SUMMARIZE_TOKENS = 8_000;
 export const MAX_KEEP_RECENT_TOKENS = 200_000;
 /** dsh's accepted range for `handoffThresholdRatio`. */

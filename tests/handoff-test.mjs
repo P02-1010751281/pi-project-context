@@ -602,7 +602,7 @@ try {
 
 	console.log("\n=== replay block shape (mid-turn cut) ===");
 	// The keep-budget cut can land inside a turn, so the slice opens on an assistant message, which
-	// Anthropic/Gemini routes reject; it gets a user-role stand-in for the summarized prefix.
+	// Anthropic/Gemini routes reject; it gets a user-role stand-in for the dropped prefix.
 	const turnEntries = [
 		contentEntry("k0", "user", [{ type: "text", text: "原始请求" }], "2026-09-16T00:43:00.000Z"),
 		contentEntry(
@@ -617,7 +617,7 @@ try {
 	check("the tool call and its result stay paired after the marker", midTurn[1]?.content?.[1]?.type === "toolCall" && midTurn[2]?.content?.[0]?.text === "输出");
 	check("a slice that already opens with a user message gets no split marker", handoff.replayMessagesFor([turnEntries[0]])[0]?.content?.[0]?.text === "原始请求");
 	// A cut can land on a summary entry that the replay filters out, exposing a tool result whose
-	// call lives in the summarized prefix: the orphan is dropped and the block still opens user-first.
+	// call lives in the dropped prefix: the orphan is dropped and the block still opens user-first.
 	const filteredInputs = [
 		contentEntry("s0", "branchSummary", [{ type: "text", text: "分支摘要" }], "2026-09-16T00:44:00.000Z"),
 		contentEntry("s1", "toolResult", [{ type: "text", text: "结果" }], "2026-09-16T00:44:01.000Z"),
@@ -631,7 +631,7 @@ try {
 			filteredHead[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER &&
 			filteredHead.map((message) => message.role).join(",") === "user,assistant",
 	);
-	check("the dropped orphan result is handed back for the summary", orphanInbox.length === 1 && orphanInbox[0]?.content?.[0]?.text === "结果");
+	check("the dropped orphan result is still reported", orphanInbox.length === 1 && orphanInbox[0]?.content?.[0]?.text === "结果");
 	check(
 		"a slice holding only orphan results replays nothing",
 		handoff.replayMessagesFor([contentEntry("s3", "toolResult", [{ type: "text", text: "结果" }], "2026-09-16T00:44:03.000Z")]).length === 0,
@@ -662,11 +662,11 @@ try {
 	check("a bash turn start needs no split marker", handoff.replayMessagesFor([bashEntry])[0]?.role === "bashExecution");
 
 	console.log("\n=== runHandoff call sites ===");
-	// Pins what the pure-function tests cannot: which slice feeds the summarizer, which language
-	// directive it gets, that the reply's headings are localized before they reach the prompt, and
-	// that the replay is the post-cut slice. The summarizer lives in pi's SDK, so it is shadowed by
-	// a stub that re-exports the real module. (The raw-vs-marker distinction inside the carried slice
-	// is behaviourally equivalent here, so it is deliberately not asserted; see analysis R2.)
+	// Pins what the pure-function tests cannot: which slice is replayed, which language directive the
+	// prompt gets, and that the replay is the post-cut slice. The handoff makes no model call at all, so
+	// the integration block ends by asserting that every scenario above ran without one. (The raw-vs-marker
+	// distinction inside the carried slice is behaviourally equivalent here, so it is deliberately not
+	// asserted; see analysis R2.)
 	let modelCalls = 0;
 	const countModelCall = async () => {
 		modelCalls += 1;
@@ -1105,6 +1105,10 @@ try {
 		"the failure toast does not promise pi's compaction",
 		throwCtx.notifications.every(([message]) => !String(message).includes("auto-compaction")),
 	);
+	// Every scenario above shares the same counting stub, so this is the one place the "no model call"
+	// property is asserted over all of them at once: a regression that swallowed an error and fell back
+	// to a model would have to have called `complete`, which throws and would have failed its own check too.
+	check("no scenario above reached a model", modelCalls === 0);
 } finally {
 		await rmTemp(tmp);
 }

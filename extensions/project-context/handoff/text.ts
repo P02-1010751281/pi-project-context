@@ -70,7 +70,7 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
 		if (typeof toolCallId === "string" && keptCallIds.has(toolCallId)) replayable.push(message);
 		else droppedOrphans?.push(message);
 	}
-	// A mid-turn cut leaves the slice opening on an assistant message, so the summarized prefix is
+	// A mid-turn cut leaves the slice opening on an assistant message, so the dropped prefix is
 	// marked with a user-facing stand-in.
 	if (replayable[0] && !USER_FACING_ROLES.has(replayable[0].role)) {
 		replayable.unshift({ role: "user", content: [{ type: "text", text: SPLIT_TURN_MARKER }], timestamp: replayable[0].timestamp } as AgentMessage);
