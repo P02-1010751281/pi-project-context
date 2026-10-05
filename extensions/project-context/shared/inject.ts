@@ -44,17 +44,29 @@ export interface InjectionSection {
 /** Level-two headings are the only ones the render schemas own. */
 const HEADING_RE = /^## (.+?)\s*$/;
 
+/** A fenced code block: a `## …` line inside one is content, not a heading. */
+const FENCE_RE = /^(`{3,}|~{3,})/;
+
 /**
- * A document-level note (`_[...]_`) belongs to no section: the truncation marker is written at the end of
- * the document, so without this it would sit in the last section's body and be indexed away with it.
+ * A document-level note (`_[...]_`) belongs to no section: the render appends the truncation marker after
+ * the last section's body, so without this it would be indexed away with the section it landed in. Only a
+ * trailing line can be that marker, so the shape is only honoured in the last section and a `_[x]_` line
+ * in the middle of a document stays where it was written.
  */
 const DOCUMENT_NOTE_RE = /^_\[[^\]]+\]_$/;
 
 /** Split a rendered document into sections; text before the first heading belongs to no section. */
 export function splitSections(text: string): InjectionSection[] {
 	const sections: InjectionSection[] = [];
+	let fence: string | undefined;
 	for (const line of text.split("\n")) {
-		const match = HEADING_RE.exec(line);
+		const trimmed = line.trim();
+		const fenceMatch = FENCE_RE.exec(trimmed);
+		if (fenceMatch) {
+			if (fence === undefined) fence = fenceMatch[1][0];
+			else if (trimmed.startsWith(fence)) fence = undefined;
+		}
+		const match = fence === undefined ? HEADING_RE.exec(line) : null;
 		if (match) sections.push({ heading: match[1], body: "" });
 		else if (sections.length > 0) sections[sections.length - 1].body += `${line}\n`;
 	}
@@ -83,10 +95,13 @@ export function renderProgressiveBody(
 	const inline: string[] = [];
 	const notes: string[] = [];
 	const pointerLines: string[] = [];
-	for (const section of splitSections(text)) {
+	const sections = splitSections(text);
+	for (const [index, section] of sections.entries()) {
+		const isLast = index === sections.length - 1;
 		const bodyLines = section.body.split("\n");
-		for (const line of bodyLines) if (DOCUMENT_NOTE_RE.test(line.trim())) notes.push(line.trim());
-		const body = bodyLines.filter((line) => !DOCUMENT_NOTE_RE.test(line.trim())).join("\n").trim();
+		const noteLines = isLast ? bodyLines.filter((line) => DOCUMENT_NOTE_RE.test(line.trim())) : [];
+		for (const line of noteLines) notes.push(line.trim());
+		const body = bodyLines.filter((line) => !noteLines.includes(line)).join("\n").trim();
 		const pointer = spec.pointers[section.heading];
 		if (pointer) pointerLines.push(`- \`## ${section.heading}\` ${dash} ${pointer[language]}`);
 		else inline.push(`## ${section.heading}\n\n${body}`);

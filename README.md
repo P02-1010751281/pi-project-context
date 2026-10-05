@@ -1,6 +1,6 @@
 # pi-project-context
 
-[pi coding agent](https://github.com/earendil-works/pi) 扩展：项目记忆与会话上下文——会话存档、`MEMORY.md`/`CONTEXT.md` consolidation、跨会话技能学习，以及带摘要和 replay-safe 原文窗口的 handoff。
+[pi coding agent](https://github.com/earendil-works/pi) 扩展：项目记忆与会话上下文——会话存档、`MEMORY.md`/`CONTEXT.md` consolidation、跨会话技能学习，以及带会话日志指针和 replay-safe 原文窗口的 handoff。
 
 ## 安装
 
@@ -23,7 +23,7 @@ pi install git:github.com/P02-1010751281/pi-project-context
 | 存档 | `session.jsonl`、`session.md`、`INDEX.md` | 逐轮增量写入，可导入历史 session |
 | 整理 | `memory.jsonl`、`MEMORY.md`、`CONTEXT.md` | journal-backed 长期 memory 与当前工作态 context |
 | 沉淀 | `skills/<name>/SKILL.md` | 证据门禁后的项目技能，或 `skill-candidates/` |
-| 交接 | 新 session、`HANDOFF.md` | 旧段摘要 + 最近原文 + replay-safe marker |
+| 交接 | 新 session、`HANDOFF.md` | 最近原文 + 文件清单 + 会话日志指针 + replay-safe marker |
 
 项目状态默认位于 `<project>/.agents/memory/`。完整数据布局、恢复规则和源码模块见[架构与数据模型](docs/architecture.md)。
 

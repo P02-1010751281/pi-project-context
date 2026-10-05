@@ -4,6 +4,8 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { classifyModelFailure, modelAutoDisabled, modelCooldownRemaining } from "../shared/call-policy.ts";
 import { getConfig, DEFAULT_CONFIG, runIsDisabled, setFeature, takeConfigMigrationNotice, updateConfig } from "../shared/config.ts";
 import { completeValues, completeVerbs } from "../shared/complete.ts";
@@ -366,9 +368,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			await consolidate(ctx, true, true);
 		} catch (error) {
 			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory). Fall back to the
-			// session cwd so a shutdown-time failure is recorded somewhere instead of vanishing silently.
+			// session cwd only when the memory layer is already there, so an arbitrary directory never gets a
+			// stray `.agents/memory/` created inside it; otherwise the failure has nowhere safe to go.
 			const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
-			await logError(projectRoot ?? ctx.cwd, "shutdown:consolidate", error).catch(() => {});
+			const root = projectRoot ?? (existsSync(join(ctx.cwd, ".agents")) ? ctx.cwd : undefined);
+			if (root) await logError(root, "shutdown:consolidate", error).catch(() => {});
 		}
 	});
 

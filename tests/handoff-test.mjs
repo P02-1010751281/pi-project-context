@@ -1105,6 +1105,32 @@ try {
 		"the failure toast does not promise pi's compaction",
 		throwCtx.notifications.every(([message]) => !String(message).includes("auto-compaction")),
 	);
+	// The two receipts that used to describe a summary that no longer exists, one single-sided pin each:
+	// re-adding the claim reddens without breaking anything else.
+	const receiptPi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`))(receiptPi);
+	const receiptCtx = makeCtx(tmp, {});
+	await runHandlers(receiptPi, "session_start", receiptCtx);
+	await receiptPi.commands.get("handoff").handler("budget recent off", receiptCtx);
+	check(
+		"the off receipt does not claim a summary carries the rest",
+		receiptCtx.notifications.some(([message]) => String(message).includes("no recent carry-over")) &&
+			receiptCtx.notifications.every(([message]) => !String(message).toLowerCase().includes("summary only")),
+	);
+	receiptCtx.notifications.length = 0;
+	await receiptPi.commands.get("handoff").handler("thinking session", receiptCtx);
+	check(
+		"the thinking receipt does not claim a summary call (session level)",
+		receiptCtx.notifications.some(([message]) => String(message).includes("no model")) &&
+			receiptCtx.notifications.every(([message]) => !/summar/i.test(String(message))),
+	);
+	receiptCtx.notifications.length = 0;
+	await receiptPi.commands.get("handoff").handler("thinking off", receiptCtx);
+	check(
+		"the thinking receipt does not claim a summary call (off)",
+		receiptCtx.notifications.some(([message]) => String(message).includes("no model")) &&
+			receiptCtx.notifications.every(([message]) => !/summar/i.test(String(message))),
+	);
 	// Every scenario above shares the same counting stub, so this is the one place the "no model call"
 	// property is asserted over all of them at once: a regression that swallowed an error and fell back
 	// to a model would have to have called `complete`, which throws and would have failed its own check too.

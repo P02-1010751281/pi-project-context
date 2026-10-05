@@ -156,8 +156,14 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			.flatMap(sessionEntryToContextMessages)
 			.reduce((sum, message) => sum + estimateTokens(message), 0);
 		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		// The anchor is carried verbatim, so it is not part of what a handoff drops: the floor and the receipt
+		// measure the middle alone, or one huge anchored turn start would make a handoff that drops almost
+		// nothing look worthwhile.
+		const anchorTokens = anchorEntry
+			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
+			: 0;
 		// Floor: below this dropping the prefix saves too little and loses too much detail.
-		if (!force && olderTokens < MIN_SUMMARIZE_TOKENS) return;
+		if (!force && olderTokens - anchorTokens < MIN_SUMMARIZE_TOKENS) return;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
 		// /handoff keeps the configured mode. "skip" leaves the session as-is
@@ -173,9 +179,6 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 		// The anchor entry is counted by `olderTokens` (it sits at the end of the dropped prefix) and is
 		// also carried verbatim, so the dropped side shown here subtracts it: the two numbers then describe
 		// the middle and the tail, and neither counts the anchored turn start twice.
-		const anchorTokens = anchorEntry
-			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
-			: 0;
 		notify(
 			ctx,
 			`Handoff: dropping ~${fmtTokens(olderTokens - anchorTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`,
@@ -423,7 +426,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					}
 					config.handoffBudgetSummaryTokens = tokens;
 					await saveConfig();
-					notify(ctx, `Handoff: summary budget ~${fmtTokens(tokens)} per handoff before caps (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
+					notify(ctx, `Handoff: summary budget ~${fmtTokens(tokens)} per handoff before caps — the pass reports this trigger; no call reads it (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
 					return;
 				}
 				if (value === "recent") {

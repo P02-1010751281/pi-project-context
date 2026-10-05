@@ -491,6 +491,14 @@ check(
 		.includes("The remaining sections are in"),
 );
 
+// A fenced code block can hold a heading-shaped line; it is content, so it must not split the document
+// (otherwise the pointer list names the same section twice and a real section loses its body).
+const fencedFixture = `# Project Memory\n\n## Project\n- 布局。\n\n## Invariants\n\n- 铁律。\n\n## Pitfalls\n\n- 坑。\n\n## Index\n- a.ts - 合并。\n\n\`\`\`md\n## Project\n- 代码里的示例。\n\`\`\`\n`;
+const fencedInjected = injection.buildMemoryInjection(fencedFixture);
+check(
+	"a heading-shaped line inside a fence does not split the document",
+	(fencedInjected.match(/- `## /g) ?? []).length === 2 && fencedInjected.includes("## Invariants\n\n- 铁律。"),
+);
 // Fail-safes: an unlisted heading and a document with no headings both stay whole, and the pointer
 // language follows the body it points into.
 check(
