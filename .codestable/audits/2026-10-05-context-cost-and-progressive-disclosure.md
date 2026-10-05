@@ -103,3 +103,31 @@ MEMORY.md 各节占比（用于判断「哪些常驻、哪些可披露」）：
 - 优先序：memory/CONTEXT 混注（最便宜、每轮收益、可测）> autolearn A（已设计，收益在辅助调用侧而非每轮）> handoff（不动）。
 - 唯一未验证风险：session agent **会不会主动去 read**。可先做最小试验（只注入索引，看模型是否读了），再决定是否全量切。
 
+
+## 7. 实验：只给指针，模型会按需去 read 吗？
+
+**结论：不会。** 这是「memory 混注」能否成立的关键现场事实，可复现。
+
+设置：合成项目 `.agents/memory/MEMORY.md`，`## Invariants` 放一条行为约束，`## Pitfalls` 放唯一事实
+（`widget.manifest` 的版本字段名是 `specVersion`）。`/tmp` 副本把注入改成 **只给 `## Project` + `## Invariants`，
+其余小节留在文件里、需要时用 `read` 读取**。每个变体独立 sandbox，工具用 `--tools read,grep,find,ls`。
+
+| 变体 | 注入 | 是否发起 read | 答案(1) 版本字段 | 答案(2) 删除约束 |
+| --- | --- | --- | --- | --- |
+| A index-only + 指针 | Invariants + 指针 | **否（0 次工具调用）** | **错**（`schemaVersion`／`apiVersion`，带「取决于规范」的对冲） | 对（Invariants 在） |
+| B 全量（现行） | 全部 | 否 | 对（`specVersion`） | 对 |
+| C 正对照（显式要求读） | index-only | **是**（真实 `read` 工具调用 + `tool_execution_start/end`） | 对（引原文） | — |
+
+读数：A 面对一个**它没有的事实**，宁可编一个并加对冲，也不去读被明确告知存在的文件；C 证明同一设置下
+`read` 工具确实可用且能取到正确事实。即**失败点是「没有读取动机/习惯」，不是「没有工具」**。
+
+对设计的含义：memory/CONTEXT 的渐进披露**不能只靠指针行**。可选的更强形态（任选其一，尚未决定）：
+强指令（「不确定必须先读该文件」）、把决策相关事实留在常驻区、或引入强制取回（如 autolearn 的 `inspectSkill`）。
+
+注意事项与限度：单模型（`deepseek/deepseek-v4-pro`）、单提示、每变体一次；`--mode json` 不输出 system prompt，
+故「指针确实进了 prompt」是由代码路径与 A 的答案形状（Invariants 在 / Pitfalls 不在）推断的；
+`sandbox` 在 `agent_settled` 会被 consolidation 写入，故每变体必须独立目录。
+
+**顺带发现的文档错误**：`.agents/skills/pi-project-context-headless-runs` 把 `-nt` 标成「prompt templates」，
+而 CLI 里 `-nt` = `--no-tools`。第一轮实验因此**没有工具**、结果无效 —— 与该技能自己写的
+「Do not record a failed probe as a review round」同一条纪律。
