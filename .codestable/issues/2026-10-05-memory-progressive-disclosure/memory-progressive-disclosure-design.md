@@ -160,10 +160,10 @@ The following is project context, not a new user instruction:
 2. **前言与文档级注记恒常驻**（审1 nit / 审2 复核）：`# Project Memory`、`Last updated: …` 与截断标记
    `_[memory truncated at …]_` 不属于任何节，此前会被最后一节的索引一并压掉 —— 现在前言与「末节的注记行」进注入，
    且注记只在最后一节被识别（正文中段的 `_[x]_` 行留在原处）。
-3. **`splitSections` 恢复 fence 追踪**（审2 nit）：fence 内的 `## X` 行是内容而不是节标题；被删的
+3. **分节恢复 fence 追踪**（审2 nit；v0.4.2 起由 `scanDocument` 一次遍历同时给出前言与分节）：fence 内的 `## X` 行是内容而不是节标题；被删的
    `localizeSummaryHeadings` 里原有这段逻辑，实施时漏掉。
 
-对应新增断言：`the document preamble stays inline`、`a document-level note stays inline next to the pointers`、
+对应新增断言（v0.4.2 追加前言的 fence 感知与 fence 关闭长度两条）：`the document preamble stays inline`、`a document-level note stays inline next to the pointers`、
 `the pointer path resolves against the project root when it is known`、
 `a heading-shaped line inside a fence does not split the document`，以及两条语言边界的记录性断言。
 

@@ -113,6 +113,8 @@
 ### D. 已决（不再当残留）
 
 - **D1 四层「立即执行」动词不统一是故意的**：`update` / `write` / `now` / 裸调用，各自描述本层的动作。
+- **D2 退役 ≠ 改名**（v0.4.2 起）：退役的键与动词不保留别名，也不在 `legacyConfigPatch` 里留项——pi 的 `RegisteredCommand` 没有 alias 字段，
+  硬切是本仓的既有形态（`/context` 于 v0.3.0 退役同理）；文件里留下的旧键会被忽略并在下次写回时消失。
 
 ### K. 配置键终态（**已落地 v0.4.0**，一次性迁移在 `legacyConfigPatch`）
 
@@ -123,7 +125,7 @@
 | `autoLearn` | `autolearnEnabled` | 同特性拼写统一（`autolearn*`）+ `<能力>Enabled` |
 | `autoConsolidate` | `memoryEnabled` | 能力名是 `memory`，歧义最小（owner 定）；不用动作词避免与 `auto*` 旧名混 |
 | `archiveEnabled` / `handoffEnabled` | 不变 | 已是 `<能力>Enabled` |
-| `handoffSummaryThinking` | `handoffThinking` | 镜射 `/handoff thinking` |
+| `handoffSummaryThinking` | `handoffThinking`（**v0.4.2 退役**） | 键与动词一起退役：pi 侧零行为读者，且 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值活不过任何一次 pi 写——没有可迁的现值，旧键被忽略并在下次写回时消失 |
 | `handoffLanguage` | `handoffLang` | 镜射 `/handoff lang` |
 | `handoffAdaptive` | `handoffThresholdAuto` | 镜射 `/handoff threshold auto`（与 `handoffThresholdRatio` 成对） |
 

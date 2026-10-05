@@ -45,7 +45,7 @@ threshold = T1 >= F ? T1 : undefined
 `max(T0, B + K + S)` 会做的事，也正是质量护栏存在的理由所要禁止的（那会让声明 1M 的模型跑到
 157K 拐点之外）。
 
-其中 `8000` 是最小可丢弃前缀（`MIN_SUMMARIZE_TOKENS`，名带旧词），`4000` 是 `TIER_EDGE_MARGIN`。
+其中 `8000` 是最小可丢弃前缀（`MIN_DROP_TOKENS`），`4000` 是 `TIER_EDGE_MARGIN`。
 这些值是 token 预算，不是字符数；不同模型 tokenizer 会使 prefix 预算成为保守近似。
 
 等价的 LaTeX 表达（GitHub 等支持 MathJax 的 Markdown 渲染器会渲染；不支持数学扩展的渲染器以文档前面的纯文本公式为准）：

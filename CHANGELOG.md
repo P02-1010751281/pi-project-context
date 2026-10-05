@@ -3,6 +3,29 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.2 — 未发布
+
+### 变更
+
+- **`handoffThinking` 与 `/handoff thinking` 退役**：该键在本仓没有行为读者——它只被那个动词写进
+  `project-context.json`，而 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值本来也活不过
+  任何一次 pi 写，回执里「stored for the dsh profile」的承诺从一开始就不成立。键、动词、二级补全、旧名迁移项与
+  文档一并移除；没有别名，文件里留下的旧键按未知键处理（忽略，下次写回时消失）。保留同拼写的
+  `handoffBudgetSummaryTokens` / `/handoff budget summary` 仍有活读者（触发公式）。同一片把常量
+  `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`（语义=最小可丢弃前缀，无行为变化），摘要链删除后
+  代码里最后一个 `summarize` 词随之消失。
+
+### 修复
+
+- **注入的前言与分节改为同一次 fence 感知遍历**（`splitSections` → `scanDocument`）：此前前言用一次不看 fence
+  的扫描找第一个标题、分节用另一次看 fence 的扫描，一段以 fenced 代码块开头的文档会让块内的 `## X` 既截断
+  前言、又变成一个假小节。
+- **fence 关闭按 CommonMark 判定**：关闭行必须是同字符、不短于开启行、且除空白外无内容；此前只比较首字符，
+  一个三反引号行会提前关掉四反引号块。
+- `session_shutdown` 的失败回退把存在性检查精确到 `.agents/memory`（与该处注释一致）：该分支只在
+  `getProjectRoot` 拒绝时才可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为修正
+  （单侧变异全绿，与 shutdown 守卫同类）。
+
 ## v0.4.1 — 2026-10-05
 
 ### 变更

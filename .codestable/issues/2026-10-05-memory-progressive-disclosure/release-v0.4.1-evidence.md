@@ -96,6 +96,13 @@ tag 指向的 `7b6fc98` 相对审3 判定的 `a0bcdd1` 只多一个 CHANGELOG �
 5. **`branch_summary` 锚点退化**：pi 的 `isTurnStartMessage` 也认 `branchSummary`/`compactionSummary`，此时锚点条目不可重放 → successor 只拿到占位标记与半回合尾巴，起始问题靠日志指针恢复。
 6. `.agents/memory/*` 的渲染抖动按仓规未提交；一次**刻意的** render refresh 需要同时做 stale-fact 复审，本轮未做。
 
+## 残留处置（2026-10-05 追加）
+
+- 残留 2 的五条 nit：owner 决定「全修」，已在 v0.4.2 片修完；其中 `.agents/memory` 那条为不可 pin 的精度修正
+  （变异 M7 全绿，理由同 shutdown 守卫），其余七格变异均有具名红。见审计 §9.7。
+- 残留 3/5/6 与旋钮分叉：`handoffThinking` 与 `MIN_SUMMARIZE_TOKENS` 已在 v0.4.2 退役/更名；两条未 pin 的边界、
+  `branch_summary` 锚点路径与刻意 render refresh 仍开放。
+
 ## 发布后探针（计划）
 
 - 真实 TUI 交接一次：确认吸附/锚定路径的载荷形状，并顺手观测 floor 锚点减法与 cwd 回退两条边界。

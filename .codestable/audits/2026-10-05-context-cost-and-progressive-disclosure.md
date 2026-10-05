@@ -2,7 +2,7 @@
 doc_type: audit
 topic: context-cost-and-progressive-disclosure
 date: 2026-10-05
-status: draft
+status: confirmed
 scope: 评估 memory / 技能 / handoff 三条链的上下文成本与渐进披露可行性；不动代码，不替 owner 做决定
 ---
 
@@ -219,3 +219,27 @@ prompt 仅 427 字符；16 次工具执行（read `INDEX.md` → grep → 按 of
 
 每格 n=1、单提示、单模型族；A/B/C/C′ 的 prompt 文本只存在于当时的 `/tmp` sandbox（已清理），结论以本表为准；
 A 形态端到端（真实交接一次）留待发布后；9.2 成本只测了一次，不当作均值。
+
+### 9.6 渲染丢失是可恢复的（现场证据，同日早先会话测得）
+
+逐条比对当前渲染：按空白归一化后，渲染缺失的条目 **11/11** 与 **13/13**（两组分别比对 `MEMORY.md` 与
+`CONTEXT.md` 的历史渲染）在 `memory.jsonl`（442,700 B）里仍**逐字存在**，此外还有 6 份字节级备份与 git 历史。
+但「条目少了」不自动等于回归：被丢的条目里也有模块计数、渲染字符数这类规则本身禁止的挥发事实，而且按前缀比对
+会高估丢失（合并或重写的条目会被算成缺失）。含义：渲染是从 journal 加本会话上下文重建的，**丢的是渲染不是数据**，
+`errors.log` 的 `memory regression` 行是检测器而不是损失证据。
+
+### 9.7 v0.4.2 收尾：审3 的五条 nit 与一次退役（2026-10-05，发布后）
+
+v0.4.1 的 tag 停在审3 判定通过的那一版，五条 nit 按停止规则留作残留；owner 随后决定「全修，无用就退役」，
+本片即该决定。五条 nit 全修（其中一条是不可 pin 的精度修正），并退役 `handoffThinking` 键与 `/handoff thinking` 动词
+——它在本仓零行为读者，而 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值活不过任何一次
+pi 写（回执里「stored for the dsh profile」的承诺因此本就不成立）；常量 `MIN_SUMMARIZE_TOKENS` 随之更名
+`MIN_DROP_TOKENS`（语义=最小可丢弃前缀），代码里最后一个 `summarize` 词消失。
+
+单侧变异 8 格（每格只改回一处）：M1 标题判定退回 fence 盲目扫描 → 3 条具名红；M2 关闭 fence 不再比较长度 → 1 条；
+M3 补回动词补全 → 3 条（含注册面的退役检查）；M4 补回二级补全 → 1 条；M5 补回动词分支 → 1 条；
+M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 → 2 条（嵌套与改名两条读取路径）。
+**M7 是负向对照**：把 `session_shutdown` 失败回退里的 `.agents/memory` 退回 `.agents`，全绿 —— 该分支只在
+`getProjectRoot` 拒绝时可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为修正，与 §9.4 的 shutdown 守卫
+同类，记为不可 pin。套件 15/15。发布事实与三审三校证据见
+`.codestable/issues/2026-10-05-memory-progressive-disclosure/release-v0.4.1-evidence.md`。

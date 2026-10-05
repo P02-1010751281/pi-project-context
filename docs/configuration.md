@@ -26,7 +26,6 @@
   "handoffThresholdRatio": 0.4,
   "handoffBudgetSummaryTokens": 64000,
   "handoffBudgetRecentTokens": 20000,
-  "handoffThinking": "off",
   "handoffMode": "send",
   "handoffGuard": "wait",
   "handoffLang": "auto"
@@ -99,7 +98,7 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 |---|---|---|
 | `/project-context` | 跨层 | `status`；`on|off`（**无目标**：一次开关四个特性）；`model <provider>/<id>|off`；`max-tokens <n>|default` |
 | `/memory` | memory | 无参：memory 状态行 ＋ `Context file:` 行；`update`：立即跑 consolidation，重写 `MEMORY.md` 和 `CONTEXT.md`；`on|off`；`max-memory <n>|default` |
-| `/handoff` | handoff | `status`、`on|off`、`threshold <auto|比例>`、`budget summary|recent`、`thinking`、`mode`、`guard`、`lang`、`now`（取值见下） |
+| `/handoff` | handoff | `status`、`on|off`、`threshold <auto|比例>`、`budget summary|recent`、`mode`、`guard`、`lang`、`now`（取值见下） |
 | `/autolearn` | autolearn | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off`。`approve` 会重新套用与提案路径相同的形状规则（描述/体积上下限、注入检测），不满足则拒绝并点名原因 |
 | `/session-log` | archive | 无参：存档状态行 ＋ `Session index:` 与 `Session logs:` 两行（**只读**）；`write`：立即写当前存档；`import <session.jsonl|目录>…`：导入历史 session；`on|off` |
 
@@ -114,8 +113,9 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 `max-memory` 与四个特性级 `on|off` 从伞形移到本层命令；`/handoff` 的裸比例、`auto`、`target`、`keep`、`send`、`draft` 六个写法被
 `threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
-取值：`thinking off|session`、`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
-`thinking` 在 v0.4.1 起对本仓无效（摘要调用已删除；键与动词保留为与 dsh 配置面同拼写），`mode`/`guard`/`lang` 照旧生效。
+取值：`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
+`handoffThinking` 与 `/handoff thinking` 已在 v0.4.2 退役：它在本仓没有行为读者，而 `parseConfig` 只保留已知键、
+`updateConfig` 整份重写，所以它写下的值本来也活不过任何一次 pi 写；dsh 侧的同拼写由 dsh 自己维护。`mode`/`guard`/`lang` 照旧生效。
 
 说明：`/handoff threshold auto` 是自适应模式（阈值取**两项**——模型的质量拐点：保守 MRCR 拟合曲线，≤~400K 诚实窗口取自身边界、500K 以上收敛到 157K 平台——与窗口末点取小；caps 只降不升）
 ，`threshold <比例>` 是固定比例模式（`handoffThresholdRatio` 只用于固定模式；`threshold 40`、`threshold 0.4`、`threshold 40%` 等价，都读作 40%），
@@ -158,7 +158,9 @@ handoff 自 v0.4.1 起不调用任何模型，也不再依赖辅助路由，因�
 
 v0.4.0 的**改名**走同一台机器：`autoConsolidate`→`memoryEnabled`、`autoLearn`→`autolearnEnabled`、
 `handoffTargetTokens`→`handoffBudgetSummaryTokens`、`handoffKeepTokens`→`handoffBudgetRecentTokens`、
-`handoffSummaryThinking`→`handoffThinking`、`handoffAdaptive`→`handoffThresholdAuto`、`handoffLanguage`→`handoffLang`。
+`handoffThresholdAuto`、`handoffLanguage`→`handoffLang`。
 旧名与新名并存时**新名优先**，写回后旧名消失；唯一认识这些旧名的地方仍是 `legacyConfigPatch()`。
+`handoffThinking` 及其旧名 `handoffSummaryThinking` 在 v0.4.2 **退役**（不是改名）：没有现值可迁，文件里留下的旧键会被忽略，
+并在下次写回时随整份重写消失。
 
 旧 memory/session 数据的路径与冲突策略见 [架构与数据模型](architecture.md)。
