@@ -18,7 +18,7 @@
   `Session archiving:`／`Session log written:`／`Session log update failed:` → `Session log:`；前缀后不再重复层名。
   `/memory` 与 `/project-context status` 的 memory 状态行现在是同一句 `Memory: …`。
 - 跨层渲染器名统一：handoff 的 `statusText` → `handoffStatusLine`，memory 的 `memoryStatusMessage` → `memoryStatusLine`。
-- 六个键原先与 dsh 共享，改名后两仓配置面分叉：dsh 需同步采用新名（映射见 `docs/configuration.md` 的兼容迁移段）。
+- 七个改名两仓同名：dsh 改的是同样七个拼写，两仓配置面不在拼写上分叉；dsh profile 里残留的旧拼写没有别名可退，须在宿主重启前改掉（映射见 `docs/configuration.md` 的兼容迁移段）。
 
 ## v0.3.2 — 2026-10-05
 

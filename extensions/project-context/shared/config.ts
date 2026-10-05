@@ -11,7 +11,8 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * tuned without touching global config.
  *
  * Field names are shared with the dsh plugin (the two repos keep the same config
- * surface; only the storage and the pi-only `handoffMode`/`handoffGuard`/`handoffLang` differ).
+ * surface; only the storage and the keys without a counterpart differ —
+ * pi's `handoffMode`/`handoffGuard`/`autolearnAt` against dsh's `handoffPendingQuestion`).
  *
  * Backward compatibility is a **one-time migration**, not a permanent read path: the pre-unification
  * nested layout (`features.*`, `autolearn.*`, `handoff.*`), the split `<project>/.agents/memory/
@@ -21,9 +22,9 @@ import { MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS, memoryDir, readOptional, writ
  * pick up a legacy fallback term by accident — the eight keys added after the unification never had one.
  *
  * v0.4.0 renamed seven flat keys so a key mirrors the command path that changes it (`budget summary` ⇒
- * `handoffBudgetSummaryTokens`); the same one-time migration folds an old name into the new one. Six of
- * the renamed keys were shared with dsh, so the two config surfaces now differ: dsh reads its own
- * spellings and ignores the new ones, and it has to adopt them (the mapping is the table in
+ * `handoffBudgetSummaryTokens`); the same one-time migration folds an old name into the new one. All
+ * seven of those names are shared with dsh, which renamed the same seven and reads no alias by design —
+ * a dsh profile still storing an old spelling has to adopt the new one (the mapping is the table in
  * `legacyConfigPatch`, mirrored in `.codestable/reference/vocabulary-conventions.md`).
  */
 
@@ -53,7 +54,7 @@ export type HandoffSettings = {
 	handoffMode: "send" | "draft";
 	/** pi-only: behavior when the last assistant message asks the user a question. */
 	handoffGuard: "wait" | "draft" | "send" | "skip";
-	/** pi-only: language of the handoff prompt scaffolding; "auto" follows the conversation language. */
+	/** Handoff scaffolding language; "auto" follows the conversation language. */
 	handoffLang: "auto" | "zh" | "en";
 };
 
