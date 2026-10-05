@@ -89,10 +89,12 @@ tag 指向的 `7b6fc98` 相对审3 判定的 `a0bcdd1` 只多一个 CHANGELOG �
 ## 残留（发布后）
 
 1. **A+B 与无模型载荷的首次生产暴露**：吸附/锚定路径只被 mock 与真实 SDK 的合成条目 pin 过，从未经历一次真实交接。失败形态安全（`Handoff: failed — Staying in this session`，内容留在会话日志）。
-2. **审3 的 5 条 nit 未修**（发布候选冻结在审3 判定通过的那一版，按 stop rule 不把未评审的改动塞进 tag）：
+2. ~~**审3 的 5 条 nit 未修**~~（发布候选冻结在审3 判定通过的那一版，按 stop rule 不把未评审的改动塞进 tag）—— **已处置，v0.4.2**，见下节「残留处置」：
    `memory/report.ts` 的存在性检查用 `.agents` 而非 `.agents/memory`；`shared/inject.ts` 的 preamble 扫描无 fence 追踪（仅自由结构 legacy 文档可能触发）、fence 关闭条件未比较长度（CommonMark 边缘）；`.codestable/reference/vocabulary-conventions.md` 的示例键写成 `handoffSummaryTokens`；审计文档 `status: draft` 却被 CHANGELOG 引作证据。
 3. **两条边界行为故意未 pin**：floor 的锚点减法、cwd 回退的存在性检查（需要真实边界场景才可观测）。
 4. **旋钮命名分叉**待 owner 决定（`/handoff budget summary`、`handoffThinking`、`MIN_SUMMARIZE_TOKENS`）。
+   → **部分已决（v0.4.2）**：`handoffThinking` 退役、`MIN_SUMMARIZE_TOKENS` 更名；`/handoff budget summary` 与
+   `handoffBudgetSummaryTokens` 的拼写分叉仍待 owner。
 5. **`branch_summary` 锚点退化**：pi 的 `isTurnStartMessage` 也认 `branchSummary`/`compactionSummary`，此时锚点条目不可重放 → successor 只拿到占位标记与半回合尾巴，起始问题靠日志指针恢复。
 6. `.agents/memory/*` 的渲染抖动按仓规未提交；一次**刻意的** render refresh 需要同时做 stale-fact 复审，本轮未做。
 

@@ -4,7 +4,7 @@ issue: handoff-last-turn-not-replayed
 date: 2026-10-05
 status: design-frozen
 revision: 2
-implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体删除，见 §8）
+implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体删除，见 §8）; bd9fd3a（v0.4.2 处置 §8.4 的两条残留，见该节附注）
 ---
 
 # handoff 保住「最后一轮」：A+B 设计与裁切+索引
@@ -129,6 +129,10 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 - 结论：**「最后一轮的问题」已经以原文到达 successor（本片已达成）**；「那一轮做过什么」仍是普通摘要散文，
   没有独立小节。
 
+> **v0.4.2 附注（本节已不可直接实现）**：本节写的前提是「改 `summary.ts` 加一次调用」，但 §8 已把整条摘要链删除，
+> 该文件不复存在。要做这一段就必须先把一次模型调用重新引进交接路径，而 §8 的 owner 决议正是「交接零模型调用」，
+> 所以本节现在的状态是「需先推翻 §8 才谈」，不再是一条待办；当下真正的开放项是 §8.4 的端到端验证与旋钮拼写。
+
 ## 8. rev 2：摘要链整体删除（2026-10-05，`b4c9405`）
 
 ### 8.1 owner 决议
@@ -165,9 +169,15 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 
 ### 8.4 残留与待决
 
+> **v0.4.2 处置（`bd9fd3a`）**：下面第 1 条涉及的 `handoffThinking` 与第 3 条已在 v0.4.2 解决——键与动词一起退役
+> （pi 侧零行为读者，且 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以它写下的值活不过任何一次 pi 写），
+> `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`。第 1 条剩下的旋钮拼写、第 2 条的收据词与第 4 条仍开放。
+
 - **旋钮命名未动**：`handoffBudgetSummaryTokens` 与 `/handoff budget summary` 保留原拼写（与 dsh 面共享，改名/删旋钮需单独的设计文档 + 现场事实）；
   但 pi 侧 `handoffThinking` 现已**无读者**（只有写路径），这是一条「不动也不生效」的控制，需 owner 决定去留。
+  → **已决（v0.4.2）**：退役。键、`/handoff thinking` 动词、二级补全与旧名迁移项一并移除，无别名；文件里的旧键按未知键忽略、下次写回消失。
 - **用户可见文案改了词**：开始提示 `dropping ~X`、成功提示「dropped prefix stays in its session log」、
   状态行 `drop N` / `drop budget N`、拒绝句里的 summary → handoff。旋钮名未改，因此收据词与配置键现在不同词，待命名决议一并处理。
 - **`MIN_SUMMARIZE_TOKENS` 名未改**：它现在是「dropped prefix 的下限」，语义未变、名字带旧词。
+  → **已决（v0.4.2）**：更名 `MIN_DROP_TOKENS`（无行为变化）；摘要链删除后代码里最后一个 `summarize` 词随之消失。
 - **端到端未验**：A 形态的真实交接（发布后在真实 TUI 跑一次）尚未做；§9.2 的正面事实来自 headless 探针。
