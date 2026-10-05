@@ -221,7 +221,10 @@ try {
 	const nested = await getNested(tmp);
 	check("nested switches mapped", nested.archiveEnabled === false && nested.memoryEnabled === false && nested.handoffEnabled === false && nested.autolearnEnabled === true);
 	check("nested threshold maps to adaptive=false + ratio", nested.handoffThresholdAuto === false && nested.handoffThresholdRatio === 0.6);
-	check("nested handoff settings mapped", nested.handoffBudgetSummaryTokens === 32_000 && nested.handoffBudgetRecentTokens === 1_000 && nested.handoffThinking === "session" && nested.handoffMode === "draft" && nested.handoffGuard === "skip");
+	check("nested handoff settings mapped", nested.handoffBudgetSummaryTokens === 32_000 && nested.handoffBudgetRecentTokens === 1_000);
+	// `handoffThinking` was retired in v0.4.2; the nested `summaryThinking` it used to fold from must not
+	// resurrect it (a retired key that came back would be write-only surface again).
+	check("a retired key is not resurrected by the nested layout", !("handoffThinking" in nested));
 	check("nested autolearn state mapped", nested.autolearnAt === 456 && nested.autolearnTurns === 7 && nested.autolearnIntervalMs === 60_000);
 	check("flat consolidation cadence read", nested.consolidateTurns === 9 && nested.consolidateIntervalMs === 300_000 && nested.forceDedupeMs === 15_000);
 	check("a key added after the unification gets no legacy term", nested.maxTokens === 8192);
@@ -248,7 +251,8 @@ try {
 	const renamedConfig = await getRenamed(tmp);
 	check("old switch names fold into the new ones", renamedConfig.autolearnEnabled === false && renamedConfig.memoryEnabled === false);
 	check("old budget names fold into the new ones", renamedConfig.handoffBudgetSummaryTokens === 48_000 && renamedConfig.handoffBudgetRecentTokens === 12_000);
-	check("old threshold/thinking/lang names fold in", renamedConfig.handoffThresholdAuto === false && renamedConfig.handoffThinking === "session" && renamedConfig.handoffLang === "zh");
+	check("old threshold and lang names fold in", renamedConfig.handoffThresholdAuto === false && renamedConfig.handoffLang === "zh");
+	check("the retired thinking name folds into nothing", !("handoffThinking" in renamedConfig));
 	check("the rename migration names itself", (takeRenamedNotice(tmp) ?? []).some((item) => String(item).includes("pre-v0.4")));
 	const rewritten = JSON.parse(await readFile(configPath, "utf8"));
 	check(

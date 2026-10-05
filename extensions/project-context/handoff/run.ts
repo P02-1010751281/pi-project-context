@@ -6,7 +6,7 @@
 import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { MAX_KEEP_RECENT_TOKENS, MIN_SUMMARIZE_TOKENS, setFeature } from "../shared/config.ts";
+import { MAX_KEEP_RECENT_TOKENS, MIN_DROP_TOKENS, setFeature } from "../shared/config.ts";
 import { completeSubValues, completeValues, completeVerbs } from "../shared/complete.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
@@ -163,7 +163,7 @@ async function runHandoff(pi: ExtensionAPI, args: string, ctx: ExtensionCommandC
 			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
 			: 0;
 		// Floor: below this dropping the prefix saves too little and loses too much detail.
-		if (!force && olderTokens - anchorTokens < MIN_SUMMARIZE_TOKENS) return;
+		if (!force && olderTokens - anchorTokens < MIN_DROP_TOKENS) return;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
 		// /handoff keeps the configured mode. "skip" leaves the session as-is
@@ -396,7 +396,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("handoff", {
-		description: "Fresh session when context hits the threshold (status|on|off|threshold|budget|thinking|mode|guard|lang|now)",
+		description: "Fresh session when context hits the threshold (status|on|off|threshold|budget|mode|guard|lang|now)",
 		getArgumentCompletions: (prefix) => {
 			const verbs = completeVerbs(prefix, HANDOFF_VERBS);
 			if (verbs) return verbs;
@@ -420,13 +420,13 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				// (no summary call reads it since v0.4.1), the other is the recent window carried over verbatim.
 				if (value === "summary") {
 					const tokens = parseTokenCount(extra ?? "");
-					if (tokens === undefined || tokens < MIN_SUMMARIZE_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
+					if (tokens === undefined || tokens < MIN_DROP_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
 						notify(ctx, "Usage: /handoff budget summary <tokens> (e.g. budget summary 64k)", "warning");
 						return;
 					}
 					config.handoffBudgetSummaryTokens = tokens;
 					await saveConfig();
-					notify(ctx, `Handoff: summary budget ~${fmtTokens(tokens)} per handoff before caps — the pass reports this trigger; no call reads it (the physical floor stays at ${fmtTokens(MIN_SUMMARIZE_TOKENS)}).`);
+					notify(ctx, `Handoff: summary budget ~${fmtTokens(tokens)} per handoff before caps — the pass reports this trigger; no call reads it (the physical floor stays at ${fmtTokens(MIN_DROP_TOKENS)}).`);
 					return;
 				}
 				if (value === "recent") {
@@ -450,21 +450,6 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					return;
 				}
 				notify(ctx, "Usage: /handoff budget summary <tokens> | budget recent <tokens|off>", "warning");
-				return;
-			}
-			if (head === "thinking") {
-				if (value !== "off" && value !== "session") {
-					notify(ctx, "Usage: /handoff thinking off|session", "warning");
-					return;
-				}
-				config.handoffThinking = value;
-				await saveConfig();
-				notify(
-					ctx,
-					value === "off"
-						? "Handoff: thinking off — stored for the dsh profile; this side calls no model."
-						: "Handoff: thinking follows the session — stored for the dsh profile; this side calls no model.",
-				);
 				return;
 			}
 			if (head === "threshold") {
@@ -549,7 +534,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				await runHandoff(pi, "force-auto", ctx);
 				return;
 			}
-			notify(ctx, `Unknown option "${arg}". Usage: /handoff [status|on|off|threshold <auto|ratio>|budget summary <tokens>|budget recent <tokens|off>|thinking off|session|mode send|draft|guard <wait|draft|send|skip>|lang <auto|zh|en>|now]`, "warning");
+			notify(ctx, `Unknown option "${arg}". Usage: /handoff [status|on|off|threshold <auto|ratio>|budget summary <tokens>|budget recent <tokens|off>|mode <send|draft>|guard <wait|draft|send|skip>|lang <auto|zh|en>|now]`, "warning");
 		},
 	});
 }
@@ -561,7 +546,6 @@ const HANDOFF_VERBS = [
 	{ value: "off" },
 	{ value: "threshold", description: "adaptive, or a fixed share of the window" },
 	{ value: "budget", description: "token amounts: the trigger request and the recent window" },
-	{ value: "thinking", description: "thinking level kept for the dsh profile (this side calls no model)" },
 	{ value: "mode", description: "dismiss the handoff into a new session, or leave it in the editor" },
 	{ value: "guard", description: "what to do while a question is pending" },
 	{ value: "lang", description: "handoff scaffolding language" },
@@ -572,7 +556,6 @@ const HANDOFF_VERBS = [
 const HANDOFF_VALUE_COMPLETIONS = [
 	{ head: "threshold", values: [{ value: "auto", description: "adaptive threshold (the default)" }] },
 	{ head: "budget", values: [{ value: "summary", description: "the trigger request the pass reports (no model call)" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
-	{ head: "thinking", values: [{ value: "off" }, { value: "session" }] },
 	{ head: "mode", values: [{ value: "send" }, { value: "draft" }] },
 	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },
 	{ head: "lang", values: [{ value: "auto" }, { value: "zh" }, { value: "en" }] },

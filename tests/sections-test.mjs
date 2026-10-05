@@ -499,6 +499,28 @@ check(
 	"a heading-shaped line inside a fence does not split the document",
 	(fencedInjected.match(/- `## /g) ?? []).length === 2 && fencedInjected.includes("## Invariants\n\n- 铁律。"),
 );
+// The preamble is found by the same fence-aware traversal as the sections, so a heading-shaped line inside
+// a fenced block at the top is content: with a fence-blind preamble scan the fake `## Project` would become
+// a second pointer line and the real section's body would be indexed away with it.
+const fencedPreambleFixture = `# Project Memory\n\n\`\`\`md\n## Project\n- 围栏内是内容。\n\`\`\`\n\n## Project\n- 真实布局。\n\n## Invariants\n\n- 铁律。\n\n## Index\n- a.ts - 合并。\n`;
+const fencedPreambleInjected = injection.buildMemoryInjection(fencedPreambleFixture);
+check(
+	"a heading-shaped line in a fenced preamble does not become a section",
+	(fencedPreambleInjected.match(/- `## Project`/g) ?? []).length === 1 &&
+		fencedPreambleInjected.includes("- 围栏内是内容。") &&
+		fencedPreambleInjected.includes("## Invariants\n\n- 铁律。"),
+);
+// A closing fence repeats the opening character at least as many times with nothing else on the line, so a
+// shorter run inside the block is content and the real `## Index` is the only one indexed. Under the old
+// one-character close test the inner three backticks ended the four-backtick fence early.
+const shortFenceFixture = `# Project Memory\n\n## Project\n- 布局。\n\n## Invariants\n\n- 铁律。\n\n## Pitfalls\n\n\`\`\`\`\n\`\`\`\n## Index\n- 围栏内假索引。\n\`\`\`\`\n\n## Index\n- a.ts - 合并。\n`;
+const shortFenceInjected = injection.buildMemoryInjection(shortFenceFixture);
+check(
+	"a shorter fence run inside a block does not close it",
+	(shortFenceInjected.match(/- `## Index`/g) ?? []).length === 1 &&
+		shortFenceInjected.includes("- 围栏内假索引。") &&
+		shortFenceInjected.includes("## Invariants\n\n- 铁律。"),
+);
 // Fail-safes: an unlisted heading and a document with no headings both stay whole, and the pointer
 // language follows the body it points into.
 check(

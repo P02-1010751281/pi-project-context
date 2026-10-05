@@ -48,8 +48,6 @@ export type HandoffSettings = {
 	handoffBudgetSummaryTokens: number;
 	/** Recent raw tokens replayed into the new session; 0 = no verbatim carry-over (file list + log pointer only). */
 	handoffBudgetRecentTokens: number;
-	/** Thinking kept for dsh profile parity; the pi-side handoff calls no model since v0.4.1. */
-	handoffThinking: "off" | "session";
 	/** pi-only: "send" dismisses the handoff into a new session, "draft" leaves it in the editor. */
 	handoffMode: "send" | "draft";
 	/** pi-only: behavior when the last assistant message asks the user a question. */
@@ -108,14 +106,13 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	handoffThresholdRatio: 0.4,
 	handoffBudgetSummaryTokens: 64_000,
 	handoffBudgetRecentTokens: 20_000,
-	handoffThinking: "off",
 	handoffMode: "send",
 	handoffGuard: "wait",
 	handoffLang: "auto",
 };
 
 /** Don't hand off unless at least this much context is actually dropped. */
-export const MIN_SUMMARIZE_TOKENS = 8_000;
+export const MIN_DROP_TOKENS = 8_000;
 export const MAX_KEEP_RECENT_TOKENS = 200_000;
 /** dsh's accepted range for `handoffThresholdRatio`. */
 const MIN_RATIO = 0.1;
@@ -199,10 +196,6 @@ function languageOf(value: unknown): HandoffSettings["handoffLang"] | undefined 
 	return value === "auto" || value === "zh" || value === "en" ? value : undefined;
 }
 
-function thinkingOf(value: unknown): HandoffSettings["handoffThinking"] | undefined {
-	return value === "session" || value === "off" ? value : undefined;
-}
-
 /**
  * The pre-unification layouts, folded into flat keys: the nested `features.*`/`autolearn.*`/`handoff.*`
  * records in the same file, the split `<memory>/autolearn.json`, and the global `auto-handoff.json`.
@@ -221,12 +214,15 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 	// name is migrated the same one-time way as a legacy layout - the new name wins when both are present, and
 	// the rewrite drops the old one. Validators are the same readers `parseConfig` uses, so a hand-edited bad
 	// value falls back to the default instead of entering the config unchecked.
+	// A **retired** name (`handoffThinking`/`handoffSummaryThinking`, dropped in v0.4.2) is deliberately not
+	// listed: it has no live key to migrate to, and since `parseConfig` keeps only known keys while
+	// `updateConfig` rewrites the whole document, an unknown key is already ignored and removed by the next
+	// write - which is why its "stored for the dsh profile" receipt could not have held anyway.
 	const RENAMED_KEYS: Array<[string, keyof ProjectContextConfig, (value: unknown) => unknown]> = [
 		["autoConsolidate", "memoryEnabled", bool],
 		["autoLearn", "autolearnEnabled", bool],
-		["handoffTargetTokens", "handoffBudgetSummaryTokens", (v) => bounded(v, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)],
+		["handoffTargetTokens", "handoffBudgetSummaryTokens", (v) => bounded(v, MIN_DROP_TOKENS, MAX_KEEP_RECENT_TOKENS)],
 		["handoffKeepTokens", "handoffBudgetRecentTokens", (v) => bounded(v, 0, MAX_KEEP_RECENT_TOKENS)],
-		["handoffSummaryThinking", "handoffThinking", thinkingOf],
 		["handoffAdaptive", "handoffThresholdAuto", bool],
 		["handoffLanguage", "handoffLang", languageOf],
 	];
@@ -256,11 +252,10 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 	put("autolearnIntervalMs", positive(autolearn.intervalMs, 1000));
 	put("handoffThresholdAuto", adaptiveOf(nestedThreshold) ?? adaptiveOf(globalThreshold));
 	put("handoffThresholdRatio", ratio(nestedThreshold) ?? ratio(globalThreshold));
-	put("handoffBudgetSummaryTokens", bounded(handoff.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS)
-		?? bounded(global.autoTargetTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS));
+	put("handoffBudgetSummaryTokens", bounded(handoff.autoTargetTokens, MIN_DROP_TOKENS, MAX_KEEP_RECENT_TOKENS)
+		?? bounded(global.autoTargetTokens, MIN_DROP_TOKENS, MAX_KEEP_RECENT_TOKENS));
 	put("handoffBudgetRecentTokens", bounded(handoff.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS)
 		?? bounded(global.keepRecentTokens, 0, MAX_KEEP_RECENT_TOKENS));
-	put("handoffThinking", thinkingOf(handoff.summaryThinking) ?? thinkingOf(global.summaryThinking));
 	put("handoffMode", modeOf(handoff.mode) ?? modeOf(global.mode));
 	put("handoffGuard", guardOf(handoff.guard) ?? guardOf(global.guard));
 	put("handoffLang", languageOf(handoff.language) ?? languageOf(global.language));
@@ -319,9 +314,8 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 
 		handoffThresholdAuto: bool(raw.handoffThresholdAuto) ?? DEFAULT_CONFIG.handoffThresholdAuto,
 		handoffThresholdRatio: ratio(raw.handoffThresholdRatio) ?? DEFAULT_CONFIG.handoffThresholdRatio,
-		handoffBudgetSummaryTokens: bounded(raw.handoffBudgetSummaryTokens, MIN_SUMMARIZE_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetSummaryTokens,
+		handoffBudgetSummaryTokens: bounded(raw.handoffBudgetSummaryTokens, MIN_DROP_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetSummaryTokens,
 		handoffBudgetRecentTokens: bounded(raw.handoffBudgetRecentTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetRecentTokens,
-		handoffThinking: thinkingOf(raw.handoffThinking) ?? DEFAULT_CONFIG.handoffThinking,
 		handoffMode: modeOf(raw.handoffMode) ?? DEFAULT_CONFIG.handoffMode,
 		handoffGuard: guardOf(raw.handoffGuard) ?? DEFAULT_CONFIG.handoffGuard,
 		handoffLang: languageOf(raw.handoffLang) ?? DEFAULT_CONFIG.handoffLang,

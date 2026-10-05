@@ -44,7 +44,7 @@ export interface InjectionSection {
 /** Level-two headings are the only ones the render schemas own. */
 const HEADING_RE = /^## (.+?)\s*$/;
 
-/** A fenced code block: a `## …` line inside one is content, not a heading. */
+/** A fenced code block's opening run: three or more backticks or tildes. */
 const FENCE_RE = /^(`{3,}|~{3,})/;
 
 /**
@@ -55,22 +55,49 @@ const FENCE_RE = /^(`{3,}|~{3,})/;
  */
 const DOCUMENT_NOTE_RE = /^_\[[^\]]+\]_$/;
 
-/** Split a rendered document into sections; text before the first heading belongs to no section. */
-export function splitSections(text: string): InjectionSection[] {
+/**
+ * What one traversal of a rendered document yields: the preamble (everything before the first heading,
+ * which belongs to no section) and the sections in document order.
+ */
+export interface ScannedDocument {
+	preamble: string;
+	sections: InjectionSection[];
+}
+
+/**
+ * Walk a rendered document once, tracking fenced code blocks so a `## …` line inside one is content rather
+ * than a heading. One traversal yields both the preamble and the sections: finding the preamble with a
+ * separate, fence-blind scan could disagree with the sections about where the document starts.
+ *
+ * A closing fence is the opening character repeated at least as many times with nothing but whitespace
+ * after it; a shorter run, a different character, or trailing text stays inside the block.
+ */
+export function scanDocument(text: string): ScannedDocument {
+	const preamble: string[] = [];
 	const sections: InjectionSection[] = [];
 	let fence: string | undefined;
 	for (const line of text.split("\n")) {
 		const trimmed = line.trim();
-		const fenceMatch = FENCE_RE.exec(trimmed);
-		if (fenceMatch) {
-			if (fence === undefined) fence = fenceMatch[1][0];
-			else if (trimmed.startsWith(fence)) fence = undefined;
+		const run = FENCE_RE.exec(trimmed);
+		if (fence === undefined) {
+			if (run) fence = run[1];
+		} else if (
+			run &&
+			run[1][0] === fence[0] &&
+			run[1].length >= fence.length &&
+			trimmed.slice(run[1].length).trim() === ""
+		) {
+			fence = undefined;
 		}
 		const match = fence === undefined ? HEADING_RE.exec(line) : null;
 		if (match) sections.push({ heading: match[1], body: "" });
 		else if (sections.length > 0) sections[sections.length - 1].body += `${line}\n`;
+		else preamble.push(line);
 	}
-	return sections.map((section) => ({ heading: section.heading, body: section.body.trim() }));
+	return {
+		preamble: preamble.join("\n").trim(),
+		sections: sections.map((section) => ({ heading: section.heading, body: section.body.trim() })),
+	};
 }
 
 /**
@@ -88,14 +115,11 @@ export function renderProgressiveBody(
 	language: DocumentLanguage,
 	root?: string,
 ): string {
-	const lines = text.split("\n");
-	const firstHeading = lines.findIndex((line) => HEADING_RE.test(line));
-	const preamble = (firstHeading > 0 ? lines.slice(0, firstHeading) : []).join("\n").trim();
+	const { preamble, sections } = scanDocument(text);
 	const dash = language === "zh" ? "——" : "—";
 	const inline: string[] = [];
 	const notes: string[] = [];
 	const pointerLines: string[] = [];
-	const sections = splitSections(text);
 	for (const [index, section] of sections.entries()) {
 		const isLast = index === sections.length - 1;
 		const bodyLines = section.body.split("\n");

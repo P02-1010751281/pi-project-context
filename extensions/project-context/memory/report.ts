@@ -369,9 +369,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		} catch (error) {
 			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory). Fall back to the
 			// session cwd only when the memory layer is already there, so an arbitrary directory never gets a
-			// stray `.agents/memory/` created inside it; otherwise the failure has nowhere safe to go.
+			// stray `.agents/memory/` created inside it; the check names the directory `logError` writes into,
+			// not its parent, since `.agents` alone is not the memory layer. Otherwise the failure has nowhere
+			// safe to go.
 			const projectRoot = await getProjectRoot(pi, ctx.cwd).catch(() => undefined);
-			const root = projectRoot ?? (existsSync(join(ctx.cwd, ".agents")) ? ctx.cwd : undefined);
+			const root = projectRoot ?? (existsSync(join(ctx.cwd, ".agents", "memory")) ? ctx.cwd : undefined);
 			if (root) await logError(root, "shutdown:consolidate", error).catch(() => {});
 		}
 	});

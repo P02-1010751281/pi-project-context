@@ -1118,18 +1118,22 @@ try {
 			receiptCtx.notifications.every(([message]) => !String(message).toLowerCase().includes("summary only")),
 	);
 	receiptCtx.notifications.length = 0;
+	// `handoffThinking` was retired in v0.4.2: it had no reader on this side, and `updateConfig` rewrites the
+	// document from known keys only, so the value it stored never survived a pi write anyway. The verb must
+	// now be refused like any other unknown option, persist nothing, and be gone from the completion surface.
 	await receiptPi.commands.get("handoff").handler("thinking session", receiptCtx);
 	check(
-		"the thinking receipt does not claim a summary call (session level)",
-		receiptCtx.notifications.some(([message]) => String(message).includes("no model")) &&
-			receiptCtx.notifications.every(([message]) => !/summar/i.test(String(message))),
+		"the retired thinking verb is refused as an unknown option",
+		receiptCtx.notifications.some(([message]) => String(message).includes('Unknown option "thinking session"')),
 	);
-	receiptCtx.notifications.length = 0;
-	await receiptPi.commands.get("handoff").handler("thinking off", receiptCtx);
 	check(
-		"the thinking receipt does not claim a summary call (off)",
-		receiptCtx.notifications.some(([message]) => String(message).includes("no model")) &&
-			receiptCtx.notifications.every(([message]) => !/summar/i.test(String(message))),
+		"the retired thinking verb persists nothing",
+		!Object.prototype.hasOwnProperty.call((await readConfig()) ?? {}, "handoffThinking"),
+	);
+	check(
+		"the retired thinking verb is gone from the completion surface",
+		!((await receiptPi.commands.get("handoff").getArgumentCompletions("")) ?? []).some((item) => item.value === "thinking") &&
+			!((await receiptPi.commands.get("handoff").getArgumentCompletions("thinking ")) ?? []).some((item) => item.value === "off"),
 	);
 	// Every scenario above shares the same counting stub, so this is the one place the "no model call"
 	// property is asserted over all of them at once: a regression that swallowed an error and fell back

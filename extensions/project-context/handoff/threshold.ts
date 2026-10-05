@@ -4,7 +4,7 @@
  */
 
 import { type ContextUsage, type ExtensionContext, buildContextEntries, estimateTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { MIN_SUMMARIZE_TOKENS } from "../shared/config.ts";
+import { MIN_DROP_TOKENS } from "../shared/config.ts";
 import { fmtPct, fmtTokens } from "./format.ts";
 import { config } from "./settings.ts";
 
@@ -117,7 +117,7 @@ export function resolveThreshold(
 
 	const baseline = baselineTokens(ctx, usage);
 	const keep = config.handoffBudgetRecentTokens;
-	const floor = baseline + keep + MIN_SUMMARIZE_TOKENS;
+	const floor = baseline + keep + MIN_DROP_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return undefined; // window too small for this configuration
 
@@ -202,7 +202,7 @@ export function thresholdRefusal(
 	if (!config.handoffThresholdAuto) return "fixed-ratio-rounds-to-zero";
 	const model = ctx.model;
 	if (!model || usage.tokens === null) return "no-model-or-usage";
-	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_SUMMARIZE_TOKENS;
+	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_DROP_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	if (usable <= floor) return "window-too-small";
 	const tierEdge = firstCostTierEdge(model);
@@ -220,7 +220,7 @@ export function thresholdRefusal(
  */
 export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionContext, usage: ContextUsage): string {
 	const window = usage.contextWindow;
-	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_SUMMARIZE_TOKENS;
+	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_DROP_TOKENS;
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	switch (reason) {
 		case "no-window":

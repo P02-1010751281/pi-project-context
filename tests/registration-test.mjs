@@ -99,13 +99,15 @@ for (const [name, file] of [
 				failures += 1;
 			}
 			const handoffVerbs = (await pi.commands.get("handoff").getArgumentCompletions("")) ?? [];
-			for (const verb of ["status", "on", "off", "threshold", "budget", "thinking", "mode", "guard", "lang", "now"]) {
+			for (const verb of ["status", "on", "off", "threshold", "budget", "mode", "guard", "lang", "now"]) {
 				if (!handoffVerbs.some((item) => item.value === verb)) {
 					console.log(`FAIL /handoff does not complete ${verb}`);
 					failures += 1;
 				}
 			}
-			for (const gone of ["auto", "target", "keep", "send", "draft"]) {
+			// `thinking` was retired with its write-only config key in v0.4.2: a completion that suggests it
+			// would send the user into the unknown-option branch.
+			for (const gone of ["auto", "target", "keep", "send", "draft", "thinking"]) {
 				if (handoffVerbs.some((item) => item.value === gone)) {
 					console.log(`FAIL /handoff still completes the retired verb ${gone}`);
 					failures += 1;
