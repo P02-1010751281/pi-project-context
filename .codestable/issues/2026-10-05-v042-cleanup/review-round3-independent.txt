@@ -1,0 +1,66 @@
+# lane A 独立审查报告（v0.4.2 发布放行轮，冻结 HEAD 8b32dcb）
+
+判定模型：**deepseek/deepseek-flash**。全程只读工作区；测试、变异、探针均在 `/tmp` 副本/临时目录执行；冻结树 `git status` 与起始基线一致（仅既有的 HANDOFF.md / project-context.json 震荡与未跟踪 skill-candidates）。基线：`node tests/run-all.mjs` 在两个 `/tmp` 副本上均 **15/15**；本地 master 与 forgejo、github 两个 push URL 的 master 均等于 `8b32dcb`。
+
+## 前两轮修复逐条核验
+
+- **审1 I1（退役理由）**：六处已一致为「v0.4.1 是已知键、值随写持久化；v0.4.2 硬切，未知键被忽略、下次写回消失」——`CHANGELOG.md:10-15`、`docs/configuration.md:117-119`、`vocabulary-conventions.md:128`、`config.ts:24-29/218-222`、`v0.4.1-fix-note.md:46-51`、`MEMORY.md:59-60` + `CONTEXT.md:11`。✓
+- **审1 I2（fence 叙述）**：我在 `/tmp/pc-v041-probe`（v0.4.1 树）实跑同一 fixture：`splitSections` 本就 fence 感知、块内 `##` 从未成小节（pointer=2），真实损害是前言扫描把前言切在假标题、丢掉 `- 围栏内是内容。`；HEAD 保留内容且 pointer 仍为 2。现 `CHANGELOG.md:20-26` 与 `tests/sections-test.mjs:502-504` 的叙述与旧代码逐字对得上。✓
+- **审2 important-1（改名清单）**：`docs/configuration.md:160-163` 的 7 项 = `config.ts:224-231` 的 `RENAMED_KEYS` 6 项 + 退役的 `handoffSummaryThinking→handoffThinking`，逐项对上。✓
+- **审2 important-2（fix-note banner）**：`v0.4.1-fix-note.md:46-51` 已改为「硬切不是改名」。✓
+- **审2 nit（§9.8 口径）**：按 `/tmp/a-paths.txt` 的 13 现场文件复算——Projects 8 文件 6 个旧键 + HOME 3 文件 2 个旧键 = **8/11**；13 文件口径加「2026 年新青马班」与 Trash = **10/13**，与 §9.8 修订文完全吻合。旋钮折算后现场唯一非默认值 = UniField `maxMemoryChars=36000`，22/22 键有 `shared/config.ts` 外读者（我复跑 census 脚本确认）。✓
+- **审2 nit（M7）**：单侧变异 `.agents/memory → .agents` 复测 **恰好 1 具名红**（`a cwd that only has .agents is not the memory layer`），与 §9.9/§9.11 一致。✓
+- **§9.11 数字复测**：M1=3 红、M2=1 红、M7=1 红均逐字复现；**M6 仍错**（见 nit-1）。R-1 固定比例探针在 HEAD 与 v0.4.1 输出逐字相同（`sent: true` / `newSessionRan: true` / `dropping ~2.1k`），非本轮回归。✓
+- **代码面**：`runHandoff` 全仓仅 `run.ts:500`（"force"）与 `:504`（"force-auto"）两个字面量调用点，签名已收窄；`shutdownErrorRoot` 仅 `memory/report.ts:27` 定义、`:382` 生产调用，测试直接断言同一函数；`migrateLegacyConfig`/`splitSections` 在 v0.4.1 就只有定义 + 文件内使用，降级/取代不丢外部消费者；35 个从导出面移除的名字中，只有技能示例还引用已删符号（nit-2）。
+
+## blocking
+
+无。
+
+## important
+
+1. **`MEMORY.md` 的活动文件地图把 `shutdownErrorRoot` 指到了错文件，且是 1553151（审2「刷记忆渲染」提交）新引入的**。
+   - `.agents/memory/MEMORY.md:126`（挂在 `memory/journal.ts` 条目下）写 `shutsdownErrorRoot and the shutdown fallback root live in the handoff/memory handler path`；`:133`（挂在 `handoff/run.ts` 条目下）写 `the failure toast and shutdownErrorRoot live here`。生产事实：`extensions/project-context/memory/report.ts:27` 定义、`:382` 调用；`run.ts`/`journal.ts` 中零引用（`git grep shutdownErrorRoot -- extensions` 仅 report.ts 两行）。`git log -S` 确认这两句由 `1553151` 引入。
+   - 影响：这是每轮注入系统提示的活动记忆，指向错文件的「源码地图」会持续误导后续会话；且与 v0.4.2 声称的「审计与文档对齐全」冲突——这正是「表面刷新、实质仍错」。
+   - 修复边界：只改记忆渲染文本（`MEMORY.md:126`/`:133` 归位到 `memory/report.ts`，`/tmp` 下的记忆刷新提交即可），不动代码；若按仓规不在发布前手改渲染，至少不能把它算作已对齐。
+
+## nit
+
+1. **§9.11 的 M6 红数仍错：写成 2，实为 3**。`.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:341`（§9.11 M6「parseConfig 补回退役键 → 2 红」）与 `:243`（§9.7 M8 同一变异「2 条」）同错。我在 HEAD 与 `git archive 15b65cb` 树上各做一次单侧变异（`shared/config.ts` 的 parseConfig 返回对象加 `handoffThinking: "off"`），跑 `node tests/run-all.mjs` 均得 **3 条具名红**：两条 switches 断言 **加上** `tests/handoff-test.mjs:1130` 的 `the retired thinking verb persists nothing`（parseConfig 注入的默认键会被下一次 `updateConfig` 整份写回持久化）。8b32dcb 的提交信息说「fix the numbers I miscounted」，M7 修对了，M6/M8 没有。修复边界：改 2→3 并补第三条标签，或在格定义里注明该格只跑 switches-test。
+2. **发布技能里有一个引用已删符号的活动示例**：`.agents/skills/pi-project-context-audit-claim-verification/SKILL.md:48` 用 `memory/journal.ts::newestMemoryArchiveSync`（v0.4.2 已删）当「grep 具名消费者」的现成例子，并给出 `rg -n "newestMemoryArchiveSync|loadMemorySync" .`——现在这条命令只会命中技能自身与记忆/档案里的历史提及。影响：`.agents/skills/` 在发布面内，示例已死。修复边界：改示例或标注为历史（不要求本轮）。
+3. **`MEMORY.md` 的 v0.4.2 相关计数已过期**：`:100`「the extension writes all 23 keys … none of the eight handoff knobs」现为 **22 键 / 7 个 handoff 旋钮**（`shared/config.ts:100-116`）；`:134`「saveConfig eight-key patch」现为 **7 键**（`handoff/settings.ts:60-70`）。修复边界：随下一次记忆刷新更正，不手改代码。
+4. **`git diff --check v0.4.1..HEAD` 不干净**：`.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:349` 有文件尾多余空行（8b32dcb 加入）。影响：发布技能把「`git diff --check` clean」列为发布前提（`pi-project-context-release-tag-and-pin-sync/SKILL.md:9`），`CONTEXT.md:19` 也声称 clean。修复边界：删掉该空行。
+5. **「七个改名两仓同名」与退役叙事存在张力**：`MEMORY.md:18,58`、`docs/configuration.md:5-6` 仍说 dsh 镜像/共享全部七个拼写，而 v0.4.2 的依据是 dsh 读的是它自己的 `handoffPendingQuestion`、这个拼写两侧都没有读者。沙箱内没有 dsh 插件源码（`~/.local/lib/node_modules/@deepseek-ai/dsh` 中不含任何 handoff 键），无法仲裁；建议给旧句加「v0.4.2 前」限定或保留为历史。
+
+## suggestion
+
+- 审2 曾建议把 fenced-preamble 断言拆成「pointer 计数」与「围栏内容仍在」两条；`tests/sections-test.mjs:506-513` 仍是单条合取。本轮不必须。
+- 发布步骤：v0.4.1 的先例是 `7b6fc98 docs(changelog): date the v0.4.1 section` 作为 tag 落点；v0.4.2 段在 8b32dcb 仍标 `未发布`（`CHANGELOG.md:6`）。正式打 tag 前需有一个「给 v0.4.2 段落日期（并顺带纠正上面的记忆/审计小项）」的发布提交，不能把 `未发布` 原文带进 tag。
+
+## learning
+
+- M6 变异的第三条红是「持久化」断言：parseConfig 注入的默认键会被下一次 `updateConfig` 的整份重写写回文件——只跑 switches-test 的矩阵格子会漏掉这条跨文件红，红数统计必须以全套件为准。
+- 记忆渲染是活文档，不是可靠事实源：其源码地图必须每次与 `git grep` 对照。审2 的刷新提交本身就把新 helper 放错了两处文件。
+- v0.4.1 fence 行为可复现：前言 fence 盲目扫描造成「真损害是丢前言内容」，而小节扫描一直正确——这为「同一文档两个视图」的表述提供了现场证据。
+- R-1 方法论有效：同一探针指向 v0.4.1 与 HEAD，逐字相同即可把「既存语义」与「本轮回归」分开。
+
+## praise
+
+- 审1/审2 的全部指定修复真实落地：改名清单完整且与 `RENAMED_KEYS` 一一对应；§9.8 的口径补写经现场文件复算精确；fix-note banner、sections-test 注释、CHANGELOG 措辞均已改正。
+- 删除面干净：三处 `!force` 分支确为不可达（v0.4.1 与 HEAD 双源码、两个字面量调用点、签名收窄）；`cleanHeaders` 零引用、`newestMemoryArchiveSync` 仅剩技能里的历史示例；降级导出在定义文件外零消费者（我的导出探针：HEAD 直出 279 个名字，零外部引用 = 0）。
+- 新增 pin 法正确：`shutdownErrorRoot` 由生产路径真调用、测试直接断言判定，单侧变异精确红一条具名断言。
+- 套件 15/15；M1/M2/M7 变异红数与我复测一致；R-1 证实非本轮回归；双远端 master 均为 8b32dcb。
+
+## residual-risk
+
+- **跨仓 dsh 面不可验证**：沙箱无 dsh 插件源码，无法确认 `handoffThinking` 在其侧确实无读者。若相反，`updateConfig` 的整份重写会在首次写回时静默删掉 dsh 仍读的键。关闭判据：在 dsh 源码里 grep `handoffThinking`/`handoffSummaryThinking`，确认无读取路径。
+- **固定比例模式无最小可丢下限**（文档化语义）：`handoffThresholdAuto:false` + 小比例 + 大窗口仍会执行只丢 ~2k 的交接；与 v0.4.1 逐字一致，非新增。
+- **`CONTEXT.md` 会话快照滞后**：`:7`/`:25` 仍以 `2a7f7d0` 为冻结版、写「Seven commits」实列 8 个 hash。按仓规由扩展再生成、不手改；发布前若要把它当发布面，需一次真实刷新。
+- **tag 前的「未发布」落日期提交**（见 suggestion 第 2 条）尚未存在。
+
+## 对抗性一遍
+
+最可能的用户可见错误是**配置键的静默消失**：任何带 `handoffThinking` 的 `project-context.json`（含与 dsh 共享的项目文件）在升级后，只要发生任意一次配置写（如 `/handoff lang zh`、`/memory on`），该键就会被整份重写移除。最小复现：写 `{"handoffThinking":"session"}` → 加载 v0.4.2 → 执行任一写配置命令 → 文件内键消失。判据是代码事实：`parseConfig` 只保留已知键、`updateConfig` 写 `{...parsed, ...patch}` 整份文档。文档已按「硬切不是改名：忽略并在下次写回消失」明说，故对读文档者不是承诺落差；但若 dsh 侧仍有读者，这就是无提示的破坏性变更（见 residual-risk 第 1 条）。次要候选：固定比例小丢弃交接（已文档化）；再其次：记忆渲染把后续会话指向错文件（本次 important-1）。
+
+VERDICT: CHANGES-REQUESTED（代码与测试面通过、15/15、变异具名可红、R-1 无回归；但本轮引入的活动记忆渲染把 `shutdownErrorRoot` 指到错文件，且 §9.11 的 M6 红数修正未落地——均属发布面事实性错误，需修正后再放行）
+RELEASE-OK: no

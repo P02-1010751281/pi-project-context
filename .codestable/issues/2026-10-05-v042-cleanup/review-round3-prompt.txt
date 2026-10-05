@@ -1,0 +1,45 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 3，本轮为**发布放行轮**）。工作目录（沙箱，冻结版）：/tmp/pc-v042-r3
+
+严格只读：不得写工作区任何文件、不得 git add/commit/checkout/stash、不得改配置；临时文件只能放 /tmp。
+你只有 read 与 bash 两个工具。判定模型（记入本次记录）：deepseek/deepseek-flash。
+请独立判断，不要继承仓库文档或前两轮的结论；假设它们可能有错，自己复测。
+
+## 本次发布范围
+v0.4.2 = `git diff v0.4.1..HEAD`，冻结于 HEAD **8b32dcb**。它是一轮「应修尽修」的清扫：删除死符号与三处不可达
+分支、退役一个无读者的配置键与动词、把 `session_shutdown` 回退的根选择抽成可测函数、并把审计与文档对齐全。
+**发布面**：`CHANGELOG.md` 的 v0.4.2 段、`docs/`、`.agents/skills/`、以及仓库双远端（master）。
+
+## 前两轮已发生的事（你要核验它们是否真修、且没有新引入的问题）
+- 审 1（冻结 15b65cb）：CHANGES-REQUESTED，0 blocking / 2 important（`handoffThinking` 退役理由写反——v0.4.1 它是
+  已知键、值会持久化，是 v0.4.2 退役才让它成为未知键；fence 旧 bug 的损害描述不实——v0.4.1 的 `splitSections`
+  本就 fence 感知）/ 6 nit / 2 suggestion。
+- 审 2（冻结 1553151）：CHANGES-REQUESTED，0 blocking / 2 important——① `docs/configuration.md` 的 v0.4.0 改名清单
+  被退役编辑剪掉了 `handoffAdaptive`→`handoffThresholdAuto`；② `v0.4.1-fix-note.md` 的 v0.4.2 横幅仍留旧理由；
+  另指出审计 §9.11 的 M7 红数把 `FAILURES: N` 汇总行也算进去了（实为 1 红）、§9.8 计数口径未声明。
+- 两轮记录都在 `.codestable/issues/2026-10-05-v042-cleanup/review-round{1,2}-*.txt`。
+
+**本轮请逐条确认这两轮的全部修复已落地且没有引入新问题**（尤其：改名清单是否完整且与 `config.ts` 的
+`RENAMED_KEYS` 一一对上；退役叙述的六处是否互相一致；§9.11 的数字与你自己的复测是否一致），
+并把任何「只在表面改了、实质仍错」的地方标出来。
+
+## 还要独立复核（用代码与测试作为事实来源）
+1. `git diff v0.4.1..HEAD -- extensions tests`：删除是否丢行为；新抽出的 `shutdownErrorRoot` 是否被生产路径真调用；
+   断言是否在断言判定。
+2. 发布面自洽：`CHANGELOG.md` v0.4.2 段每一句、`docs/configuration.md`、`docs/handoff.md`、
+   `.codestable/reference/vocabulary-conventions.md`、`.agents/memory/{MEMORY,CONTEXT}.md` 是否彼此一致；
+   有无仍在描述已删机制的活动引用（`handoffThinking`/`MIN_SUMMARIZE_TOKENS`/`estimatedAfter`/`sliceTokens`/
+   `cleanHeaders`/`newestMemoryArchiveSync`；`.codestable/` 冻结档案里的历史提及不算）。
+3. `node tests/run-all.mjs` 在沙箱里跑（只写 /tmp）应 15/15；自选 3 格做单侧变异，证明断言真的可红且具名。
+4. 固定比例模式无最小可丢下限（审计 §9.11 的 R-1）：自己跑一次探针确认它与 v0.4.1 行为一致（不是新回归）。
+5. 旋钮结论（§9.8）：先把 v0.4.0 前旧键名按 `legacyConfigPatch` 折算再与 `DEFAULT_CONFIG` 比，现场唯一手改值应为
+   UniField `maxMemoryChars=36000`；22/22 键有读者；「无旋钮可删」是否站得住。
+
+## 对抗性一遍
+假设发布后会有一个用户可见错误：最可能是哪一种？给最小复现与判据。特别检查是否存在「文档承诺了代码不做的事」
+或「代码做了文档没说的破坏性事」（例如未知配置键的消失时机、`/handoff` 未知动词的回退、记忆渲染被重写）。
+
+## 输出格式
+按严重级别分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条含 `file:line`、
+影响、修复边界。最后两行必须是：
+`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`（附一句理由）
+`RELEASE-OK: yes/no`（只有在 VERDICT 为 PASSED 时才可 yes）

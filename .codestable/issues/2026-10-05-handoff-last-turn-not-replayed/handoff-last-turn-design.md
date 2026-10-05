@@ -170,7 +170,7 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 ### 8.4 残留与待决
 
 > **v0.4.2 处置（`bd9fd3a`）**：下面第 1 条涉及的 `handoffThinking` 与第 3 条已在 v0.4.2 解决——键与动词一起退役
-> （pi 侧零行为读者，dsh 读的是它自己的 `handoffPendingQuestion`；这是硬切不是改名——v0.4.1 里它仍是已知键、值会随写持久化，v0.4.2 起按未知键忽略并在下次写回时消失），
+> （pi 侧零行为读者，回执里的 dsh 承诺在本仓无证据、跨仓不可复验；这是硬切不是改名——v0.4.1 里它仍是已知键、值会随写持久化，v0.4.2 起按未知键忽略并在下次写回时消失），
 > `MIN_SUMMARIZE_TOKENS` 更名为 `MIN_DROP_TOKENS`。第 1 条剩下的旋钮拼写、第 2 条的收据词与第 4 条仍开放。
 
 - **旋钮命名未动**：`handoffBudgetSummaryTokens` 与 `/handoff budget summary` 保留原拼写（与 dsh 面共享，改名/删旋钮需单独的设计文档 + 现场事实）；

@@ -240,7 +240,8 @@ v0.4.1 的 tag 停在审3 判定通过的那一版，五条 nit 按停止规则�
 
 单侧变异 8 格（每格只改回一处）：M1 标题判定退回 fence 盲目扫描 → 3 条具名红；M2 关闭 fence 不再比较长度 → 1 条；
 M3 补回动词补全 → 3 条（含注册面的退役检查）；M4 补回二级补全 → 1 条；M5 补回动词分支 → 1 条；
-M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 → 2 条（嵌套与改名两条读取路径）。
+M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 → 2 条（嵌套与改名两条读取路径）。（**数字订正**：全量套件下为 3 条——第三条是
+`handoff-test` 的持久化断言，当时只跑了 switches-test；见 §9.11 的订正史。）
 **M7 是负向对照**：把 `session_shutdown` 失败回退里的 `.agents/memory` 退回 `.agents`，全绿 —— 该分支只在
 `getProjectRoot` 拒绝时可达，而它自身的回退就是会话 cwd，所以这是精度修正而非行为修正，与 §9.4 的 shutdown 守卫
 同类，记为不可 pin。套件 15/15。发布事实与三审三校证据见
@@ -338,12 +339,35 @@ split the document`、`a heading-shaped line in a fenced preamble does not becom
 run inside a block does not close it`）；M2 关闭 fence 不再比较长度 → **1 红**（`a shorter fence run inside a
 block does not close it`）；M3 补回退役动词补全 → **1 红**、M4 补回退役二级补全 → **1 红**（两者都红
 `the retired thinking verb is gone from the completion surface`）；M5 补回退役动词分支 → **1 红**
-（`the retired thinking verb is refused as an unknown option`）；M6 `parseConfig` 补回退役键 → **2 红**
-（`a retired key is not resurrected by the nested layout`、`the retired thinking name folds into nothing`）；
+（`the retired thinking verb is refused as an unknown option`）；M6 `parseConfig` 补回退役键 → **3 红（全量套件）**（switches 的 `a retired key is not resurrected by the nested
+layout`、`the retired thinking name folds into nothing`，**加上** `tests/handoff-test.mjs` 的
+`the retired thinking verb persists nothing`——注入的默认键会被下一次 `updateConfig` 整份写回，所以只跑
+switches-test 的格子会漏掉第三条）；
 M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents is not the memory layer`）——抽取
 `shutdownErrorRoot` 之前该格是全绿（§9.7 的负向对照），抽取后同一次变异精确红一条，与 CHANGELOG、§9.9 一致。
 
-首轮记录曾把 `FAILURES: N` 汇总行也计入，写成 M6=3、M7=2；审 2 指出 M7 实为 1 红，脚本改为只数具名行并重跑，
-这里是订正后的数字。格定义与 §9.7 的旧矩阵不同（本轮每格是「补回/退回一处」，落点与红数不可与旧表逐格对齐），
+数字订正史（三轮各纠一次）：首轮把 `FAILURES: N` 汇总行也计成红，写成 M6=3、M7=2；审 2 指出 M7 实为 1 红，脚本改为
+只数具名 `FAIL ` 行；审 3 又指出 M6 那一格只跑了 switches-test、漏掉 handoff-test 的持久化断言，全量套件下是 3 红——
+脚本现改为每格跑全套件、只数具名行，上面是订正后的数字。格定义与 §9.7 的旧矩阵不同（本轮每格是「补回/退回一处」，落点与红数不可与旧表逐格对齐），
 负向对照是同一棵未改动的树跑全套件 15/15。脚本：`/tmp/matrix-v042.py`。
+
+### 9.12 记名残留 R-2：dsh 侧有没有 `handoffThinking` 读者，本仓不可复验（2026-10-05）
+
+审 3 抓到一处**新的过度主张**：本轮与 v0.4.2 前几片把「dsh 读的是它自己的 `handoffPendingQuestion`，不是这个
+拼写」当成事实写进 6 个活动面（CHANGELOG、`docs/configuration.md`、词汇表、`config.ts` 注释、设计文档、测试注释）
+来支撑退役。本仓真正站得住的只有两半：
+
+- **pi 侧**：零行为读者（只有那个动词写它）——`git grep -n handoffThinking -- extensions/` 可复测。
+- **dsh 侧**：本机所有 dsh 产物都不含 `handoff` 字样——已装的 `~/.local/lib/node_modules/@deepseek-ai/dsh`
+  （283 MB，`lib/` 全部 bundle，大小写不敏感）、`~/.dsh/settings.yaml`、`~/.dsh/profiles/**`、
+  `~/.dsh/dsh-memento`、`~/.dsh/dsh-config-manager` 全为 0 命中。**但这不等于 dsh 没有读者**：这些产物里根本
+  没有 handoff 面，而 v0.4.0 的证据（`.codestable/issues/2026-10-05-vocabulary-consistency/release-v0.4.0-evidence.md:62`）
+  只说「七个改名两仓同名」，没有说 dsh 是否读它。
+
+因此退役依据已改写为「pi 侧零行为读者 + 回执里的 dsh 承诺在本仓无证据」，跨仓结论列为残留。
+
+**关闭判据**：在 dsh 插件源码里 `grep -rn 'handoffThinking\|handoffSummaryThinking\|handoffPendingQuestion'`，
+确认是否存在读取路径。**影响面**：若 dsh 侧确有读者，这次退役对 dsh 用户就是一次无提示的破坏性变更——
+`parseConfig` 只保留已知键、`updateConfig` 整份重写，所以升级后任意一次写配置都会静默删掉该键
+（`docs/configuration.md` 已按「硬切」明说，但对 dsh 侧读者仍是行为变化）。
 

@@ -1118,8 +1118,8 @@ try {
 			receiptCtx.notifications.every(([message]) => !String(message).toLowerCase().includes("summary only")),
 	);
 	receiptCtx.notifications.length = 0;
-	// `handoffThinking` was retired in v0.4.2: it had no reader on this side (dsh keeps its own key), so the
-	// value was never acted on. Up to v0.4.1 it was still a known key that round-tripped through config; the
+	// `handoffThinking` was retired in v0.4.2: it had no reader on this side, so the value was never acted on
+	// (whether the dsh counterpart reads it cannot be checked from this repo; see audit R-2). Up to v0.4.1 it was still a known key that round-tripped through config; the
 	// retirement is what makes it an unknown key the next rewrite drops. The verb must now be refused like
 	// any other unknown option, persist nothing, and be gone from the completion surface.
 	await receiptPi.commands.get("handoff").handler("thinking session", receiptCtx);

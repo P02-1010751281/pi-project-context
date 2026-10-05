@@ -45,7 +45,9 @@ Open the test file and look for how it reaches the code, before writing a covera
 rg -n "newSession|captureNewSession|maybeTrigger|runHandoff" tests/
 ```
 
-`tests/handoff-test.mjs` drives `runHandoff` through a `newSession` mock (skip / success / cancel / throwing ctx) and asserts `maybeTrigger`'s settle trigger plus a non-stacking negative, so the "maybeTrigger and runHandoff are untested" residual was false. Same trap for dead code: grep the named consumer, not only the symbol — `memory/journal.ts::newestMemoryArchiveSync` is dead because its JSDoc cites `loadMemorySync`, which no longer exists anywhere (`rg -n "newestMemoryArchiveSync|loadMemorySync" .`).
+`tests/handoff-test.mjs` drives `runHandoff` through a `newSession` mock (skip / success / cancel / throwing ctx) and asserts `maybeTrigger`'s settle trigger plus a non-stacking negative, so the "maybeTrigger and runHandoff are untested" residual was false. Same trap for dead code: grep the named consumer, not only the symbol — `memory/journal.ts::newestMemoryArchiveSync` was dead because its JSDoc cited `loadMemorySync`, a symbol that had
+stopped existing anywhere (`rg -n "newestMemoryArchiveSync|loadMemorySync" .`); it was deleted in v0.4.2, so use it as
+the shape of the check, not as a live example.
 
 ### 3b. Attribute an artifact by its producer's call sites, not by its shape
 Found stale field files that *look* like evidence for a code path? Grep the path's call sites in the extension before citing them:

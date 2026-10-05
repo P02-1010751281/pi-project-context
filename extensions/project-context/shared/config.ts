@@ -216,8 +216,9 @@ async function legacyConfigPatch(projectRoot: string): Promise<{ patch: Partial<
 	// the rewrite drops the old one. Validators are the same readers `parseConfig` uses, so a hand-edited bad
 	// value falls back to the default instead of entering the config unchecked.
 	// A **retired** name (`handoffThinking`/`handoffSummaryThinking`, dropped in v0.4.2) is deliberately not
-	// listed: it has no live key to migrate to and no reader on either side (dsh's counterpart is its own
-	// `handoffPendingQuestion`). The retirement is a hard cut, not a rename: up to v0.4.1 the key was known
+	// listed: it has no live key to migrate to and no reader on this side - and the receipt's "stored for
+	// the dsh profile" claim has no evidence in this repo (the cross-repo half cannot be checked here; see
+	// audit R-2). The retirement is a hard cut, not a rename: up to v0.4.1 the key was known
 	// and written back, while from v0.4.2 on it is unknown - and since `parseConfig` keeps only known keys
 	// while `updateConfig` rewrites the whole document, an unknown key is ignored and removed by the next
 	// write.
