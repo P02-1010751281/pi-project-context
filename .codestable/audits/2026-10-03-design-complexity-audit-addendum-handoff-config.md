@@ -46,6 +46,13 @@ tags: [process, design-review, complexity, evidence, handoff, config, strict-mod
 迁移是**单向**的（读旧布局、写新扁平布局），所以这层可以定一个退役窗口（例如再发一版之后删），而不是永久背着。
 在此之前它是「面向外部安装的兼容」，不是本机 bug。
 
+> **2026-10-06 收口（现场事实，退役问题按反方向结束）**：用 `legacyConfigPatch` 真正认的六个改名键
+> （`autoConsolidate` / `autoLearn` / `handoffTargetTokens` / `handoffKeepTokens` / `handoffAdaptive` / `handoffLanguage`）
+> 重扫本机 10 个 `.agents/memory/project-context.json`：**2 个（`形式化证明`、`HWCup-Math-A`）六个键全带**，其余 8 个干净。
+> 也就是说这层兼容**正在真场上干活**——那两个项目的设置只因为迁移存在才没被静默丢掉；而旧键之所以还在，是因为读路径
+> 非破坏（只有写路径才重写文档）。原判据「等一条 0 命中以外的现场事实」因此以**相反方向**满足：退役会真丢配置。
+> 处置：**保留，不定退役窗口**；此前 §9.10 的「等事实」不再是挂账，而是已决。
+
 ### 2.3【现场事实 + 残留·跨特性耦合】handoff 有一条真实的失败链路
 
 P4 的栈显示：`session_shutdown` 期间的**记忆 consolidation 抛错**（`memory/pass.ts:109` ← `report.ts:57` ← `:197`）
@@ -54,6 +61,9 @@ catch-all 提示 + 失败退避。
 
 - 这**证实**了失败退避/提示机制有据（不是预防性代码）。
 - 同时记一条**跨特性耦合残留**：handoff 事务的成功依赖 memory 特性不在 shutdown 抛错。本次审计不改它（无新机制诉求即有据，但有据也需要单独立项）。
+
+> **2026-10-06 收口**：残留已立成可追踪 issue——`.codestable/issues/2026-10-06-handoff-shutdown-coupling/brief.md`
+> （现场事实、现有防御性守卫及其无法在 harness 钉住的原因、三条待 owner 选的处置）。本附注不再单独挂账。
 
 ### 2.4【已更正·原为误判】触发门与事务其实有测试
 
