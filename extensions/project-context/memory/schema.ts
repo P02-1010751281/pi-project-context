@@ -43,6 +43,21 @@ export function memorySchemaOverheadChars(): number {
 	return MEMORY_HEADER.length + MEMORY_SECTIONS.reduce((sum, section) => sum + `## ${section.heading}\n\n`.length + MEMORY_SECTION_GAP_CHARS, 0);
 }
 
+/**
+ * What the rendered document spends outside the section bodies, exactly: the header, each heading with
+ * its newline, and the blank line between neighbouring sections.
+ *
+ * `memorySchemaOverheadChars` is deliberately more generous than this (it reserves a blank line after
+ * every section rather than between them), because the per-section targets are shares of the remainder
+ * and under-reserving there would let a document that fills every target exceed the cap. The renderer's
+ * own limit has to use this exact figure instead: charging the pool a structurally unused gap is how
+ * 9 idle characters and the target floors turned into three dropped entries on 2026-10-06.
+ */
+export function memoryStructureOverheadChars(): number {
+	// `heading` carries the name only, so each one costs its name, the "## " prefix, and its newline.
+	return MEMORY_HEADER.length + MEMORY_SECTIONS.reduce((sum, section) => sum + section.heading.length + 4, 0) + (MEMORY_SECTIONS.length - 1);
+}
+
 /** Per-section body budgets for a document cap, floored so they plus the overhead never exceed it. */
 export function memorySectionBudgets(cap: number): MemorySectionBudget[] {
 	const body = Math.max(0, cap - memorySchemaOverheadChars());

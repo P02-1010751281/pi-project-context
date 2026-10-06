@@ -41,9 +41,9 @@ export type ConsolidateOutcome = {
 	kind: ConsolidateKind;
 	/** No section held an entry worth storing, so the memory must not be written at all. */
 	semanticEmpty: boolean;
-	/** Sections that lost at least one entry to their budget. */
+	/** Sections that lost at least one entry because the document was at its cap. */
 	sectionDropped: number;
-	/** Entries dropped because their section's budget was full. */
+	/** Entries dropped because the document was at its cap, not because their section was over its share. */
 	droppedItems: number;
 	/** Entries clipped to their section's per-item cap. */
 	itemTruncated: number;

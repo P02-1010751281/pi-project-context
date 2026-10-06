@@ -1521,6 +1521,9 @@ try {
 		const CONTEXT = { title: "structured", summary: "summary text", key_points: ["kp"], open_tasks: ["ot"] };
 		const memoryFile = (root) => path.join(root, ".agents/memory/MEMORY.md");
 		const errorLog = (root) => path.join(root, ".agents/memory/errors.log");
+		// A missing errors.log is a failing expectation, not a crash: the matrix runs mutate the renderer,
+		// and an ENOENT would abort the file before the assertion that should have gone red could run.
+		const errorLogText = (root) => readFile(errorLog(root), "utf8").catch(() => "");
 
 		/** Register the extension over a fresh temp project whose model replies as `reply` says. */
 		const project = async (name, config = {}) => {
@@ -1597,7 +1600,7 @@ try {
 				check("the reply does not claim the memory was updated", !toasts.some((message) => /Memory: updated /.test(message)));
 				check("the reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
 				check("no removal warning is raised for an unwritten memory", !toasts.some((message) => message.includes("no longer carries")));
-				check("the gate leaves an ordinary diagnostic", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
+				check("the gate leaves an ordinary diagnostic", (await errorLogText(handle.root)).includes("carried no entries"));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1614,7 +1617,7 @@ try {
 				const { toasts } = await pass(handle, () =>
 					toolReply({ memory: { project: ["p"], invariants: ["keep this invariant"], pitfalls: ["keep this pitfall"], index: ["i"] }, context: CONTEXT }),
 				);
-				check("the guard counts the vanished Invariants/Pitfalls entries", (await readFile(errorLog(handle.root), "utf8")).includes("memory regression: 2"));
+				check("the guard counts the vanished Invariants/Pitfalls entries", (await errorLogText(handle.root)).includes("memory regression: 2"));
 				check("the guard warns the user by name", toasts.some((message) => message.includes("no longer carries 2 Invariants/Pitfalls")));
 				check("the guard does not block the write", (await readFile(memoryFile(handle.root), "utf8")).includes("keep this invariant"));
 			} finally {
@@ -1628,7 +1631,7 @@ try {
 			try {
 				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\nProse, not bullets.\n\n## Invariants\n- a\n\n## Pitfalls\n- b\n\n## Index\n- c\n");
 				const { toasts } = await pass(handle, () => toolReply({ memory: SECTIONS, context: CONTEXT }));
-				check("the guard is skipped for a free-form memory", (await readFile(errorLog(handle.root), "utf8")).includes("guard skipped"));
+				check("the guard is skipped for a free-form memory", (await errorLogText(handle.root)).includes("guard skipped"));
 				check("no removal warning is raised for a free-form memory", !toasts.some((message) => message.includes("no longer carries")));
 			} finally {
 				await rmTemp(handle.root);
@@ -1647,7 +1650,7 @@ try {
 				// first, capped result stands: that is the case the write path has to make visible.
 				const { toasts } = await pass(handle, () => toolReply({ memory: { project: flood, invariants: [], pitfalls: [], index: [] }, context: CONTEXT }));
 				const written = await readFile(memoryFile(handle.root), "utf8");
-				const log = await readFile(errorLog(handle.root), "utf8");
+				const log = await errorLogText(handle.root);
 				check("the render honours the cap", written.length <= 4000);
 				check("the cap event reaches errors.log", log.includes("reached its cap"));
 				check("the cap event is announced to the user", toasts.some((message) => message.includes("reached its character cap")));
@@ -1699,7 +1702,7 @@ try {
 			try {
 				await pass(handle, () => toolReply({ memory: SECTIONS, context: { summary: 42 } }));
 				check("a valid memory survives an unusable context member", (await readFile(memoryFile(handle.root), "utf8")).includes("Structured invariant"));
-				check("the unusable context is reported", (await readFile(errorLog(handle.root), "utf8")).includes("could not be used"));
+				check("the unusable context is reported", (await errorLogText(handle.root)).includes("could not be used"));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1718,7 +1721,7 @@ try {
 					stopReason: "stop",
 				}));
 				check("a heading-only opaque reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("the skeleton is reported, not silently accepted", (await readFile(errorLog(handle.root), "utf8")).includes("carried no entries"));
+				check("the skeleton is reported, not silently accepted", (await errorLogText(handle.root)).includes("carried no entries"));
 				check("the skeleton does not claim an update", !toasts.some((message) => /Memory: updated /.test(message)));
 				check("the semantic-empty toast does say the reply carried no entries", toasts.some((message) => message.includes("carried no entries")));
 			} finally {
@@ -1736,7 +1739,7 @@ try {
 				// back to, and "" would otherwise read as an empty-but-successful reply.
 				const { toasts } = await pass(handle, () => toolReply({ memory: { project: [], invariants: [], pitfalls: [] }, context: CONTEXT }));
 				check("a malformed tool call leaves MEMORY.md untouched", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("a malformed tool call is reported as a failure", (await readFile(errorLog(handle.root), "utf8")).includes("unusable arguments and no text"));
+				check("a malformed tool call is reported as a failure", (await errorLogText(handle.root)).includes("unusable arguments and no text"));
 				check("a malformed tool call is not reported as success", toasts.some((message) => message.includes("failed")));
 			} finally {
 				await rmTemp(handle.root);
@@ -1750,7 +1753,7 @@ try {
 				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- p.\n\n## Invariants\n- an invariant\n\n## Pitfalls\n\n## Index\n- i\n");
 				const prose = "# Project Memory\n\nProject prose with no bullets at all, long enough to pass the length rule on its own.";
 				await pass(handle, () => ({ content: [{ type: "text", text: prose }], stopReason: "stop" }));
-				check("the guard reports its skip when the new reply is opaque", (await readFile(errorLog(handle.root), "utf8")).includes("did not produce sections"));
+				check("the guard reports its skip when the new reply is opaque", (await errorLogText(handle.root)).includes("did not produce sections"));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1761,7 +1764,7 @@ try {
 			const handle = await project("structured-guard-fresh");
 			try {
 				await pass(handle, () => ({ content: [{ type: "text", text: "# Project Memory\n\nFresh prose that is long enough to be written." }], stopReason: "stop" }));
-				check("a fresh project logs no guard skip", !(await readFile(errorLog(handle.root), "utf8").catch(() => "")).includes("guard skipped"));
+				check("a fresh project logs no guard skip", !(await errorLogText(handle.root)).includes("guard skipped"));
 			} finally {
 				await rmTemp(handle.root);
 			}

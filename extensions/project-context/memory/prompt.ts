@@ -23,7 +23,7 @@ export function buildPrompt(
 	return [
 		"Maintain durable project memory and the current session context for the coding project below.",
 		`Prefer calling the ${RECORD_MEMORY_TOOL.name} tool exactly once, at the end of this pass, with the memory sections and the context as its arguments.`,
-		"If you cannot call that tool, return exactly one JSON object with keys memory_markdown and context instead. Do not use a Markdown code fence.",
+		"If you cannot call that tool, return exactly one JSON object with keys memory_markdown and context instead. Do not use a Markdown code fence. Inside memory_markdown, write each entry on its own line starting with `- ` under its `## <section>` heading: a document without those bullets cannot be read back as sections, so it is stored verbatim and skips the per-section accounting entirely.",
 		"",
 		"memory_markdown is the project's long-term memory, injected into every future session. Write stable statements, not narrative. Replace or remove superseded entries instead of appending. Promote something from context only once it is clearly durable beyond the session.",
 		`Either way, the memory carries these exact sections, in this order: each is listed with the share of the budget it is expected to take, and a section may exceed its share while the document as a whole still fits its cap:`,

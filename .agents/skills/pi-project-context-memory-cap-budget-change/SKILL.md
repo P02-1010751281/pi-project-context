@@ -25,6 +25,14 @@ Changing anything about the memory character budget in `pi-project-context`: `ma
 
 5. **Overflow = one bounded condensation call.** If a reply to consolidate overflows the document's `maxMemoryChars`, make exactly one condensation call that tells the model to keep every still-true fact, merge duplicates, deduplicate across sections, then condense wording until the whole document fits the cap; a deletion is allowed only for an entry that is superseded or already covered elsewhere. Adopt it only if `renderMemoryDocument` reports nothing dropped (its counts are now the document-full signal, not a per-section one); otherwise keep the original reply and let the cap report speak. Silent tail-dropping is not acceptable. The per-section shares are **targets**: the renderer pools what the under-target sections leave and hands it to the over-target ones, so a section may exceed its share while the document still fits — do not "fix" a section over its share by deleting entries.
 
+5b. **The pool is the document's real body, not the sum of the targets.** Any allocation that lets one section
+   spend another's leftover must measure the budget as `cap - memoryStructureOverheadChars()` (header + `## H` lines
+   + the separators between sections = 67 at this schema), not as the sum of `memorySectionBudgets`. The schema
+   overhead is deliberately conservative (76) and the targets are floored, so `Σtargets` is 11 characters smaller
+   than the cap; charging the pool from it dropped three entries on this repo's own memory on 2026-10-06 while the
+   document still had 7 characters spare. Pin it with a fixture whose canonical document fits the cap but exceeds
+   `Σtargets`.
+
 6. **Wire diagnostics, not silence.** The `errors.log` entry, non-silent pass warning, `/memory update` command reply, and `/project-context status` should all name the cap and what was dropped. Update `docs/architecture.md` if a new shared module was added.
 
 7. **Verify.**

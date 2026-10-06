@@ -2,55 +2,78 @@
 
 日期：2026-10-06
 前置：`acceptance-2026-10-06-v0.4.4-not-met.md`（v0.4.4 的提示层修复不足，四次真实 pass 各丢 10–15 条）
-改动：`extensions/project-context/memory/sections.ts`（渲染器）、`prompt.ts`、`pass.ts`、`report.ts` 措辞
-状态：已实现，待独立评审
+改动：`memory/sections.ts`（渲染器）、`memory/schema.ts`（精确结构开销）、`prompt.ts`、`pass.ts`、`report.ts`
+状态：已实现并收口第 1 轮评审（`CHANGES-REQUESTED` → 见 §5）
 
-## 决策
+## 1. 决策
 
-owner 定：**「总的不超配额就行；四段的数字本来就是预估」**。于是 share 从「硬配额」降为「目标值」，唯一硬约束
-是文档的 `maxMemoryChars`。
+owner 定：**「总的不超配额就行；四段的数字本来就是预估」**。share 从「硬配额」降为「目标值」，唯一硬约束是
+文档的 `maxMemoryChars`。
 
-## 机制
+## 2. 机制
 
-`allocationFor(targets, wanted)`（sections.ts，渲染器内）：
+渲染前先分配（`allocationFor(targets, wanted, body)`）：
 
-1. 每段先拿 `min(需求, 自己的目标)`——用不完的部分进池；
+1. 每段先拿 `min(需求, 自己的目标)`——用不完的进池；
 2. 池按各超额段的**超出量比例**分配（`floor(池 × 超额 / 总超额)`）；
-3. 池能覆盖全部超额时，比例分配**精确等于**各自超额 → 一条不丢；只有池不够（即文档真的满）时才丢条目。
+3. 池覆盖全部超额时，比例分配**精确等于**各自超额 → 一条不丢；池不够（文档真的满）才丢条目。
 
-`text.length <= cap` 仍由构造保证：`Σ allowed ≤ Σ targets = body`。
+**池的口径是文档自己的 body**：`cap − memoryStructureOverheadChars()`（header + 每段 `## H\n` + 段间空行 = 67），
+**不是 `Σtargets`**。这一点是第 1 轮评审的 blocking 发现：`Σtargets`（31,922）比真实 body（31,933）小 11 字符
+（`memorySchemaOverheadChars` 出于保守多留 9，加上 floor 余数），于是「文档还有 7 字符余量却丢 3 条」——
+**正是本次要修的那类错误的翻版**，而且最先打在本仓自己提交的记忆上（那 3 条分别是 inject 指针条目、
+skill-candidates 条目、attention.md 指针）。`text.length <= cap` 仍由构造保证。
 
-好处：借用只在「邻居让出」时发生，所以 share 仍起平衡作用；同时不再出现「文档还有 1,839 字符空着却丢条目」。
-
-## 钉子与变异矩阵（`tests/sections-test.mjs`）
+## 3. 钉子与变异矩阵（`tests/sections-test.mjs`，单侧改动后还原）
 
 | 变异 | 红点 |
 | --- | --- |
-| M0 未变异 | 0 红（套件 15/15） |
-| M1 借用关掉（回到硬 share） | 4 红：`a section over its share borrows instead of dropping entries` / `every over-share entry survives the borrow` / `the over-share section takes the room its neighbours left` / `a borrowing section keeps a longer entry whole` |
-| M2 每段直接取走自己的超额（不分池） | 1 红：`2000 random caps all fit`（worst margin −3119，即突破了上限） |
-| M3 每项上限用目标而不是借用后的额度 | 1 红：`a borrowing section keeps a longer entry whole` |
+| M0 未变异 | 0 断言红，套件 15/15 |
+| M1 借用关掉（回到硬 share） | **6 红**：4 条借用断言 + `a document that fits the cap never drops (4 violations of 2000)` + `content that fits the cap but exceeds the target sum keeps every entry` |
+| M2 每段直接取走自己的超额（不分池） | **1 红**：`2000 random caps all fit (worst margin -3232 chars)` |
+| M3 池用 `Σtargets` 而不是真实 body | **1 红**：`content that fits the cap but exceeds the target sum keeps every entry`（这条就是 B1 的钉子） |
+| M4 每项上限用目标而非借用后额度 | **1 红**：`a borrowing section keeps a longer entry whole` |
 
-新增两条与机制等价的断言：随机 2,000 组「内容量 ≤ 目标总量」的输入**必须 0 丢弃**（0 violations），以及
-随机 2,000 个上限**永不超过**。
+两条属性断言（各 2,000 组随机）：内容装得进 cap 就**必须 0 丢弃**；任何输入**不得超过 cap**。
+`tests/consolidation-test.mjs` 的 errors.log 读取改为 `errorLogText`（缺文件按「没有日志」判，不再 ENOENT 崩掉整个文件，
+否则变异矩阵会以崩溃而不是断言红呈现）。
 
-## 端到端实测（真实 flash 辅助调用，现场输入 137 条 / 31,774 字符）
+## 4. 端到端实测（真实 flash 辅助调用，现场输入）
 
-| | 改前（v0.4.4） | 改后 |
+| | 改前（v0.4.4） | 改后（v0.4.5） |
 | --- | --- | --- |
-| 渲染器在此输入上的丢弃 | 9 条（三段超配额） | **0 条**（借用 866/251/553，Project 让出 1,839） |
-| 四次真实 pass 的既有事实丢失（Inv+Pit diff） | 7 条（净条目 137 → 128/129） | **1 条 / 3 条**（净条目 137 / 136，且每次都有等量新增） |
-| `errors.log` 上限行 | 每次都有 | 仍有，但只在**回复本身超过文档上限**时 |
+| **渲染器**在提交版记忆上的丢弃 | 3–9 条（3 段超配额） | **0 条**（current 版：借 1,071/239/544，Project 让 1,850；canonical 67+31,926 = 31,993 ≤ 32,000） |
+| 真实 pass 的**既有事实**净变化 | 每轮丢 7–15 条 | 样本：−1 / −3（我的两次，exact-match 口径）与 −4 / −17（评审的两次，含一次走 opaque 路径） |
 
-改后仍报上限行的原因已量清：本仓记忆已占上限的 **99.3%**（31,774 / 32,000），模型每轮还会**新增**条目
-（post1 新增 3、post2 新增 1），于是回复总量超过 31,924 的 body 上限 → 渲染器按新规则从超额段丢。丢的主要是
-模型自己刚加的内容，既有事实的净损失 1–3 条。
-**这是总量余量问题，不是分配问题**：分配问题（文档有余却丢）已由本次修复解决。
+**改后仍有的损失，归因要诚实**（第 1 轮评审 I2 推翻了初稿的归因）：
 
-## 剩余项（给 owner）
+- **主因是模型自己的整篇重写**（合并、改写、删条目），不是渲染器：评审两次真实 pass 里，一次回复**不带 `- ` 条目**
+  → `sectionsFromMarkdown` 判 undefined → 走 **fallback-opaque**，新分配器根本没执行，guard 记 "did not produce sections"；
+  另一次走 sections、**渲染 0 丢弃**（分配器正常），但 guard 记 `memory regression: 39 …`、净条目 138 → 121。
+  guard 的 exact-match 口径会把改写/合并算成删除（高估），但净条目 −17 说明模型确实在大删。
+- **记忆贴上限是次要但真实的条件**：31,993 / 32,000（余 **7** 字符），模型每轮新增都会把回复推过上限，于是要么它自己删、
+  要么重试压缩、要么渲染器补刀。彻底不丢要么抬 `maxMemoryChars`（每会话多约 1,000 tokens 的注入），要么人工裁剪一次。
+- 已顺手减少一条 bypass：提示现在明说 `memory_markdown` 里每条要写成 `## <section>` 下的 `- ` 条目（写成普通行就会
+  整篇 verbatim 存下、跳过所有分段账目）。
 
-- **记忆贴着上限**：要彻底不丢，要么抬 `maxMemoryChars`（`/memory max-memory <n>`，例如 36,000 ≈ 每会话多
-  约 1,000 tokens 的注入），要么对记忆做一次人工裁剪。当前已记进 `.codestable/attention.md`。
-- CONTEXT.md 不在此次改动内：它按段裁剪但**在文件里写明截断了多少**（`truncation marker`），且是每轮重写的
-  会话状态，不存在「静默丢策展事实」的同一故障。
-- 冷凝重试仍可能被拒（模型压不下来），但它的裁判现在是「文档是否装下」，比原来的「每段是否装下」可达得多。
+## 5. 第 1 轮评审的收口
+
+| 编号 | 内容 | 处置 |
+| --- | --- | --- |
+| B1 | 池用了 `Σtargets`（31,922）而非真实 body（31,933），本仓记忆仍被丢 3 条 | 已修：新增 `memoryStructureOverheadChars()`（精确 67）并只用于渲染器；新增边界钉子（M3 可红） |
+| I1 | 只有单项截断时也报「document reached its cap」，并指向不存在的 dropped 列表 | 已修：丢弃与截断分句，日志/提示/状态句按原因分流 |
+| I2 | 「剩余 1–3 条」归因不成立（模型重写占主导 + opaque bypass） | 已改：见 §4；提示补 `- ` 条目形状要求 |
+| N1 | 变异矩阵记录与实测不符（含 ENOENT 崩溃） | 已改：本文表格为复核后的数字；测试加 `errorLogText` |
+| N2 | 旧策略残留文案（pass.ts、report.ts、测试 label、CONTEXT.md 验收句） | 已改 |
+| N3 | 属性钉子跳过了 bug 区域（前提算术错） | 已改：前提改为「canonical 文档 ≤ cap」，并加边界 fixture |
+| N4 | 借用数字口径不一致 | 已改：本文数字按渲染器口径（条目花费，不含 `## H\n`）复算 |
+| N5 | `itemTruncated` 含「截断后又被丢」的条目 | 已改：句子写作「were cut to their section's per-item cap (a cut entry may also be dropped)」 |
+| N6 | `MIN_SECTION_BUDGET_CHARS` 不可达、CONTEXT.md 边界 | 复核成立（生产路径 cap ≥ 4000），无需改 |
+
+## 6. 剩余项（给 owner）
+
+- 记忆贴着上限（余 7 字符）：抬 `maxMemoryChars`（`/memory max-memory <n>`）或人工裁剪一次，二选一，已记
+  `.codestable/attention.md`。
+- 模型每轮的自行删除/改写是主要损失源：这属于提示层与模型能力的边界（v0.4.4 已把「删」改成「压」），
+  若要进一步收紧需独立议题。
+- CONTEXT.md 仍按段裁剪（有 truncation marker + 日志）且是每轮重写的会话状态，不属于同一故障。

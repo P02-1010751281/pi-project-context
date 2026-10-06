@@ -12,7 +12,7 @@ import type { AuxTool } from "../shared/llm.ts";
 import { MAX_LIST_ITEM_CHARS } from "../shared/limits.ts";
 import { CONTEXT_TOOL_SCHEMA } from "./context-schema.ts";
 import { clipToLineBoundary, isMemoryTruncationLine, MEMORY_HEADER } from "./document.ts";
-import { MEMORY_SECTIONS, memorySectionBudgets } from "./schema.ts";
+import { MEMORY_SECTIONS, memorySectionBudgets, memoryStructureOverheadChars } from "./schema.ts";
 
 /** The four fixed sections, in document order; each holds one self-contained entry per bullet. */
 export type MemorySections = {
@@ -104,12 +104,13 @@ const MIN_SECTION_BUDGET_CHARS = 8;
  * `Invariants`/`Pitfalls`/`Index` were a combined 1,670 over their shares, and four passes in a row
  * dropped 10-15 whole entries each while the document itself was below its cap.
  *
- * The floors cost at most one unspent character per over-target section, and only when the document is
- * full: a pool that covers every overage divides exactly, so nothing is lost where it matters.
+ * The pool is the document's own body budget, not the sum of the targets: the targets are floored
+ * shares of a deliberately conservative overhead, so charging the pool from them leaves a few
+ * structurally unused characters that would then be spent as dropped entries.
  */
-function allocationFor(targets: readonly number[], wanted: readonly number[]): number[] {
+function allocationFor(targets: readonly number[], wanted: readonly number[], body: number): number[] {
 	const allowed = wanted.map((need, index) => Math.min(need, targets[index]));
-	const pool = targets.reduce((sum, value) => sum + value, 0) - allowed.reduce((sum, value) => sum + value, 0);
+	const pool = body - allowed.reduce((sum, value) => sum + value, 0);
 	const over = wanted.map((need, index) => Math.max(0, need - targets[index]));
 	const overTotal = over.reduce((sum, value) => sum + value, 0);
 	if (pool <= 0 || overTotal === 0) return allowed;
@@ -142,6 +143,7 @@ export function renderMemoryDocument(sections: MemorySections, cap: number): Mem
 	const allowed = allocationFor(
 		budgets.map((budget) => budget.chars),
 		entries.map((list) => list.reduce((sum, entry) => sum + entry.length + BULLET_OVERHEAD_CHARS, 0)),
+		Math.max(0, cap - memoryStructureOverheadChars()),
 	);
 	for (let index = 0; index < budgets.length; index += 1) {
 		const budget = budgets[index];

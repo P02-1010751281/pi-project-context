@@ -29,19 +29,17 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
 - **每个机制必须在设计里标出对应的现场事实编号**（issue §1 的现场证据 F1–F4 一类）；标不出就进"非目标/残留"，不进方案。
 - **评审发现若要求"新增机制"**（而不是修正已有机制），评审与作者都要先问"对应哪条现场事实"；无则只记残留，不改设计。
 - **一个 issue 只做一个主题**：不把跨主题硬化并进来（`poison × 锁` 是反例）。设计行数 > 代码改动 ×3 时，先写一段"最小修复面"再开评审轮。轮次预算、停止规则与其余防复发纪律见 `.agents/skills/pi-project-context-independent-review/SKILL.md` 与 `.agents/skills/pi-project-context-curated-surface-hygiene/SKILL.md`。
-- **MEMORY.md 的绑定约束是「段配额」，不是总上限——丢条发生在渲染器，不在模型。** 现场证据（2026-10-06）：
-  已提交版 31,774 字符里 Invariants +852 / Pitfalls +239 / Index +544 **超出各自配额**，Project 却只用了 71%，
-  于是 `renderMemoryDocument`（`memory/sections.ts`）把放不下的**整条丢掉**（实测 `sectionDropped=3`、`droppedItems=9`，
-  9 条丢弃全落在现场文件缺的那批里）。关键量级：Project 空额 1,850 **足以吸收** Invariants/Index/Pitfalls 合计
-  1,635 的超额，但固定 share 不允许借用——总文档余 1,798 却仍丢条目。
-  `errors.log` 的 `memory exceeded a section budget: …` 是这条路径的日志，`memory regression:` 行则跑在裁切**之前**，
-  **不能**当损失的度量或验收。守卫只记不拒发（`memory/pass.ts`）。
-  提示层修过（v0.4.4：主规则＋重试句改成「压缩而非删除」），但实测证明不足：四次真实 flash pass 每轮丢 10–15 条。
-  **已在 v0.4.5 定为 C 并实现**：段配额降为目标值，渲染器把用不完的配额汇池、超额段按超额比例借用，只有文档到达
-  上限才丢条目——本仓这一版从丢 9 条变为 **0 丢弃**（借用 866/251/553，Project 让出 1,839）。见
-  `.codestable/issues/2026-10-06-consolidation-keeps-entries/fix-2026-10-06-shares-are-targets.md`。
-  **新记（待 owner 定）**：本仓记忆已占上限 **99.3%**（31,774 / 32,000），模型每轮新增会把回复推过 body 上限，
-  端到端仍有 1–3 条既有事实净损失（丢的主要是模型刚加的条目）。要么抬 `maxMemoryChars`（如 36,000 ≈ 每会话多约
-  1,000 tokens），要么人工裁剪一次记忆。
-  手改 MEMORY.md 补条目**必须同时满足段配额**，否则下一轮必被裁回（2026-10-06 已实测过一次）。
+- **MEMORY.md 的绑定约束曾是「段配额」，2026-10-06 起改为「文档上限」（v0.4.5）。** 旧规则按四段固定 share
+  （0.2/0.4/0.25/0.15）逐段裁切：本仓内容需要 14.2/42.7/25.8/16.7%，Project 空余 1,850 而其余三段合计超 1,670，
+  总文档 31,753 < 32,000 却每轮丢 10–15 条（四次真实 pass）。现在渲染器把用不完的配额汇池、超额段按超额比例借用，
+  **只有整个文档到达 `maxMemoryChars` 才丢条目**；`errors.log` 的行也改为 `memory document reached its cap: …`
+  （旧的 `memory exceeded a section budget:` 已不存在，别再按它做验收）。实现、变异矩阵、端到端对比与第 1 轮评审
+  收口见 `.codestable/issues/2026-10-06-consolidation-keeps-entries/fix-2026-10-06-shares-are-targets.md`。
+  **教训（评审 blocking）**：池的口径必须是文档的**真实 body**（`cap − memoryStructureOverheadChars()` = 67），
+  不是 `Σtargets`（31,922，比真实小 11：schema 出于保守多留 9 + floor 余数）；用后者会在「文档还有 7 字符」时丢 3 条，
+  而且先打在本仓自己提交的记忆上。
+  **待 owner 定（新）**：记忆已占上限 **99.98%**（31,993 / 32,000，余 7 字符），模型每轮新增都会把它推过上限——
+  要么抬 `maxMemoryChars`（`/memory max-memory <n>`，每会话多约 1,000 tokens 注入），要么人工裁剪一次。
+  另一条已量清的事实：剩余损失**主因是模型自己整篇重写/合并/删除**（评审两次真实 pass 为 −4 与 −17 条，
+  其中一次回复不带 `- ` 条目、走 opaque 路径使分段账目整段失效），不是渲染器。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。

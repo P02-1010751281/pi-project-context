@@ -34,7 +34,7 @@ type LastWriteInfo = {
 	repaired: boolean;
 	/** The opaque entry's whole-document cap dropped the middle (a marker still says so). */
 	capped?: boolean;
-	/** A section-based reply lost entries to its budgets. */
+	/** A section-based reply lost entries, or had one cut to its per-item cap, because the cap was reached. */
 	sectionsCapped?: boolean;
 	/** The composed section-cap sentence, so the log and the command reply read the same. */
 	capNote?: string;
@@ -92,8 +92,9 @@ function sectionCapSentence(outcome: ConsolidateOutcome): string {
 		parts.push(`${outcome.droppedItems} whole entry(ies) were dropped from ${outcome.sectionDropped} section(s) because the memory document reached its character cap`);
 	}
 	if (outcome.itemTruncated > 0) {
-		// An entry can be truncated and then dropped, so both counts appearing is not a contradiction.
-		parts.push(`${outcome.itemTruncated} entry(ies) exceeded their section's per-item cap and were truncated`);
+		// An entry can be truncated and then dropped, so both counts appearing is not a contradiction —
+		// and a truncation on its own is not a document-cap event, so the sentence says only what happened.
+		parts.push(`${outcome.itemTruncated} entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)`);
 	}
 	return parts.join("; ");
 }
@@ -214,7 +215,15 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					}
 					if (cappedSections && !memorySectionCapWarned.has(projectRoot)) {
 						memorySectionCapWarned.add(projectRoot);
-						await logError(projectRoot, "memory", `memory document reached its cap: ${sectionCapSentence(outcome)}`);
+						// Only a drop means the document hit its cap; a lone per-item cut is a bounded line, so it
+						// must not be told as a cap event or point at a drop list that does not exist.
+						await logError(
+							projectRoot,
+							"memory",
+							outcome.droppedItems > 0
+								? `memory document reached its cap: ${sectionCapSentence(outcome)}`
+								: `memory: ${sectionCapSentence(outcome)}`,
+						);
 					} else if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
 						// A marker nobody reads is still a silent loss: say it once per project per process,
 						// and point at the knob that lifts the cap.
@@ -278,13 +287,19 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					const capNote = cappedMemory
 						? ` It also hit its ${maxMemoryChars}-character cap; both ends were kept and the middle was dropped on a line boundary.`
 						: cappedSections
-							? ` It also reached the memory document's character cap: ${sectionCapSentence(outcome)}.`
+							? outcome.droppedItems > 0
+								? ` It also reached the memory document's character cap: ${sectionCapSentence(outcome)}.`
+								: ` It also had entries cut: ${sectionCapSentence(outcome)}.`
 							: "";
 					notify(ctx, `Memory: was raw JSON from the old bug, and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
 				} else if (cappedSections) {
 					notify(
 						ctx,
-						`Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`,
+						// A lone per-item cut is not a cap event, and pointing at a drop list that does not exist
+						// would send the reader to nothing.
+						outcome.droppedItems > 0
+							? `Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`
+							: `Memory: updated; ${sectionCapSentence(outcome)}. Details in .agents/memory/errors.log.${clippedNote}`,
 						"warning",
 					);
 				} else if (cappedMemory) {

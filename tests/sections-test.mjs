@@ -190,22 +190,31 @@ console.log("\n=== renderMemoryDocument ===");
 	}
 	check(`2000 random caps all fit (worst margin ${worst} chars)`, over === 0);
 
-	// The guarantee the borrowing exists for, stated as a property: when the sections together fit the
-	// targets, nothing is dropped - no matter how unevenly the content sits across them.
+	// The guarantee the borrowing exists for, stated as a property: when the canonical document fits the
+	// cap, nothing is dropped - however unevenly the content sits across the sections. The premise has to
+	// be the document's own size (structure plus entries), not the sum of the targets: a target-floored
+	// pool is a few characters smaller than the cap, and charging those characters as drops is exactly the
+	// bug this property exists to catch.
 	let fitsButDropped = 0;
+	let considered = 0;
 	for (let index = 0; index < 2000; index += 1) {
 		const cap = 4000 + Math.floor(Math.random() * 196_001);
-		const targets = schema.memorySectionBudgets(cap);
-		const body = targets.reduce((sum, budget) => sum + budget.chars, 0);
-		// One section takes most of the room, the others share what is left.
 		const make = () => Array.from({ length: Math.floor(Math.random() * 6) }, () => "z".repeat(1 + Math.floor(Math.random() * 300)));
 		const shape = [make(), make(), make(), make()];
-		const wanted = shape.reduce((sum, list) => sum + list.reduce((n, entry) => n + entry.length + 3, 0), 0) + 4 * "## heading\n".length;
-		if (wanted > body) continue;
-		const rendered = sections.renderMemoryDocument({ project: shape[0], invariants: shape[1], pitfalls: shape[2], index: shape[3] }, cap);
-		if (rendered.droppedItems > 0) fitsButDropped += 1;
+		const wantedDoc = schema.memoryStructureOverheadChars() + shape.reduce((sum, list) => sum + list.reduce((n, entry) => n + entry.length + 3, 0), 0);
+		if (wantedDoc > cap) continue;
+		considered += 1;
+		const fits = sections.renderMemoryDocument({ project: shape[0], invariants: shape[1], pitfalls: shape[2], index: shape[3] }, cap);
+		if (fits.droppedItems > 0) fitsButDropped += 1;
 	}
-	check(`a document that fits its targets never drops (${fitsButDropped} violations)`, fitsButDropped === 0);
+	check(`a document that fits the cap never drops (${fitsButDropped} violations of ${considered})`, fitsButDropped === 0 && considered > 100);
+
+	// The exact boundary that produced B1: content whose canonical document fits the cap while the sum of
+	// the floored targets does not cover it. Ten 390-character entries need 3,930 of the 3,933 characters
+	// cap 4000 leaves for bodies, against 3,924 of targets - the 6-character gap is what must not be spent
+	// as a dropped entry.
+	const tight = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 10 }, () => "t".repeat(390)), pitfalls: [], index: [] }, 4000);
+	check("content that fits the cap but exceeds the target sum keeps every entry", tight.droppedItems === 0 && tight.text.length <= 4000);
 }
 
 console.log("\n=== sectionsFromMarkdown contract ===");

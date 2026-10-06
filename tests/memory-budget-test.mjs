@@ -121,7 +121,11 @@ try {
 			schemaPrompt.includes("A detail with no home stays as one short line."),
 	);
 	check(
-		"the prompt ties the drop rule to each section's budget",
+		"the prompt says how a memory_markdown document is bulleted",
+			schemaPrompt.includes("write each entry on its own line starting with `- ` under its `## <section>` heading"),
+	);
+	check(
+		"the prompt ties the drop rule to the document cap",
 		schemaPrompt.includes("then condense the wording until the document fits its cap below") &&
 			schemaPrompt.includes("never to make room for a new one"),
 	);
