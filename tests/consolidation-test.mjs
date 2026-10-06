@@ -1660,8 +1660,8 @@ try {
 				const log = await errorLogText(handle.root);
 				check("the render honours the cap", written.length <= 4000);
 				check("the cap event reaches errors.log", log.includes("reached its cap"));
-				// The notice tells the reader the dropped entries are sampled in errors.log, so the log has to
-				// name them instead of only counting them (review R3).
+				// The log line names the dropped entries instead of only counting them; the notice inlines its own
+				// samples and no longer depends on this line existing (review R3, tightened in R5).
 				check("the log names samples of what went, not only the count", /dropped entries \(first 3\): entry number \d/.test(log));
 				check("the cap event is announced to the user", toasts.some((message) => message.includes("reached its character cap")));
 				check("the section path suggests no max-memory value", !toasts.some((message) => message.includes("max-memory")) && !log.includes("raise it with"));

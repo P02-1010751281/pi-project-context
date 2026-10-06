@@ -18,10 +18,11 @@
 | 轮 | 冻结点 | 判定 | 抓到的东西 |
 | --- | --- | --- | --- |
 | R1 | `ae857ab` | **CHANGES-REQUESTED / RELEASE-OK: no** | B1：池用 `Σtargets`（31,922）而非真实 body（31,933），本仓提交的记忆仍被丢 3 条（文档余 7 字符）；I1：仅单项截断也报「到达文档上限」并指向不存在的 dropped 列表；I2：「剩余 1–3 条」归因不成立（模型整篇重写占主导；不带 `- ` 条目的回复走 opaque 绕过分配器）；N1–N6 |
-| R2 | `59a53a4` 树（提交结构见上表，`git diff` 为 0） | **CHANGES-REQUESTED / RELEASE-OK: no** | I1：命令回复（`/memory update` → `consolidateReply`）仍把「仅单项截断」报成「到达文档上限」并指向不存在的 dropped 列表（自动 toast 与 errors.log 已分流，命令路径漏了）；nit：边界注释算术、M2 变异写法歧义、数字口径未统一、CONTEXT 状态过期。B1 修复经其独立复核通过（`memoryStructureOverheadChars` 与渲染器实际结构逐一致；M3 恰丢那 3 条） |
+| R2 | `59a53a4` 树（`git diff` 与上一行提交结构差为 0） | **CHANGES-REQUESTED / RELEASE-OK: no** | I1：命令回复（`/memory update` → `consolidateReply`）仍把「仅单项截断」报成「到达文档上限」并指向不存在的 dropped 列表（自动 toast 与 errors.log 已分流，命令路径漏了）；nit：边界注释算术、M2 变异写法歧义、数字口径未统一、CONTEXT 状态过期。B1 修复经其独立复核通过（`memoryStructureOverheadChars` 与渲染器实际结构逐一致；M3 恰丢那 3 条） |
 | R3 | `1995a3a` | **CHANGES-REQUESTED** | B1：提示说「被丢条目列在 errors.log」而日志只有计数（守卫比较的是裁剪前的回复，取不到那些条目）→ 渲染器改为返回样本、日志行写出样本；I1：三处文案仍指向 v0.3.0 已移除的 `/project-context max-memory` → 改 `/memory max-memory` + 61 文件源串扫描；N1–N4 |
 | R4 | `0a9dd75` | **CHANGES-REQUESTED** | I1：同进程**第二次** cap 事件仍承诺「样本在日志里」，而该行每项目每进程一次 → 记录 `samplesLogged` 分流；N1–N4、S1–S3（含 docs/configuration.md 机制段与 CHANGELOG 条目） |
 | R5 | `2ff6628` | **CHANGES-REQUESTED** | I1（交叉序）：本进程首次 cap 事件若是「仅截断」，日志没有样本，后续 drop 提示仍说「样本来自第一次提示」→ 根治：**样本直接内联进提示与命令回复**，不再依赖日志指针；N1（status 指针悬空 → 措辞改为「诊断落到该文件」）、N2（docs 数字句） |
+| R6 | `b5a53b7` | **PASSED / RELEASE-OK: yes** | 交叉序（先截断后丢弃 / 反向）实测提示不再指日志；内联样本在 opaque/仅截断/0 丢/空样本下恒真且有界（3,000 组随机：269 例丢弃，0 空、0 超 72、0 超 3 条）；变异 M1 6 / M2 1 / M2' 9 / M3 1 / M4 1 复现；两套快照数字复算一致；5 条 nit（docs 越权描述、回复未带数字、过期注释、占比基数、拼接标点）已在发布提交收口 |
 
 评审的独立复核（R1）本身很有价值：50,000 组随机输入上分配器语义与自写参考实现一致；两次真实 pass 分别
 −4 与 −17 条，其中一次证明 opaque 路径能让分配器整段不执行。

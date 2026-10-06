@@ -216,8 +216,8 @@ console.log("\n=== renderMemoryDocument ===");
 	const tight = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 10 }, () => "t".repeat(390)), pitfalls: [], index: [] }, 4000);
 	check("content that fits the cap but exceeds the target sum keeps every entry", tight.droppedItems === 0 && tight.text.length <= 4000);
 
-	// A drop has to be actionable: the write path tells the reader the dropped entries are sampled in
-	// errors.log, so the renderer has to hand the samples over instead of only the count (review R3).
+	// A drop has to be actionable: the notice inlines the dropped entries, so the renderer has to hand the
+	// samples over instead of only the count (review R3; the notice stopped pointing at the log in R5).
 	const overflow = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 400 }, (_, index) => `entry-${index}-${"y".repeat(40)}`), pitfalls: [], index: [] }, 4000);
 	check("a drop carries the entries it dropped", overflow.droppedItems > 0 && overflow.droppedSamples.length === 3 && overflow.droppedSamples[0].startsWith("entry-"));
 	check("the dropped samples stay bounded", overflow.droppedSamples.every((sample) => sample.length <= 72));

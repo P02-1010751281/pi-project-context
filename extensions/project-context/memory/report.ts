@@ -576,8 +576,8 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		// Same split as the automatic notice: only a drop is a cap event, and only then is there a drop
 		// list to point at.
 		return info.entriesDropped
-			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}.${guard}`
-			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}.${guard}`;
+			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}${guard}`
+			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}${guard}`;
 	}
 	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /memory max-memory <n> or trim MEMORY.md.${guard}`;
 	return `Memory: updated.${guard}`;

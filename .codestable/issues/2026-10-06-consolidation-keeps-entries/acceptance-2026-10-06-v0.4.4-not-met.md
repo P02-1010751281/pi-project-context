@@ -68,7 +68,7 @@ pi -p --mode json -ne -ns -np --thinking off \
 | 选项 | 改动 | 今天的效果 | 代价 |
 | --- | --- | --- | --- |
 | **A 接受自然裁剪** | 无 | 每轮继续丢 10–15 条 | 内容持续流失（journal 仍有历史，可人工回捞） |
-| **B 重配 share** | `memory/schema.ts` 四个常量 | 需要的 share ≈ Project 14.2% / Invariants 42.7% / Pitfalls 25.8% / Index 16.7%（合计约 99.3%） | 改契约（测试钉了 share 数组）；且总文档已占 99.4% 上限，零余量，任何增长再次触发 |
+| **B 重配 share** | `memory/schema.ts` 四个常量 | 需要的 share ≈ Project 14.2% / Invariants 42.6% / Pitfalls 25.7% / Index 16.7%（合计约 99.3%） | 改契约（测试钉了 share 数组）；且总文档已占 99.4% 上限，零余量，任何增长再次触发 |
 | **C 段间可借额度** | 渲染器（share 变软目标，硬约束退回整档上限） | 这一版 **0 丢弃**（canonical 31,774 ≤ 32,000，余 226） | 已在 v0.4.5 实现（见 `fix-2026-10-06-shares-are-targets.md`） |
 | D 仅调配置 | `.agents/memory/project-context.json` 的 `maxMemoryChars` | 实测 **35,700** 才能让今天的内容装进现有 share（零余量）；**36,000** 余 47 字符 | 每个会话的注入前缀 +约 4,000 字符（约 1,000 tokens）；不治配比，只是把墙往后推 |
 
