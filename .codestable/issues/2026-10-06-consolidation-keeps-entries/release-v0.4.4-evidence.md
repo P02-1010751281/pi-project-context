@@ -46,6 +46,22 @@ Invariants/Pitfalls/Index 合计超 1,635、Project 空额 1,850 却借不过来
   「段间可借额度」（后者是机制改动，需独立设计）。已记 `.codestable/attention.md` 与修复说明 §6，待 owner 定。
 - 手改 MEMORY.md 补条目必须**同时**满足段配额，否则下一轮必被裁回（本次已实测一次）。
 
-## 发布后补记
+## 发布后补记（2026-10-06）
 
-见紧随其后的 `docs(records)` 提交（tag 对象、peeled、pin 提交、安装副本 HEAD/describe、探针结果）。
+| 项 | 值 |
+| --- | --- |
+| tag 对象 | `5982fd9f507265481e07e51837034e48a2f8ba3c` |
+| tag 指向（peeled） | `009ccebab704d0a4877dd4e26d378c9387e7e507` |
+| forgejo / github 镜像 | `ls-remote --tags 'refs/tags/v0.4.4^{}'` 两端同为 `009cceb` |
+| `~/.pi` pin 提交 | `ed4a732`（`agent/settings.json` + `README.md` 改 `@v0.4.4`，已推 pi-config `origin`） |
+| 安装命令 | `pi update --extensions`（`tag v0.4.4 -> FETCH_HEAD`，HEAD 落到 `009cceb`） |
+| 安装副本 HEAD / describe / 脏 | `009cceb` / `v0.4.4` / 0 |
+| 副本自测 | `node tests/run-all.mjs` → `repo hygiene … ok` + 15/15 |
+| 到位抽检 | 新措辞命中（`until each section fits its budget above` 2 处、`merge duplicates within a section` 3 处、`overflowed a section budget` 2 处、`never to make room for a new one` 2 处）；旧删除授权 `remove the least durable` **0 处** |
+
+**需要重启 pi 才生效**：运行中的会话仍加载 v0.4.3 的模块。
+
+**首个现场样本的预约**：跟踪的 `MEMORY.md` 在发布时是完整版（137 条，31,774 字符），它**超出三个段的固定配额**
+（这正是本次现场损失的来源），因此**重启后的第一次合并必须靠新规则把它压缩进各段配额**——这就是 v0.4.4 的
+渲染面验收点：(a) `errors.log` 不再出现 `memory exceeded a section budget: …`；(b) 条目数不低于 137 条。
+未出现 (a) 或条目数缩水即视为未修好，需回到本 issue。
