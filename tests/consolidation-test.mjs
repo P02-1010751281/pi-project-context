@@ -6,9 +6,10 @@ import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
- * End-to-end test of the settle/shutdown path in one extension:
- * archive writes session.jsonl / session.md / session-index.md, then the consolidation
- * pass rewrites MEMORY.md and CONTEXT.md from the real conversation projection.
+ * End-to-end test of the settle/shutdown path in one extension: the archive writes session.jsonl /
+ * session.md / session-index.md at exit, and the consolidation pass - driven here through the forced
+ * `/memory update` path, because the exit only flushes since 2026-10-06 (decision 1) - rewrites
+ * MEMORY.md and CONTEXT.md from the real conversation projection.
  */
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-"));
@@ -17,6 +18,15 @@ let failures = 0;
 function check(label, value) {
 	console.log(`${value ? "OK  " : "FAIL"} ${label}`);
 	if (!value) failures += 1;
+}
+
+/**
+ * Drive the memory write path explicitly. Since 2026-10-06 (decision 1) `session_shutdown` only flushes:
+ * it folds a hand-edited MEMORY.md into the journal and leaves the file as the journal's render, and it
+ * calls no model. A test that wants a consolidation pass uses the forced, user-facing path instead.
+ */
+async function consolidateNow(pi, ctx) {
+	await pi.commands.get("memory").handler("update", ctx);
 }
 
 try {
@@ -50,7 +60,9 @@ try {
 		};
 	};
 
+	// The archive layer still writes at exit; the memory pass is a separate path that calls a model.
 	await runHandlers(pi, "session_shutdown", ctx);
+	await consolidateNow(pi, ctx);
 
 	console.log("=== archive ===");
 	const rawLog = await readFile(path.join(tmp, ".agents/memory/session-logs/e2e-session/session.jsonl"), "utf8").catch(() => "");
@@ -132,7 +144,7 @@ try {
 					},
 				},
 			});
-			await runHandlers(retryPi, "session_shutdown", retryCtx);
+			await consolidateNow(retryPi, retryCtx);
 			const retryMemory = await readFile(path.join(retryTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const retryErrors = await readFile(path.join(retryTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a transient malformed reply is retried once", calls === 2);
@@ -171,7 +183,7 @@ try {
 					stopReason: "stop",
 				};
 			};
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const memory = await readFile(path.join(capTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const errors = await readFile(path.join(capTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a truncated reply is retried once with a larger budget", calls === 2 && budgets[1] > budgets[0]);
@@ -202,7 +214,7 @@ try {
 				calls += 1;
 				return { content: [{ type: "text", text: '{"memory_markdown":"# Project Memory\\n\\n- cut' }], stopReason: "length" };
 			};
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const memory = await readFile(path.join(hardTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const errors = await readFile(path.join(hardTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a persistent truncation gets only one retry", calls === 2);
@@ -234,7 +246,7 @@ try {
 					stopReason: "length",
 				};
 			};
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const memory = await readFile(path.join(okTmp, ".agents/memory/MEMORY.md"), "utf8");
 			check("a complete JSON that stopped at the cap is written without a retry", calls === 1 && memory.includes("complete at the cap."));
 		} finally {
@@ -262,7 +274,7 @@ try {
 				calls += 1;
 				return { content: [], stopReason: "error", errorMessage: "402: Insufficient Balance" };
 			};
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const memory = await readFile(path.join(errTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const errors = await readFile(path.join(errTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a provider error is not parsed and not retried", calls === 1);
@@ -293,7 +305,7 @@ try {
 				calls += 1;
 				return { content: [], stopReason: "toolUse" };
 			};
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const memory = await readFile(path.join(pendingTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const errors = await readFile(path.join(pendingTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a non-final stop reason fails the pass without a retry", calls === 1 && memory === previous);
@@ -338,7 +350,7 @@ try {
 					},
 				},
 			});
-			await runHandlers(pi, "session_shutdown", ctx);
+			await consolidateNow(pi, ctx);
 			const recovered = await readFile(path.join(jsonTmp, ".agents/memory/MEMORY.md"), "utf8");
 			check("a malformed reply stores the recovered memory", recovered.includes("- recovered.") && !recovered.includes("memory_markdown"));
 
@@ -347,7 +359,7 @@ try {
 			const realNow = Date.now;
 			Date.now = () => realNow() + 60 * 1000;
 			try {
-				await runHandlers(pi, "session_shutdown", ctx);
+				await consolidateNow(pi, ctx);
 			} finally {
 				Date.now = realNow;
 			}
@@ -1853,6 +1865,105 @@ try {
 	} finally {
 		await rmTemp(agentsOnly);
 	}
+	console.log("\n=== the exit flushes without a model call (decision 1) ===");
+	{
+		const flushTmp = await mkdtemp(path.join(os.tmpdir(), "pi-shutdown-flush-"));
+		try {
+			const flushMem = path.join(flushTmp, ".agents/memory");
+			await mkdir(flushMem, { recursive: true });
+			const flushFactory = await loadDefault(`${PC}/index.ts`);
+			const flushPi = makePi({ cwd: flushTmp });
+			await flushFactory(flushPi);
+			let flushCalls = 0;
+			// The reply never quotes the conversation, which is what makes "the exit composed nothing"
+			// observable: only a model reply could put the marker into MEMORY.md.
+			const flushEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`f${index}`, "user", `${marker} turn ${index}`, `2026-09-12T10:0${index}:00.000Z`));
+			const flushCtx = makeCtx(flushTmp, {
+				sessionManager: makeSessionManager(flushEntries, "flush-session"),
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					complete: async () => {
+						flushCalls += 1;
+						return {
+							content: [{
+								type: "text",
+								text: JSON.stringify({
+									memory_markdown: "# Project Memory\n\n## Project\n- Seeded before the exit.",
+									context: { title: "Flush", summary: "Seeded.", key_points: [], open_tasks: [] },
+								}),
+							}],
+						};
+					},
+				},
+			});
+			await consolidateNow(flushPi, flushCtx);
+			const seededCalls = flushCalls;
+			const seededJournal = await readFile(path.join(flushMem, "memory.jsonl"), "utf8");
+			check("the seeding pass wrote a journal entry and a render", seededJournal.includes("Seeded before the exit.") && seededCalls === 1);
+
+			// A hand edit newer than the journal: the exit must fold it in, compose nothing, call no model.
+			const handEdit = `${(await readFile(path.join(flushMem, "MEMORY.md"), "utf8")).trimEnd()}\n- Hand-curated at exit.\n`;
+			await writeFile(path.join(flushMem, "MEMORY.md"), handEdit);
+			const newer = new Date(Date.now() + 5_000);
+			await utimes(path.join(flushMem, "MEMORY.md"), newer, newer);
+
+			await runHandlers(flushPi, "session_shutdown", flushCtx);
+
+			check("the exit made no model call", flushCalls === seededCalls);
+			const flushJournal = await readFile(path.join(flushMem, "memory.jsonl"), "utf8");
+			check("the hand edit was adopted into the journal", flushJournal.includes("Hand-curated at exit.") && flushJournal.length > seededJournal.length);
+			check("the file is still the journal's render", (await readFile(path.join(flushMem, "MEMORY.md"), "utf8")).includes("Hand-curated at exit."));
+			const flushErrors = await readFile(path.join(flushMem, "errors.log"), "utf8").catch(() => "");
+			check("the adoption left a trace", flushErrors.includes("adopted an externally edited MEMORY.md"));
+			// The trade decision 1 accepts: a tail no settle pass reached stays out of the memory document.
+			check("the exit composed nothing", !(await readFile(path.join(flushMem, "MEMORY.md"), "utf8")).includes(marker));
+			const archivedTail = await readFile(path.join(flushMem, "session-logs/flush-session/session.jsonl"), "utf8").catch(() => "");
+			check("the tail is in the archive", archivedTail.includes(marker));
+		} finally {
+			await rmTemp(flushTmp);
+		}
+	}
+
+	console.log("\n=== the settle pass is still the automatic writer ===");
+	{
+		// Decision 1 rests on this: with the exit no longer composing, the throttled settle pass is what
+		// updates the memory during a session. Without this pin, "the exit is the only writer" would pass.
+		const settleTmp = await mkdtemp(path.join(os.tmpdir(), "pi-settle-writes-"));
+		try {
+			const settleMem = path.join(settleTmp, ".agents/memory");
+			await mkdir(settleMem, { recursive: true });
+			const settleFactory = await loadDefault(`${PC}/index.ts`);
+			const settlePi = makePi({ cwd: settleTmp });
+			await settleFactory(settlePi);
+			const settleEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`s${index}`, "user", `settle turn ${index}`, `2026-09-12T11:0${index}:00.000Z`));
+			const settleCtx = makeCtx(settleTmp, {
+				sessionManager: makeSessionManager(settleEntries, "settle-session"),
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					complete: async () => ({
+						content: [{
+							type: "text",
+							text: JSON.stringify({
+								memory_markdown: "# Project Memory\n\n## Project\n- The settle pass wrote this.",
+								context: { title: "Settle", summary: "Settle wrote.", key_points: [], open_tasks: [] },
+							}),
+						}],
+					}),
+				},
+			});
+			// `agent_settled` fires and forgets, so wait for the write instead of assuming it landed.
+			await runHandlers(settlePi, "agent_settled", settleCtx);
+			const settleWritten = await waitUntil(async () => (await readFile(path.join(settleMem, "MEMORY.md"), "utf8").catch(() => "")).includes("The settle pass wrote this"), 3_000);
+			check("a settle pass with the throttle satisfied still writes the memory", settleWritten);
+			const settleContext = await readFile(path.join(settleMem, "CONTEXT.md"), "utf8").catch(() => "");
+			check("the settle pass still writes CONTEXT.md", settleContext.includes("Settle wrote."));
+		} finally {
+			await rmTemp(settleTmp);
+		}
+	}
+
 } finally {
 	await rmTemp(tmp);
 }

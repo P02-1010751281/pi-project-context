@@ -1,7 +1,7 @@
 /**
- * The memory read path and the one write transaction: adopt an external edit into the journal
- * history, append this pass's render, rotate if needed, rebuild the render; and the legacy
- * read fallbacks that keep a project without a journal working.
+ * The memory read path and the write transactions: adopt an external edit into the journal history,
+ * append this pass's render, rotate if needed, rebuild the render; the model-free flush a session
+ * teardown runs; and the legacy read fallbacks that keep a project without a journal working.
  */
 
 import { readFile, stat } from "node:fs/promises";
@@ -12,6 +12,7 @@ import { decodePoisonedMemory, memoryComparisonKey } from "./poison.ts";
 import { logError } from "../shared/error-log.ts";
 import { readOptional, writeAtomic } from "../shared/files.ts";
 import { ensureMemoryGitignore } from "../shared/gitignore.ts";
+import { withMemoryLock } from "../shared/lock.ts";
 import { MAX_MEMORY_CHARS } from "../shared/limits.ts";
 import { legacyOmpDir, legacyPiDir, memoryDir, memoryFile, memoryJournalFile } from "../shared/paths.ts";
 
@@ -52,6 +53,64 @@ function renderKeyOf(raw: string, limit: number): string {
 type MemoryWriteResult = { written: true } | { written: false; kept: string };
 
 /**
+ * Fold an external edit (a hand edit, or a render left behind by an older build) into the journal, so
+ * its bytes enter the journal's history instead of being overwritten by the next pass. A render that
+ * merely equals the fold is our own output, and one that is older and differs is a torn write window
+ * (the journal is already ahead), so neither is adopted. Returns whether anything was adopted.
+ *
+ * Callers hold the memory lock. `preRead` lets the write path hand over what it has already read.
+ */
+export async function adoptExternalEdit(
+	projectRoot: string,
+	limit: number = MAX_MEMORY_CHARS,
+	preRead: { journal?: Awaited<ReturnType<typeof readMemoryJournal>>; renderKey?: string } = {},
+): Promise<boolean> {
+	const file = memoryJournalFile(projectRoot);
+	const base = preRead.journal ?? (await readMemoryJournal(file));
+	if (base.unreadable) throw new Error(`memory journal exists but cannot be read: ${file}`);
+	if (base.entries.length === 0) return false;
+	const renderKey = preRead.renderKey ?? renderKeyOf(await readOptional(memoryFile(projectRoot)), limit);
+	if (!renderKey) return false;
+	const foldedView = foldMemoryJournal(base.entries, limit);
+	const renderInfo = await stat(memoryFile(projectRoot)).catch(() => undefined);
+	const journalInfo = await stat(file).catch(() => undefined);
+	if (renderKey === foldedView || !renderInfo || !journalInfo || renderInfo.mtimeMs <= journalInfo.mtimeMs) return false;
+	await appendMemoryOp(file, "replace", renderKey);
+	// Keep a trace of which pass folded in an edit that was made outside the extension.
+	await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
+	return true;
+}
+
+/** What a model-free flush did: folded an external edit in, and/or rewrote a drifted render. */
+export type FlushResult = { adopted: boolean; written: boolean };
+
+/**
+ * Publish what is already stored, without calling a model. A session teardown runs this instead of a
+ * consolidation pass (2026-10-06, decision 1): the exit still folds a hand-edited `MEMORY.md` into the
+ * journal and leaves the file as the journal's own render, but no auxiliary call sits on a path that
+ * once let a provider error escape into pi's session switch.
+ *
+ * The render write is skipped when the file already carries the fold's key, so a clean exit is a no-op.
+ * It fires after an adoption whose bytes changed under normalization (whitespace, or a hand edit clipped
+ * to the cap) and on a render that drifted from the journal - the file is left as the journal's render
+ * either way. Nothing here composes memory: a session with no settle pass keeps its tail in the archive.
+ */
+export async function flushMemoryRender(projectRoot: string, limit: number = MAX_MEMORY_CHARS): Promise<FlushResult> {
+	const journal = memoryJournalFile(projectRoot);
+	return await withMemoryLock(memoryFile(projectRoot), async () => {
+		const adopted = await adoptExternalEdit(projectRoot, limit);
+		const state = await readMemoryJournal(journal);
+		if (state.unreadable) throw new Error(`memory journal exists but cannot be read: ${journal}`);
+		const folded = foldMemoryJournal(state.entries, limit);
+		if (!folded) return { adopted, written: false };
+		const onDisk = await readOptional(memoryFile(projectRoot));
+		if (memoryComparisonKey(onDisk, limit) === memoryComparisonKey(folded, limit)) return { adopted, written: false };
+		await writeAtomic(memoryFile(projectRoot), folded);
+		return { adopted, written: true };
+	});
+}
+
+/**
  * Record one consolidated document: keep a pre-journal project's current memory as the journal's
  * base, append the new replacement, collapse the journal when it grew too large and render
  * `MEMORY.md`. Callers hold the memory lock and have already backed up the current render.
@@ -73,22 +132,7 @@ export async function recordMemoryDocument(
 	// same bytes, and an empty document is not a key at all.
 	const renderRaw = await readOptional(memoryFile(projectRoot));
 	const renderKey = renderKeyOf(renderRaw, limit);
-	if (base.entries.length > 0) {
-		// Adopt an external edit (hand edit or an older build) before appending this pass: its bytes
-		// enter the journal's history instead of being silently overwritten. A render that merely
-		// equals the fold is our own output, and one that is older and differs is a torn write
-		// window (journal already ahead), so neither is adopted.
-		const foldedView = foldMemoryJournal(base.entries, limit);
-		if (renderKey) {
-			const renderInfo = await stat(memoryFile(projectRoot)).catch(() => undefined);
-			const journalInfo = await stat(file).catch(() => undefined);
-			if (renderKey !== foldedView && renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
-				await appendMemoryOp(file, "replace", renderKey);
-				// Keep a trace of which pass folded in an edit that was made outside the extension.
-				await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
-			}
-		}
-	}
+	if (base.entries.length > 0) await adoptExternalEdit(projectRoot, limit, { journal: base, renderKey });
 	// The reply was built from this baseline. When the stored memory moved on while the model was
 	// writing, publishing the reply would overwrite that newer content, so keep it instead. Both
 	// sides are compared as keys: the read path returns the fold when a journal exists and the raw

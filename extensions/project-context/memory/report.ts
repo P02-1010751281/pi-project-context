@@ -11,7 +11,7 @@ import { getConfig, DEFAULT_CONFIG, runIsDisabled, setFeature, takeConfigMigrati
 import { completeValues, completeVerbs } from "../shared/complete.ts";
 import { MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
 import { capCeilingWarning, memoryCapUnsatisfiable } from "../shared/output-budget.ts";
-import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
+import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, flushMemoryRender, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
 import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
@@ -411,13 +411,17 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		// Write silently: the UI may already be rebuilding for a session switch. A throw here escapes into
 		// pi's ExtensionRunner (one field chain in errors.log runs through emitSessionShutdownEvent), and the
 		// handoff's session switch rides that same emit, so log and return instead of taking the switch down.
+		// A model call used to sit on this path; since 2026-10-06 (decision 1) the exit flushes instead: it
+		// adopts a hand-edited MEMORY.md into the journal and leaves the file as the journal's render, and it
+		// composes nothing, so a session that ends between settle passes keeps that tail in the archive.
 		try {
-			await consolidate(ctx, true, true);
+			const projectRoot = await getProjectRoot(pi, ctx.cwd);
+			await flushMemoryRender(projectRoot, (await getConfig(projectRoot)).maxMemoryChars);
 		} catch (error) {
 			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory); see
 			// `shutdownErrorRoot` for the cwd fallback rule, and act only when it names a safe root.
 			const root = shutdownErrorRoot(await getProjectRoot(pi, ctx.cwd).catch(() => undefined), ctx.cwd);
-			if (root) await logError(root, "shutdown:consolidate", error).catch(() => {});
+			if (root) await logError(root, "shutdown:flush", error).catch(() => {});
 		}
 	});
 
