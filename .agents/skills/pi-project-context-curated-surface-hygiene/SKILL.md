@@ -144,7 +144,34 @@ commit in the `docs(memory): refresh the memory render` style, never bundled wit
 A description/body-only pass leaves `extensions/` byte-identical to the current release tag, so it
 needs no new tag, pin bump or restart.
 
-## 10. Re-check at every render, not once
+## 10. Mechanically grep the render's source map before committing it
+
+The `## Index` lines name file: symbol pairs, and a refresh keeps stale ones: in v0.4.2 one refresh carried
+`shutdownErrorRoot` onto the wrong file plus `splitSections` (deleted in the same round) and
+`productLanguageInstruction` (a name that never existed anywhere), and three separate review rounds each caught
+only the one they happened to read. Extract every backticked symbol and CamelCase identifier from the `## Index`
+lines and require at least one hit under `extensions/` or `tests/`; the probe is in
+`.codestable/issues/2026-10-05-v042-cleanup/` (round-4 transcript) and the shape is:
+
+    python3 - <<'PY'
+    import pathlib, re, subprocess
+    t = pathlib.Path(".agents/memory/MEMORY.md").read_text(encoding="utf-8")
+    lines = [l for l in t.splitlines() if re.match(r"^- [\w./-]+\.(ts|mjs)\s*-", l)]
+    syms = set()
+    for l in lines:
+        syms |= {m.split("::")[-1].split(".")[0].strip("()") for m in re.findall(r"`([A-Za-z_][A-Za-z0-9_.:()]*)`", l)}
+        syms |= set(re.findall(r"\b([a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)\b", l))
+    for s in sorted(syms):
+        if s.endswith((".ts", ".mjs")): continue
+        if not subprocess.run(["git", "grep", "-l", rf"\b{re.escape(s)}\b", "--", "extensions", "tests"],
+                              capture_output=True, text=True).stdout.strip():
+            print("dead name in the render Index:", s)
+    PY
+
+A name that only survives in a historical `CHANGELOG` entry or a frozen `.codestable/` record is dead: the check
+searches code and tests, which is where a live symbol has to exist.
+
+## 11. Re-check at every render, not once
 
 A render draws on the session's own context as well as the journal, so hand-cleaned external state
 came back three times in the field. Re-run step 2 before committing any render. The only durable fix

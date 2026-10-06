@@ -20,7 +20,7 @@ Two hits mean two renderers — that is the shape to look for; a single hit mean
 
 ## Step 2 — create the shared renderer
 Add `extensions/project-context/memory/status.ts` exporting exactly two symbols:
-- `memoryStatusMessage()` — the single user-visible wording;
+- `memoryStatusLine()` — the single user-visible wording (renamed from `memoryStatusMessage()` in v0.4.0);
 - `memoryStatusLevel()` — the severity, for colouring or toast choice.
 
 One function must cover every branch: normal, empty, at cap (truncated), poisoned (raw JSON from the old bug), damaged lines, file unreadable, journal unreadable.

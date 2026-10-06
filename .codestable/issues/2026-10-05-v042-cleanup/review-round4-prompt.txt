@@ -1,0 +1,40 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 4，**发布放行轮**）。工作目录（沙箱，冻结版）：/tmp/pc-v042-r4
+
+严格只读：不得写工作区任何文件、不得 git add/commit/checkout/stash、不得改配置；临时文件只能放 /tmp。
+你只有 read 与 bash 两个工具。判定模型（记入本次记录）：deepseek/deepseek-flash。
+请独立判断，不要继承文档或前三轮的结论；假设它们可能有错，自己复测。
+
+## 发布范围
+v0.4.2 = `git diff v0.4.1..HEAD`，冻结于 HEAD **0149d5a**：删除死符号与三处不可达分支、退役一个 pi 侧无读者的
+配置键与动词、把 `session_shutdown` 回退的根选择抽成可测函数、并把审计与文档对齐全。发布面：`CHANGELOG.md`
+的 v0.4.2 段、`docs/`、`.agents/skills/`、`.agents/memory/{MEMORY,CONTEXT}.md`。
+
+## 前三轮的结论（本轮只核验修复是否真落地，不重开已决事项）
+- 审 1（15b65cb）：2 important（退役理由写反；fence 叙述不实）
+- 审 2（1553151）：2 important（改名清单被剪掉 `handoffAdaptive`；fix-note 横幅留旧理由）+ M7 红数
+- 审 3（8b32dcb）：1 important（记忆渲染把 `shutdownErrorRoot` 指到错文件）+ 5 nit（M6 红数应 3；
+  **dsh 主张无据**）。审 3 判 RELEASE-OK: no。
+  记录：`.codestable/issues/2026-10-05-v042-cleanup/review-round{1,2,3}-*.txt`。
+
+**本轮请逐条确认审 3 的每一项都已真修**：
+1. `.agents/memory/MEMORY.md` 源码地图：`shutdownErrorRoot` 是否归位到 `memory/report.ts`（生产定义与调用点），
+   `journal.ts`/`handoff/run.ts` 条目里是否已无它；同文件的键数与 saveConfig patch 键数（22 / 7）是否与代码一致；
+   `MEMORY.md`/`CONTEXT.md` 是否已不再断言「dsh 读自己的键」。
+2. 6 个活动面（`CHANGELOG.md`、`docs/configuration.md`、`vocabulary-conventions.md`、`config.ts` 注释、设计文档、
+   测试注释）对退役依据的说法是否一致、只剩「pi 侧零行为读者 + 回执承诺在本仓无据」；有无重复病句。
+3. 审计 §9.11 M6 是否已改为 3 红（全量套件）并说明订正史；§9.7 的 M8 是否已指向该订正；新增 §9.12 R-2
+   是否写清关闭判据与影响面。
+4. `.agents/skills/pi-project-context-audit-claim-verification/SKILL.md` 里那个已删符号的示例是否已不像活例。
+5. `git diff --check v0.4.1..HEAD` 是否干净；`node tests/run-all.mjs` 是否 15/15；双远端 master 是否都等于冻结版。
+
+## 独立复核（不要只看修复）
+6. 发布面自洽：`CHANGELOG.md` 的 v0.4.2 段、`docs/`、词汇表、记忆渲染彼此一致；无残留描述已删机制的活动引用
+   （`.codestable/` 冻结档案里的历史提及不算）。
+7. 自己挑 3 格做单侧变异（每格只改一处），确认断言具名可红；并确认未变异树上全套件 15/15。
+8. 对抗性一遍：假设发布后有一个用户可见错误，最可能是哪一种？给最小复现与判据。
+
+## 输出格式
+按严重级别分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条含 `file:line`、
+影响、修复边界。最后两行必须是：
+`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`（附一句理由）
+`RELEASE-OK: yes/no`

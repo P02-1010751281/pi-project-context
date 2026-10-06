@@ -1,0 +1,70 @@
+# lane A 独立审查报告（v0.4.2 发布放行轮，冻结 HEAD `0149d5a`）
+
+判定模型：**deepseek/deepseek-flash**。全程只读工作区（`git status` 与起始基线一致：仅既有的 HANDOFF.md / project-context.json 震荡与未跟踪 skill-candidates）；测试、变异、探针全部在 `git archive HEAD` 出来的 `/tmp` 副本上执行。
+
+## 逐条核验（要求 1–5）
+
+1. **`shutdownErrorRoot` 归位**：✓ 真落地。`extensions/project-context/memory/report.ts:27` 定义、`:382` 生产调用；`.agents/memory/MEMORY.md:121` 挂在 report.ts 条目，`journal.ts`（:124）与 `handoff/run.ts`（:132）条目已无它。键数 **22** 与 saveConfig patch **7** 与代码一致（我用 `loadNamespace` 探针实测：DEFAULT_CONFIG=22 键；`handoff/settings.ts:60-70` patch=7 键）。MEMORY.md:60 / CONTEXT.md:11 已不再断言「dsh 读自己的键」，只留「本仓无证据 / 跨仓不可复验」。**但同一 Index 表还有三处死名/错位（见 important-2）。**
+2. **六个活动面**：✓ 全部只剩「pi 侧零行为读者 + 回执承诺在本仓无据」。CHANGELOG.md:9-13、docs/configuration.md:116-120、vocabulary-conventions.md:128、config.ts:218-223、handoff-last-turn-design.md:170-171、tests/handoff-test.mjs:1121-1124 逐句对上；我做了相邻重复行检查与逐句复核，**没有逐字重复病句**（只有 CHANGELOG.md:17-19 一处换行把「是别的机制、/别的词形」拆成两行，见 nit-5）。唯一残留：审计自身 §9.7 与 §9.11 仍把 dsh 读自己的键当事实（nit-1）。
+3. **审计**：✓ §9.11:342 已写 **3 红（全量套件）**，:349 有「数字订正史（三轮各纠一次）」；§9.7:243 的 M8 行已带指向 §9.11 的订正注；§9.12:354-372 写清 R-2 关闭判据（grep dsh 插件源码）与影响面（首次写回静默删键）。我单侧变异复现了**恰好 3 条具名红**（见下）。
+4. **技能死例**：✓ 真落地。`pi-project-context-audit-claim-verification/SKILL.md:48-50` 已改成「it was deleted in v0.4.2, so use it as the shape of the check, not as a live example」。
+5. **门禁三项**：`git diff --check v0.4.1..HEAD` **不干净**（`...progressive-disclosure.md:373: new blank line at EOF.`，见 important-1）；`node tests/run-all.mjs` 在冻结 HEAD 副本上 **15/15**；本地 master = forgejo master = github 第二 push URL master = `0149d5ac7947861d44d2ebc1609bdba0716278d8`。
+
+## 独立复核（要求 6–8）
+
+- **发布面自洽**：CHANGELOG v0.4.2 每句与代码对得上（fence 单遍扫描 ✓、CommonMark 关闭判定 ✓、`shutdownErrorRoot` 精确到 `.agents/memory` 且 v0.4.1 旧码只查 `.agents` ✓、硬切语义 ✓、`MIN_DROP_TOKENS` 全仓无旧名 ✓、动词/补全/迁移项删除 ✓）。死符号 `estimatedAfter` 只出现在 docs/handoff.md:90 的「已删且不可达」历史说明里；`cleanHeaders`/`newestMemoryArchiveSync` 在 extensions/tests 0 引用。但索引仍有死名残留（important-2 / nit-2 / nit-4）。
+- **三格单侧变异（每格只改一处，均在全量套件上跑）**：
+  - V1 `report.ts` shutdown 回退 `join(cwd,".agents","memory")` → `.agents`：**1 条具名红** `a cwd that only has .agents is not the memory layer`（consolidation-test.mjs）。
+  - V2 `parseConfig` 复活 `handoffThinking:"off"`：**3 条具名红** —— `the retired thinking verb persists nothing`（handoff-test）+ `a retired key is not resurrected by the nested layout`、`the retired thinking name folds into nothing`（switches）——与审计 §9.11 M6=3 逐条吻合。
+  - V3 `shared/inject.ts` 关闭 fence 去掉 `run[1].length >= fence.length`：**1 条具名红** `a shorter fence run inside a block does not close it`（sections-test）。
+  - 未变异冻结树：15/15。
+- **对抗性一遍**：最可能的用户可见错误是 **R-2 的配置键静默消失**。最小复现：任意 `project-context.json` 写 `{"handoffThinking":"session"}`（共享给 dsh 的项目文件同样）→ 升级 v0.4.2 → 跑任一写配置命令（如 `/handoff lang zh`）→ 文件里该键消失、无提示。判据是代码事实：`parseConfig` 只保留已知键（`config.ts:297-336`），`updateConfig` 写 `{...parsed,...patch}` 整份文档（`config.ts:356-362`）。文档已按硬切明说，对读文档者不是承诺落差；对 dsh 侧读者是不可验证的跨仓风险（§9.12 已列为 R-2）。次要候选：记忆渲染源码地图继续指错文件；再次：固定比例小丢弃交接（已文档化，非本轮回归）。
+
+## blocking
+
+无。代码面未发现行为回归；15/15；删除的三处 `!force` 分支经调用点与收窄签名复核确为不可达。
+
+## important
+
+1. **`git diff --check v0.4.1..HEAD` 仍不干净，且有两处「自称 clean」的假记录**。
+   `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:373`（文件尾多余空行，`git show v0.4.1:…|tail` 单 `\n`、HEAD 为 `\n\n`；由 `f064362` 引入，经 15b65cb/1553151/8b32dcb 存活）。影响：发布技能 `pi-project-context-release-tag-and-pin-sync/SKILL.md:9,12` 把 `git diff --check` clean 列为发布前提，本轮门禁第 5 项直接失败；`fa4c15b` 的提交信息明写「diff --check clean」；`.agents/memory/CONTEXT.md:19`（发布面）也写「git diff --check clean」——该句描述的状态（2a7f7d0）实测同样不干净（`git diff --check v0.4.1..2a7f7d0` 红同一条）。审 3 nit-4 的修复未落地。修复边界：删掉该空行、重跑 `git diff --check v0.4.1..HEAD`，并修正 CONTEXT.md 的验证句（或做一次真实渲染刷新）。
+2. **MEMORY.md 的 Index 仍含已删/不存在的符号，`0149d5a` 的刷新只修了 `shutdownErrorRoot` 一处**。
+   `.agents/memory/MEMORY.md:119` 写 `injection.ts … splitSections/scanDocument`：`splitSections` 已在 v0.4.2 删除（`8f4eab7`，v0.4.1 还有 `export function splitSections`；HEAD 全仓仅 CHANGELOG 提到这次改名），`scanDocument` 实际是 `shared/inject.ts:75` 的私有函数；`:131` 写 `prompt.ts holds productLanguageInstruction()`：该名字**全仓、全历史 0 命中**（`autolearn/prompt.ts` 只导出 `buildPrompt`）；`:123` 的 `memoryStatusMessage()` 是 v0.4.0 已改名为 `memoryStatusLine()` 的死名。`:119`/`:131` 由 `1553151`（审 3 已因 `shutdownErrorRoot` 错位判 important 的同一次刷新）引入，0149d5a 未清。影响：这是每轮注入系统提示的活动记忆，源码地图指向死符号/错文件，与「只有 shutdownErrorRoot 指错」同类、且与「审计与文档对齐全」的发布主张冲突。修复边界：只改渲染文本，把三处 Index 条目按 HEAD 的 `git grep` 订正（`shared/inject.ts::scanDocument`、删除 `splitSections` 与 `productLanguageInstruction`、`memoryStatusLine`），不动代码。
+
+## nit
+
+1. **审计自身仍在两处保留 §9.12 刚撤回的 dsh 断言，且无交叉指针**：`.codestable/audits/…progressive-disclosure.md:235-236`（§9.7 正文「dsh 读的是它自己的 `handoffPendingQuestion`」）与 `:319`（§9.11 I1 行「退役依据改回真正的理由（… + dsh 读自己的 `handoffPendingQuestion`）」）。§9.12 说这六面已改写，但这两处是同一文档的活段落（非冻结档案）。影响：发布证据自相矛盾。修复边界：加「见 §9.12（跨仓不可复验）」或改写。
+2. **MEMORY.md:100 的「eight handoff knobs」未随退役变 7**。v0.4.1 确有 8 个 handoff 设置（含 `handoffThinking`），HEAD 只剩 7（`shared/config.ts:100-116`）；审 3 nit-3 要求 22/7，`0149d5a` 只改了 23→22。修复边界：eight→seven。
+3. **CONTEXT.md:7 会话快照滞后**：仍以 `2a7f7d0` 为冻结版、写「Seven commits」实列 8 个 hash；HEAD 已推进到 `0149d5a`。按仓规这是扩展再生成的震荡文件，但本轮把它算发布面。修复边界：真实刷新或按惯例接受为 session state。
+4. **`memoryStatusMessage()` 死名仍在活动面**：`docs/configuration.md:132`、`.agents/skills/pi-project-context-command-surface-audit/SKILL.md:27`、`.agents/skills/pi-project-context-status-renderer-dedup/SKILL.md:23`（v0.4.0 已改名，非本轮引入）。修复边界：随下次触碰文档时改 `memoryStatusLine`。
+5. **CHANGELOG.md:17-19 换行把括号内容拆成三行**（「（`summarized`/ `summarizer` 是别的机制、 别的词形）」），是 `fa4c15b` 重排的产物；纯排版，非事实错误。修复边界：可选重排。
+
+## suggestion
+
+- tag 前做一个发布提交：给 CHANGELOG.md:6 的 v0.4.2 段落日期（`未发布` 不能进 tag）、顺手删审计尾空行、订正上述 Index/计数；由 v0.4.1 的先例（`7b6fc98`）看这是既有流程。
+- 记忆刷新可加一道机械检查：对 Index 里每个反引号符号跑一遍 `git grep`，这次 `1553151` 一次刷新就带进三处死名（shutdownErrorRoot/splitSections/productLanguageInstruction），人工复读不足以兜住。
+
+## learning
+
+- 「刷新渲染」本身会引入新的错位：`1553151` 在修正旧理由的同时把 `splitSections`（当时已在 `8f4eab7` 删除）和从未存在的 `productLanguageInstruction` 写进 Index；三轮审查各抓到一处、每轮都只修被点名的那一处。源码地图要以 `git grep` 全量对照，而不是逐条应付。
+- 提交信息里的验证断言必须当成事实核对：`fa4c15b` 声称 diff --check clean，实际该空行从 `f064362` 起就存在，三轮审查都放过了门禁项本身。
+
+## praise
+
+- 审 3 的指定修复真实落地：`shutdownErrorRoot` 归位、audit M6=3 + 订正史、§9.7 M8 指针、§9.12 R-2、技能死例标注，逐项复现无误。
+- 新 pin 法有效：`shutdownErrorRoot` 由生产路径真调用，单侧变异精确红一条具名断言；我另两格变异也各得其名。
+- 六面退役依据现在措辞统一，且与代码事实（pi 侧零读者、硬切语义）一致；死代码/不可达分支的删除面干净（0 引用、调用点只有两个字面量）。
+- 冻结树 15/15；local/forgejo/github 三处 master 同一 sha。
+
+## residual-risk
+
+- **R-2 跨仓不可复验**（§9.12 已记名）：沙箱无 dsh 插件源码，无法排除 dsh 仍读 `handoffThinking`；关闭判据已写明。
+- **固定比例模式无最小可丢下限**（docs/handoff.md:87-90，与 v0.4.1 逐字一致，非本轮回归）。
+- **CONTEXT.md 快照滞后**属扩展再生成的既有震荡，本轮发布面把它显式包含后成为一个小的「发布面不实」来源。
+
+## 对抗性一遍（要求 8）
+
+最可能：**升级后首个配置写把 `handoffThinking` 静默删除**。复现：`echo '{"handoffThinking":"session"}' > <proj>/.agents/memory/project-context.json` → 以 v0.4.2 启动 → `/handoff lang zh` → `grep handoffThinking` 为 0。判据：`config.ts` 的 `parseConfig` 无该键分支、`updateConfig` 整份重写。若 dsh 确有读者即为无提示破坏性变更（R-2）；若没有则仅影响残留键清理。次之是本次 important-2 的源码地图误导后续会话。
+
+VERDICT: CHANGES-REQUESTED（代码与测试面通过、15/15、三格变异具名可红、双远端同 sha；但门禁项 `git diff --check v0.4.1..HEAD` 不干净且提交信息/CONTEXT 谎称 clean，发布面记忆渲染仍含三处死符号/错位，需订正后再放行）
+RELEASE-OK: no

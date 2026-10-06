@@ -232,8 +232,8 @@ A 形态端到端（真实交接一次）留待发布后；9.2 成本只测了�
 
 v0.4.1 的 tag 停在审3 判定通过的那一版，五条 nit 按停止规则留作残留；owner 随后决定「全修，无用就退役」，
 本片即该决定。五条 nit 全修（其中一条是不可 pin 的精度修正），并退役 `handoffThinking` 键与 `/handoff thinking` 动词
-——它在本仓零行为读者（回执里「stored for the dsh profile」的承诺因此本就不成立，dsh 读的是它自己的
-`handoffPendingQuestion`）。**下方原文曾把退役理由写成「它写下的值活不过任何一次 pi 写」，该说法经 v0.4.2 校验轮
+——它在本仓零行为读者（回执里「stored for the dsh profile」的承诺因此在本仓无据；本段原文随后写的「dsh 读的是它自己的
+`handoffPendingQuestion`」经审 3 判为无据，**见 §9.12 R-2**）。**下方原文曾把退役理由写成「它写下的值活不过任何一次 pi 写」，该说法经 v0.4.2 校验轮
 实测证伪**（v0.4.1 的 `config.ts:52/111/229/263/324` 显示它当时是已知键，读回+写回，值会持久化；退役才是把它
 变成未知键的那一步），已按「硬切不是改名」改写见 §9.11；常量 `MIN_SUMMARIZE_TOKENS` 随之更名
 `MIN_DROP_TOKENS`（语义=最小可丢弃前缀），代码里最后一个 `summarize` 词消失。
@@ -316,7 +316,7 @@ M6 持久化补回退役键 → 1 条；M8 `parseConfig` 单侧补回退役键 �
 
 | # | 断言 | 证伪证据（本仓可复测） | 修法 |
 | --- | --- | --- | --- |
-| I1 | 「`handoffThinking` 写下的值活不过任何一次 pi 写」 | **假**。`git show v0.4.1:extensions/project-context/shared/config.ts` 的 `:52/111/229/263/324` 显示它在 v0.4.1 是**已知键**（类型、默认值、旧名映射、`put`、`parseConfig` 读），值会随 `updateConfig` 持久化；是 v0.4.2 的退役才把它变成未知键 | 改 6 处措辞为「硬切不是改名：v0.4.1 它会持久化，v0.4.2 起被忽略、下次写回消失」，退役依据改回真正的理由（pi 侧零行为读者 + dsh 读自己的 `handoffPendingQuestion`） |
+| I1 | 「`handoffThinking` 写下的值活不过任何一次 pi 写」 | **假**。`git show v0.4.1:extensions/project-context/shared/config.ts` 的 `:52/111/229/263/324` 显示它在 v0.4.1 是**已知键**（类型、默认值、旧名映射、`put`、`parseConfig` 读），值会随 `updateConfig` 持久化；是 v0.4.2 的退役才把它变成未知键 | 改 6 处措辞为「硬切不是改名：v0.4.1 它会持久化，v0.4.2 起被忽略、下次写回消失」，退役依据改回可证的理由（pi 侧零行为读者 + 回执承诺在本仓无据；dsh 侧不可复验，见 §9.12 R-2） |
 | I2 | 「块内 `## X` 既截断前言、又变成一个假小节」 | **半假**。v0.4.1 的 `splitSections`（`inject.ts:59-69`）本来就 fence 感知，块内 `## X` 从未成为小节；真实损害是**前言**那次 fence 盲目扫描把前言切在假标题处并丢掉围栏内容 | 只改 CHANGELOG 的叙述，不动 `scanDocument` 与断言（断言靠内容判定，本身正确） |
 
 nits 全修：`run.ts` 调用点注释（手动 `/handoff now` 不经 `maybeTrigger`）、`journal.ts` 与 `report.ts` 的多余空行、
@@ -370,4 +370,3 @@ M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents 
 确认是否存在读取路径。**影响面**：若 dsh 侧确有读者，这次退役对 dsh 用户就是一次无提示的破坏性变更——
 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以升级后任意一次写配置都会静默删掉该键
 （`docs/configuration.md` 已按「硬切」明说，但对 dsh 侧读者仍是行为变化）。
-

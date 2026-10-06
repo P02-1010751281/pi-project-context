@@ -129,7 +129,7 @@ dsh 产物都不含 `handoff` 字样（跨仓不可复验，见审计 §9.12 R-2
 **入口关系**（v0.3.0 起重排）：一个参数住在**改变它的那一层**。每个特性有自己的 `on|off`（`/memory`、`/session-log`、`/handoff`、`/autolearn`），
 伞形只保留两个以上层共用的项：`status`、`model`、`max-tokens`，以及**四特性批量** `on|off`——批量形**不接受目标**，`/project-context off all`
 会被拒绝并提示改用裸 `off`（一个事实一个名字）。伞形的批量不是扩展开关：命令面关不掉扩展，唯一的整扩展禁用是 run 级 `--no-project-context` flag。
-`/project-context status` 是一屏总览（特性、辅助调用、配置路径、memory 状态行、context 文件行）；memory 状态行由共享的 `memoryStatusMessage()` 渲染，
+`/project-context status` 是一屏总览（特性、辅助调用、配置路径、memory 状态行、context 文件行）；memory 状态行由共享的 `memoryStatusLine()` 渲染，
 context 文件行由共享的 `contextStatusLine()` 渲染，所以 `/memory` 与伞形两处逐行一致（**不做整块相等**：伞形的副本带更新时间戳）。
 `/session-log` 无参只读，打存档状态行与两条路径；`/memory` 无参打 memory 状态行与 context 文件行——`/context` 原来的三行就是这样拆完的。
 **一个事实一个名字**（v0.2.3 起）：伞形首行只报特性，标签 `Features:`；context 文件那行都叫 `Context file:`。
