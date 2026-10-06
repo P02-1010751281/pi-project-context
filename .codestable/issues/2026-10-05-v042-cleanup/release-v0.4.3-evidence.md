@@ -15,7 +15,9 @@
 | 行为提交 | `057021d`（固定下限 + 清单标记）、`3a0183b`（拒绝点名、边界与数字断言、卫生门禁） |
 | 修复提交 | `e024595`（单源常量 + 门禁口径）、`c9d4db6`（CRLF 与 MIN 侧断言、文档计数）、`6a00587`（夹具由常量派生、空白尾行、计数） |
 | 记录/文档提交 | `ab21491`、发布定版提交（本文件所在提交） |
-| tag 对象 / peeled / 双远端 | 见「发布后补记」 |
+| tag 对象 | `b26c2db3106df81889158d4a99adccec3ee6ce1d` |
+| tag 指向（peeled） | `b9085d5e58e33533cbd96e565a4cd06adc498ba4` |
+| forgejo / github 镜像 | `ls-remote --tags 'v0.4.3*'` 两行（对象 + peeled）一致 |
 
 ## 五轮独立评审（lane A，模型 `deepseek/deepseek-flash`，/tmp 冻结沙箱 + 零写入证明）
 
@@ -45,6 +47,18 @@
 - 本机合并清单 7,892/8,000：截断标记路径目前只有合成测试覆盖（真实截断尚未在现场观测到）。
 - `CONTEXT.md` 会话快照为 pi 再生成文件，存在既有滞后。
 
-## 发布后补记
+## 发布后补记（2026-10-06）
 
-见紧随其后的 `docs(records)` 提交（tag 对象、peeled、pin 提交、安装副本 HEAD/describe、探针结果）。
+| 项 | 值 |
+| --- | --- |
+| `~/.pi` pin 提交 | `3c5dad6`（`agent/settings.json` + `README.md` 改 `@v0.4.3`，已推送 pi-config `origin`） |
+| 安装命令 | `pi update --extensions`（拉取 `tag v0.4.3 -> FETCH_HEAD`，HEAD 落到 `b9085d5`） |
+| 安装副本 HEAD / describe / 脏 | `b9085d5e58e33533cbd96e565a4cd06adc498ba4` / `v0.4.3` / 0 |
+| 副本自测 | `node tests/run-all.mjs` → `repo hygiene … ok` + 15/15 |
+| 到位抽检（副本 `extensions/` + `tests/`） | `MAX_THRESHOLD_RATIO` 12 处、`MIN_THRESHOLD_RATIO` 13 处、`more skill(s) not listed` 2 处、`fixed-below-floor` 7 处、`repo hygiene` 4 处；`MIN_SUMMARIZE_TOKENS` 0 处；`handoffThinking` 仅剩 `shared/config.ts` 两处退役说明注释 |
+| 真实安装态探针 | `/tmp/pc-release-probe-v043`（预置 `handoffThresholdAuto:false, handoffThresholdRatio:0.1`）：`pi -p "只回复两个字：收到"` → exit 0、回复「收到」；扩展生成 `.agents/memory/{MEMORY.md,CONTEXT.md,memory.jsonl,.gitignore}`、`session-logs/<id>/{session.jsonl,session.md}` 与 `INDEX.md` |
+
+**需要重启 pi 才生效**：运行中的会话仍加载 v0.4.2 的模块。
+
+tag 落点 `b9085d5` 相对最后一轮评审的 `6a00587` 只多「v0.4.3 定义日期 + 本证据文件 + 审 14 的 1 nit/2 建议」，
+无行为语义改动（审 14 已逐项核对 `c9d4db6..HEAD` 的差异性质）。
