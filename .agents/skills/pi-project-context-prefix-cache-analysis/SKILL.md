@@ -40,6 +40,12 @@ The owner asks about provider prefix caching, cache hit/miss rates, why requests
 
 ## Recommended actions (ranked)
 
+> **Measured verdict (2026-10-06 field run): adopt none of 1/3; 2 and 4 stand.** In one session a hand edit of the
+> memory block did not collapse `cacheRead` (2048 -> 2432); the handoff's drop (2048 -> 640) comes from the successor's
+> divergent message list, which no ordering or snapshot can avoid. Do not build a caching layer, a snapshot, or a
+> handoff-path suppression on the strength of the handoff drop alone - cite the measurement in
+> `.codestable/audits/2026-10-06-handoff-and-cache-field-run.md` instead.
+
 1. Keep the injected memory **stable within a session** (snapshot the rendered text) instead of rewording it on every settle.
 2. Keep the memory block at the **end of the system prompt**; never insert it as a mid-stream user message.
 3. **Decouple handoff** from a same-moment memory render (suppress or snapshot the render on the handoff path).
