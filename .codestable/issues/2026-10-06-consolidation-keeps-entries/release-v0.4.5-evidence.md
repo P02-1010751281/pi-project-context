@@ -73,3 +73,22 @@
   **决定**：抬 `maxMemoryChars`（`/memory max-memory <n>`，每会话多约 1,000 tokens 注入）或人工裁剪一次记忆。
   该条已记 `.codestable/attention.md`。
 - 提示层（v0.4.4）已把「删」改成「压」，但对 flash 级模型不足；若要进一步收紧需独立议题（例如换辅助模型线路）。
+
+## 发布后发现：cap 裁剪经采纳路径变成永久状态（2026-10-06 现场）
+
+上一会话收尾时（10:48:14Z）一次 pass 把已提交的 138 条 render 换成 126 条，**丢弃经采纳路径变成了状态**，跟踪文件因此少了 12 条curated 事实（本次已恢复 12 条，见提交 `3a7c402`）。
+
+现场证据（都可复核）：
+
+| 来源 | 内容 |
+| --- | --- |
+| journal 末两条 | `10:48:14.887 replace 31993 字符 / 138 条`（未裁剪的回复）→ `10:48:14.969 replace 29939 / 126 条`（文件内容） |
+| errors.log | `10:48:14.289 memory regression: 2 …` 与 `10:48:14.962 adopted an externally edited MEMORY.md into the memory journal` |
+| 文件对比 | `git show ae857ab:.agents/memory/MEMORY.md` = 138 条 / 31,993 vs 工作区 126 条 / 29,939 |
+
+机制（由上面三行可算，不是纯推断）：**回复给出约 138 条 → 渲染器按 cap 裁剪掉约 10 条（`droppedItems`）→ 裁剪后的文件被"外部编辑采纳"路径写回 journal → 裁剪成为权威状态**。
+`memory regression: 2` 是守卫的**逐字**口径（规范化后精确集合比较），它只统计"原文彻底不在"的条目，**不是**丢失计数：本次 12 条丢失里它只报 2 条，其余是裁剪。cap 行缺失可解释为"每项目每进程写一次"的限流（errors.log 还会轮转），因此**这类丢失在当前实现下是静默的**。
+
+后果与状态：恢复后 render 为 135 条 / 31,935 字符，`sectionDropped=0 droppedItems=0`，距 cap 仅 **65 字符**——与丢失前（7 字符）几乎相同，即**下一次贴顶的 pass 可以再发生同样的事**。未恢复的 3 条（machine-path 扫尾判据、sections-test.mjs 索引细节、审计指针）可从 `ae857ab` 取回。
+
+**待 owner**：抬 `maxMemoryChars`（每条 pass 的净增约 2,000 字符即可避免裁剪）或做一次更深的人工裁剪；在此之前"恢复"只能挡住一次。
