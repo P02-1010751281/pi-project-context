@@ -35,5 +35,6 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
   记 `memory regression: …` 之后照常发布，所以「文件里少了什么」不会有第二次提示；跟踪文件被手工补回也会在下一轮再丢，**不是持久修法**（采纳路径只保证外部编辑进 journal）。
   现状：137 条 / 31,774 字符 / 上限 32,000（余量 226，一条条目的量级）。三条出路待 owner 定：
   (a) 接受由每轮合并自然裁减（现状）；(b) 收紧合并规则为「压缩合并而非删除，只删可证过期者」，prompt 级改动，按 `.agents/skills/pi-project-context-consolidation-prompt-rule/SKILL.md` 走并需渲染面验收；
-  (c) 抬高 `maxMemoryChars`——注入成本随每会话上升，与 `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md` 的成本结论相抵。2026-10-06 已按 (a) 的临时手段把丢掉的 10 条补回并提交（`8baab6f`）。
+  (c) 抬高 `maxMemoryChars`——注入成本随每会话上升，与 `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md` 的成本结论相抵。2026-10-06 已按 (a) 的临时手段把丢掉的
+  10 条补回并提交（`8baab6f`）。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。
