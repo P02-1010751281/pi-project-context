@@ -83,6 +83,10 @@ handoff its model and thinking level」），不是现场事故。按判据 1 �
 
 ### D7【已更正】陈旧锁确实存在，但**不能**归属给 `lock.ts`
 
+> **2026-10-06 补记（第二族锁名）**：`.agents/memory/` 下另有 `.memory.lock` / `.index.lock` / `.migration.lock`
+> 一族。`grep` 本仓 TS 与 pi dist 均 **0 命中**，而 **Codex 移植**（`codex-project-context`）三处各命中 1 个文件
+> ⇒ 与第一族（`session-logs/s-*/​.lock`）同源，仍不是本扩展的产物。锁卫生项至此**两类锁都已归属并关闭**。
+
 > **更正（2026-10-04，补审三 §2 归属核查）**：本节原文把 CipherCat 那 22 个 0 字节 `.lock` 当作
 > `lock.ts` 陈旧窃取路径的现场依据，**是错的**。核查：`lock.ts` 的锁路径是 `${target}.lock`，当前全部
 > 调用点只锁 `memory/session-index.lock`、`MEMORY.md.lock`、`project-context.json.lock`；
