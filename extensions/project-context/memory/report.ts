@@ -91,7 +91,9 @@ function sectionCapSentence(outcome: ConsolidateOutcome): string {
 	if (outcome.sectionDropped > 0) {
 		// The per-section shares are targets, so entries only go when the document itself is full; saying
 		// "a section exceeded its budget" would point the reader at a number that is not a limit any more.
-		parts.push(`${outcome.droppedItems} whole entry(ies) were dropped from ${outcome.sectionDropped} section(s) because the memory document reached its character cap`);
+		// The cause stays out of this clause: the log line and the notices already name it, and repeating it
+		// reads as two different reasons (review R3).
+		parts.push(`${outcome.droppedItems} whole entry(ies) were dropped from ${outcome.sectionDropped} section(s)`);
 	}
 	if (outcome.itemTruncated > 0) {
 		// An entry can be truncated and then dropped, so both counts appearing is not a contradiction —
@@ -223,7 +225,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 							projectRoot,
 							"memory",
 							outcome.droppedItems > 0
-								? `memory document reached its cap: ${sectionCapSentence(outcome)}`
+								? `memory document reached its cap: ${sectionCapSentence(outcome)}; dropped entries: ${outcome.droppedSamples.join(" | ") || "(none recorded)"}`
 								: `memory: ${sectionCapSentence(outcome)}`,
 						);
 					} else if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
@@ -233,7 +235,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						await logError(
 							projectRoot,
 							"memory",
-							`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /project-context max-memory ${neededChars} (or trim MEMORY.md)${overflowPath ? `; the unclipped reply is kept at ${overflowPath}` : ""}`,
+							`memory exceeded maxMemoryChars (${maxMemoryChars}): both ends were kept and the middle dropped on a line boundary; the reply needed about ${neededChars} characters — raise it with /memory max-memory ${neededChars} (or trim MEMORY.md)${overflowPath ? `; the unclipped reply is kept at ${overflowPath}` : ""}`,
 						);
 					}
 				}
@@ -300,14 +302,14 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						// A lone per-item cut is not a cap event, and pointing at a drop list that does not exist
 						// would send the reader to nothing.
 						outcome.droppedItems > 0
-							? `Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`
+							? `Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. Samples of the dropped entries are in .agents/memory/errors.log.${clippedNote}`
 							: `Memory: updated; ${sectionCapSentence(outcome)}. Details in .agents/memory/errors.log.${clippedNote}`,
 						"warning",
 					);
 				} else if (cappedMemory) {
 					notify(
 						ctx,
-						`Memory: hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /project-context max-memory ${neededChars} or trim it.${overflowPath ? ` The unclipped reply is kept at ${overflowPath}.` : ""}`,
+						`Memory: hit its ${maxMemoryChars}-character cap: both ends were kept, the middle was dropped on a line boundary, and MEMORY.md ends with a truncation marker (the reply needed about ${neededChars} chars). Raise it with /memory max-memory ${neededChars} or trim it.${overflowPath ? ` The unclipped reply is kept at ${overflowPath}.` : ""}`,
 						"warning",
 					);
 				} else if (report === "clipped") {
@@ -532,7 +534,16 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply carried no entries";
 		return `Memory: context updated; memory was kept unchanged (${why}).${clippedNote}${guard}`;
 	}
-	if (report === "clipped") return `${info?.backup ? `${CLIPPED_NOTICE} Previous file: ${info.backup}.` : CLIPPED_NOTICE_NO_WRITE}${guard}`;
+	if (report === "clipped") {
+		// Both events can land in one pass: the prompt was shortened for the output budget *and* the reply
+		// hit the memory cap. The cap one is what the user has to act on, so it is said here too (review R3).
+		const capNote = info?.capped
+			? " It also hit its maxMemoryChars cap; both ends were kept and the middle was dropped."
+			: info?.sectionsCapped
+				? ` It also ${info.entriesDropped ? "reached the memory document's character cap" : "had entries cut"}: ${info.capNote ?? "the cap cut content"}.`
+				: "";
+		return `${info?.backup ? `${CLIPPED_NOTICE} Previous file: ${info.backup}.` : CLIPPED_NOTICE_NO_WRITE}${capNote}${guard}`;
+	}
 	if (report === "deduped") return "Memory: already up to date (deduped recently); nothing was rewritten.";
 	if (report === "unchanged") return "Consolidation ran but produced no new memory or context.";
 	if (info?.repaired && info.backup) {
@@ -549,9 +560,9 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		// Same split as the automatic notice: only a drop is a cap event, and only then is there a drop
 		// list to point at.
 		return info.entriesDropped
-			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`
+			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. Samples of the dropped entries are in .agents/memory/errors.log.${guard}`
 			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}. Details in .agents/memory/errors.log.${guard}`;
 	}
-	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.${guard}`;
+	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /memory max-memory <n> or trim MEMORY.md.${guard}`;
 	return `Memory: updated.${guard}`;
 }

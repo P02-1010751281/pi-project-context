@@ -81,9 +81,21 @@ export type MemoryRender = {
 	sectionDropped: number;
 	/** Entries dropped because the document's cap was full, not because a section was over its share. */
 	droppedItems: number;
+	/**
+	 * The first `DROPPED_SAMPLE_LIMIT` dropped entries, each clipped to `DROPPED_SAMPLE_CHARS`.
+	 *
+	 * The counts alone cannot be acted on: the write path promises the dropped entries are named in
+	 * `errors.log`, and the regression guard cannot supply them because it compares the stored memory with
+	 * the reply *before* clipping, where those entries are still present (review R3).
+	 */
+	droppedSamples: string[];
 	/** Entries clipped to their section's per-item cap. */
 	itemTruncated: number;
 };
+
+/** How many dropped entries a render names, and how much of each, so log lines stay bounded. */
+const DROPPED_SAMPLE_LIMIT = 3;
+const DROPPED_SAMPLE_CHARS = 72;
 
 /** A section's budget is spent by `- `, the entry, and its newline. */
 const BULLET_OVERHEAD_CHARS = 3;
@@ -137,6 +149,7 @@ export function renderMemoryDocument(sections: MemorySections, cap: number): Mem
 	let sectionDropped = 0;
 	let droppedItems = 0;
 	let itemTruncated = 0;
+	const droppedSamples: string[] = [];
 	const rendered: string[] = [];
 	const budgets = memorySectionBudgets(cap);
 	const entries = budgets.map((budget) => toEntries(sections[sectionKey(budget.heading)] ?? []));
@@ -171,6 +184,7 @@ export function renderMemoryDocument(sections: MemorySections, cap: number): Mem
 				// document's own cap is full, never because a neighbouring section left room.
 				lost = true;
 				droppedItems += 1;
+				if (droppedSamples.length < DROPPED_SAMPLE_LIMIT) droppedSamples.push(clipToLineBoundary(entry, DROPPED_SAMPLE_CHARS));
 				continue;
 			}
 			spent += cost;
@@ -182,7 +196,7 @@ export function renderMemoryDocument(sections: MemorySections, cap: number): Mem
 		rendered.push(`## ${budget.heading}\n${kept.map((entry) => `- ${entry}\n`).join("")}`);
 	}
 	const text = `${MEMORY_HEADER}${rendered.join("\n")}`.trimEnd() + "\n";
-	return { text, sectionDropped, droppedItems, itemTruncated };
+	return { text, sectionDropped, droppedItems, droppedSamples, itemTruncated };
 }
 
 /** An ATX heading: one or more `#` followed by whitespace or end of line. `#1 rule` is not one. */

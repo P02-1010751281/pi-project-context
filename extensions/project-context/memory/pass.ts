@@ -45,6 +45,8 @@ export type ConsolidateOutcome = {
 	sectionDropped: number;
 	/** Entries dropped because the document was at its cap, not because their section was over its share. */
 	droppedItems: number;
+	/** Samples of those dropped entries, so the log can name what went instead of only counting it. */
+	droppedSamples: string[];
 	/** Entries clipped to their section's per-item cap. */
 	itemTruncated: number;
 	/** Invariants/Pitfalls entries the previous memory had and this one does not. */
@@ -333,6 +335,7 @@ export async function consolidateProjectState(
 			semanticEmpty,
 			sectionDropped: render?.sectionDropped ?? 0,
 			droppedItems: render?.droppedItems ?? 0,
+			droppedSamples: render?.droppedSamples ?? [],
 			itemTruncated: render?.itemTruncated ?? 0,
 			...(removed ? { removed } : {}),
 		};

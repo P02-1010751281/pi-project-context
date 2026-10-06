@@ -1,3 +1,4 @@
+import { readdir, readFile } from "node:fs/promises";
 import { loadDefault, loadNamespace, makePi, messageEntry, PC, PI } from "./harness.mjs";
 
 /**
@@ -171,3 +172,25 @@ if (!(contextDocument.includes("## Summary") && contextDocument.includes("render
 
 console.log(failures === 0 ? "\nALL OK" : `\nFAILURES: ${failures}`);
 if (failures > 0) process.exitCode = 1;
+
+console.log("\n=== command spellings in user-facing strings ===");
+{
+	// v0.3.0 moved `max-memory` from /project-context to /memory, and three messages kept sending people
+	// to the removed verb until review R3 caught them. Sweep the sources, not the strings someone remembered.
+	const files = (await readdir(PC, { recursive: true, withFileTypes: true }))
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+		.map((entry) => `${entry.parentPath}/${entry.name}`);
+	let stale = 0;
+	for (const file of files) {
+		const text = await readFile(file, "utf8");
+		if (text.includes("/project-context max-memory")) {
+			stale += 1;
+			console.log(`FAIL ${file} still points at /project-context max-memory (moved to /memory in v0.3.0)`);
+		}
+	}
+	if (stale === 0) {
+		console.log(`OK   no source string sends users to the removed /project-context max-memory (${files.length} files)`);
+	} else {
+		failures += 1;
+	}
+}

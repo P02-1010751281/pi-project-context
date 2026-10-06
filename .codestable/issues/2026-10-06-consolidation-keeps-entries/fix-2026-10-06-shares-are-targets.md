@@ -30,7 +30,8 @@ skill-candidates 条目、attention.md 指针）。`text.length <= cap` 仍由�
 | --- | --- |
 | M0 未变异 | 0 断言红，套件 15/15 |
 | M1 借用关掉（回到硬 share） | **6 红**：4 条借用断言 + `a document that fits the cap never drops (4 violations of 2000)` + `content that fits the cap but exceeds the target sum keeps every entry` |
-| M2 每段直接取走自己的超额（不分池） | **1 红**：`2000 random caps all fit (worst margin -3232 chars)` |
+| M2 `extra = min(over, pool)`（取自自己的超额，池不随领取递减） | **1 红**：`2000 random caps all fit`（worst margin 随机，−2634…−3232） |
+| M2' 字面忽略池：`extra = over` | **4 红**（3 条确定性 + cap 属性，worst margin −10558） |
 | M3 池用 `Σtargets` 而不是真实 body | **1 红**：`content that fits the cap but exceeds the target sum keeps every entry`（这条就是 B1 的钉子） |
 | M4 每项上限用目标而非借用后额度 | **1 红**：`a borrowing section keeps a longer entry whole` |
 

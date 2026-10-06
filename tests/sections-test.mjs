@@ -148,8 +148,8 @@ console.log("\n=== renderMemoryDocument ===");
 
 	// The per-section numbers are targets, not caps: a section over its share is served from the room its
 	// neighbours left, and the renderer spends entries only when the document itself is full. The field
-	// case that forced this (2026-10-06): 1,839 characters idle in `Project` while `Invariants`,
-	// `Pitfalls` and `Index` were a combined 1,670 over, so four real passes dropped 10-15 entries each.
+	// case that forced this (2026-10-06): 1,850 characters idle in `Project` while `Invariants`,
+	// `Pitfalls` and `Index` were a combined 1,635 over, so four real passes dropped 10-15 entries each.
 	// Under the old hard share this fixture loses Invariants entries; that is the mutation this pair reddens.
 	const overShare = Array.from({ length: 10 }, (_, index) => `invariant ${index} ${"x".repeat(170)}`);
 	const borrowed = sections.renderMemoryDocument({ project: [], invariants: overShare, pitfalls: ["p"], index: ["i"] }, 4000);
@@ -215,6 +215,12 @@ console.log("\n=== renderMemoryDocument ===");
 	// as a dropped entry.
 	const tight = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 10 }, () => "t".repeat(390)), pitfalls: [], index: [] }, 4000);
 	check("content that fits the cap but exceeds the target sum keeps every entry", tight.droppedItems === 0 && tight.text.length <= 4000);
+
+	// A drop has to be actionable: the write path tells the reader the dropped entries are sampled in
+	// errors.log, so the renderer has to hand the samples over instead of only the count (review R3).
+	const overflow = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 400 }, (_, index) => `entry-${index}-${"y".repeat(40)}`), pitfalls: [], index: [] }, 4000);
+	check("a drop carries the entries it dropped", overflow.droppedItems > 0 && overflow.droppedSamples.length === 3 && overflow.droppedSamples[0].startsWith("entry-"));
+	check("the dropped samples stay bounded", overflow.droppedSamples.every((sample) => sample.length <= 72));
 }
 
 console.log("\n=== sectionsFromMarkdown contract ===");
