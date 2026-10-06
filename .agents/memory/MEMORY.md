@@ -97,7 +97,7 @@
 - Do not read not-exported-to-tests as not tested: tests/handoff-test.mjs drives runHandoff through a newSession mock and maybeTrigger's settle trigger.
 - Dead-code hunts must grep the named consumer, not only the symbol: memory/journal.ts::newestMemoryArchiveSync survived because its JSDoc cited loadMemorySync, which no longer exists anywhere.
 - An export-surface probe over a whole repo (definition-file-external references) is the reliable dead-export detector: of 314 exports, 34 had zero external use, 2 of them zero uses anywhere, and the rest were internal-only, so `export` alone proves nothing about an API's reach.
-- Knob usage cannot be read from key presence: the extension writes all 22 keys into every project-context.json, and across the thirteen files found on this machine exactly one value differs from DEFAULT_CONFIG and none of the eight handoff knobs was ever touched.
+- Knob usage cannot be read from key presence: the extension writes all 22 keys into every project-context.json, and across the thirteen files found on this machine exactly one value differs from DEFAULT_CONFIG and none of the seven handoff knobs was ever touched.
 - Journal rotation has never fired in the field (largest memory.jsonl is 373 KB against a 512 KB threshold); cite it as preventive, not field-evidenced, unlike backups and errors.log rotation.
 - Attributing a field artifact to a module requires checking that the module can produce that path: the 19 zero-byte .lock files found across three repos cannot come from any current or historical lock target, and the Codex port uses fcntl.flock.
 - A suspicious filename in the field is not proof of ownership: migration-manifest.json exists in two consumer repos but appears nowhere in this extension's code or history, so migrateProjectState still has 0/9 field evidence.
@@ -116,11 +116,11 @@
 ## Index
 - extensions/project-context/shared/inject.ts - section-name pointer rendering shared by both injected blocks; one traversal selects and binds the pointer text.
 - extensions/project-context/shared/lang.ts - the single CJK/language owner used by both injected pointer blocks.
-- extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and the buildMemoryInjection/buildContextInjection entry points; splitSections/scanDocument and the fence-aware document scan.
+- extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and the buildMemoryInjection/buildContextInjection entry points; shared/inject.ts::scanDocument (private) is the fence-aware document scan.
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
 - extensions/project-context/memory/report.ts - record_memory tool, refusal gating, stale sentence, side-effect skipping; the before_agent_start MEMORY.md system-prompt injection; migrateProjectState call; the session_shutdown consolidate call with the shutdown:consolidate guard and its shutdownErrorRoot root choice.
 - extensions/project-context/archive/archive.ts:121 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the second per-turn injected block.
-- extensions/project-context/memory/status.ts - memoryStatusMessage()/memoryStatusLevel() plus contextStatusLine(), pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
+- extensions/project-context/memory/status.ts - memoryStatusLine()/memoryStatusLevel() plus contextStatusLine(), pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
 - extensions/project-context/memory/pass.ts - ConsolidateOutcome.basisKey, single-flight throttled pass, modelBlocked parking.
 - extensions/project-context/memory/prompt.ts - buildPrompt with the consolidation rules, the recent-conversation block and the cross-project boundary statement.
 - extensions/project-context/memory/journal.ts - journal append/rotate/backup helpers.
@@ -128,7 +128,7 @@
 - extensions/project-context/shared/paths.ts - base-layer path helpers (context file, session index, session logs directory) that the command surface prints.
 - extensions/project-context/shared/limits.ts - MAX_SKILL_BODY_CHARS 20000, the body cap candidate.ts and pass.ts enforce.
 - extensions/project-context/autolearn/inventory.ts - collectSkills() reads the provenance marker; inventoryText()/AUTOLEARN_INVENTORY_CHARS 8000 cap it; learnedBodies() feeds the merge prompt.
-- extensions/project-context/autolearn/skill.ts - SkillInfo/ProposedSkill shapes, autolearnProvenance()/withoutAutolearnProvenance()/skillBody()/promotedDocument(), MIN_SKILL_BODY_CHARS, UNSAFE_SKILL_PATTERNS; candidate.ts holds the collision gate and admission checks; prompt.ts holds productLanguageInstruction().
+- extensions/project-context/autolearn/skill.ts - SkillInfo/ProposedSkill shapes, autolearnProvenance()/withoutAutolearnProvenance()/skillBody()/promotedDocument(), MIN_SKILL_BODY_CHARS, UNSAFE_SKILL_PATTERNS; candidate.ts holds the collision gate and admission checks; prompt.ts holds the autolearn prompt builder (buildPrompt) and the product-language instruction it embeds.
 - extensions/project-context/autolearn/pass.ts:102 - the autolearn aux call and its only tools site (RECORD_SKILL_TOOL), with the inspect backtrack round at pass.ts:142-153.
 - extensions/project-context/handoff/run.ts - handoff transaction, newSession, replay filter, language selection, maybeTrigger (the only gate owner) and the failure toast.
 - extensions/project-context/handoff/settings.ts - saveConfig seven-key patch through updateConfig, plus parseRatio / parseTokenCount.
