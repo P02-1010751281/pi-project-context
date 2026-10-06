@@ -85,16 +85,17 @@ E-4000
   （`cost.tiers`，如 272K → 268K）能再压低；档位边界低于 `floor + 4000` 时返回
   undefined（不静默跨档）。
 - `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`）；`/handoff threshold auto` 不接受比例参数。
-  固定比例模式**不经过**上面那条物理下限：阈值完全由比例与窗口决定，用户给的比例就是决定，所以很小的比例配上
-  很大的窗口可以产生「丢弃量很小」的交接——这是既定语义，不是缺口。v0.4.2 删除的 `runHandoff` 事后下限与
-  `estimatedAfter` 预检自 v0.4.1 起就不可达，删除没有改变这条语义。
+  固定比例模式**走同一条物理下限**（v0.4.3 起）：比例给出的阈值低于 `baseline + keep + MIN_DROP` 时，交接被拒绝
+  并在状态行点名原因，因为一次只丢几千 token 的交接只是换会话、省不下上下文。这条下限是**拒绝门**，不会把比例
+  抬到下限；固定模式下阈值仍完全由比例与窗口决定（`handoffThresholdRatio` 只在这里生效）。
 - `/handoff status` 在能解析阈值时显示 **guardrail 之后的预计丢弃量**（`tokens − baseline − keep`；`auto 157k (16%) · drop 125k`，
   Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`drop budget 64.0k`）。
   实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to drop`。
 - 如果最终 cap 压低了阈值，状态行会显示 `capped by the first pricing tier`；窗口末点是 auto 的两个项之一，不再作为「事后 cap」出现。
 - 如果门槛拒绝，状态行点名真正的原因：`window too small`、`pricing tier`、
   `the model's quality knee of … is below the … floor`、或窗口最后 4000 token 留下的量不足——
-  不再统一渲染成「窗口没空间」。
+  不再统一渲染成「窗口没空间」。固定比例模式同样点名：`fixed 10% (the …-token threshold is below the …-token
+  floor …)`，或比例在该窗口取不到正值时的 `fixed 50% (this ratio resolves to no positive threshold …)`。
 - tokenizer 差异和完整 reserve 预留会让结果偏保守；本项目不引入第二套 tokenizer 或分块摘要。
 
 ## 交接内容与 replay

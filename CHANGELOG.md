@@ -3,6 +3,22 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.3 — 未发布
+
+### 修复
+
+- **固定比例模式也走物理下限**：`handoffThresholdRatio` 给出的阈值低于 `baseline + keep + MIN_DROP_TOKENS` 时
+  不再触发交接——一次只丢几千 token 的交接只是换会话，省不下上下文。自适应模式一直有这条拒绝门，固定模式此前
+  没有，于是 `0.1 × 大窗口` 这类设置会产生「丢弃量很小」的交接。下限仍是拒绝门而非抬升，固定模式的阈值仍完全由
+  比例与窗口决定。
+- **固定模式的拒绝不再被状态行隐瞒**：`/handoff status` 此前只在自适应模式渲染拒绝原因，固定模式照抄一个永远不会
+  触发的比例（例如 `threshold 10%`）。现在两种模式都点名原因：`fixed 10% (the 10.0k-token threshold is below the
+  78.0k-token floor a worthwhile handoff needs at this baseline; raise /handoff threshold or lower /handoff budget
+  recent)`，或比例取不到正值时的 `fixed 50% (this ratio resolves to no positive threshold …)`。
+- **autolearn 清单截断可见**：技能清单超过 8000 字符上限被截断时，注入的清单末尾会多一行
+  `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`，而不是静默丢掉尾巴——模型据此
+  知道列表不完整，可点名 `inspectSkill`；读 prompt 的人也能确认上限真的被撞到（本机合并清单 7,892/8,000）。
+
 ## v0.4.2 — 2026-10-05
 
 ### 变更

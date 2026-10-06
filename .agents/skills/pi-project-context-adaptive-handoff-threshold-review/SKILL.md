@@ -10,7 +10,8 @@ Use when changing adaptive handoff thresholds, budget formulas, summarizer limit
 
 > **v0.4.x 更新（2026-10-05）**：本技能正文里的阈值公式与状态行措辞是 v0.4.0 之前的旧形态——旧公式
 > `T0 = max(min(usable − 4000, knee), baseline + keep + S)` 已被 `docs/handoff.md` 明确禁止（`S` 不参与公式、
-> 物理下限是**拒绝门**不是抬升），summarizer 容量 cap 随摘要链在 v0.4.1 删除，状态行现为 `drop N` / `drop budget N`。
+> 物理下限是**拒绝门**不是抬升、且 v0.4.3 起对固定比例模式同样生效），summarizer 容量 cap 随摘要链在 v0.4.1 删除，
+> 状态行现为 `drop N` / `drop budget N`。
 > 现行语义以 `docs/handoff.md` 为准；键名已更到 `handoffBudgetRecentTokens` / `handoffBudgetSummaryTokens`。
 
 ## Procedure

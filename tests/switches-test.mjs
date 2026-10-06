@@ -31,6 +31,11 @@ try {
 		messageEntry(`u${index}`, "user", `turn ${index}`, `2026-09-12T10:0${index}:00.000Z`),
 		messageEntry(`a${index}`, "assistant", `answer ${index}`, `2026-09-12T10:0${index}:01.000Z`),
 	]).flat();
+	// One turn of real bulk. A fixed-ratio handoff is only worthwhile when the conversation itself holds
+	// more than `keep + MIN_DROP_TOKENS`, because the physical floor compares the trigger against the
+	// measured baseline - a synthetic usage of 150k over a few hundred tokens of dialogue would mean the
+	// baseline is 150k and there is nothing to drop.
+	entries.push(messageEntry("bulk", "user", "context ".repeat(45_000), "2026-09-12T10:06:00.000Z"));
 
 	const factory = await loadDefault(`${PC}/index.ts`);
 	const pi = makePi({ cwd: tmp });

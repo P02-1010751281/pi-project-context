@@ -93,7 +93,7 @@ function firstCostTierEdge(model: NonNullable<ExtensionContext["model"]>): numbe
 
 /**
  * Resolve the trigger threshold from model info and measured usage:
- * - fixed: ratio * contextWindow.
+ * - fixed: ratio * contextWindow, refused below the same physical floor the adaptive branch uses.
  * - adaptive: `min(knee(window), usable - TIER_EDGE_MARGIN)` — the quality knee and the last usable
  *   point, two terms only — lowered further by the first cost tier so no surcharge is crossed.
  *   `handoffBudgetSummaryTokens` does **not** take
@@ -110,7 +110,12 @@ export function resolveThreshold(
 	if (window <= 0) return undefined;
 	if (!config.handoffThresholdAuto) {
 		const tokens = Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN);
-		return tokens > 0 ? { tokens, label: `${fmtPct(config.handoffThresholdRatio * 100)} of window` } : undefined;
+		if (tokens <= 0) return undefined;
+		// The physical floor is a refusal gate in fixed mode too: below it a handoff would drop less than
+		// `MIN_DROP_TOKENS`, replacing context without buying anything. It needs no model - only the measured
+		// baseline and the carried-window budget - so both modes agree on what counts as worthwhile.
+		if (tokens < baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_DROP_TOKENS) return undefined;
+		return { tokens, label: `${fmtPct(config.handoffThresholdRatio * 100)} of window` };
 	}
 	const model = ctx.model;
 	if (!model || usage.tokens === null) return undefined;
@@ -185,7 +190,8 @@ export type ThresholdRefusal =
 	| "window-too-small"
 	| "below-first-tier"
 	| "below-quality-knee"
-	| "below-usable-window";
+	| "below-usable-window"
+	| "fixed-below-floor";
 
 /**
  * The refusal cause behind `resolveThreshold(...) === undefined`, or `undefined` when it resolves.
@@ -199,7 +205,10 @@ export function thresholdRefusal(
 	if (resolveThreshold(ctx, usage) !== undefined) return undefined;
 	const window = usage.contextWindow;
 	if (window <= 0) return "no-window";
-	if (!config.handoffThresholdAuto) return "fixed-ratio-rounds-to-zero";
+	if (!config.handoffThresholdAuto) {
+		const tokens = Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN);
+		return tokens <= 0 ? "fixed-ratio-rounds-to-zero" : "fixed-below-floor";
+	}
 	const model = ctx.model;
 	if (!model || usage.tokens === null) return "no-model-or-usage";
 	const floor = baselineTokens(ctx, usage) + config.handoffBudgetRecentTokens + MIN_DROP_TOKENS;
@@ -226,7 +235,9 @@ export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionCon
 		case "no-window":
 			return "auto (the context window is not known yet)";
 		case "fixed-ratio-rounds-to-zero":
-			return `auto (a fixed ratio of ${fmtPct(config.handoffThresholdRatio * 100)} resolves to no positive threshold at this window)`;
+			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (this ratio resolves to no positive threshold at a ${fmtTokens(window)}-token window)`;
+		case "fixed-below-floor":
+			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the ${fmtTokens(Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN))}-token threshold is below the ${fmtTokens(floor)}-token floor a worthwhile handoff needs at this baseline; raise /handoff threshold or lower /handoff budget recent)`;
 		case "no-model-or-usage":
 			return "auto (the session model or its token usage is not known yet)";
 		case "window-too-small":

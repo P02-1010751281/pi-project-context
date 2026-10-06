@@ -34,10 +34,11 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 			// A manual target the guardrail landed below must be named, not silently ignored: a user who
 			// raised it and sees the same trigger has been sent to a control that does nothing.
 			if (threshold.override) thresholdLabel += ` · ${thresholdOverrideText(threshold.override, usage.contextWindow)}`;
-		} else if (config.handoffThresholdAuto) {
-			// Never render every refusal as a claim about the window: name the term that refused.
+		} else {
+			// Never render every refusal as a claim about the window, and never echo a fixed ratio that
+			// cannot trigger: name the term that refused.
 			const refusal = thresholdRefusal(ctx, usage);
-			thresholdLabel = refusal === undefined ? "auto" : thresholdRefusalText(refusal, ctx, usage);
+			thresholdLabel = refusal === undefined ? thresholdLabel : thresholdRefusalText(refusal, ctx, usage);
 		}
 	}
 	// With a usable threshold the status reports the projected prefix after caps, so a cap cannot be

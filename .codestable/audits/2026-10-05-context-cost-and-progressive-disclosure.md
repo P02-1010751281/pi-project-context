@@ -367,6 +367,26 @@ M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents 
 因此退役依据已改写为「pi 侧零行为读者 + 回执里的 dsh 承诺在本仓无证据」，跨仓结论列为残留。
 
 **关闭判据**：在 dsh 插件源码里 `grep -rn 'handoffThinking\|handoffSummaryThinking\|handoffPendingQuestion'`，
-确认是否存在读取路径。**影响面**：若 dsh 侧确有读者，这次退役对 dsh 用户就是一次无提示的破坏性变更——
+确认是否存在读取路径。**订正注（2026-10-05，审 9 nit）**：本节标题下的证据句曾写作「本机所有 dsh 产物都不含 `handoff` 字样」，实测过宽
+——`handoff` 一词在 dsh 的 telemetry bundle 与 web profile 里都有命中（`handoffCursor`、"web boot handoff"）；
+真正 0 命中且与本键相关的是两个**键拼写** `handoffThinking`/`handoffSummaryThinking`。活动面（CHANGELOG、
+`docs/configuration.md`）已按后者改写，本节按冻结档案惯例保留原文并加此订正注。
+**本仓处置（2026-10-05）**：owner 决定 dsh 侧在 dsh 仓处理，本仓不再挂账（见 §9.13）。
+
+**影响面**：若 dsh 侧确有读者，这次退役对 dsh 用户就是一次无提示的破坏性变更——
 `parseConfig` 只保留已知键、`updateConfig` 整份重写，所以升级后任意一次写配置都会静默删掉该键
 （`docs/configuration.md` 已按「硬切」明说，但对 dsh 侧读者仍是行为变化）。
+
+### 9.13 残留收口（2026-10-05，v0.4.3）
+
+- **R-1 已修**：固定比例模式此前不经过物理下限（§9.11 记为「既定语义」），现改为与自适应分支共用同一条拒绝门
+  ——比例阈值低于 `baseline + keep + MIN_DROP_TOKENS` 时不触发，状态行点名 `fixed <pct> (…)` 而不是照抄一个永远
+  不会触发的比例（固定模式的拒绝此前根本不渲染）。测试：三条直连断言（经 `loadShared` 共享 settings 模块后改比例）
+  + 两条端到端回执断言；`switches-test` 的合成语料同时补到真实体量，因为该门使「会话自身小于 `keep + 8000` token
+  时固定比例交接不可能发生」成为结构约束。
+- **R-2 已交接**：dsh 侧是否存在 `handoffThinking` 读者由 owner 在 dsh 仓处理（本仓不再挂账）；本仓保留的只是
+  「回执里的 dsh 承诺无证据」这一条可复验陈述。
+- **autolearn 清单截断已可见**：`inventoryText` 被上限截断时追加一行
+  `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`，模型与读 prompt 的人都能看到
+  列表不完整（原先静默丢弃尾巴）。证据：`tests/autolearn-test.mjs` 的四条断言。
+

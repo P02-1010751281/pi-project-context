@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
@@ -540,6 +540,77 @@ try {
 		);
 	} finally {
 		await rmTemp(fixedTmp);
+	}
+	// The physical floor guards fixed mode too: a ratio that resolves below `baseline + keep + MIN_DROP`
+	// would hand off and drop almost nothing, so it is refused with its own cause rather than run. The two
+	// modules load through one registry so the settings object mutated here is the one the math reads.
+	const [fixedHandoff, fixedSettings] = await loadShared([`${PC}/handoff/handoff.ts`, `${PC}/handoff/settings.ts`]);
+	const savedAuto = fixedSettings.config.handoffThresholdAuto;
+	const savedRatio = fixedSettings.config.handoffThresholdRatio;
+	const fixedFloorCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-floor"),
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 50_000, percent: 50, contextWindow: 100_000 }),
+	});
+	const fixedWideCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-wide"),
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 50_000, percent: 5, contextWindow: 1_000_000 }),
+	});
+	try {
+		fixedSettings.config.handoffThresholdAuto = false;
+		fixedSettings.config.handoffThresholdRatio = 0.1;
+		check(
+			"a fixed ratio below the physical floor resolves to no threshold",
+			fixedHandoff.resolveThreshold(fixedFloorCtx, fixedFloorCtx.getContextUsage()) === undefined,
+		);
+		check(
+			"the fixed-floor refusal has its own cause",
+			fixedHandoff.thresholdRefusal(fixedFloorCtx, fixedFloorCtx.getContextUsage()) === "fixed-below-floor",
+		);
+		check(
+			"the same ratio above the floor still resolves",
+			fixedHandoff.resolveThreshold(fixedWideCtx, fixedWideCtx.getContextUsage())?.tokens === 100_000,
+		);
+	} finally {
+		fixedSettings.config.handoffThresholdAuto = savedAuto;
+		fixedSettings.config.handoffThresholdRatio = savedRatio;
+	}
+	// And through the extension, so the receipt the user reads is pinned as well.
+	const fixedFloorTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-fixed-floor-"));
+	try {
+		await mkdir(path.join(fixedFloorTmp, ".agents/memory"), { recursive: true });
+		await writeFile(
+			path.join(fixedFloorTmp, ".agents/memory/project-context.json"),
+			JSON.stringify({ handoffEnabled: true, handoffThresholdAuto: false, handoffThresholdRatio: 0.1 }),
+		);
+		const fixedFloorPi = makePi({ cwd: fixedFloorTmp });
+		await (await loadDefault(`${PC}/index.ts`))(fixedFloorPi);
+		const narrowCtx = makeCtx(fixedFloorTmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-floor-e2e"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 50_000, percent: 50, contextWindow: 100_000 }),
+		});
+		await runHandlers(fixedFloorPi, "session_start", narrowCtx);
+		await fixedFloorPi.commands.get("handoff").handler("status", narrowCtx);
+		const refusalReceipt = String(narrowCtx.notifications.at(-1)?.[0] ?? "");
+		check(
+			"the status line explains the fixed-floor refusal",
+			/fixed/.test(refusalReceipt) && /floor/.test(refusalReceipt),
+		);
+		const wideCtx = makeCtx(fixedFloorTmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-wide-e2e"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 50_000, percent: 5, contextWindow: 1_000_000 }),
+		});
+		await runHandlers(fixedFloorPi, "session_start", wideCtx);
+		await fixedFloorPi.commands.get("handoff").handler("status", wideCtx);
+		check(
+			"the status line shows the fixed share when the floor allows it",
+			String(wideCtx.notifications.at(-1)?.[0] ?? "").includes("10% of window"),
+		);
+	} finally {
+		await rmTemp(fixedFloorTmp);
 	}
 	const usableTmp = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-usable-"));
 	try {

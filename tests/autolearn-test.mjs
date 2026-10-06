@@ -25,6 +25,24 @@ async function exists(file) {
 
 try {
 	const { buildPrompt: buildAutolearnPrompt } = await loadNamespace(`${PC}/autolearn/prompt.ts`);
+	const { inventoryText } = await loadNamespace(`${PC}/autolearn/inventory.ts`);
+	check(
+		"a small inventory lists every skill",
+		inventoryText([{ name: "a", scope: "project", description: "short", autolearn: true }]) === "- a (project, learned): short",
+	);
+	const manySkills = Array.from({ length: 400 }, (_, i) => ({
+		name: `skill-${i}`,
+		scope: "project",
+		description: "x".repeat(60),
+		autolearn: false,
+	}));
+	const truncatedInventory = inventoryText(manySkills);
+	check("the inventory says how many skills it could not list", /more skill\(s\) not listed/.test(truncatedInventory));
+	check("the truncation marker names the cap", truncatedInventory.split("\n").at(-1).includes("inventory cap"));
+	check(
+		"the listed skills stay bounded",
+		truncatedInventory.split("\n").length < manySkills.length && truncatedInventory.length < 8_400,
+	);
 	const { MAX_SKILL_BODY_CHARS } = await loadNamespace(`${PC}/shared/limits.ts`);
 	const { MIN_SKILL_BODY_CHARS, MAX_SKILL_DESCRIPTION_CHARS } = await loadNamespace(`${PC}/autolearn/skill.ts`);
 	const autolearnPrompt = buildAutolearnPrompt("/tmp/autolearn-schema", "# Project Memory\n\n- x\n", "# Project Context\n\n- y\n", [], []);
