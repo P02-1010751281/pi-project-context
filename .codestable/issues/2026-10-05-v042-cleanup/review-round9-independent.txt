@@ -1,0 +1,58 @@
+# Lane A 独立审查 — v0.4.2 发布放行确认轮（冻结 HEAD `4f14bc3`，判定模型 `deepseek/deepseek-flash`）
+
+严格只读；入场/离场 `git status --porcelain` 逐字一致（`M HANDOFF.md`、`M project-context.json`、`?? skill-candidates/`，代入场会话态）。所有断言均自己复跑。
+
+## 一、四项修复核验（逐条读行+读码）
+
+1. **MEMORY.md 过期行号 → 文件级指针**：`4f14bc3` 只改 `.agents/memory/MEMORY.md:132`（`82b06c1..HEAD` 共 7 文件 +113/−10，`extensions/`、`tests/` 零改动）。现文 "the inspect backtrack round later in the same file (the `inspect`/`inspectSkill` branch)"；`autolearn/pass.ts:154-170` 的注释确为 "Backtrack: …"，分支条件 `decision.inspect.length > 0 || decision.inspectSkill.length > 0`。✅ 落地，无新错。
+2. **dsh 证据句收窄**：`CHANGELOG.md:12`、`docs/configuration.md:118` 现为「本机的 dsh 产物里这两个键拼写 0 命中」。实测：`handoffThinking`=0、`handoffSummaryThinking`=0（`~/.local/lib/node_modules/@deepseek-ai/dsh` 与 `~/.dsh` 全树）；而 `handoff` 一词实际命中 57+25 个文件（`handoffCursor`、"web boot handoff"），收窄是必要且准确的。✅ 无新错。
+3. **headless-runs 横幅**：`SKILL.md:102` 现文「只有机械头部（Created/Project/Log/Index）与文件清单，没有摘要散文」。`handoff/prompt.ts:119-132` 的 `buildHandoffDocument` = 标题 + Created/Project/Session log/Session index + 可选文件清单，无摘要散文。✅ 与码一致。
+4. **threshold skill 横幅前移**：横幅现于 `SKILL.md:12-16`、`## Procedure` 在 `:18`。横幅四断言逐一对码：`S` 不入公式、物理下限是拒绝门（`docs/handoff.md:24/44-45/82`，`threshold.ts:99-102/154-157`）；`handoff/*.ts` 已无 `summarizer`，摘要链在 v0.4.1 删除（CHANGELOG v0.4.1）；状态行 ` · drop N` / ` · drop budget N`（`run.ts:48-49`）；键名一致（`threshold.ts:135` 活读者）。✅ 无新错。
+
+## 二、硬门禁（全部自跑）
+
+| 门禁 | 实测 |
+|---|---|
+| `git diff --check v0.4.1..HEAD` | 空，exit 0 |
+| `node tests/run-all.mjs` | `All 15 tests passed.`，exit 0，15 条 `... ok` |
+| master / forgejo URL / github push URL | 均 `4f14bc3cf07e…9f466`（本地 `master`==HEAD） |
+| hygiene §10 脚本原样跑 | 23 条命中行、1 条 `renamed from` 跳过、22 条受检、**0 不符**（与审 8 的 23/0 同口径） |
+
+位置/序数复核：`MEMORY.md:19`「end」→ `report.ts:364`/`archive.ts:122` 均 `systemPrompt: ${event.systemPrompt}\n\n…`；`MEMORY.md:122`「first … registered before the memory one」→ `index.ts:55 registerArchive` 先于 `:56 registerConsolidation`，链式返回决定 CONTEXT 块在前、MEMORY 块在末；prefix-cache 三处 end 同证；`CONTEXT.md:12` 收窄句与 v0.4.1 仅存 `MIN_SUMMARIZE_TOKENS`、现仓 0 命中一致；另抽 `memory-recovery`（先 MEMORY.md 后 overflow 副本）、`command-surface-audit`（`both()` 取 `notified[0]` 首行）、`consolidation-prompt-rule`（`<recent-conversation>` 首行注记）、`agent_settled` 双注册，均与码一致。
+
+## 三、分桶
+
+### blocking
+无。
+
+### important
+无。
+
+### nit
+1. **`.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:361-363` 仍留旧宽句**（v0.4.2 内 `fa4c15b` 加入，非本轮四处修复所改）：「本机所有 dsh 产物都不含 `handoff` 字样……全为 0 命中」与实测不符（`handoff` 命中 82 个文件，只有两个键拼写是 0）。活动面（CHANGELOG/docs）已收窄且准确，R-2 结论不受影响；按本仓「冻结档案不重写」惯例，修复边界是下次编辑该审计时加一条订正注（narrow 到两个键拼写），不在本次发布动它。
+2. `CHANGELOG.md:12`/`docs/configuration.md:118` 的「这两个键拼写」未在句内点名；实测在 `handoffThinking`、`handoffSummaryThinking`、`handoff thinking` 任一口径下都为 0，故只是可读性 nit（可在下次顺带写明两名）。
+
+### suggestion
+1. `CHANGELOG.md:6` 仍为「未发布」，tag 时落真实日期（发布步骤，非缺陷）。
+2. 若动审计 §9.12，用订正注而非改写原文（与 §9.11 的订正史体例一致）。
+
+### learning
+- §10 归属检查天然覆盖不到行号/序数；本轮四处修复后的句子都是「可 grep 或结构可指认」形态，这是本轮能清零的结构原因。
+- 审计档案里的事实句即使被活动面收窄，仍可能被引用路径带到读者眼前——引用与证据的精度要一起收窄。
+
+### praise
+- 四条 nit 全部真落地且零代码改动（`82b06c1..HEAD` 仅 7 个文档/记录文件）；第三条从「只有文件清单」收到「无摘要散文」，第四条把横幅放在读者先撞到的位置，均为用户可核对的事实形态。
+
+### residual-risk（预声明，发布后处理）
+- **R-2**：dsh 侧有无 `handoffThinking` 读者跨仓不可复验；本仓任意一次写回静默删键（见下对抗）。
+- **R-1**：固定比例模式无最小可丢下限（`docs/handoff.md:86-90` 记名，v0.4.1 起既存）。
+- `CONTEXT.md` 快照仍写 `master=2a7f7d0`（第 7/25 行），与 HEAD 不符——预声明快照残留。
+- autolearn inventory 截断贴边（~7,892/8,000）——预声明残留。
+- 入场工作区即带 HANDOFF/项目配置/skill-candidates 会话态，非冻结面内容。
+
+## 四、对抗性一遍
+
+最可能的发布后用户可见错误仍是 **R-2 硬切静默丢键**。我在 `/tmp` 独立复现（`updateConfig` 写回含 `"handoffThinking": "session"` 的 `/tmp` 项目配置）：一次写回后 `grep handoffThinking` 归零，而 `handoffBudgetRecentTokens: 1234` 原样保留——即「未知键被忽略、下次写回整份重写消失」为真，且无任何提示（`handoff-test.mjs:1132` 同证）。pi 侧未找到第二候选：`runHandoff` 仅 `force`/`force-auto` 两个调用点（`run.ts:500/504`），被删的 `!force` 分支确不可达；fence 与 `shutdownErrorRoot` 改动只会多保留内容或少落一条边角日志。**判据**：在 dsh 插件源码 `grep -rn 'handoffThinking\|handoffSummaryThinking'` 是否存在读取路径——存在则这是无提示的破坏性丢设置，不存在则是设计内硬切；本仓不可复验，按记名残留 R-2 放行。
+
+`VERDICT: PASSED` — 四项修复真落地且无新事实错误；diff-check/15-15/三端同 sha/§10 零不符/位置序数全部成立；仅余审计档案旧句等 nit 与预声明残留，无 blocking/important。
+`RELEASE-OK: yes`
