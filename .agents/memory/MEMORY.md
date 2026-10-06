@@ -118,7 +118,7 @@
 - extensions/project-context/shared/lang.ts - the single CJK/language owner used by both injected pointer blocks.
 - extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and the buildMemoryInjection/buildContextInjection entry points; shared/inject.ts::scanDocument (private) is the fence-aware document scan.
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
-- extensions/project-context/memory/report.ts - record_memory tool, refusal gating, stale sentence, side-effect skipping; the before_agent_start MEMORY.md system-prompt injection; migrateProjectState call; the session_shutdown consolidate call with the shutdown:consolidate guard and its shutdownErrorRoot root choice.
+- extensions/project-context/memory/report.ts - refusal gating, stale sentence, side-effect skipping (the `record_memory` tool itself is in memory/sections.ts); the before_agent_start MEMORY.md system-prompt injection; migrateProjectState call; the session_shutdown consolidate call with the shutdown:consolidate guard and its shutdownErrorRoot root choice.
 - extensions/project-context/archive/archive.ts:121 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the second per-turn injected block.
 - extensions/project-context/memory/status.ts - memoryStatusLine()/memoryStatusLevel() plus contextStatusLine(), pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
 - extensions/project-context/memory/pass.ts - ConsolidateOutcome.basisKey, single-flight throttled pass, modelBlocked parking.
@@ -128,14 +128,14 @@
 - extensions/project-context/shared/paths.ts - base-layer path helpers (context file, session index, session logs directory) that the command surface prints.
 - extensions/project-context/shared/limits.ts - MAX_SKILL_BODY_CHARS 20000, the body cap candidate.ts and pass.ts enforce.
 - extensions/project-context/autolearn/inventory.ts - collectSkills() reads the provenance marker; inventoryText()/AUTOLEARN_INVENTORY_CHARS 8000 cap it; learnedBodies() feeds the merge prompt.
-- extensions/project-context/autolearn/skill.ts - SkillInfo/ProposedSkill shapes, autolearnProvenance()/withoutAutolearnProvenance()/skillBody()/promotedDocument(), MIN_SKILL_BODY_CHARS, UNSAFE_SKILL_PATTERNS; candidate.ts holds the collision gate and admission checks; prompt.ts holds the autolearn prompt builder (buildPrompt) and the product-language instruction it embeds.
+- extensions/project-context/autolearn/skill.ts - SkillInfo/ProposedSkill shapes, autolearnProvenance()/withoutAutolearnProvenance()/skillBody()/promotedDocument(), MIN_SKILL_BODY_CHARS, UNSAFE_SKILL_PATTERNS; candidate.ts holds the collision gate and admission checks; prompt.ts holds the autolearn prompt builder (buildPrompt).
 - extensions/project-context/autolearn/pass.ts:102 - the autolearn aux call and its only tools site (RECORD_SKILL_TOOL), with the inspect backtrack round at pass.ts:142-153.
-- extensions/project-context/handoff/run.ts - handoff transaction, newSession, replay filter, language selection, maybeTrigger (the only gate owner) and the failure toast.
+- extensions/project-context/handoff/run.ts - handoff transaction, newSession, replay filter, language selection, maybeTrigger (the only gate owner), the failure toast, and findCutPoint (pi's own export, imported at the top and called here).
 - extensions/project-context/handoff/settings.ts - saveConfig seven-key patch through updateConfig, plus parseRatio / parseTokenCount.
 - extensions/project-context/handoff/threshold.ts - the threshold math (window-end and pricing-tier bounds), refusal reasons and the guardrail receipt; MIN_DROP_TOKENS (renamed from MIN_SUMMARIZE_TOKENS in v0.4.2).
 - extensions/project-context/handoff/prompt.ts - SCAFFOLDING, buildHandoffPrompt (continuation prompt) and buildHandoffDocument (HANDOFF.md); buildHandoffPrompt accepts an optional pi compaction summary.
-- extensions/project-context/handoff/text.ts - findCutPoint/replayMessagesFor/SPLIT_TURN_MARKER/REPLAY_MARKER and the replayable-role filter.
-- extensions/project-context/shared/config.ts - flat config, legacyConfigPatch()/migrateLegacyConfig(), setFeature feature toggle writer, saveConfig via updateConfig.
+- extensions/project-context/handoff/text.ts - replayMessagesFor/SPLIT_TURN_MARKER/REPLAY_MARKER and the replayable-role filter.
+- extensions/project-context/shared/config.ts - flat config, legacyConfigPatch()/migrateLegacyConfig(), setFeature feature toggle writer, the updateConfig whole-document writer.
 - extensions/project-context/shared/lock.ts - stale-horizon steal path; the zero-byte .lock files under <repo>/.agents/memory/session-logs/<session>/ are the Codex port's flock lock files, not lock.ts.
 - tests/sections-test.mjs - pins the section split, the pointer lines, the preamble/note/absolute-path/fence cells and the keep/pointers disjointness.
 - tests/harness.mjs - loadNamespace helper: loads any module by path through the production path, the basis for probe scripts.
