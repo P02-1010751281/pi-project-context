@@ -92,18 +92,20 @@ session.jsonl ──► session.md ──► INDEX.md
 
 ## 记忆层的写入触发点
 
-只有两个时点会生成新内容，其余都不调用辅助模型：
+只有两个时点会**生成新内容**（都要调辅助模型），其余都不调：
 
 | 时点 | 行为 |
 | --- | --- |
-| `session_start` | 布局迁移与配置提示，不写记忆内容 |
+| `session_start` | 布局迁移与 legacy 记忆导入（经 `recordMemoryDocument` 写 journal 与 render），不调用模型 |
 | `before_agent_start` | 注入系统提示，不落盘 |
 | `agent_settled` | 自动 consolidation，受 `consolidateTurns`（默认 6 轮）与 `consolidateIntervalMs`（默认 5 分钟）**双重节流** |
-| `session_shutdown` | **不调模型的 flush**：采纳外部手改进 journal，并把文件留作 journal 的渲染；不生成内容 |
+| `session_shutdown` | **不调模型的 flush**：采纳外部手改进 journal；文件缺失、或陈旧/撕裂于 journal 时用 fold 重发（写前备份）；文件已是 fold 时不写 |
 | `/memory update` | 显式强制 consolidation（`forceDedupeMs` 15 秒内去重重复的强制 pass） |
 
-节流是这笔成本的唯一上限：每次 consolidation ≈ 一次辅助模型调用 + 一份全文快照追加进 `memory.jsonl` + 一次 `MEMORY.md` 写入。
-退出不生成内容（2026-10-06 决策 1），所以在两次 pass 之间结束的会话，其尾部只留在 `session-logs/` 归档里。
+flush 有两条前置守卫：journal 不存在时直接返回（裸项目退出后不留记忆状态、不取跨进程锁），文件与 fold 的比较键相同时不写。
+节流是这笔模型成本的唯一上限：每次 consolidation ≈ 一次辅助模型调用 + 一份全文快照追加进 `memory.jsonl` + 一次 `MEMORY.md` 写入。
+退出不生成内容（2026-10-06 决策 1），所以在两次 pass 之间结束的会话，其尾部只留在 `session-logs/` 归档里；缺口长度由节流决定，
+不是固定上界（记忆被故障策略 park 时，可以是整段会话）。
 
 ## consolidation 的安全语义
 

@@ -55,8 +55,8 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
 
 ## 待决事项
 
-- **记忆层的 shutdown 耦合**（owner 未定）：现场只有一条链（`errors.log` 2026-09-22，模型调用抛错经 `consolidate` 逸出
-  `session_shutdown` handler 进 pi 的 runner），现有守卫已覆盖、此后无复发。三选一：
-  ① 退出只落盘、不调模型（代价＝最多 6 轮 / 5 分钟的尾部只留在归档里）；② handoff 侧隔离（只治症状）；
-  ③ 保持现状（teardown 上仍有那次强制模型调用，每个会话至多一次）。代码核对过的后果、每 pass 成本与实现面见
-  `.codestable/issues/2026-10-06-handoff-shutdown-coupling/brief.md`。
+- **记忆层的 shutdown 耦合 —— 已决定 ①（2026-10-06，owner），已实现**：现场只有一条链（`errors.log` 2026-09-22，
+  模型调用抛错经 `consolidate` 逸出 `session_shutdown` handler 进 pi 的 runner），现有守卫已覆盖、此后无复发。
+  owner 选 ①「退出只落盘、不调模型」；代价是两次 settle pass 之间结束的会话，其尾部只留在 `session-logs/` 归档里。
+  语义见 `docs/architecture.md`「记忆层的写入触发点」，行为变化见 `CHANGELOG.md` v0.4.6，实现、独立审查轮与残留风险见
+  `.codestable/issues/2026-10-06-handoff-shutdown-coupling/`。

@@ -103,7 +103,7 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
 ### Gotchas
 
 - Replay blocks must not open with `assistant(toolCall)` — Anthropic/Gemini routes reject it with 400. Verify the omitted-marker substitution preserved `findCutPoint` slicing and toolCall/toolResult pairing.
-- `session_shutdown` always runs a forced silent consolidation pass, so replacing a session produces extra `MEMORY.md` + backup writes — that is expected, not a bug.
+- `session_shutdown` runs a **model-free flush** (since 2026-10-06, decision 1): it folds a hand-edited `MEMORY.md` into the journal, republishes the journal's fold only when the render is missing or stale/torn, and writes nothing when the file already carries the fold. Do not expect a consolidation pass, a `CONTEXT.md` write or extra backup files at exit, and a project with no journal is left untouched (no memory directory, no lock).
 - Known pre-existing gap: when the whole session fits in `handoffBudgetRecentTokens`, `runHandoff` returns before any notify and the user sees a silent no-op. Do not mistake that for a failure of your change.
 - `--mode json` does **not** emit the system prompt, so an injected-memory experiment cannot be verified from the transcript;
   infer it from the answer's shape (a fact from a kept section present, a fact from a dropped section absent).
