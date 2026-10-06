@@ -388,3 +388,16 @@ M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents 
 - **autolearn 清单截断已可见**：`inventoryText` 被上限截断时追加一行
   `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`，模型与读 prompt 的人都能看到
   列表不完整（原先静默丢弃尾巴）。证据：`tests/autolearn-test.mjs` 该块的七条断言（其中六条针对截断，一条是基线对照）。
+
+### 9.14 渐进披露的现场证据：真实会话按需拉取 memory（2026-10-06，发布后）
+
+样本：上一会话的**原始 JSONL**（`~/.pi/agent/sessions/--run-media-user-…-pi-project-context--/2026-10-06T07-05-26-627Z_01a11008-…jsonl`，428 条记录），统计其中 `arguments` 里出现 `.agents/memory` 的工具调用。
+
+| 工具 | 次数 | 触碰路径（去重计数） |
+| --- | --- | --- |
+| `bash` | 51 | MEMORY.md 31、errors.log 20、project-context.json 13、CONTEXT.md 10、HANDOFF.md 3、memory.jsonl 2、session-logs/ 2 |
+| `write` | 2（内容里提到该路径，非写 memory 文件） | — |
+
+结论：会话执行者在注入的 MEMORY/CONTEXT 之外**主动按需拉取细节**（errors.log 与旋钮值 project-context.json 是前两位），说明渐进披露在真实运行里被使用，注入文档不需要装下全部事实。此前这一条只有设计面（`input.ts`/`injection.ts` 的按需路径），这是**第一条现场证据**：同一次会话的最终记忆反而因为贴 cap 被裁剪（见 `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md` 的现场段），即"少注入、按需读"与"状态贴 cap 即丢"是两件独立的事。
+
+**autolearn 清单上限**（同一开放项的另一半）：本仓当前 `collectSkills()` 的项目 skill 数与 `inventoryText()` 长度见下，截断行未出现，因此"现场命中 8000 字符上限"仍未被观察到，且当前规模下**不可达**；该行由 `tests/autolearn-test.mjs` 的合成用例钉住。
