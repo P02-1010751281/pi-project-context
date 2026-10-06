@@ -50,4 +50,5 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
 两个 renderer 在未超限时产物逐字节相同（实测），差异只在需要整条丢弃时出现。守卫缺口仍成立：
 `memory regression: 2` 是**逐字**口径（12 条里只报 2），cap 行又被「每项目每进程一次」限流吃掉——**这类丢失在实现里是静默的**）。现场与算术见
   `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md`。
+    **现状（2026-10-06）**：人工裁剪已执行两次（`8ffe467`、`778d38c`），当前 109 条 / 29,551 字符，余量 **2,449**；门槛规则＝余量 < ~2,000 时再裁一次（不抬上限）。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。
