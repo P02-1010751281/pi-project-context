@@ -33,7 +33,12 @@
 
 **重开条件（写死）**：`errors.log` 再出现一条栈中含 `teardownCurrent` 或 `newSession` 的行 ⇒ 重开本 issue，优先选 ①。
 
-## 选 ① 的后果（2026-10-06 代码核对，owner 未定）
+## 决定（2026-10-06，owner）：选项 ①，已实现
+
+owner 定 ①：**退出只 flush、不调模型**。实现与验证见同目录 `shutdown-flush-fix-note.md`；语义写进
+`docs/architecture.md` 的「记忆层的写入触发点」，行为变化记在 `CHANGELOG.md` 的 v0.4.6（未发布）段。
+
+## 选 ① 的后果（2026-10-06 代码核对）
 
 注册点是 4 个，但**只有 2 个真的写记忆内容**（`memory/report.ts`）：
 

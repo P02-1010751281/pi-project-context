@@ -3,6 +3,18 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.6 — 未发布
+
+### 变更
+
+- **退出不再合并记忆（issue `2026-10-06-handoff-shutdown-coupling`，选项 ①）**：`session_shutdown` 此前跑一次强制 consolidation，
+  它是唯一绕过 `consolidateTurns`（6 轮）/ `consolidateIntervalMs`（5 分钟）节流的 pass，也是 2026-09-22 那条
+  「模型调用抛错经 `consolidate` 逸出 handler 进 `ExtensionRunner.emit`」链的唯一来源。现在退出只做**不调模型的 flush**：
+  把被外部手改的 `MEMORY.md` 采纳进 journal、并把文件留作 journal 的渲染（内容不变时是 no-op），不生成任何新内容。
+  代价（已接受）：某次 pass 之后、会话结束前的内容（最多 6 轮 / 5 分钟）不再进入 `MEMORY.md`，只留在 `session-logs/`
+  归档里；自动写入只剩被节流的 `agent_settled` 与显式 `/memory update`。`errors.log` 的键随之改为 `shutdown:flush`
+  （`shutdown:consolidate` 只出现在 v0.4.1–v0.4.5 的历史记录里）。语义见 `docs/architecture.md` 的「记忆层的写入触发点」。
+
 ## v0.4.5 — 2026-10-06
 
 ### 修复

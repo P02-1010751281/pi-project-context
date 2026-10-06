@@ -90,6 +90,21 @@ session.jsonl ──► session.md ──► INDEX.md
 - OMP/旧布局在 `session_start` 迁移时使用当前项目的 `maxMemoryChars`，不会退回默认值。
 - 旧的 poisoned memory 只在内存中解码；下一次正常覆盖前才备份和修复，不在读取阶段产生副作用。
 
+## 记忆层的写入触发点
+
+只有两个时点会生成新内容，其余都不调用辅助模型：
+
+| 时点 | 行为 |
+| --- | --- |
+| `session_start` | 布局迁移与配置提示，不写记忆内容 |
+| `before_agent_start` | 注入系统提示，不落盘 |
+| `agent_settled` | 自动 consolidation，受 `consolidateTurns`（默认 6 轮）与 `consolidateIntervalMs`（默认 5 分钟）**双重节流** |
+| `session_shutdown` | **不调模型的 flush**：采纳外部手改进 journal，并把文件留作 journal 的渲染；不生成内容 |
+| `/memory update` | 显式强制 consolidation（`forceDedupeMs` 15 秒内去重重复的强制 pass） |
+
+节流是这笔成本的唯一上限：每次 consolidation ≈ 一次辅助模型调用 + 一份全文快照追加进 `memory.jsonl` + 一次 `MEMORY.md` 写入。
+退出不生成内容（2026-10-06 决策 1），所以在两次 pass 之间结束的会话，其尾部只留在 `session-logs/` 归档里。
+
 ## consolidation 的安全语义
 
 consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不会用空内容覆盖旧 `CONTEXT.md`：

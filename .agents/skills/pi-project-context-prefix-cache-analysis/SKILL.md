@@ -29,7 +29,7 @@ The owner asks about provider prefix caching, cache hit/miss rates, why requests
 ## The handoff / settle coupling
 
 - `extensions/project-context/handoff/run.ts` and `extensions/project-context/memory/report.ts` both register on `agent_settled`. A handoff that coincides with a consolidation render rewrites MEMORY.md at that moment, so the successor's system block no longer matches the predecessor and the one reusable block is lost; the successor's first request necessarily misses.
-- There is also a known chain where a memory consolidation error thrown during `session_shutdown` fails `ctx.newSession`, so handoff success is coupled to memory not throwing at shutdown. Treat these as memory-side changes that need owner sign-off.
+- The chain where a memory consolidation error thrown during `session_shutdown` failed `ctx.newSession` (one `errors.log` line, 2026-09-22) had one source: a model call on the teardown path. Since 2026-10-06 (decision 1) the exit only flushes, so that source is gone; the teardown still writes files inside a guard, and the settle/render overlap above stays the thing to watch.
 
 ## pi already caches (do not re-implement)
 
