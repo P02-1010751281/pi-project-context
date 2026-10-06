@@ -12,7 +12,11 @@ type MemorySectionSpec = {
 	heading: string;
 	/** What belongs in the section, rendered next to its heading in the prompt. */
 	description: string;
-	/** Share of the budgeted body this section should stay within; the shares sum to 1. */
+	/**
+	 * Share of the budgeted body this section is expected to take; the shares sum to 1. They are
+	 * targets rather than caps: the renderer pools what a section leaves unused for those that need
+	 * more, and only the document cap itself drops entries (`sections.ts`).
+	 */
 	share: number;
 };
 
@@ -31,7 +35,7 @@ const MEMORY_SECTION_GAP_CHARS = 2;
 
 /**
  * Characters the document header, the fixed section headings, and the blank lines around the section
- * bodies spend before any body text. The per-section budgets are shares of the remainder: shares of
+ * bodies spend before any body text. The per-section targets are shares of the remainder: shares of
  * the whole cap would let a document that exactly fills every budget exceed the cap once the header,
  * headings, and separating blank lines are added.
  */

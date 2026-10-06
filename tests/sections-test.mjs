@@ -136,7 +136,7 @@ console.log("\n=== renderMemoryDocument ===");
 	const parsed = sections.sectionsFromMarkdown(rendered.text);
 	check("the render round-trips through the extractor", JSON.stringify(parsed) === JSON.stringify({ project: ["p1"], invariants: ["i1", "i2"], pitfalls: ["q1"], index: ["x1"] }));
 
-	// A huge single entry: the per-item cap has to come from the section budget, not MAX_LIST_ITEM_CHARS.
+	// A huge single entry: the per-item cap has to come from what the section may spend, not MAX_LIST_ITEM_CHARS.
 	const big = sections.renderMemoryDocument({ project: [], invariants: [], pitfalls: [], index: ["x".repeat(803)] }, 4000);
 	check("cap 4000 keeps the document inside the cap", big.text.length <= 4000);
 	check("an over-long entry is truncated, not left to break the cap", big.itemTruncated === 1);
