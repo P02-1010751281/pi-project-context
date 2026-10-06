@@ -1875,8 +1875,9 @@ try {
 			const flushPi = makePi({ cwd: flushTmp });
 			await flushFactory(flushPi);
 			let flushCalls = 0;
-			// The reply never quotes the conversation, which is what makes "the exit composed nothing"
-			// observable: only a model reply could put the marker into MEMORY.md.
+			// Any call after the seeding pass is a regression: that reply would replace the whole render,
+			// so its marker is what "the exit composed nothing" looks for.
+			const exitReply = "PUBLISHED-AT-EXIT-9083";
 			const flushEntries = Array.from({ length: 6 }, (_, index) =>
 				messageEntry(`f${index}`, "user", `${marker} turn ${index}`, `2026-09-12T10:0${index}:00.000Z`));
 			const flushCtx = makeCtx(flushTmp, {
@@ -1885,11 +1886,14 @@ try {
 					hasConfiguredAuth: () => true,
 					complete: async () => {
 						flushCalls += 1;
+						const body = flushCalls === 1
+							? "# Project Memory\n\n## Project\n- Seeded before the exit."
+							: `# Project Memory\n\n## Project\n- ${exitReply}`;
 						return {
 							content: [{
 								type: "text",
 								text: JSON.stringify({
-									memory_markdown: "# Project Memory\n\n## Project\n- Seeded before the exit.",
+									memory_markdown: body,
 									context: { title: "Flush", summary: "Seeded.", key_points: [], open_tasks: [] },
 								}),
 							}],
@@ -1908,20 +1912,82 @@ try {
 			const newer = new Date(Date.now() + 5_000);
 			await utimes(path.join(flushMem, "MEMORY.md"), newer, newer);
 
-			await runHandlers(flushPi, "session_shutdown", flushCtx);
+			// Past forceDedupeMs (15s): a shutdown that still ran a forced pass would reach the model for
+			// real instead of being deduped against the seeding pass, so the counter below can go red.
+			const realNow = Date.now;
+			Date.now = () => realNow() + 60_000;
+			try {
+				await runHandlers(flushPi, "session_shutdown", flushCtx);
+			} finally {
+				Date.now = realNow;
+			}
 
 			check("the exit made no model call", flushCalls === seededCalls);
 			const flushJournal = await readFile(path.join(flushMem, "memory.jsonl"), "utf8");
 			check("the hand edit was adopted into the journal", flushJournal.includes("Hand-curated at exit.") && flushJournal.length > seededJournal.length);
-			check("the file is still the journal's render", (await readFile(path.join(flushMem, "MEMORY.md"), "utf8")).includes("Hand-curated at exit."));
+			const flushed = await readFile(path.join(flushMem, "MEMORY.md"), "utf8");
+			check("the file still carries the hand edit", flushed.includes("Hand-curated at exit."));
 			const flushErrors = await readFile(path.join(flushMem, "errors.log"), "utf8").catch(() => "");
 			check("the adoption left a trace", flushErrors.includes("adopted an externally edited MEMORY.md"));
 			// The trade decision 1 accepts: a tail no settle pass reached stays out of the memory document.
-			check("the exit composed nothing", !(await readFile(path.join(flushMem, "MEMORY.md"), "utf8")).includes(marker));
+			check("the exit composed nothing", !flushed.includes(marker) && !flushed.includes(exitReply));
 			const archivedTail = await readFile(path.join(flushMem, "session-logs/flush-session/session.jsonl"), "utf8").catch(() => "");
 			check("the tail is in the archive", archivedTail.includes(marker));
+
+			// The render write-back, which this test left unpinned at first: a missing or stale render is
+			// republished from the journal (remove that write and these four checks go red).
+			const journalBeforeRebuild = (await readFile(path.join(flushMem, "memory.jsonl"), "utf8")).length;
+			await rm(path.join(flushMem, "MEMORY.md"));
+			await runHandlers(flushPi, "session_shutdown", flushCtx);
+			const rebuilt = await readFile(path.join(flushMem, "MEMORY.md"), "utf8").catch(() => "");
+			check("the exit republishes a missing render", rebuilt.includes("Hand-curated at exit.") && !rebuilt.includes(exitReply));
+			check("republishing a missing render does not append to the journal", (await readFile(path.join(flushMem, "memory.jsonl"), "utf8")).length === journalBeforeRebuild);
+
+			// Older than the journal and different: a torn window, or a render left by an older build.
+			await writeFile(path.join(flushMem, "MEMORY.md"), "# Project Memory\n\n## Project\n- Stale render.\n");
+			const stale = new Date(Date.now() - 60_000);
+			await utimes(path.join(flushMem, "MEMORY.md"), stale, stale);
+			await runHandlers(flushPi, "session_shutdown", flushCtx);
+			const refreshed = await readFile(path.join(flushMem, "MEMORY.md"), "utf8").catch(() => "");
+			check("the exit replaces a stale render with the journal's fold", !refreshed.includes("Stale render.") && refreshed.includes("Hand-curated at exit."));
+			check("replacing a render backs it up first", (await readdir(flushMem)).some((name) => name.startsWith("MEMORY.md.memory-backup-")));
 		} finally {
 			await rmTemp(flushTmp);
+		}
+	}
+
+	console.log("\n=== a stale ctx must not reject the exit handler, and a journal-less project stays untouched ===");
+	{
+		// decision 1 removed the model call, but the handler still reads ctx.cwd: a session replaced or
+		// reloaded under it throws straight out of that getter, and a catch that read it again would
+		// reject into pi's ExtensionRunner - the very chain this change was made to close.
+		const staleTmp = await mkdtemp(path.join(os.tmpdir(), "pi-shutdown-stale-ctx-"));
+		try {
+			const staleFactory = await loadDefault(`${PC}/index.ts`);
+			const stalePi = makePi({ cwd: staleTmp });
+			await staleFactory(stalePi);
+			const ctxFor = () => makeCtx(staleTmp, {
+				sessionManager: makeSessionManager([messageEntry("s0", "user", "hello", "2026-09-12T12:00:00.000Z")], "stale-session"),
+			});
+			// A project that never used memory: the archive layer's own lock makes the directory, but the flush
+			// must add nothing to it and must not take the memory lock (it used to, up to 5s, on every exit).
+			const freshProbe = path.join(staleTmp, "fresh");
+			await mkdir(freshProbe, { recursive: true });
+			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
+			const flushedFresh = await flushMemoryRender(freshProbe, 32000);
+			check("a journal-less project flushes to nothing", flushedFresh.adopted === false && flushedFresh.written === false);
+			check("a journal-less project gains no memory state", !(await stat(path.join(freshProbe, ".agents/memory/.gitignore")).catch(() => undefined))
+				&& !(await stat(path.join(freshProbe, ".agents/memory/memory.jsonl")).catch(() => undefined)));
+
+			const memoryHandler = (stalePi.handlers.get("session_shutdown") ?? []).find((handler) => handler.toString().includes("shutdown:flush"));
+			check("the memory handler is registered on session_shutdown", Boolean(memoryHandler));
+			const staleCtx = ctxFor();
+			Object.defineProperty(staleCtx, "cwd", { get() { throw new Error("ctx.cwd: session replaced"); } });
+			let rejected = false;
+			await memoryHandler({}, staleCtx).catch(() => { rejected = true; });
+			check("the memory exit handler does not reject when ctx.cwd throws", !rejected);
+		} finally {
+			await rmTemp(staleTmp);
 		}
 	}
 

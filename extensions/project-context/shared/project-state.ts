@@ -7,7 +7,7 @@ export type { MemoryJournalEntry } from "../memory/journal.ts";
 export { withMemoryLock } from "./lock.ts";
 export { readJsonStringField } from "../memory/poison.ts";
 export { flushMemoryRender, loadMemory, recordMemoryDocument } from "../memory/store.ts";
-export type { FlushResult, LoadedMemory } from "../memory/store.ts";
+export type { LoadedMemory } from "../memory/store.ts";
 export { logError } from "./error-log.ts";
 export { fileMtimeMs, pathExists, readOptional, writeAtomic } from "./files.ts";
 export { ensureMemoryGitignore } from "./gitignore.ts";

@@ -412,15 +412,28 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		// pi's ExtensionRunner (one field chain in errors.log runs through emitSessionShutdownEvent), and the
 		// handoff's session switch rides that same emit, so log and return instead of taking the switch down.
 		// A model call used to sit on this path; since 2026-10-06 (decision 1) the exit flushes instead: it
-		// adopts a hand-edited MEMORY.md into the journal and leaves the file as the journal's render, and it
-		// composes nothing, so a session that ends between settle passes keeps that tail in the archive.
+		// folds a hand-edited MEMORY.md into the journal and leaves the file alone, and it composes nothing,
+		// so a session that ends between settle passes keeps that tail in the archive.
+		// The cwd is read exactly once, guarded: a stale ctx (session replaced or reloaded) throws straight
+		// out of this getter, and reading it again inside the catch below would reject this handler into
+		// pi's ExtensionRunner - the failure class decision 1 removed from this path.
+		let cwd: string;
 		try {
-			const projectRoot = await getProjectRoot(pi, ctx.cwd);
-			await flushMemoryRender(projectRoot, (await getConfig(projectRoot)).maxMemoryChars);
+			cwd = ctx.cwd;
+		} catch {
+			return;
+		}
+		try {
+			if (runIsDisabled()) return;
+			const projectRoot = await getProjectRoot(pi, cwd);
+			const config = await getConfig(projectRoot);
+			// Memory off: the exit must not touch the journal or the render, as the settle path is gated.
+			if (!config.memoryEnabled) return;
+			await flushMemoryRender(projectRoot, config.maxMemoryChars);
 		} catch (error) {
 			// `getProjectRoot` can itself fail (no git above the cwd, a removed directory); see
 			// `shutdownErrorRoot` for the cwd fallback rule, and act only when it names a safe root.
-			const root = shutdownErrorRoot(await getProjectRoot(pi, ctx.cwd).catch(() => undefined), ctx.cwd);
+			const root = shutdownErrorRoot(await getProjectRoot(pi, cwd).catch(() => undefined), cwd);
 			if (root) await logError(root, "shutdown:flush", error).catch(() => {});
 		}
 	});

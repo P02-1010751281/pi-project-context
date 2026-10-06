@@ -6,6 +6,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { backupMemoryBeforeWrite } from "./backup.ts";
 import { clipToLineBoundary, normalizeMemoryDocument, normalizeMemoryReply } from "./document.ts";
 import { appendMemoryOp, foldMemoryJournal, newestMemoryArchive, readMemoryJournal, rotateMemoryJournalIfNeeded } from "./journal.ts";
 import { decodePoisonedMemory, memoryComparisonKey } from "./poison.ts";
@@ -60,7 +61,7 @@ type MemoryWriteResult = { written: true } | { written: false; kept: string };
  *
  * Callers hold the memory lock. `preRead` lets the write path hand over what it has already read.
  */
-export async function adoptExternalEdit(
+async function adoptExternalEdit(
 	projectRoot: string,
 	limit: number = MAX_MEMORY_CHARS,
 	preRead: { journal?: Awaited<ReturnType<typeof readMemoryJournal>>; renderKey?: string } = {},
@@ -87,25 +88,41 @@ export type FlushResult = { adopted: boolean; written: boolean };
 /**
  * Publish what is already stored, without calling a model. A session teardown runs this instead of a
  * consolidation pass (2026-10-06, decision 1): the exit still folds a hand-edited `MEMORY.md` into the
- * journal and leaves the file as the journal's own render, but no auxiliary call sits on a path that
- * once let a provider error escape into pi's session switch.
+ * journal, but no auxiliary call sits on a path that once let a provider error escape into pi's session
+ * switch, and nothing here composes memory - a session that ends between settle passes keeps that tail
+ * in the archive.
  *
- * The render write is skipped when the file already carries the fold's key, so a clean exit is a no-op.
- * It fires after an adoption whose bytes changed under normalization (whitespace, or a hand edit clipped
- * to the cap) and on a render that drifted from the journal - the file is left as the journal's render
- * either way. Nothing here composes memory: a session with no settle pass keeps its tail in the archive.
+ * A project with no journal has nothing to flush, and a teardown must not create a memory directory (or
+ * take the cross-process lock) for it, so that case returns before the lock. The render is rewritten only
+ * when the file is missing or stale/torn against the journal; an edit that is merely different is folded
+ * in and left on disk exactly as it was found (an over-cap hand edit keeps its own bytes, the journal
+ * holding the clipped key). A clean exit writes nothing.
  */
 export async function flushMemoryRender(projectRoot: string, limit: number = MAX_MEMORY_CHARS): Promise<FlushResult> {
 	const journal = memoryJournalFile(projectRoot);
-	return await withMemoryLock(memoryFile(projectRoot), async () => {
-		const adopted = await adoptExternalEdit(projectRoot, limit);
+	const file = memoryFile(projectRoot);
+	if (!(await stat(journal).catch(() => undefined))) return { adopted: false, written: false };
+	return await withMemoryLock(file, async () => {
+		// An edit can land between an adopt read and the write below; adopt until the render and the
+		// journal agree, so the flush never publishes a fold over bytes it did not fold in first.
+		let adopted = false;
+		for (let pass = 0; pass < 3 && (await adoptExternalEdit(projectRoot, limit)); pass++) adopted = true;
 		const state = await readMemoryJournal(journal);
 		if (state.unreadable) throw new Error(`memory journal exists but cannot be read: ${journal}`);
 		const folded = foldMemoryJournal(state.entries, limit);
-		if (!folded) return { adopted, written: false };
-		const onDisk = await readOptional(memoryFile(projectRoot));
-		if (memoryComparisonKey(onDisk, limit) === memoryComparisonKey(folded, limit)) return { adopted, written: false };
-		await writeAtomic(memoryFile(projectRoot), folded);
+		if (!folded) {
+			// Every line was damaged; the read path reports that state as unreadable, so leave a trace too.
+			if (state.damaged > 0) await logError(projectRoot, "memory", "the memory journal holds no readable entry; the exit flush left the render alone").catch(() => {});
+			return { adopted, written: false };
+		}
+		const onDisk = await readOptional(file);
+		const onDiskKey = renderKeyOf(onDisk, limit);
+		if (onDiskKey && onDiskKey === memoryComparisonKey(folded, limit)) return { adopted, written: false };
+		// Missing (nothing to keep) or stale/torn (a fresh edit would have been adopted above): republish
+		// the journal's fold. Every other memory write backs the file up first; this one is no exception.
+		await backupMemoryBeforeWrite(file);
+		await ensureMemoryGitignore(memoryDir(projectRoot));
+		await writeAtomic(file, folded);
 		return { adopted, written: true };
 	});
 }
