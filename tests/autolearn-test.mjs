@@ -53,6 +53,11 @@ try {
 		"the marker overshoots the cap only by its own line",
 		truncatedInventory.length <= 8_000 + 120,
 	);
+	const oversizedFirst = inventoryText([{ name: "huge", scope: "project", description: "y".repeat(9_000) }]);
+	check(
+		"a first line that alone overflows the cap still gets the marker",
+		oversizedFirst.startsWith("- (1 more skill(s) not listed") && oversizedFirst.includes("inventory cap"),
+	);
 	const { MAX_SKILL_BODY_CHARS } = await loadNamespace(`${PC}/shared/limits.ts`);
 	const { MIN_SKILL_BODY_CHARS, MAX_SKILL_DESCRIPTION_CHARS } = await loadNamespace(`${PC}/autolearn/skill.ts`);
 	const autolearnPrompt = buildAutolearnPrompt("/tmp/autolearn-schema", "# Project Memory\n\n- x\n", "# Project Context\n\n- y\n", [], []);

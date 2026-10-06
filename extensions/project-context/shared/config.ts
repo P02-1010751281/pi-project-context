@@ -41,9 +41,11 @@ export const FEATURE_FIELDS: Record<FeatureName, "archiveEnabled" | "memoryEnabl
 };
 
 type HandoffSettings = {
-	/** Adaptive threshold (dsh `handoffAdaptive`); false uses `handoffThresholdRatio`. */
+	/** Adaptive threshold (dsh `handoffAdaptive`); false uses `handoffThresholdRatio`, whose accepted range is
+	 * `MIN_THRESHOLD_RATIO`..`MAX_THRESHOLD_RATIO` below. */
 	handoffThresholdAuto: boolean;
-	/** Context-window fraction (0.1–0.95) used when `handoffThresholdAuto` is false. */
+	/** Context-window fraction used when `handoffThresholdAuto` is false; the accepted range is the
+	 * `MIN_THRESHOLD_RATIO`..`MAX_THRESHOLD_RATIO` pair, never a literal here. */
 	handoffThresholdRatio: number;
 	/** Trigger request: conversation tokens the pass reports as the droppable prefix; no call reads it. */
 	handoffBudgetSummaryTokens: number;

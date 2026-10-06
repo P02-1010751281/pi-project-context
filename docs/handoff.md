@@ -85,9 +85,9 @@ E-4000
   （`cost.tiers`，如 272K → 268K）能再压低；档位边界低于 `floor + 4000` 时返回
   undefined（不静默跨档）。
 - `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`），且受同一条物理下限约束；`/handoff threshold auto` 不接受比例参数。
-  固定比例模式**走同一条物理下限**（v0.4.3 起）：比例给出的阈值低于 `baseline + keep + MIN_DROP` 时，交接被拒绝
-  并在状态行点名原因，因为一次只丢几千 token 的交接只是换会话、省不下上下文。这条下限是**拒绝门**，不会把比例
-  抬到下限；固定模式下阈值仍完全由比例与窗口决定（`handoffThresholdRatio` 只在这里生效）。
+  固定比例模式**走同一条物理下限**（v0.4.3 起）：比例给出的阈值低于 `baseline + keep + MIN_DROP` 时**自动触发**
+  被拒绝（手动 `/handoff now` 不查阈值，见上），因为一次只丢几千 token 的交接只是换会话、省不下上下文。这条下限是
+  **拒绝门**，不会把比例抬到下限；固定模式下阈值仍完全由比例与窗口决定（`handoffThresholdRatio` 只在这里生效）。
 - `/handoff status` 在能解析阈值时显示 **guardrail 之后的预计丢弃量**（`tokens − baseline − keep`；`auto 157k (16%) · drop 125k`，
   Codex 272K 窗口 → `auto 252k (93%)`）；没有可用 usage 时回退为配置值（`drop budget 64.0k`）。
   实际切点只会更短：若整段窗口装在一轮里，handoff 会跳过并提示 `nothing older than the recent window to drop`。

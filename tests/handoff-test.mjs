@@ -559,6 +559,10 @@ try {
 		"the ratio parser accepts the shared minimum",
 		ratioSettings.parseRatio(String(ratioConstants.MIN_THRESHOLD_RATIO)) === ratioConstants.MIN_THRESHOLD_RATIO,
 	);
+	check(
+		"the ratio parser refuses just below the shared minimum",
+		ratioSettings.parseRatio(String((ratioConstants.MIN_THRESHOLD_RATIO - 0.01).toFixed(2))) === undefined,
+	);
 	// The physical floor guards fixed mode too: a ratio that resolves below `baseline + keep + MIN_DROP`
 	// would hand off and drop almost nothing, so it is refused with its own cause rather than run. The two
 	// modules load through one registry so the settings object mutated here is the one the math reads.

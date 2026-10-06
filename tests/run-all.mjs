@@ -26,7 +26,8 @@ if (tracked.status === 0) {
 			try {
 				const bytes = readFileSync(path.join(repoRoot, file));
 				if (bytes.includes(0)) return false;
-				return bytes.toString("utf8").endsWith("\n\n");
+				// `\n\n` misses a CRLF blank tail, which `git diff --check` reports just the same.
+				return /\r?\n\r?\n$/.test(bytes.toString("utf8"));
 			} catch {
 				return false;
 			}
