@@ -38,6 +38,8 @@ type LastWriteInfo = {
 	sectionsCapped?: boolean;
 	/** The composed section-cap sentence, so the log and the command reply read the same. */
 	capNote?: string;
+	/** Whole entries went, not just a per-item cut: the difference between a cap event and a trimmed line. */
+	entriesDropped?: boolean;
 	/** The reply was not written for this reason, so the stored memory was kept. */
 	memoryKept?: boolean;
 	/** Which reason that was: nothing to store, too short to be a change, or a newer memory on disk. */
@@ -243,7 +245,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				repaired: !memoryRefused && storedPoisoned,
 				capped: cappedMemory,
 				sectionsCapped: cappedSections,
-				...(cappedSections ? { capNote: sectionCapSentence(outcome) } : {}),
+				...(cappedSections ? { capNote: sectionCapSentence(outcome), entriesDropped: outcome.droppedItems > 0 } : {}),
 				contextWritten: Boolean(update),
 				// The reply was not written for whatever reason — kept because it was empty, because it was
 				// too short to be a change, or because the memory moved on while it was being built. Either
@@ -537,12 +539,18 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		const capNote = info.capped
 			? " It also hit its maxMemoryChars cap; both ends were kept and the middle was dropped on a line boundary."
 			: info.sectionsCapped
-				? " It also reached the memory document's character cap, so whole entries were dropped."
+				? info.entriesDropped
+					? " It also reached the memory document's character cap, so whole entries were dropped."
+					: " It also had entries cut to their per-item cap."
 				: "";
 		return `Memory: updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}${guard}`;
 	}
 	if (info?.sectionsCapped) {
-		return `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`;
+		// Same split as the automatic notice: only a drop is a cap event, and only then is there a drop
+		// list to point at.
+		return info.entriesDropped
+			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`
+			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}. Details in .agents/memory/errors.log.${guard}`;
 	}
 	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.${guard}`;
 	return `Memory: updated.${guard}`;

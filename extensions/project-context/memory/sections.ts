@@ -100,8 +100,8 @@ const MIN_SECTION_BUDGET_CHARS = 8;
  * section gets exactly what it needs and nothing is dropped at all.
  *
  * This is what stops the renderer from spending entries to balance a document that still has room.
- * The field case that forced it (2026-10-06): 1,839 characters sat idle in `Project` while
- * `Invariants`/`Pitfalls`/`Index` were a combined 1,670 over their shares, and four passes in a row
+ * The field case that forced it (2026-10-06): 1,850 characters sat idle in `Project` while
+ * `Invariants`/`Pitfalls`/`Index` were a combined 1,635 over their shares, and four passes in a row
  * dropped 10-15 whole entries each while the document itself was below its cap.
  *
  * The pool is the document's own body budget, not the sum of the targets: the targets are floored

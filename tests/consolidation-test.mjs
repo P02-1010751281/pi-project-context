@@ -1066,6 +1066,12 @@ try {
 
 			const { consolidateReply } = await loadNamespace(`${PC}/memory/report.ts`);
 			check("a clipped reply is visible to explicit commands", consolidateReply("clipped").includes("output budget"));
+			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
+			// the document hitting its cap and point at a drop list that does not exist (review R2).
+			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
+			const didDrop = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, capNote: "3 whole entry(ies) were dropped from 2 section(s) because the memory document reached its character cap" });
+			check("a per-item cut is not told as the document reaching its cap", !cutOnly.includes("reached its character cap") && !cutOnly.includes("dropped entries are listed"));
+			check("a real drop still names the cap and the drop list", didDrop.includes("reached its character cap") && didDrop.includes("dropped entries are listed"));
 
 			// The command path runs silently; it must still report the clip and leave a trace.
 			const factory = await loadDefault(`${PC}/index.ts`);

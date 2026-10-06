@@ -14,7 +14,7 @@ This session turned the previous session's memory-loss finding into v0.4.4. The 
 - Mutation matrix on the new prompt sites: main-rule deletion 3 red, note deletion exactly 1 red, old wording 4 red, retry regression 4 red; minimum-side ratio mutation now reddens 3 named assertions (was green before).
 - Prompt cost: main prompt +376 characters (4,145 -> 4,521, ~94 tokens per consolidation) and the retry sentence +158 only when a section overflows.
 - v0.4.4 release verified: tag object 5982fd9f, peeled 009cceb, both remotes show master and v0.4.4 at the peeled commit; pi-config pin commit ed4a732 bumped settings.json and README.md to @v0.4.4; installed clone describe v0.4.4 with zero dirty and 15/15 self-test; the removed wording `remove the least durable` is absent from the installed tree.
-- MEMORY.md is restored to the complete 137-entry / 31,774-character version (it equals HEAD, so `git checkout --` needed no commit). It is deliberately over three section shares: the first pass after the pi restart is the acceptance test for the new compression rule.
+- MEMORY.md is restored to the complete 138-entry / 31,993-character version (it equals HEAD, so `git checkout --` needed no commit). It is deliberately over three section shares: the first pass after the pi restart is the acceptance test for the new compression rule.
 - Sandbox hygiene was paid for again: the two 185 MB review copies were removed and /tmp is back to 58%.
 - The second-layer finding - fixed shares versus this repo's content distribution, where ~2,000 characters of the total cap stay unused - is recorded in .codestable/attention.md and the fix note, for the owner to decide.
 

@@ -211,7 +211,7 @@ console.log("\n=== renderMemoryDocument ===");
 
 	// The exact boundary that produced B1: content whose canonical document fits the cap while the sum of
 	// the floored targets does not cover it. Ten 390-character entries need 3,930 of the 3,933 characters
-	// cap 4000 leaves for bodies, against 3,924 of targets - the 6-character gap is what must not be spent
+	// cap 4000 leaves for bodies, against 3,922 of targets - the 8-character gap is what must not be spent
 	// as a dropped entry.
 	const tight = sections.renderMemoryDocument({ project: [], invariants: Array.from({ length: 10 }, () => "t".repeat(390)), pitfalls: [], index: [] }, 4000);
 	check("content that fits the cap but exceeds the target sum keeps every entry", tight.droppedItems === 0 && tight.text.length <= 4000);
