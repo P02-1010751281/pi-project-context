@@ -18,6 +18,7 @@ function check(label, value) {
 	if (!ok) failures += 1;
 }
 
+const schema = await loadNamespace(`${PC}/memory/schema.ts`);
 const sections = await loadNamespace(`${PC}/memory/sections.ts`);
 const autolearnSchema = await loadNamespace(`${PC}/autolearn/schema.ts`);
 // Loaded together so the policy the test observes IS the one `callAux` records into.
@@ -145,6 +146,36 @@ console.log("\n=== renderMemoryDocument ===");
 	check("a flood of entries still fits the cap", many.text.length <= 4000);
 	check("the flood reports the section it overflowed", many.sectionDropped === 1 && many.droppedItems > 0);
 
+	// The per-section numbers are targets, not caps: a section over its share is served from the room its
+	// neighbours left, and the renderer spends entries only when the document itself is full. The field
+	// case that forced this (2026-10-06): 1,839 characters idle in `Project` while `Invariants`,
+	// `Pitfalls` and `Index` were a combined 1,670 over, so four real passes dropped 10-15 entries each.
+	// Under the old hard share this fixture loses Invariants entries; that is the mutation this pair reddens.
+	const overShare = Array.from({ length: 10 }, (_, index) => `invariant ${index} ${"x".repeat(170)}`);
+	const borrowed = sections.renderMemoryDocument({ project: [], invariants: overShare, pitfalls: ["p"], index: ["i"] }, 4000);
+	const parsedBorrowed = sections.sectionsFromMarkdown(borrowed.text);
+	check("the fixture really is over the Invariants share", overShare.reduce((n, entry) => n + entry.length + 3, 0) > 1569);
+	check("a section over its share borrows instead of dropping entries", borrowed.sectionDropped === 0 && borrowed.droppedItems === 0);
+	check("every over-share entry survives the borrow", parsedBorrowed.invariants.length === 10);
+	check("the borrowed document stays inside the cap", borrowed.text.length <= 4000);
+
+	const full = sections.renderMemoryDocument(
+		{ project: [], invariants: Array.from({ length: 400 }, (_, index) => `entry-${index}-${"y".repeat(40)}`), pitfalls: ["keep me"], index: ["and me"] },
+		4000,
+	);
+	const parsedFull = sections.sectionsFromMarkdown(full.text);
+	const invariantsSpent = parsedFull.invariants.reduce((n, entry) => n + entry.length + 3, 0) + "## Invariants\n".length;
+	check("a document that is really full still drops entries", full.droppedItems > 0 && full.sectionDropped >= 1);
+	check("the over-share section takes the room its neighbours left", invariantsSpent > 1569);
+	check("neighbours under their share keep every entry", parsedFull.pitfalls.length === 1 && parsedFull.index.length === 1);
+
+	// The per-item cap follows the borrowed budget, not the share: at cap 4000 the Index share is 588, so a
+	// 700-character entry would be clipped there, but Index borrows the room its neighbours left and keeps
+	// the entry whole. This is the assertion that reddens if the item cap goes back to the raw share.
+	const longIndex = [`i ${"z".repeat(700)}`];
+	const keptWhole = sections.renderMemoryDocument({ project: [], invariants: [], pitfalls: [], index: longIndex }, 4000);
+	check("a borrowing section keeps a longer entry whole", keptWhole.itemTruncated === 0 && sections.sectionsFromMarkdown(keptWhole.text).index[0] === longIndex[0].trim());
+
 	// The renderer must never write the old marker: the write path strips it again.
 	check("the renderer writes no truncation marker", !rendered.text.includes("_[memory truncated") && !many.text.includes("_[memory truncated"));
 
@@ -158,6 +189,23 @@ console.log("\n=== renderMemoryDocument ===");
 		worst = Math.min(worst, cap - text.length);
 	}
 	check(`2000 random caps all fit (worst margin ${worst} chars)`, over === 0);
+
+	// The guarantee the borrowing exists for, stated as a property: when the sections together fit the
+	// targets, nothing is dropped - no matter how unevenly the content sits across them.
+	let fitsButDropped = 0;
+	for (let index = 0; index < 2000; index += 1) {
+		const cap = 4000 + Math.floor(Math.random() * 196_001);
+		const targets = schema.memorySectionBudgets(cap);
+		const body = targets.reduce((sum, budget) => sum + budget.chars, 0);
+		// One section takes most of the room, the others share what is left.
+		const make = () => Array.from({ length: Math.floor(Math.random() * 6) }, () => "z".repeat(1 + Math.floor(Math.random() * 300)));
+		const shape = [make(), make(), make(), make()];
+		const wanted = shape.reduce((sum, list) => sum + list.reduce((n, entry) => n + entry.length + 3, 0), 0) + 4 * "## heading\n".length;
+		if (wanted > body) continue;
+		const rendered = sections.renderMemoryDocument({ project: shape[0], invariants: shape[1], pitfalls: shape[2], index: shape[3] }, cap);
+		if (rendered.droppedItems > 0) fitsButDropped += 1;
+	}
+	check(`a document that fits its targets never drops (${fitsButDropped} violations)`, fitsButDropped === 0);
 }
 
 console.log("\n=== sectionsFromMarkdown contract ===");

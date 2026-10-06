@@ -236,16 +236,17 @@ export async function consolidateProjectState(
 			throw new Error(`consolidation reply was not a usable JSON object\n${replyHead(completion.text)}`);
 		}
 		let render = resolved.sections ? renderMemoryDocument(resolved.sections, config.maxMemoryChars) : undefined;
-		// The same quality loop the whole-document cap used to drive. The renderer guarantees the text
-		// fits the cap, so the old `exceedsMemoryCap` gate is always false here: what is left to react
-		// to is a section that had to give up entries. The opaque entry has no section counts, so it
-		// keeps the cap test — otherwise the path most likely to overflow would lose the loop entirely.
+		// The same quality loop the whole-document cap used to drive. The renderer keeps the text inside
+		// the cap by construction, so what is left to react to is a render that had to give up whole
+		// entries — which, since the per-section shares became targets, means the document itself was
+		// full rather than one section being over its share. The opaque entry has no section counts, so
+		// it keeps the cap test — otherwise the path most likely to overflow would lose the loop.
 		const needsCondense = render ? render.sectionDropped > 0 : exceedsMemoryCap(resolved.result.memory, config.maxMemoryChars);
 		if (needsCondense) {
 			// One bounded condensation attempt turns a silent loss into a curated shrink; if it fails or
 			// still does not fit, keep the first result and let the cap report speak.
 			const limit = config.maxMemoryChars;
-			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown overflowed a section budget (or, without sections, the whole-document character cap), so whole entries would be dropped when it is written. Retry this same consolidation and rewrite memory_markdown until every section fits the budget stated above: keep every durable fact that is still true, merge duplicates within a section, deduplicate across sections, then condense the wording — delete an entry only when it is superseded or already covered elsewhere. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
+			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown overflowed the document's character cap, so whole entries would be dropped when it is written. Retry this same consolidation and rewrite memory_markdown until the whole document fits that cap (the per-section numbers are targets, not caps): keep every durable fact that is still true, merge duplicates within a section, deduplicate across sections, then condense the wording — delete an entry only when it is superseded or already covered elsewhere. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
 			let condensed: ResolvedReply | undefined;
 			try {
 				condensed = resolveReply(await call(condensePrompt, usedInput, false), false);

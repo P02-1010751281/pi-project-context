@@ -125,7 +125,7 @@ extensions/project-context/
 │   ├── prompt.ts           #    提示词：固定规则 + 装配后的文档
 │   ├── input.ts            #    记忆 + 上下文适配进输入预算
 │   ├── parse.ts            #    回复解析（容错 JSON + 逐字段裁决）
-│   ├── sections.ts         #    分节表示：抽取、渲染与按节预算（`record_memory` schema）
+│   ├── sections.ts         #    分节表示：抽取、渲染与段配额（配额是目标，硬上限只有文档上限）
 │   ├── document.ts         #    MEMORY.md 规范化与截断标记
 │   ├── schema.ts           #    固定小节 schema 与每节字符预算
 │   ├── context-schema.ts   #    CONTEXT.md 固定小节 schema 与每节预算

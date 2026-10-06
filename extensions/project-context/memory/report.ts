@@ -87,7 +87,9 @@ async function saveOverflowReply(projectRoot: string, text: string): Promise<str
 function sectionCapSentence(outcome: ConsolidateOutcome): string {
 	const parts: string[] = [];
 	if (outcome.sectionDropped > 0) {
-		parts.push(`${outcome.sectionDropped} section(s) exceeded their budget and ${outcome.droppedItems} whole entry(ies) were dropped`);
+		// The per-section shares are targets, so entries only go when the document itself is full; saying
+		// "a section exceeded its budget" would point the reader at a number that is not a limit any more.
+		parts.push(`${outcome.droppedItems} whole entry(ies) were dropped from ${outcome.sectionDropped} section(s) because the memory document reached its character cap`);
 	}
 	if (outcome.itemTruncated > 0) {
 		// An entry can be truncated and then dropped, so both counts appearing is not a contradiction.
@@ -199,7 +201,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					if (!sectioned && exceedsMemoryCap(memoryText, maxMemoryChars)) {
 						overflowPath = await saveOverflowReply(projectRoot, memoryText);
 					}
-					// The section counts are the durable trace of what the budgets gave up: the renderer writes no
+					// The section counts are the durable trace of what the cap gave up: the renderer writes no
 					// marker (the write path would strip it), so these counts are all there is.
 					cappedSections = outcome.sectionDropped > 0 || outcome.itemTruncated > 0;
 					cappedMemory = !sectioned && exceedsMemoryCap(memoryText, maxMemoryChars);
@@ -212,7 +214,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					}
 					if (cappedSections && !memorySectionCapWarned.has(projectRoot)) {
 						memorySectionCapWarned.add(projectRoot);
-						await logError(projectRoot, "memory", `memory exceeded a section budget: ${sectionCapSentence(outcome)}`);
+						await logError(projectRoot, "memory", `memory document reached its cap: ${sectionCapSentence(outcome)}`);
 					} else if (cappedMemory && !memoryCapWarned.has(projectRoot)) {
 						// A marker nobody reads is still a silent loss: say it once per project per process,
 						// and point at the knob that lifts the cap.
@@ -276,13 +278,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					const capNote = cappedMemory
 						? ` It also hit its ${maxMemoryChars}-character cap; both ends were kept and the middle was dropped on a line boundary.`
 						: cappedSections
-							? ` It also exceeded its section budget: ${sectionCapSentence(outcome)}.`
+							? ` It also reached the memory document's character cap: ${sectionCapSentence(outcome)}.`
 							: "";
 					notify(ctx, `Memory: was raw JSON from the old bug, and is now Markdown${backup ? ` (backup: ${backup})` : ""}.${capNote}${clippedNote}`, "warning");
 				} else if (cappedSections) {
 					notify(
 						ctx,
-						`Memory: exceeded its section budget: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`,
+						`Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. The dropped entries are listed in .agents/memory/errors.log.${clippedNote}`,
 						"warning",
 					);
 				} else if (cappedMemory) {
@@ -520,12 +522,12 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		const capNote = info.capped
 			? " It also hit its maxMemoryChars cap; both ends were kept and the middle was dropped on a line boundary."
 			: info.sectionsCapped
-				? " It also exceeded its section budget, so entries beyond it were dropped whole."
+				? " It also reached the memory document's character cap, so whole entries were dropped."
 				: "";
 		return `Memory: updated; the stored raw JSON reply was replaced (backup: ${info.backup}).${capNote}${guard}`;
 	}
 	if (info?.sectionsCapped) {
-		return `Memory: updated, but it exceeded its section budget: ${info.capNote ?? "a section lost entries to its budget"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`;
+		return `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. The dropped entries are listed in .agents/memory/errors.log.${guard}`;
 	}
 	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /project-context max-memory <n> or trim MEMORY.md.${guard}`;
 	return `Memory: updated.${guard}`;

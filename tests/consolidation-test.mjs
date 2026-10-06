@@ -1635,19 +1635,22 @@ try {
 			}
 		}
 
-		// 5. A section over its budget is visible through the write path, with no numeric suggestion.
+		// 5. A document over its cap is visible through the write path, with no numeric suggestion.
+		//    A section over its own share is not enough since the shares became targets: the renderer only
+		//    drops entries when the whole document is full, so the fixture has to overflow the document
+		//    (300 short entries against a 4000-character cap) rather than one section.
 		{
 			const handle = await project("structured-cap", { maxMemoryChars: 4000 });
 			try {
-				const flood = Array.from({ length: 200 }, (_, index) => `entry number ${index}`);
+				const flood = Array.from({ length: 300 }, (_, index) => `entry number ${index}`);
 				// The condensation reply carries no text (a tool call again), so it cannot be adopted and the
 				// first, capped result stands: that is the case the write path has to make visible.
 				const { toasts } = await pass(handle, () => toolReply({ memory: { project: flood, invariants: [], pitfalls: [], index: [] }, context: CONTEXT }));
 				const written = await readFile(memoryFile(handle.root), "utf8");
 				const log = await readFile(errorLog(handle.root), "utf8");
 				check("the render honours the cap", written.length <= 4000);
-				check("the cap event reaches errors.log", log.includes("exceeded a section budget"));
-				check("the cap event is announced to the user", toasts.some((message) => message.includes("exceeded its section budget")));
+				check("the cap event reaches errors.log", log.includes("reached its cap"));
+				check("the cap event is announced to the user", toasts.some((message) => message.includes("reached its character cap")));
 				check("the section path suggests no max-memory value", !toasts.some((message) => message.includes("max-memory")) && !log.includes("raise it with"));
 			} finally {
 				await rmTemp(handle.root);

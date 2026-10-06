@@ -74,12 +74,12 @@ export function sectionsSemanticallyEmpty(sections: MemorySections): boolean {
 	return SECTION_KEYS.every((key) => toEntries(sections[key] ?? []).length === 0);
 }
 
-/** What a render cost: the document plus what the per-section budgets had to give up. */
+/** What a render cost: the document plus what the document's cap had to give up. */
 export type MemoryRender = {
 	text: string;
 	/** Sections that lost at least one entry. */
 	sectionDropped: number;
-	/** Entries dropped because their section's budget was full. */
+	/** Entries dropped because the document's cap was full, not because a section was over its share. */
 	droppedItems: number;
 	/** Entries clipped to their section's per-item cap. */
 	itemTruncated: number;
@@ -92,12 +92,42 @@ const BULLET_OVERHEAD_CHARS = 3;
 const MIN_SECTION_BUDGET_CHARS = 8;
 
 /**
- * Render the sections into the stored document, enforcing `cap` per section.
+ * What each section may spend, in document order.
  *
- * Each section is clipped on its own: the per-item cap is derived from that section's budget, every
- * entry is cut to it with the line-boundary clipper (never a raw `slice`, which can split a surrogate
- * pair), and an entry that still does not fit is dropped whole rather than halved. Because a single
- * entry always fits an empty section, `text.length <= cap` holds by construction.
+ * The per-section numbers are targets, not caps: the document cap is the only hard limit. A section
+ * that needs less than its target leaves the rest in a pool, and the sections over their targets draw
+ * from that pool in proportion to how far over they are. When the pool covers every overage, each
+ * section gets exactly what it needs and nothing is dropped at all.
+ *
+ * This is what stops the renderer from spending entries to balance a document that still has room.
+ * The field case that forced it (2026-10-06): 1,839 characters sat idle in `Project` while
+ * `Invariants`/`Pitfalls`/`Index` were a combined 1,670 over their shares, and four passes in a row
+ * dropped 10-15 whole entries each while the document itself was below its cap.
+ *
+ * The floors cost at most one unspent character per over-target section, and only when the document is
+ * full: a pool that covers every overage divides exactly, so nothing is lost where it matters.
+ */
+function allocationFor(targets: readonly number[], wanted: readonly number[]): number[] {
+	const allowed = wanted.map((need, index) => Math.min(need, targets[index]));
+	const pool = targets.reduce((sum, value) => sum + value, 0) - allowed.reduce((sum, value) => sum + value, 0);
+	const over = wanted.map((need, index) => Math.max(0, need - targets[index]));
+	const overTotal = over.reduce((sum, value) => sum + value, 0);
+	if (pool <= 0 || overTotal === 0) return allowed;
+	// Proportional to the overage, floored: the floors can only hand out less than the pool, and when the
+	// pool covers every overage each section gets its own overage back rather than a fraction of it.
+	const extra = over.map((want) => (want === 0 ? 0 : Math.min(want, Math.floor((pool * want) / overTotal))));
+	return allowed.map((value, index) => value + extra[index]);
+}
+
+/**
+ * Render the sections into the stored document, keeping the whole document within `cap`.
+ *
+ * The allocation runs before the packing because what a section may spend decides its per-item cap:
+ * every entry is cut to that cap with the line-boundary clipper (never a raw `slice`, which can split
+ * a surrogate pair), and an entry that still does not fit is dropped whole rather than halved. A
+ * section is only ever over its own target because another section left room, so a drop means the
+ * document cap itself is full. Because a single entry always fits an empty section, `text.length <=
+ * cap` holds by construction.
  *
  * The renderer writes no truncation marker: the stored marker is stripped again by the write path, so
  * the drop is reported through the returned counts instead.
@@ -107,28 +137,36 @@ export function renderMemoryDocument(sections: MemorySections, cap: number): Mem
 	let droppedItems = 0;
 	let itemTruncated = 0;
 	const rendered: string[] = [];
-	for (const budget of memorySectionBudgets(cap)) {
-		const key = sectionKey(budget.heading);
-		const entries = toEntries(sections[key] ?? []);
+	const budgets = memorySectionBudgets(cap);
+	const entries = budgets.map((budget) => toEntries(sections[sectionKey(budget.heading)] ?? []));
+	const allowed = allocationFor(
+		budgets.map((budget) => budget.chars),
+		entries.map((list) => list.reduce((sum, entry) => sum + entry.length + BULLET_OVERHEAD_CHARS, 0)),
+	);
+	for (let index = 0; index < budgets.length; index += 1) {
+		const budget = budgets[index];
+		const list = entries[index];
 		if (budget.chars < MIN_SECTION_BUDGET_CHARS) {
 			// Unreachable while MIN_MEMORY_CHARS is 4000 (the smallest section budget is 588). The
 			// heading is still rendered so the document keeps its four-section shape and stays readable
 			// by sectionsFromMarkdown, which requires all four headings.
 			sectionDropped += 1;
-			droppedItems += entries.length;
+			droppedItems += list.length;
 			rendered.push(`## ${budget.heading}\n`);
 			continue;
 		}
-		const itemCap = Math.max(1, Math.min(MAX_LIST_ITEM_CHARS, budget.chars - BULLET_OVERHEAD_CHARS));
+		const spentLimit = allowed[index];
+		const itemCap = Math.max(1, Math.min(MAX_LIST_ITEM_CHARS, spentLimit - BULLET_OVERHEAD_CHARS));
 		const kept: string[] = [];
 		let spent = 0;
 		let lost = false;
-		for (const entry of entries) {
+		for (const entry of list) {
 			const clipped = clipToLineBoundary(entry, itemCap);
 			if (clipped !== entry) itemTruncated += 1;
 			const cost = clipped.length + BULLET_OVERHEAD_CHARS;
-			if (spent + cost > budget.chars) {
-				// Whole-entry drop: a half entry reads as a fact while being unusable.
+			if (spent + cost > spentLimit) {
+				// Whole-entry drop: a half entry reads as a fact while being unusable. Only reachable when the
+				// document's own cap is full, never because a neighbouring section left room.
 				lost = true;
 				droppedItems += 1;
 				continue;
