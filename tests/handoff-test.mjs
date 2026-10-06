@@ -655,7 +655,12 @@ try {
 		await mkdir(path.join(fixedFloorTmp, ".agents/memory"), { recursive: true });
 		await writeFile(
 			path.join(fixedFloorTmp, ".agents/memory/project-context.json"),
-			JSON.stringify({ handoffEnabled: true, handoffThresholdAuto: false, handoffThresholdRatio: 0.1 }),
+			JSON.stringify({
+				handoffEnabled: true,
+				handoffThresholdAuto: false,
+				// Derived from the shared minimum so a constant move does not silently invalidate the fixture.
+				handoffThresholdRatio: ratioConstants.MIN_THRESHOLD_RATIO,
+			}),
 		);
 		const fixedFloorPi = makePi({ cwd: fixedFloorTmp });
 		await (await loadDefault(`${PC}/index.ts`))(fixedFloorPi);
@@ -673,7 +678,9 @@ try {
 		);
 		check(
 			"the refusal names the real threshold and floor numbers",
-			/fixed 10% \(the 10\.0k-token threshold is below the [\d.]+k-token floor/.test(refusalReceipt),
+			new RegExp(
+				`fixed ${ratioConstants.MIN_THRESHOLD_RATIO * 100}% \\(the ${(ratioConstants.MIN_THRESHOLD_RATIO * 100).toFixed(1)}k-token threshold is below the [\\d.]+k-token floor`,
+			).test(refusalReceipt),
 		);
 		const wideCtx = makeCtx(fixedFloorTmp, {
 			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-wide-e2e"),
@@ -684,7 +691,7 @@ try {
 		await fixedFloorPi.commands.get("handoff").handler("status", wideCtx);
 		check(
 			"the status line shows the fixed share when the floor allows it",
-			String(wideCtx.notifications.at(-1)?.[0] ?? "").includes("10% of window"),
+			String(wideCtx.notifications.at(-1)?.[0] ?? "").includes(`${ratioConstants.MIN_THRESHOLD_RATIO * 100}% of window`),
 		);
 	} finally {
 		await rmTemp(fixedFloorTmp);
