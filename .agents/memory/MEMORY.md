@@ -16,7 +16,7 @@
 - The pi host bundle lives in ~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/dist/, with the active version in ~/.pi/agent/install/current-version and pi's own docs/ (skills.md, settings.md) beside it.
 - User surface is five slash commands (/project-context umbrella, then one per layer: /memory, /handoff, /autolearn, /session-log), all documented in docs/configuration.md, which also owns the entry-point relationship section.
 - The dsh plugin is the sibling implementation of the same config surface: it mirrored all seven v0.4.0 renames and reads no alias, so the two config surfaces do not diverge in spelling; only the storage and the keys without a counterpart differ.
-- Two modules append to the system prompt on every before_agent_start: memory/report.ts injects a MEMORY.md block and archive/archive.ts:121 injects a CONTEXT.md block; both sit at the front of the system prompt and are re-sent every turn, and since v0.4.1 both render section pointers instead of whole text.
+- Two modules append to the system prompt on every before_agent_start: memory/report.ts injects a MEMORY.md block and archive/archive.ts:122 injects a CONTEXT.md block; both are appended to the end of the system prompt and are re-sent every turn, and since v0.4.1 both render section pointers instead of whole text.
 - Each session's session-logs/<id>/ holds session.md (grep-friendly markdown rendering, header: canonical session.jsonl link plus entry count) and session.jsonl; the rendering is larger than the raw jsonl and can far exceed a context window, so a successor can only grep it or read it by offset.
 - The extension ships pipeline-layer project skills under .agents/skills/ (notably pi-project-context-headless-runs, pi-project-context-release, pi-project-context-prefix-cache-analysis), tracked like any other project artifact.
 
@@ -119,7 +119,7 @@
 - extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and the buildMemoryInjection/buildContextInjection entry points; shared/inject.ts::scanDocument (private) is the fence-aware document scan.
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
 - extensions/project-context/memory/report.ts - refusal gating, stale sentence, side-effect skipping (the `record_memory` tool itself is in memory/sections.ts); the before_agent_start MEMORY.md system-prompt injection; migrateProjectState call; the session_shutdown consolidate call with the shutdown:consolidate guard and its shutdownErrorRoot root choice.
-- extensions/project-context/archive/archive.ts:121 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the second per-turn injected block.
+- extensions/project-context/archive/archive.ts:122 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the second per-turn injected block.
 - extensions/project-context/memory/status.ts - memoryStatusLine()/memoryStatusLevel() plus contextStatusLine(), pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
 - extensions/project-context/memory/pass.ts - ConsolidateOutcome.basisKey, single-flight throttled pass, modelBlocked parking.
 - extensions/project-context/memory/prompt.ts - buildPrompt with the consolidation rules, the recent-conversation block and the cross-project boundary statement.
