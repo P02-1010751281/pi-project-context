@@ -181,3 +181,13 @@ implemented_in: f19dc93536ba（A+B 裁切/锚定）; b4c9405（摘要链整体�
 - **`MIN_SUMMARIZE_TOKENS` 名未改**：它现在是「dropped prefix 的下限」，语义未变、名字带旧词。
   → **已决（v0.4.2）**：更名 `MIN_DROP_TOKENS`（无行为变化）；摘要链删除后代码里最后一个 `summarize` 词随之消失。
 - **端到端未验**：A 形态的真实交接（发布后在真实 TUI 跑一次）尚未做；§9.2 的正面事实来自 headless 探针。
+
+## 9. 处置（2026-10-06，owner 定：按实验结果与结论）
+
+- **§7（turn-prefix 第二段摘要）记为历史，不再是待办。** 其前提（改 `summary.ts` 加一次模型调用）已随 §8 的摘要链删除而不存在；
+  要做必须先推翻 §8 的「交接零模型调用」。而目标本身已达成：`2026-10-06-handoff-and-cache-field-run.md` §2 的真交接
+  （自动阈值路，窗口回退到最后一轮起点、keep=60 而实际 `kept ~234`）与本次会话自身的交接都显示
+  「最后一轮的问题以原文到达 successor」。
+- **§8.4 第 4 条「端到端未验」按已验证关闭。** 证据同上（真机 RPC 路与 TUI 走同一个 handler；本次交接本身即真实交接）。
+- **§8.4 其余三条已在前轮关闭**：`handoffThinking` 于 v0.4.2 退役（键 + 动词 + 补全 + 旧名迁移项，无别名，测试钉住不复活）；
+  `MIN_SUMMARIZE_TOKENS` 更名 `MIN_DROP_TOKENS`；旋钮拼写的命名分叉已判 keep（`handoffBudgetSummaryTokens` 保留，threshold.ts 有读者）。
