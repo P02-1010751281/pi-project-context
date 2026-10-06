@@ -26,7 +26,7 @@ Started from the owner's "全修，无用就退役" instruction (plus handoffThi
 - Closed in v0.4.3: the autolearn inventory truncation is observable now (the injected list ends with `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`), and fixed-ratio mode obeys the same physical floor as adaptive mode with its refusal named on the status line.
 - Owner action plus restart, after any release: run one real TUI handoff to expose the A+B snap/anchor path for the first time, and confirm the cwd fallback boundaries.
 - Watch a real session JSONL for a read of .agents/memory/* as field evidence of progressive-disclosure compliance, and log it in the audit.
-- v0.4.2 已发布（2026-10-05，tag `1a3ddeec` / peeled `4b4f9c3`，pin `a170e37`；九轮独立评审后审8/审9 判 PASSED，证据 `.codestable/issues/2026-10-05-v042-cleanup/release-v0.4.2-evidence.md`）；本仓 `project-context.json` 仍带 `handoffThinking`，按硬切语义会在重启后第一次写回时消失。
+- v0.4.2/v0.4.3 均已发布：v0.4.2（2026-10-05，tag `1a3ddeec` / peeled `4b4f9c3`，pin `a170e37`，九轮评审后审8/审9 PASSED）；v0.4.3 残留收口（2026-10-06，tag `b26c2db` / peeled `b9085d5`，pin `3c5dad6`，五轮评审后审12–14 PASSED：固定比例同受物理下限、清单截断可见、比例范围单源、套件级尾空行门禁）。证据分别见 `release-v0.4.2-evidence.md` 与 `release-v0.4.3-evidence.md`。
 - Record the summary-chain deletion adjustment in .codestable/issues/2026-10-05-handoff-last-turn-not-replayed/ (the mechanical shape chosen); its design banner already names f19dc93 and b4c9405.
 - The seven owner forks in .codestable/issues/2026-10-05-autolearn-progressive-disclosure/ section 0 remain unanswered; slice A1 is unimplemented and autolearn B1' stays parked per the owner.
 - The pi-style turn-prefix second handoff summary stays designed-not-built in section 7 of handoff-last-turn-design.md and needs its own go-ahead.
