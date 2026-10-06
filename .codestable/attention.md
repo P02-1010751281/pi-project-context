@@ -42,9 +42,12 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
   余量 1,710）：合并语义重叠行 + 把 Index 长句收回定位职责，逐行做过**符号/常量/版本/反引号串存活校验**
   （39 个 token，仅 3 处故意移除：v0.4.5 tag id 与 v0.2.3 版本戳，改由 CHANGELOG/证据文件承载）。提交 `8ffe467`。
   损失机制有**两条**，别只记一条：①**模型自己整篇重写/合并/删除**（评审两次真实 pass 为 −4 与 −17 条，其中一次回复
-  不带 `- ` 条目、走 opaque 路径使分段账目整段失效）；②**贴顶时渲染器按 cap 裁剪，裁剪结果经「外部编辑采纳」路径写回
-  journal 而变成永久状态**（2026-10-06 10:48:14Z 现场：journal 先记 138 条的未裁剪回复、再记 126 条的文件内容，
-  `errors.log` 记 `memory regression: 2` 与 `adopted an externally edited MEMORY.md`；守卫的 2 是**逐字**口径，12 条里
-  它只报 2，cap 行又被「每项目每进程一次」限流吃掉——**这类丢失在实现里是静默的**）。现场与算术见
+  不带 `- ` 条目、走 opaque 路径使分段账目整段失效）；②**并发或混版本写入者可能把更大的文档换成更小的**（2026-10-06 复核后改写，旧表述「贴顶时渲染器按 cap 裁剪、
+裁剪结果经「外部编辑采纳」写回 journal」**已推翻**）：2026-10-06 10:48:14Z 现场 journal 是 `138 条/31,993`（.887）
+→ `126 条/29,939`（.969），而采纳日志落在**两者之间**（.962）⇒ 后一条是采纳**另一个写入者**的文件，不是本构建的
+裁剪写回。单构建内 journal 尾与文件由同一裁剪器产出（`pass.ts::memoryTextFor` 把 `renderMemoryDocument` 的产物同时
+喂给 journal 与 `MEMORY.md`，而该渲染器按构造保证产物 ≤ cap）⇒ 裁剪本来就是状态，**不需要**采纳这一步；
+两个 renderer 在未超限时产物逐字节相同（实测），差异只在需要整条丢弃时出现。守卫缺口仍成立：
+`memory regression: 2` 是**逐字**口径（12 条里只报 2），cap 行又被「每项目每进程一次」限流吃掉——**这类丢失在实现里是静默的**）。现场与算术见
   `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md`。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。

@@ -86,8 +86,18 @@
 | errors.log | `10:48:14.289 memory regression: 2 …` 与 `10:48:14.962 adopted an externally edited MEMORY.md into the memory journal` |
 | 文件对比 | `git show ae857ab:.agents/memory/MEMORY.md` = 138 条 / 31,993 vs 工作区 126 条 / 29,939 |
 
-机制（由上面三行可算，不是纯推断）：**回复给出约 138 条 → 渲染器按 cap 裁剪掉约 10 条（`droppedItems`）→ 裁剪后的文件被"外部编辑采纳"路径写回 journal → 裁剪成为权威状态**。
-`memory regression: 2` 是守卫的**逐字**口径（规范化后精确集合比较），它只统计"原文彻底不在"的条目，**不是**丢失计数：本次 12 条丢失里它只报 2 条，其余是裁剪。cap 行缺失可解释为"每项目每进程写一次"的限流（errors.log 还会轮转），因此**这类丢失在当前实现下是静默的**。
+机制（**2026-10-06 复核后已推翻，旧表述保留在下方以便追溯**）：~~回复给出约 138 条 → 渲染器按 cap 裁剪掉约 10 条（`droppedItems`）→ 裁剪后的文件被“外部编辑采纳”路径写回 journal → 裁剪成为权威状态~~。
+
+  复核结论：`pass.ts::memoryTextFor` 把 `renderMemoryDocument(resolved.sections, cap)` 的 `text` **同时**作为 journal 的 op
+  与 `MEMORY.md` 的内容，且该渲染器按构造保证产物 ≤ cap ⇒ journal 尾 == 文件、`renderKey === foldedView`，
+  **采纳分支不会被自己的输出触发**；裁剪不需要采纳就已经是状态。时间戳也对不上：journal 是 `.887`（138 条）→ `.969`（126 条），
+  而采纳日志在 **`.962`**（夹在中间）⇒ 后一条是**采纳另一个写入者的文件**（现场会话当时加载 installed clone 的 v0.4.3 模块，
+  而 HEAD 已到 v0.4.5；该仓 `.agents/memory/` 布局同时被 Codex 移植使用）。实测：同一份 30,223 字符文档，v0.4.3 与 HEAD 的
+  renderer 产物逐字节相同，差异只在需要整条丢弃时出现。
+
+  本节保留的现场事实是「12 条从受版本控制的文件里消失」，但**其归因不是本构建的 cap 裁剪**，而是另一个写入者的更小文档被按设计采纳进来。
+  `memory regression: 2` 是守卫的**逐字**口径（规范化后精确集合比较），它只统计“原文彻底不在”的条目，**不是**丢失计数（本次 12 条里它只报 2）。
+  cap 行缺失可解释为“每项目每进程写一次”的限流（errors.log 还会轮转），因此**这类丢失在当前实现下是静默的**。
 
 后果与状态：恢复后 render 为 135 条 / 31,935 字符，`sectionDropped=0 droppedItems=0`，距 cap 仅 **65 字符**——与丢失前（7 字符）几乎相同，即**下一次贴顶的 pass 可以再发生同样的事**。未恢复的 3 条（machine-path 扫尾判据、sections-test.mjs 索引细节、审计指针）可从 `ae857ab` 取回。
 
