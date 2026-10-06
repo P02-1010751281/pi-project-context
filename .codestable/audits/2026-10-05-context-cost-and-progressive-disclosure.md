@@ -400,4 +400,6 @@ M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents 
 
 结论：会话执行者在注入的 MEMORY/CONTEXT 之外**主动按需拉取细节**（errors.log 与旋钮值 project-context.json 是前两位），说明渐进披露在真实运行里被使用，注入文档不需要装下全部事实。此前这一条只有设计面（`input.ts`/`injection.ts` 的按需路径），这是**第一条现场证据**：同一次会话的最终记忆反而因为贴 cap 被裁剪（见 `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md` 的现场段），即"少注入、按需读"与"状态贴 cap 即丢"是两件独立的事。
 
-**autolearn 清单上限**（同一开放项的另一半）：本仓当前 `collectSkills()` 的项目 skill 数与 `inventoryText()` 长度见下，截断行未出现，因此"现场命中 8000 字符上限"仍未被观察到，且当前规模下**不可达**；该行由 `tests/autolearn-test.mjs` 的合成用例钉住。
+**autolearn 清单上限（同一开放项的另一半，现场确认）**：本机实测 `collectSkills(skillsDir(root), "project")` 18 个 + `collectSkills(globalSkillsDir(), "global")` 51 个 = 69 个 skill，`inventoryText([...])` = **7,970 字符**（上限 8,000），截断标记**确实出现**：
+`- (N more skill(s) not listed: the 8000-character inventory cap was reached)`。
+即"截断在界面上可见"此前只有 `tests/autolearn-test.mjs` 的合成用例，现在是**现场第一例**：真实会话注入的清单已在丢尾巴，只剩 30 字符余量，任何新增 skill/更长的描述都会让更多 skill 不被列出。这与 9.14 上半段同属"少注入、按需拉取"，但方向相反：这一处**必须**在注入里说清楚不完整，否则模型会把"看不见"当成"不存在"。
