@@ -36,8 +36,11 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
   1,635 的超额，但固定 share 不允许借用——总文档余 1,798 却仍丢条目。
   `errors.log` 的 `memory exceeded a section budget: …` 是这条路径的日志，`memory regression:` 行则跑在裁切**之前**，
   **不能**当损失的度量或验收。守卫只记不拒发（`memory/pass.ts`）。
-  已修的是提示层（主规则＋重试句都改成「压到每段配额内，只删可证过期者」，见
-  `.codestable/issues/2026-10-06-consolidation-keeps-entries/`）；**未决的是第二层**：固定 share（0.2/0.4/0.25/0.15）
-  与本仓实际分布不符，可选「按分布重配 share」或「段间可借额度」（机制改动，需独立设计）。
+  提示层已修（主规则＋重试句都改成「压到每段配额内，只删可证过期者」，v0.4.4），但 **2026-10-06 用 v0.4.4 冻结代码
+  ＋真实 flash 辅助调用实测四次：提示层不足** —— 模型压不进固定配额、重试四次 `adopt=false`，每轮真实丢 10–15 条；
+  本仓内容需要 share **14.2/42.7/25.8/16.7%**，而总文档 31,753 < 32,000（Project 空余 1,839 可吸收 1,670 的超额）。
+  **待决**：C 段间可借额度（renderer 把 share 变软目标，硬约束退回整档上限；实测今天 0 丢弃，机制改动需设计）/
+  B 重配 share（`schema.ts` 契约，且余量仅 0.6%）/ D 只把 `maxMemoryChars` 提到 35,700–36,000（每会话多约 4,000 字符
+  注入，不治配比）/ A 接受裁剪。数据与复现：`acceptance-2026-10-06-v0.4.4-not-met.md`。
   手改 MEMORY.md 补条目**必须同时满足段配额**，否则下一轮必被裁回（2026-10-06 已实测过一次）。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。
