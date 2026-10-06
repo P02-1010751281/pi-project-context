@@ -3,7 +3,7 @@
   "memoryEnabled": true,
   "autolearnEnabled": true,
   "handoffEnabled": true,
-  "autolearnAt": 1791291679730,
+  "autolearnAt": 1791295968502,
   "autolearnTurns": 20,
   "autolearnIntervalMs": 1800000,
   "consolidateTurns": 6,
