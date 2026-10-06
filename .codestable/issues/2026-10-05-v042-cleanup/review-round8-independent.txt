@@ -1,0 +1,65 @@
+# Lane A 独立审查 — v0.4.2 发布放行轮（冻结 HEAD `82b06c1`，判定模型 `deepseek/deepseek-flash`）
+
+严格只读：入场/离场 `git status --porcelain` 逐字一致（`M HANDOFF.md`、`M project-context.json`、`?? skill-candidates/`，均为入场会话态）；变异在 `/tmp` 的整仓副本里做（`git checkout -- .` 复位后 15/15 负控制）。
+
+## 硬门禁（全部自己复跑）
+
+| 门禁 | 实测 | 结果 |
+|---|---|---|
+| `git diff --check v0.4.1..HEAD` | 空输出，exit 0 | ✅ |
+| `node tests/run-all.mjs`（仓内冻结树） | `All 15 tests passed.` | ✅ |
+| 本地 master / forgejo / github 两个 push URL | 均 `82b06c1b1e2974e18257dd120f5a188020825357` | ✅ |
+| hygiene §10 按行归属脚本（原文原样跑） | 23 条 Index 行，**0 条不符**；自写更严版（含 camelCase/全大写）同 0 | ✅ |
+| 人工位置/序数复核 | L19「end of the system prompt」✓（pi runner 链式语义：注册序决定，archive 先=第一块，memory 后=末块）；L122「first … registered before the memory one」✓；prefix-cache skill 三处 end ✓；adaptive/headless 横幅均把旧形态标为历史 ✓ | ✅ |
+| 变异 A `shared/inject.ts` fence 长度判断 | 恰 1 条具名红 `a shorter fence run inside a block does not close it`（sections-test） | ✅ |
+| 变异 B `memory/report.ts:28` `.agents/memory`→`.agents` | 恰 1 条具名红 `a cwd that only has .agents is not the memory layer` | ✅ |
+| 变异 C `threshold.ts:135` 8000→7000（单点） | 2 条具名红（tier 边界/归因） | ✅ |
+| 未变异副本 | 15/15 | ✅ |
+
+上一轮判否点的真修：`MEMORY.md:122` 现为 "the first of the two per-turn injected blocks (registered before the memory one)"；`CONTEXT.md:12` 已收窄为 "the last MIN_SUMMARIZE_* identifier"（`summarized`/`summarizer` 已归为别的词形）；`command-surface-audit` skill 的 `/memory` 前缀已改成共享 `Memory: `（与 `report.ts:450`、`index.ts:91` 一致）。CHANGELOG v0.4.2 逐句对码全部成立（硬切非改名、v0.4.1 已知键持久化、未知键下次写回消失、`handoffBudgetSummaryTokens` 活读者在 `threshold.ts:135` 且不入 auto 公式、`MIN_DROP_TOKENS` 纯更名值仍 8000、`scanDocument` 单遍历、CommonMark 关 fence、`shutdownErrorRoot` 精度修正）。
+
+## blocking
+无。
+
+## important
+无。
+
+## nit
+
+1. **`.agents/memory/MEMORY.md:132` — 残留的过期行号区间。** 原文 "the inspect backtrack round at `pass.ts:142-153`"；实际 backtrack 块在 `autolearn/pass.ts:155-170`（`if (!decision.skill && (decision.inspect.length …))` 起），142-153 是 first-look/decision 记账与 `shownNames` 注释。文件与机制名对，区间错。§10 归属检查天然看不见行号。影响：按指针取读的 agent 会读到错区域；属发布面渲染的过期定位。修复边界：仅改这一行渲染文本（写 `pass.ts:155-170`，或按本仓 Pitfall「指针落到文件级」删掉区间），重刷 `docs(memory): refresh the memory render`；不动代码。
+2. **`.agents/skills/pi-project-context-adaptive-handoff-threshold-review/SKILL.md:15-21` — Procedure 正文仍按现行语气给出已被禁止的旧公式。** step 2 仍写 `T0 = max(min(usable - 4000, knee), baseline + keep + handoffBudgetSummaryTokens)`，step 2 第 5 项与 :36 仍写 `summarizer` cap/期望值。横幅在 :29-32，已明确「正文公式是 v0.4.0 之前旧形态、`docs/handoff.md` 明令禁止、以 docs 为准」，故未把旧形态当现行；但读者按序执行仍可能先撞上旧式。修复边界：把横幅提到 Procedure 之前或改写 step 2 的 `T0`/cap 行；不动 knee 曲线与 Gotchas 的历史记载。
+3. **`.agents/skills/pi-project-context-headless-runs/SKILL.md:102` — 横幅「HANDOFF.md 只有文件清单」略过头。** `prompt.ts:119-135` 的 `buildHandoffDocument` 还带 Created/Project/Log/Index 机械头部；真实论点是「无摘要散文」。修复边界：改成「只有机械头部与文件清单（无摘要）」，不动其余正文。
+4. **`CHANGELOG.md:13` / `docs/configuration.md:118` — dsh 证据句比实测事实宽。** 「本机所有 dsh 产物都不含 `handoff` 字样」对字面单词不成立：`~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-session-telemetry/lib/index.js` 含 `handoffCursor`，`~/.dsh/profiles/web/node_modules/dsh-context/lib/client.js:9082` 含 "web boot handoff"（零命中的是键拼写 `handoffThinking`/`handoffSummaryThinking`）。结论不受影响（R-2 本就记名「跨仓不可复验」）。修复边界：把证据句收窄为「本机 dsh 产物中 `handoffThinking`/`handoffSummaryThinking` 0 命中」，保留 R-2 指向。
+
+## suggestion
+
+1. **`docs/architecture.md:122-136,160-177`** — 模块树漏列 `memory/status.ts`、`memory/injection.ts`、`shared/inject.ts`、`shared/lang.ts`（代码与 `MEMORY.md` 均有）。非 v0.4.2 引入（v0.4.0/v0.4.1 遗留）。修复边界：下次编辑 architecture.md 时补 4 行，不单开发布修复。
+2. **`CHANGELOG.md:6`** — v0.4.2 段仍为「未发布」；tag 前落真实日期（发布步骤，非缺陷）。
+3. 把「位置/序数断言跨面互读」做成一条机械探针：§10 脚本旁再加一次对 release surface 的 `first|second|front|end|at the end` 扫描并与两处构串代码对读，避免再次靠人眼漏掉 `second`/行号这类残证。
+
+## learning
+
+- pi 的 `before_agent_start` 返回值是整体替换、按注册序链式传递（`dist/core/extensions/runner.js` 的 `emitBeforeAgentStart`），所以注入块顺序由 `index.ts:55-58` 的注册序决定，不由散文列举顺序决定。这是「谁 first」唯一可复验的判据。
+- §10 归属（符号是否出现在该行文件）与行号/序数是两套检查：本轮归属 0 命中，但 `pass.ts:142-153` 与 `handoffThinking` 单词级别的 dsh 证据句都没有被它覆盖。
+- v0.4.2 的运行时净变化是**删表面**（`extensions`+`tests` 仅 174+/178−），风险集中在配置/命令面退役与文档面；最大可复现用户影响是键静默消失（R-2），不是注入路径。
+
+## praise
+
+- 四项硬门禁与两格单侧变异全部独立复跑成立；CHANGELOG 承诺的「shutdownErrorRoot 单侧变异精确红一条」为真。
+- 三处上一轮点名的问题真修且可复核：序数改 first 与 pi runner 语义一致；CONTEXT 表述收窄；技能 `/memory` 前缀与代码统一。
+- `scanDocument` 单遍历 + CommonMark 关闭行是正确方向的修复（只可能保留更多内容，不会新丢内容），且新增两条断言都是判据式而非抄实现。
+
+## residual-risk（发布后处理项）
+
+- **R-2**：dsh 侧是否存在 `handoffThinking` 读者跨仓不可复验；本仓 HEAD 与工作区 `project-context.json` 均仍有 `"handoffThinking": "off"`，任意一次写回会静默丢弃（已在 CHANGELOG/docs 明说为硬切）。
+- **R-1**：固定比例模式无最小可丢下限（`docs/handoff.md:86-90` 已记名，v0.4.1 起既存语义，删除 `runHandoff` 事后下限未改变它）。
+- `CONTEXT.md` 会话快照停在 `2a7f7d0`（第 7/29/39 行仍写「Frozen revision 2a7f7d0」「Master=2a7f7d0」），与 HEAD `82b06c1` 不符——预声明快照残留，下次刷新改写。
+- autolearn inventory 截断贴边（~7,892/8,000 字符），预声明残留。
+- 入场工作区即带 `M HANDOFF.md`/`M project-context.json`/`?? skill-candidates/`（会话态，非本次审查产生，也不是冻结面内容）。
+
+## 对抗性一遍
+
+最可能的用户可见错误仍是 **R-2 硬切静默丢键**：若 dsh 真有 `handoffThinking` 读取路径，升级到 v0.4.2 后任意写配置命令都会无提示删键。最小复现：在含 `"handoffThinking": "session"` 的 `project-context.json` 上执行 `/handoff threshold auto`（或 `/memory off`），随后 `grep handoffThinking .agents/memory/project-context.json` 归零。判据：dsh 源码 `grep -rn 'handoffThinking\|handoffSummaryThinking'` 是否存在读取路径；本仓不可复验，故按记名残留放行。pi 侧运行时未找到第二候选：`/handoff now|run|force` 与 `force-auto` 是两个唯一起点（`run.ts:499-505`），`maybeTrigger` 仍持 `handoffEnabled`/阈值门；fence 两处改动只可能多保留内容；`shutdownErrorRoot` 仅在「cwd 有 `.agents` 无 `.agents/memory`」边角少落一条日志（已在 CHANGELOG 如实写明）。
+
+`VERDICT: PASSED` — 四项硬门禁、按行归属、位置/序数复检与变异具名可红全部成立；仅余行号/证据精度/横幅位置类 nit 与预声明残留，无 blocking/important。
+`RELEASE-OK: yes`

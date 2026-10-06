@@ -1,0 +1,39 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 8，**发布放行轮**）。沙箱（冻结版）：/tmp/pc-v042-r8
+
+严格只读（不得写工作区 / git 写操作 / 改配置；临时文件只在 /tmp）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。独立判断，不继承此前结论；所有断言自己复跑。
+
+## 范围
+v0.4.2 = `git diff v0.4.1..HEAD`，冻结于 HEAD 82b06c1。发布面：CHANGELOG v0.4.2 段、docs/、.agents/skills/、
+.agents/memory/{MEMORY,CONTEXT}.md。
+
+## 上一轮判否的一点（本轮核验真修）
+MEMORY.md 曾把 archive 的 CONTEXT 块写成 "the second per-turn injected block"，而 `index.ts` 的注册序是
+`registerArchive(pi)` 先于 `registerConsolidation(pi)`，所以 CONTEXT 块是第一个、MEMORY 块在末尾。
+请自己读注册序与两个 `systemPrompt: \${event.systemPrompt}\n\n## …` 构造，确认渲染现在说的是 first。
+同轮两个 nit：CONTEXT.md 的「last "summarize" word」已收窄为「last MIN_SUMMARIZE_* identifier」；
+command-surface-audit skill 的 `/memory` 前缀改成 `Memory: `。另请核这两个技能正文的旧键名与过期公式横幅
+（adaptive-handoff-threshold-review、headless-runs）是否已不再把旧形态当现行。
+
+## 硬门禁（自己跑）
+1. `git diff --check v0.4.1..HEAD` 空。
+2. `node tests/run-all.mjs` 15/15。
+3. 本地 master 与两个 push URL 的 master 同一 sha（`git ls-remote`）。
+4. hygiene skill §10 的按行归属检查跑一遍，报告不符项；并人工核位置/序数类断言（front/end/first/second）与代码一致。
+5. 自选 1-2 格单侧变异确认断言具名可红；未变异树 15/15。
+
+## 抽检
+6. 发布面自洽：CHANGELOG v0.4.2 每句与代码一致；无描述已删机制的活动引用（`.codestable/` 冻结档案与 CHANGELOG
+   历史条目不算）。
+7. 对抗性一遍：假设发布后有一个用户可见错误，最可能是哪一种？给最小复现与判据。
+
+## 判定规则（预先声明）
+- 有 blocking/important（用户可见错误、错误承诺、丢数据、发布面事实不实）→ `CHANGES-REQUESTED` / `RELEASE-OK: no`。
+- 只剩 nit/suggestion/已知记名残留（R-1 固定比例语义、R-2 dsh 跨仓不可复验、CONTEXT 会话快照、inventory 截断贴边）
+  → 可 `VERDICT: PASSED` / `RELEASE-OK: yes`，并把它们列在 nit/residual-risk 作为发布后处理项。
+
+## 输出格式
+分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条含 `file:line`、影响、
+修复边界。最后两行：
+`VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`（附理由）
+`RELEASE-OK: yes/no`

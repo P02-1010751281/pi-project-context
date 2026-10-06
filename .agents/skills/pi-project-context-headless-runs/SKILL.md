@@ -98,7 +98,7 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
 4. For language resolution, send a short Chinese user turn and repeat: the handoff doc headings should render in Chinese when `handoffLang: auto` resolves to `zh`.
 
 > **v0.4.x 更新（2026-10-05）**：键名已从 `handoffKeepTokens` / `handoffLanguage` 更到
-> `handoffBudgetRecentTokens` / `handoffLang`（正文已替换）；交接自 v0.4.1 起不生成摘要，HANDOFF.md 只有文件清单。
+> `handoffBudgetRecentTokens` / `handoffLang`（正文已替换）；交接自 v0.4.1 起不生成摘要，HANDOFF.md 只有机械头部（Created/Project/Log/Index）与文件清单，没有摘要散文。
 
 ### Gotchas
 

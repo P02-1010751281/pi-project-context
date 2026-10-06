@@ -8,8 +8,7 @@
 ### 变更
 
 - **`handoffThinking` 与 `/handoff thinking` 退役**：该键在本仓没有行为读者（只有那个动词写它），回执里
-  「stored for the dsh profile」的承诺在本仓找不到证据支撑——v0.4.0 的证据只说两仓共享那七个改名拼写，本机所有
-  dsh 产物都不含 `handoff` 字样（跨仓不可在本仓复验，见审计 §9.12 R-2）。兼容性上这是一次**硬切**，不是改名：
+  「stored for the dsh profile」的承诺在本仓找不到证据支撑——v0.4.0 的证据只说两仓共享那七个改名拼写，本机的 dsh 产物里这两个键拼写 0 命中（跨仓不可在本仓复验，见审计 §9.12 R-2）。兼容性上这是一次**硬切**，不是改名：
   v0.4.1 里它仍是已知键（`parseConfig` 读回、`updateConfig` 写回，值会随写持久化），退役后它才成为未知键——
   按本仓规则被忽略，并在下一次写回时随整份重写消失。键、动词、二级补全、旧名迁移项与文档一并移除；没有别名。
   保留同拼写的 `handoffBudgetSummaryTokens` / `/handoff budget summary` 仍有活读者（`threshold.ts` 把它读进
