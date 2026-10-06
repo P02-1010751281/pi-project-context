@@ -1,0 +1,57 @@
+# Lane A 独立审查报告 — v0.4.2 发布放行轮（冻结 HEAD `8824599`）
+
+判定模型：deepseek/deepseek-flash。工作区只读：`git status` 与开场一致（仅既有 `HANDOFF.md`/`project-context.json` 震荡 + 未跟踪 `skill-candidates/`），变异与测试在 `/tmp` 副本执行。
+
+## 门禁独立复跑（不采信任何记录）
+
+| 门禁 | 实测 | 结果 |
+|---|---|---|
+| `git diff --check v0.4.1..HEAD` | 空输出，exit 0 | ✅ 干净 |
+| `node tests/run-all.mjs` | `All 15 tests passed` | ✅ 15/15 |
+| 本地 master | `88245990de74cc300da6e6ad0d25241d6121413e` | ✅ |
+| forgejo master | `8824599…` | ✅ 同一 sha |
+| github master | `8824599…` | ✅ 同一 sha |
+
+渲染源码地图（§10 脚本原样 + 全 27 行等价脚本）：23 条 `.ts/.mjs` 行抽 36 符号，**0 个 0 命中**；全部 Index 行路径存在；`shutdownErrorRoot` 只在 `memory/report.ts`（定义 :27、生产调用 :382，另仅 `tests/consolidation-test.mjs` 直接断言）。但逐行**文件归属**校验发现两处机器检查看不见的问题（见下）。
+
+单侧变异 2 格（`/tmp/pc-v042-r5-mut`，未变异树 15/15）：
+- `inject.ts:87` `run[1].length >= fence.length` → `>= 1`：仅红 `a shorter fence run inside a block does not close it`（FAILURES 1）。
+- `report.ts:28` `.agents","memory"` → `.agents`：仅红 `a cwd that only has .agents is not the memory layer`（FAILURES 1）。
+
+退役依据一致性：CHANGELOG:10-14、docs/configuration.md:117-120/163/166、vocabulary-conventions.md:116-117/128、config.ts:218-223、handoff-last-turn-design.md:172-178、tests/handoff-test.mjs:1121-1125、switches-test.mjs:225-227、MEMORY.md:59-60 均已统一为「pi 侧零行为读者 + 回执承诺在本仓无据 + 跨仓见 R-2」；审计 §9.7:235-238 改为叙述撤回并指向 §9.12，§9.11 I1、§9.12:354-371 不再断言 dsh 读自己的键。v0.4.1 `config.ts:52/111/229/263/324` 与 `:358-362` 独立复验，「硬切不是改名」成立；`threshold.ts:135` 确有读者，且 auto 公式只用 `asked` 做 override 回执——CHANGELOG 该句准确。
+
+## blocking
+无。
+
+## important
+1. **`.agents/memory/MEMORY.md:137` — `findCutPoint` 指错文件。** Index 写 `handoff/text.ts - findCutPoint/replayMessagesFor/…`，但 `findCutPoint` 是 pi 宿主导出（`handoff/run.ts:8` 导入、`:96` 调用），text.ts 及其全历史从未包含它（`git grep`/`git log -S` 均 0）。该行由本次发布渲染（8824599）新增，与审 3 的 `shutdownErrorRoot` 错位同类；§10 只查「全树有无命中」，对「命中在别的文件」免疫。影响：发布面源码地图把读者指向错误模块。修复边界：删掉该行的 `findCutPoint/`（如需保留则挂到 `handoff/run.ts` 行并注明宿主 API），只改渲染文本后重刷提交。
+2. **`.agents/memory/MEMORY.md:131` — 「product-language instruction」无指涉，审 4 第三处死名并未真修。** 该行现在写 `prompt.ts holds … (buildPrompt) and the product-language instruction it embeds`；`git grep -ni "language|语言" -- extensions/project-context/autolearn` 与 `autolearn/prompt.ts` 全历史均 0 命中，仓库/`.codestable`/docs 也无此概念（唯一 `语言指令` 在已删除的 handoff 摘要链）。审 4 点名的 `productLanguageInstruction` 只是从死符号换成了同指散文，机械检查自然通过。影响：发布面断言一个不存在的机制，且属「前账假修」。修复边界：删掉 `and the product-language instruction it embeds`，或改为可 grep 的真实内容（如 buildPrompt 的项目边界/正文风格规则集）。
+
+## nit
+- `.agents/memory/MEMORY.md:138` `shared/config.ts … saveConfig via updateConfig`：`saveConfig` 定义在 `handoff/settings.ts:62`（下行已正确归属），config.ts 只拥有 `updateConfig`；v0.4.1 就有，本次刷新未动。
+- `.agents/memory/MEMORY.md:121` `report.ts - record_memory tool`：工具常量 `RECORD_MEMORY_TOOL` 定义在 `memory/sections.ts:343`；report.ts 并不引用它，且 `sections.ts` 全无 Index 行。v0.4.1 就有。
+- `.agents/memory/MEMORY.md:127` 把 `capCeilingWarning`（定义于 `shared/output-budget.ts:52`）列作 index.ts helpers；`.agents/memory/MEMORY.md:135` 的 `MIN_DROP_TOKENS` 定义在 `shared/config.ts:116`。均为既有松散归属，可留待下次渲染顺手清理。
+- `.agents/memory/CONTEXT.md:7` 会话快照停在 `2a7f7d0`（与 HEAD 的 8 轮提交/8824599 不符）；属预声明的 CONTEXT 快照残留。
+
+## suggestion
+- 把 §10 从「存在性」升级为「按行归属」：Index 行的符号必须出现在该行主文件、或同一行显式点名的文件（并把下划线/全大写常量纳入抽取）。这能一次性抓到本轮的 `findCutPoint` 与上面四条 nit。
+- tag 前给 `CHANGELOG.md:6` 的 v0.4.2 段落改真实日期（`未发布` 不应进 tag），沿用 v0.4.1 的发布提交先例。
+
+## learning
+- 存在性 grep ≠ 归属检查：同一个「符号存在、却挂在错文件」的缺陷类已连续两轮出现（审 3 的 `shutdownErrorRoot`、本轮的 `findCutPoint`），只查全树命中的机械检查必然漏。
+- 对死符号的「散文式替换」不等于修复：只要把名字换成同义描述，检查就会绿，但断言仍无据可查（`productLanguageInstruction` → `product-language instruction`）。
+- 提交信息与记录里的门禁断言仍必须独立复跑；本轮四项硬门禁实测与声明一致，但这是复跑的结果，不是采信的结果。
+
+## praise
+- 四项硬门禁这次是真的干净：diff --check exit 0、15/15、三端同 sha；上一轮「提交信息称 clean 而实脏」的问题不再。
+- `shutdownErrorRoot` 抽取与 `shutdown:consolidate` 守卫、`MIN_DROP_TOKENS` 纯更名（v0.4.1..HEAD 仅 import + 3 处调用点）、fence 单遍 `scanDocument` 与 v0.4.1 双扫描叙事逐句对得上，两个变异各自只红一条具名断言。
+- 退役叙事在七个活动面 + 审计内全部改写并互相指向 R-2；`handoffBudgetSummaryTokens` 保留有 `threshold.ts:135` 实证；固定比例无下限明确写入 docs/handoff.md:87-90 记名残留，而不是偷偷改机制。
+
+## residual-risk
+- **R-2**：dsh 侧是否存在 `handoffThinking` 读者跨仓不可复验；若存在，硬切对 dsh 用户是无提示破坏性变更（关闭判据已写在审计 §9.12）。
+- **R-1**：固定比例模式无最小可丢下限——v0.4.1 起的既存语义，已文档化。
+- 退役键在下一次 pi 写入时被整份重写静默丢弃（含本仓自己的 `project-context.json`，见 CONTEXT.md:29），语义已明说。
+- autolearn inventory 截断贴边（7,892/8,000，实测残留）；不属本次发布引入。
+
+VERDICT: CHANGES-REQUESTED — 四项硬门禁与代码侧均真修，但发布面 `MEMORY.md` Index 仍有两处事实错误（`findCutPoint` 挂错文件；`product-language instruction` 无指涉、审 4 死名为散文式假修），§10 存在性检查看不见这两类。
+RELEASE-OK: no

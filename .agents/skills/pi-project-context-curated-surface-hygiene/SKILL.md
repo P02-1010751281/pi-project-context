@@ -144,32 +144,45 @@ commit in the `docs(memory): refresh the memory render` style, never bundled wit
 A description/body-only pass leaves `extensions/` byte-identical to the current release tag, so it
 needs no new tag, pin bump or restart.
 
-## 10. Mechanically grep the render's source map before committing it
+## 10. Attribute every symbol the render's Index names
 
-The `## Index` lines name file: symbol pairs, and a refresh keeps stale ones: in v0.4.2 one refresh carried
-`shutdownErrorRoot` onto the wrong file plus `splitSections` (deleted in the same round) and
-`productLanguageInstruction` (a name that never existed anywhere), and three separate review rounds each caught
-only the one they happened to read. Extract every backticked symbol and CamelCase identifier from the `## Index`
-lines and require at least one hit under `extensions/` or `tests/`; the probe is in
-`.codestable/issues/2026-10-05-v042-cleanup/` (round-4 transcript) and the shape is:
+The `## Index` lines are file: symbol pairs, and a refresh keeps stale ones. Existence greps are not enough:
+one refresh in v0.4.2 carried `shutdownErrorRoot` onto the wrong file, `splitSections` (deleted the same round),
+`productLanguageInstruction` (a name that never existed), and `findCutPoint` (pi's own export) onto a module that
+does not use it - and successive review rounds each caught only the one they happened to read. The rule is per
+line: a symbol must appear **in that line's main file**, or in a file the same line names explicitly. A historical
+name is allowed only when the line says `renamed from`.
 
-    python3 - <<'PY'
-    import pathlib, re, subprocess
-    t = pathlib.Path(".agents/memory/MEMORY.md").read_text(encoding="utf-8")
-    lines = [l for l in t.splitlines() if re.match(r"^- [\w./-]+\.(ts|mjs)\s*-", l)]
-    syms = set()
-    for l in lines:
-        syms |= {m.split("::")[-1].split(".")[0].strip("()") for m in re.findall(r"`([A-Za-z_][A-Za-z0-9_.:()]*)`", l)}
-        syms |= set(re.findall(r"\b([a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)\b", l))
-    for s in sorted(syms):
-        if s.endswith((".ts", ".mjs")): continue
-        if not subprocess.run(["git", "grep", "-l", rf"\b{re.escape(s)}\b", "--", "extensions", "tests"],
-                              capture_output=True, text=True).stdout.strip():
-            print("dead name in the render Index:", s)
-    PY
+```bash
+python3 - <<'PY'
+import pathlib, re, subprocess
+def files_containing(sym):
+    r = subprocess.run(["git", "grep", "-l", rf"\b{re.escape(sym)}\b", "--", "extensions", "tests"],
+                       capture_output=True, text=True)
+    return r.stdout.split()
+doc = pathlib.Path(".agents/memory/MEMORY.md").read_text(encoding="utf-8")
+lines = [(i + 1, l) for i, l in enumerate(doc.splitlines()) if re.match(r"^- [\w./-]+\.(ts|mjs)\s*-", l)]
+skip = {"MEMORY", "HANDOFF", "CONTEXT", "INDEX", "README"}
+for no, l in lines:
+    path = l.split(" - ")[0][2:].strip()
+    desc = l.split(" - ", 1)[1] if " - " in l else ""
+    if "renamed from" in desc:
+        continue
+    syms = {m.split("::")[-1].split(".")[0].strip("()") for m in re.findall(r"`([A-Za-z_][A-Za-z0-9_.:()]*)`", l)}
+    syms |= set(re.findall(r"\b([a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)\b", l))
+    syms |= set(re.findall(r"\b([A-Z][A-Z0-9_]{3,})\b", l))
+    named = set(re.findall(r"\b([\w.-]+\.(?:ts|mjs))\b", desc))
+    for s in sorted(x for x in syms if not x.endswith((".ts", ".mjs")) and x not in skip):
+        hits = files_containing(s)
+        if any(h == path for h in hits) or any(pathlib.Path(h).name in named for h in hits):
+            continue
+        print(f"MEMORY.md:{no} {s} is attributed to {path} but appears in {hits or 'nothing'}")
+PY
+```
 
-A name that only survives in a historical `CHANGELOG` entry or a frozen `.codestable/` record is dead: the check
-searches code and tests, which is where a live symbol has to exist.
+A prose paraphrase is not a fix either: replacing a dead name with a description the check cannot see (the round-4
+"product-language instruction") leaves the claim just as unverifiable, so a line should name something greppable
+or say nothing.
 
 ## 11. Re-check at every render, not once
 
