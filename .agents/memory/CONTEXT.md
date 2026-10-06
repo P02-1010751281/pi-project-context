@@ -26,7 +26,7 @@ Started from the owner's "全修，无用就退役" instruction (plus handoffThi
 - Owner decision pending on making the autolearn inventory truncation observable (a prompt/receipt change) now that it is measured at 7,892/8,000 merged characters.
 - Owner action plus restart, after any release: run one real TUI handoff to expose the A+B snap/anchor path for the first time, and confirm the cwd fallback boundaries.
 - Watch a real session JSONL for a read of .agents/memory/* as field evidence of progressive-disclosure compliance, and log it in the audit.
-- v0.4.2 is written into CHANGELOG.md as 未发布; nothing is tagged or pinned for it, and this repo's project-context.json still holds handoffThinking until the first write after a restart.
+- v0.4.2 已发布（2026-10-05，tag `1a3ddeec` / peeled `4b4f9c3`，pin `a170e37`；九轮独立评审后审8/审9 判 PASSED，证据 `.codestable/issues/2026-10-05-v042-cleanup/release-v0.4.2-evidence.md`）；本仓 `project-context.json` 仍带 `handoffThinking`，按硬切语义会在重启后第一次写回时消失。
 - Record the summary-chain deletion adjustment in .codestable/issues/2026-10-05-handoff-last-turn-not-replayed/ (the mechanical shape chosen); its design banner already names f19dc93 and b4c9405.
 - The seven owner forks in .codestable/issues/2026-10-05-autolearn-progressive-disclosure/ section 0 remain unanswered; slice A1 is unimplemented and autolearn B1' stays parked per the owner.
 - The pi-style turn-prefix second handoff summary stays designed-not-built in section 7 of handoff-last-turn-design.md and needs its own go-ahead.
