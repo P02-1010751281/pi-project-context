@@ -84,7 +84,7 @@ E-4000
   `handoff budget summary 64k is not applied in full: …` 并点名压住它的那条护栏与可用的杆杆。计价档位
   （`cost.tiers`，如 272K → 268K）能再压低；档位边界低于 `floor + 4000` 时返回
   undefined（不静默跨档）。
-- `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`）；`/handoff threshold auto` 不接受比例参数。
+- `handoffThresholdRatio` 只服务固定模式（`/handoff threshold 0.6`），且受同一条物理下限约束；`/handoff threshold auto` 不接受比例参数。
   固定比例模式**走同一条物理下限**（v0.4.3 起）：比例给出的阈值低于 `baseline + keep + MIN_DROP` 时，交接被拒绝
   并在状态行点名原因，因为一次只丢几千 token 的交接只是换会话、省不下上下文。这条下限是**拒绝门**，不会把比例
   抬到下限；固定模式下阈值仍完全由比例与窗口决定（`handoffThresholdRatio` 只在这里生效）。

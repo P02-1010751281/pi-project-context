@@ -443,7 +443,9 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				config.handoffThresholdAuto = false;
 				config.handoffThresholdRatio = ratio;
 				await saveConfig();
-				notify(ctx, `Handoff: threshold ${fmtPct(ratio * 100)} of the window.`);
+				// A ratio that can never fire must not be confirmed as a success: hand back the status line,
+				// which names a refusal (v0.4.3 made fixed mode obey the physical floor).
+				notify(ctx, handoffStatusLine(ctx));
 				return;
 			}
 			if (head === "on" || head === "off") {

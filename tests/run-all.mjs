@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,32 @@ const tests = readdirSync(here)
 	.sort();
 
 let failed = 0;
+
+// A file ending in a blank line is invisible in a diff read and fails the release gate (`git diff --check`);
+// two release rounds in a row shipped one, so fail the suite instead of relying on a proofreader.
+const repoRoot = path.resolve(here, "..");
+const tracked = spawnSync("git", ["ls-files"], { encoding: "utf8", cwd: repoRoot });
+if (tracked.status === 0) {
+	const text = /\.(md|ts|mjs|json|ya?ml|txt|sh|gitignore)$/;
+	const offenders = tracked.stdout
+		.split("\n")
+		.filter((file) => file && text.test(file))
+		.filter((file) => {
+			try {
+				return readFileSync(path.join(repoRoot, file), "utf8").endsWith("\n\n");
+			} catch {
+				return false;
+			}
+		});
+	if (offenders.length > 0) {
+		failed += 1;
+		console.log("== repo hygiene (no trailing blank line) ... FAILED");
+		for (const file of offenders) console.log(`   ${file}`);
+	} else {
+		console.log("== repo hygiene (no trailing blank line) ... ok");
+	}
+}
+
 for (const test of tests) {
 	process.stdout.write(`== ${test} ... `);
 	// A hung test must fail the run instead of blocking CI forever.

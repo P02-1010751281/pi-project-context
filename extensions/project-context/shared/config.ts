@@ -117,7 +117,8 @@ export const MIN_DROP_TOKENS = 8_000;
 export const MAX_KEEP_RECENT_TOKENS = 200_000;
 /** dsh's accepted range for `handoffThresholdRatio`. */
 const MIN_RATIO = 0.1;
-const MAX_RATIO = 0.95;
+/** Also the largest fixed share a "no ratio fits" refusal may point at, so the two cannot drift. */
+export const MAX_THRESHOLD_RATIO = 0.95;
 
 export function configFile(projectRoot: string): string {
 	return join(memoryDir(projectRoot), "project-context.json");
@@ -165,7 +166,7 @@ function bounded(value: unknown, min: number, max: number): number | undefined {
 }
 
 function ratio(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= MIN_RATIO && value <= MAX_RATIO ? value : undefined;
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_RATIO && value <= MAX_THRESHOLD_RATIO ? value : undefined;
 }
 
 /** dsh's accepted floor for `maxTokens`; also enforced by the `/project-context max-tokens` verb. */

@@ -544,7 +544,11 @@ try {
 	// The physical floor guards fixed mode too: a ratio that resolves below `baseline + keep + MIN_DROP`
 	// would hand off and drop almost nothing, so it is refused with its own cause rather than run. The two
 	// modules load through one registry so the settings object mutated here is the one the math reads.
-	const [fixedHandoff, fixedSettings] = await loadShared([`${PC}/handoff/handoff.ts`, `${PC}/handoff/settings.ts`]);
+	const [fixedHandoff, fixedSettings, fixedThreshold] = await loadShared([
+		`${PC}/handoff/handoff.ts`,
+		`${PC}/handoff/settings.ts`,
+		`${PC}/handoff/threshold.ts`,
+	]);
 	const savedAuto = fixedSettings.config.handoffThresholdAuto;
 	const savedRatio = fixedSettings.config.handoffThresholdRatio;
 	const fixedFloorCtx = makeCtx(tmp, {
@@ -572,6 +576,36 @@ try {
 			"the same ratio above the floor still resolves",
 			fixedHandoff.resolveThreshold(fixedWideCtx, fixedWideCtx.getContextUsage())?.tokens === 100_000,
 		);
+		// The gate is inclusive, and the floor it compares against is the one the refusal text quotes: read it
+		// from the sentence, then place the threshold exactly on it and one step below.
+		const floorTokens =
+			fixedThreshold.baselineTokens(fixedFloorCtx, fixedFloorCtx.getContextUsage()) +
+			fixedSettings.config.handoffBudgetRecentTokens +
+			8_000;
+		const floorText = fixedHandoff.thresholdRefusalText("fixed-below-floor", fixedFloorCtx, fixedFloorCtx.getContextUsage());
+		const quotedFloor = Math.round(Number((floorText.match(/([\d.]+)k-token floor/) ?? [])[1]) * 1000);
+		check(
+			"the refusal text quotes the floor it compared against",
+			Number.isFinite(quotedFloor) && Math.abs(quotedFloor - floorTokens) <= 100,
+		);
+		const atFloorCtx = makeCtx(tmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-at-floor"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 50_000, percent: 5, contextWindow: floorTokens * 10 }),
+		});
+		check(
+			"a fixed threshold exactly at the floor resolves",
+			fixedHandoff.resolveThreshold(atFloorCtx, atFloorCtx.getContextUsage())?.tokens === floorTokens,
+		);
+		const belowFloorCtx = makeCtx(tmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-below-floor"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 50_000, percent: 5, contextWindow: (floorTokens - 1_000) * 10 }),
+		});
+		check(
+			"a fixed threshold below the floor is refused",
+			fixedHandoff.resolveThreshold(belowFloorCtx, belowFloorCtx.getContextUsage()) === undefined,
+		);
 	} finally {
 		fixedSettings.config.handoffThresholdAuto = savedAuto;
 		fixedSettings.config.handoffThresholdRatio = savedRatio;
@@ -597,6 +631,10 @@ try {
 		check(
 			"the status line explains the fixed-floor refusal",
 			/fixed/.test(refusalReceipt) && /floor/.test(refusalReceipt),
+		);
+		check(
+			"the refusal names the real threshold and floor numbers",
+			/fixed 10% \(the 10\.0k-token threshold is below the [\d.]+k-token floor/.test(refusalReceipt),
 		);
 		const wideCtx = makeCtx(fixedFloorTmp, {
 			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-wide-e2e"),

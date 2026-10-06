@@ -43,6 +43,16 @@ try {
 		"the listed skills stay bounded",
 		truncatedInventory.split("\n").length < manySkills.length && truncatedInventory.length < 8_400,
 	);
+	const listedLines = truncatedInventory.split("\n");
+	const omitted = Number((listedLines.at(-1).match(/(\d+) more skill/) ?? [])[1]);
+	check(
+		"the marker's count is exactly what was dropped",
+		Number.isFinite(omitted) && omitted === manySkills.length - (listedLines.length - 1),
+	);
+	check(
+		"the marker overshoots the cap only by its own line",
+		truncatedInventory.length <= 8_000 + 120,
+	);
 	const { MAX_SKILL_BODY_CHARS } = await loadNamespace(`${PC}/shared/limits.ts`);
 	const { MIN_SKILL_BODY_CHARS, MAX_SKILL_DESCRIPTION_CHARS } = await loadNamespace(`${PC}/autolearn/skill.ts`);
 	const autolearnPrompt = buildAutolearnPrompt("/tmp/autolearn-schema", "# Project Memory\n\n- x\n", "# Project Context\n\n- y\n", [], []);

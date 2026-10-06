@@ -389,4 +389,3 @@ M7 shutdown 回退只查 `.agents` → **1 红**（`a cwd that only has .agents 
 - **autolearn 清单截断已可见**：`inventoryText` 被上限截断时追加一行
   `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`，模型与读 prompt 的人都能看到
   列表不完整（原先静默丢弃尾巴）。证据：`tests/autolearn-test.mjs` 的四条断言。
-

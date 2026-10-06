@@ -17,7 +17,8 @@
   recent)`，或比例取不到正值时的 `fixed 50% (this ratio resolves to no positive threshold …)`。
 - **autolearn 清单截断可见**：技能清单超过 8000 字符上限被截断时，注入的清单末尾会多一行
   `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`，而不是静默丢掉尾巴——模型据此
-  知道列表不完整，可点名 `inspectSkill`；读 prompt 的人也能确认上限真的被撞到（本机合并清单 7,892/8,000）。
+  知道「没看到」不等于「不存在」，读 prompt 的人也能确认上限真的被撞到（本机合并清单 7,892/8,000）。标记本身
+  不计入上限，所以文本可能比上限多出标记那一行（不到 100 字符）。
 
 ## v0.4.2 — 2026-10-05
 

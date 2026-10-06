@@ -4,7 +4,7 @@
  */
 
 import { type ContextUsage, type ExtensionContext, buildContextEntries, estimateTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { MIN_DROP_TOKENS } from "../shared/config.ts";
+import { MAX_THRESHOLD_RATIO, MIN_DROP_TOKENS } from "../shared/config.ts";
 import { fmtPct, fmtTokens } from "./format.ts";
 import { config } from "./settings.ts";
 
@@ -74,7 +74,8 @@ export interface ThresholdOverride {
 }
 
 /** Everything that is not conversation: system prompt, tool schemas, injected memory/context. */
-function baselineTokens(ctx: ExtensionContext, usage: ContextUsage): number {
+/** The measured non-conversation baseline. Exported so tests can pin the floor boundary exactly. */
+export function baselineTokens(ctx: ExtensionContext, usage: ContextUsage): number {
 	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 	const contextTokens = entries
 		.flatMap(sessionEntryToContextMessages)
@@ -177,10 +178,10 @@ export function resolveThreshold(
  * Why {@link resolveThreshold} returned `undefined`, named as the term that actually decided.
  *
  * The receipt used to render every refusal as "auto (no room at this window)" — an assertion about
- * the window. Only one of these causes is about the window; the others are an unknown window, an
- * unknown model/usage, a fixed ratio that rounds to zero, a **pricing tier** that would be crossed,
- * and the adaptive guardrail itself sitting below the floor a worthwhile drop needs (the knee, or
- * the window's last tier margin). Sending a user to change the model or the target when the cause is
+ * the window. Only one of these causes is about the window; the others are an unknown window/unknown
+ * model or usage, a fixed ratio that rounds to zero or lands below the physical floor, a **pricing tier**
+ * that would be crossed, and the adaptive guardrail itself sitting below the floor a worthwhile drop needs
+ * (the knee, or the window's last tier margin). Sending a user to change the model or the target when the cause is
  * billing (or when nothing is known yet) is the misattribution this names away.
  */
 export type ThresholdRefusal =
@@ -233,11 +234,19 @@ export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionCon
 	const usable = window - WINDOW_RESERVE_TOKENS;
 	switch (reason) {
 		case "no-window":
-			return "auto (the context window is not known yet)";
+			return config.handoffThresholdAuto
+				? "auto (the context window is not known yet)"
+				: `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the context window is not known yet)`;
 		case "fixed-ratio-rounds-to-zero":
 			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (this ratio resolves to no positive threshold at a ${fmtTokens(window)}-token window)`;
 		case "fixed-below-floor":
-			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the ${fmtTokens(Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN))}-token threshold is below the ${fmtTokens(floor)}-token floor a worthwhile handoff needs at this baseline; raise /handoff threshold or lower /handoff budget recent)`;
+			// Name a lever that actually works with these numbers: when even the largest legal ratio cannot
+			// clear the floor, raising it is not a lever and only the carried-window budget is.
+			const largestRatio = Math.min(Math.round(MAX_THRESHOLD_RATIO * window), window - TIER_EDGE_MARGIN);
+			const lever = largestRatio >= floor
+				? "raise /handoff threshold or lower /handoff budget recent"
+				: "lower /handoff budget recent (no ratio fits this window at this baseline)";
+			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the ${fmtTokens(Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN))}-token threshold is below the ${fmtTokens(floor)}-token floor a worthwhile handoff needs at this baseline; ${lever})`;
 		case "no-model-or-usage":
 			return "auto (the session model or its token usage is not known yet)";
 		case "window-too-small":

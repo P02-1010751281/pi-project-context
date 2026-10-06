@@ -53,8 +53,10 @@ export function inventoryText(skills: SkillInfo[]): string {
 	}
 	if (lines.length === 0) return "(none)";
 	if (lines.length < skills.length) {
-		// Say the list is incomplete instead of silently hiding the tail: the model can then ask for a name
-		// by `inspectSkill`, and an operator reading the prompt sees the cap actually being reached.
+		// Say the list is incomplete instead of silently hiding the tail: the model then knows that a skill
+		// it cannot see is not a skill that does not exist, and an operator reading the prompt sees the cap
+		// being reached. The marker itself is not charged against the cap, so the text may exceed it by the
+		// marker's own line (under 100 characters).
 		lines.push(`- (${skills.length - lines.length} more skill(s) not listed: the ${AUTOLEARN_INVENTORY_CHARS}-character inventory cap was reached)`);
 	}
 	return lines.join("\n");
