@@ -38,8 +38,13 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
   **教训（评审 blocking）**：池的口径必须是文档的**真实 body**（`cap − memoryStructureOverheadChars()` = 67），
   不是 `Σtargets`（31,922，比真实小 11：schema 出于保守多留 9 + floor 余数）；用后者会在「文档还有 7 字符」时丢 3 条，
   而且先打在本仓自己提交的记忆上。
-  **待 owner 定（新）**：记忆已占上限 **99.98%**（31,993 / 32,000，余 7 字符），模型每轮新增都会把它推过上限——
-  要么抬 `maxMemoryChars`（`/memory max-memory <n>`，每会话多约 1,000 tokens 注入），要么人工裁剪一次。
-  另一条已量清的事实：剩余损失**主因是模型自己整篇重写/合并/删除**（评审两次真实 pass 为 −4 与 −17 条，
-  其中一次回复不带 `- ` 条目、走 opaque 路径使分段账目整段失效），不是渲染器。
+  **owner 已定（2026-10-06）：人工裁剪，不抬上限。** 深裁剪把 render 从 31,935 降到 **30,290 字符**（135 → 130 条，
+  余量 1,710）：合并语义重叠行 + 把 Index 长句收回定位职责，逐行做过**符号/常量/版本/反引号串存活校验**
+  （39 个 token，仅 3 处故意移除：v0.4.5 tag id 与 v0.2.3 版本戳，改由 CHANGELOG/证据文件承载）。提交 `8ffe467`。
+  损失机制有**两条**，别只记一条：①**模型自己整篇重写/合并/删除**（评审两次真实 pass 为 −4 与 −17 条，其中一次回复
+  不带 `- ` 条目、走 opaque 路径使分段账目整段失效）；②**贴顶时渲染器按 cap 裁剪，裁剪结果经「外部编辑采纳」路径写回
+  journal 而变成永久状态**（2026-10-06 10:48:14Z 现场：journal 先记 138 条的未裁剪回复、再记 126 条的文件内容，
+  `errors.log` 记 `memory regression: 2` 与 `adopted an externally edited MEMORY.md`；守卫的 2 是**逐字**口径，12 条里
+  它只报 2，cap 行又被「每项目每进程一次」限流吃掉——**这类丢失在实现里是静默的**）。现场与算术见
+  `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md`。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。
