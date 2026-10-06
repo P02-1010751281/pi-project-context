@@ -1,0 +1,35 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 12，**v0.4.3 放行确认轮**）。沙箱：/tmp/pc-v043-r3
+
+严格只读（不得写工作区 / git 写操作 / 改配置；临时文件只在 /tmp）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。独立判断，所有断言自己复跑。
+
+## 范围
+v0.4.3 = `git diff v0.4.2..HEAD`，冻结于 HEAD e024595。审 11 在 ab21491 上判 CHANGES-REQUESTED，唯一
+important 是：上一提交声称 `MAX_THRESHOLD_RATIO` 让「解析器与回执共用一个数」，但 `handoff/settings.ts::parseRatio`
+仍硬编码 0.1/0.95、run.ts 的用法串也另写一份，且没有测试覆盖这层耦合（把常量改成 0.9，套件仍 15/15 全绿）。
+随后落的修复（本轮只核验它们真实落地）：
+1. `shared/config.ts` 导出 `MIN_THRESHOLD_RATIO`/`MAX_THRESHOLD_RATIO` 一对；validator、`parseRatio`、用法串都读它们；
+   新增一条从常量派生输入的断言（`parseRatio(String(MAX))===MAX`、`parseRatio(String(MAX+0.01))===undefined`、`MIN` 同理）。
+2. 近边界回执不再出现「78.0k 低于 78.0k」（两位读数相撞时改用精确整数）。
+3. 卫生门禁改为读全部跟踪文件（按 NUL 判二进制，`LICENSE` 这类无扩展名也覆盖），且其结果不再混进测试计数
+   （失败时摘要为 “All 15 tests passed, but the repo hygiene check failed.”）。
+4. 清单在「第一行就超上限」时也会给出截断标记。
+5. 审计 §9.13 的计数与技能正文里的窗口数字改为与现状一致。
+
+## 请独立核验
+1. **耦合**：把常量改成别的值（例如 0.9）后解析器是否跟着变？再复现**旧形态**（常量 0.9 + 解析器硬编码 0.95），
+   确认那条断言会红。两半都要自己跑，别只看代码。
+2. **卫生门禁**：`node tests/run-all.mjs` → 15/15 且卫生 ok；在临时副本里给一个无扩展名文件（如 `LICENSE`）与一个
+   带扩展名文件分别加尾空行，确认都被点名；确认摘要与退出码正确；确认二进制不被误报。
+3. **近边界文案**：构造 `threshold` 距 floor 不到 100 token 的用例，确认回执不再自我矛盾。
+4. **发布面**：`git diff --check v0.4.2..HEAD` 空；CHANGELOG v0.4.3、docs/handoff.md、审计 §9.13 与代码一致
+   （数字自己复算）；无描述已删/已改机制的活动引用。
+5. 自选 1–2 格单侧变异确认断言具名可红。
+
+## 判定规则（预先声明）
+- blocking / important → `VERDICT: CHANGES-REQUESTED` / `RELEASE-OK: no`。
+- 只剩 nit / suggestion / 已知残留 → `VERDICT: PASSED` / `RELEASE-OK: yes`。
+
+## 输出格式
+分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条含 `file:line`、影响、修复边界。
+最后两行：`VERDICT: …`（附理由）与 `RELEASE-OK: yes/no`。

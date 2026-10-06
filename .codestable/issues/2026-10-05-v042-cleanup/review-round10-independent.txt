@@ -1,0 +1,37 @@
+# v0.4.3 独立评审（lane A，审 10）——冻结 HEAD `057021d`
+
+沙箱 `/tmp/pc-v043-r1` 全程只读（`git status` 里的 `HANDOFF.md` / `project-context.json` 脏标记是运行时 churn，不在 `v0.4.2..HEAD` 内；变异全部在 `/tmp/pc-mut-*` 副本上做）。所有断言我都自跑了：`node tests/run-all.mjs` → **15/15**；`resolveThreshold` 用另一份独立实现（直接用 pi 的 `buildContextEntries`/`estimateTokens` 重算 `baseline`）在 3×5×7×3×4 网格上逐格对拍（含 `keep=0`、窗口 <4000、等值边界），全绿；`git diff --check v0.4.2..HEAD` → **非空**。
+
+## blocking
+无。
+
+## important
+1. **`git diff --check v0.4.2..HEAD` 非空，且是复犯** — `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:392: new blank line at EOF`（exit 2）。v0.4.2 的该文件以单 `\n` 结尾，`057021d` 的 §9.13 又在文末留了一个空行；`.agents/memory/CONTEXT.md` 自己记着「The `git diff --check clean` claim … was wrong: one audit file kept a trailing blank line until v0.4.2 round 4 caught it」——也就是说这是项目在 v0.4.2 评审里已抓过并修过的同一缺陷。影响：本任务 §6 明列的发布面判据未通过；不影响运行时。修复边界：删掉该空行、重跑 `git diff --check`；一行改动。若维护者坚持「纯空白=nit」，则代码面本身干净——但按本评审给出的放行清单，这一格在 tag 前必须为零。
+
+## nit
+1. **固定模式的 `no-window` 文案仍带 `auto (`** — `extensions/project-context/handoff/threshold.ts:236` 返回 `"auto (the context window is not known yet)"`，而 `run.ts:37-42` 在固定模式下也会走到它（实测：`{tokens:1000, contextWindow:0}` → `threshold auto (the context window is not known yet)`）。修复边界：该 case 按模式出词（`fixed <pct> (the context window is not known yet)`）。可达性：pi 1.0.2/1.0.3 的 `getContextUsage` 在 `contextWindow<=0` 时返回 `undefined`（`agent-session.js:3404-3406`），所以真实宿主到不了；仅 mock/未来宿主。
+2. **`ThresholdRefusal` 的 JSDoc 枚举漏了新原因** — `threshold.ts:179-184` 仍写「unknown window / unknown model / fixed ratio rounds to zero / pricing tier / adaptive guardrail」，没有 `fixed-below-floor`。修复边界：补一词。
+3. **清单截断的「可点名 inspectSkill」是过度承诺** — `inventory.ts:56` 注释与 `CHANGELOG.md:19` 说「模型据此…可点名 `inspectSkill`」，但标记不给出被截技能名，`learnedBodies` 只服务显式请求的名字，模型无从点名未见过的名字。修复边界：改成「模型知道清单不完整（避免把「没看到」当成「不存在」）」；标记本身的价值（操作者可见 + 模型知道不完整）成立。
+4. **`SKILL.md` 正文的 floor 公式仍是旧键** — `.agents/skills/pi-project-context-adaptive-handoff-threshold-review/SKILL.md:39` 写 `baseline + keep + handoffBudgetSummaryTokens`，现行是 `MIN_DROP_TOKENS`(8000)；顶部横幅已声明正文是旧形态且本次只改了横幅，故按 nit 记。
+5. **记忆渲染里「截断可观测属 pending owner 决策」已过期** — `.agents/memory/CONTEXT.md:26`（及 `:18`）写 observability「needs owner sign-off / pending」，而 `057021d` 已实现标记；属 pi 再生成的 churn，按已知残留记。
+6. **截断标记本身不计入 `used`** — `inventory.ts:54-59`：实测 n=100/400 时渲染 8,034/8,036 字符，略超自称的 8000 上限（≤ +90）。修复边界：追加标记时也算长度，或把上限语义改成「技能行上限」。
+
+## suggestion
+1. **设置固定比例时的回执不提示拒绝** — `run.ts:446` 对 `/handoff threshold <ratio>` 只回 `Handoff: threshold X% of the window.`，而同语法的 `/handoff threshold auto` 会回整条 status（那里能看到拒绝）。v0.4.3 起固定比例可能永不触发，这条确认句就成为「配置成功」的错误暗示；建议 ratio 分支也 render `handoffStatusLine(ctx)`。
+2. **拒绝文案的杆杆在极端配置下不成立** — `threshold.ts:239-240` 固定说「raise /handoff threshold or lower /handoff budget recent」，但当 `floor > min(0.95*window, window-4000)` 时抬比例无效（例：window 64k、baseline 40k、keep 20k → floor 68k，95% 阈值只有 60k，文案重放同一句；只有降 keep 才可能过门）。建议点名哪根杆在当前数字下可解。
+3. **`docs/handoff.md:12` 的固定 bullet 没提下限**（下限在 `:88-90` 才出现）；`docs/configuration.md` 的固定模式句也没提。建议就地加半句，别让读者以为固定模式仍「比例即决定」。
+4. **测试没钉数值与等值边界** — `tests/handoff-test.mjs:566-577` 只断言 `fixed-below-floor` 原因与端到端 `/fixed/ && /floor/`，没钉文案里的 `10.0k/78.0k` 数字；`tests/autolearn-test.mjs:40-44` 没钉 `N more` 的算术。做了 `<= floor` 单侧变异（`/tmp/pc-mut-e`）→ 15/15 全绿，证明等值边界无测试覆盖。建议各加一条数字断言。
+
+## learning
+- 这条下限是**对触发阈值 T 的门**（`T >= B+K+8000`），不是对当下丢弃量的门：它保证「首次越过阈值的瞬间 drop≥8000」，但会在「越阈值已久、本来能丢很多」的会话里也一律拒绝。固定模式下阈值不随会话增长，所以 `ratio*window < B+K+8000` 的配置是**永久惰性**，与后来会话多大无关。文档（`docs/handoff.md:82/88` 与 `F=B+K+8000`）与回执都说清了这一点；这条判据下次评审固定模式改动时可直接复用。
+- `loadShared`（同 jiti registry 载入 handoff.ts+settings.ts）是测模块级 config 的正确姿势，直连断言因此不是摆设。
+
+## praise
+- 三处变更都做了独立数值对拍：`resolveThreshold` 固定分支与文档公式逐格一致；`thresholdRefusal` 两条固定原因互斥且完备（穷举无交叠、无遗漏）；两条新文案的阈值/下限数字与真实计算逐位一致（`fixed 10%`→10.0k/78.0k，`fixed 50%`→4.0k 窗口）。
+- 测试确实能红：去掉 `threshold.ts:117` → 3 条具名红；`run.ts:37` 改回 `else if (config.handoffThresholdAuto)` → 1 条具名红；去掉 `inventory.ts:54` 标记 → 2 条具名红；去掉 `switches-test.mjs:38` bulk → 2 条具名红。新增语料不是掩饰，而是把「合成 usage 150k / 会话几百 token」这种物理上不可能被门放行的旧夹具改成自洽夹具（实测估计 90k token、floor 余量 12k）。
+
+## residual-risk（对抗性一遍的结论）
+**最可能的用户可见回归：固定比例配置在升级后静默失效。** 判据/最小复现（我实际跑了 v0.4.2 archive 与 HEAD 对照）：临时项目 `project-context.json = {handoffThresholdAuto:false, handoffThresholdRatio:0.4}`，window 200k，会话约 25k token（`"context ".repeat(12_500)`），usage 85k（baseline≈60k，keep=20k）→ v0.4.2 在 `agent_settled` 发出 `/handoff force-auto`；HEAD 不发任何消息，只有 `/handoff status` 显示 `threshold fixed 40% (the 80.0k-token threshold is below the 88.0k-token floor … raise /handoff threshold or lower /handoff budget recent)`。这正是本次要修的「丢几千 token 的交接」，语义正确、CHANGELOG 与 docs 都披露了；残余风险在于**运行时没有任何提示**（与自适应一致），且设置回执不校验（见 suggestion 1）。「固定比例 + 大窗口 + 小会话」本身不是失败路径（大窗口把 0.1×W 抬得很高，通常过门）；真正会挨门的是小窗口/大 keep/厚 baseline 组合，文档给了公式与可操作回执，这一点我认为**已文档化，不判 important**。
+
+VERDICT: CHANGES-REQUESTED — 发布面判据 `git diff --check v0.4.2..HEAD` 非空（审计 §9.13 文末多一个空行，057021d 复犯 v0.4.2 round 4 已修的同一缺陷）；三处代码变更本身未发现用户可见错误、错误承诺或丢失数据，其余仅为 nit/suggestion/residual。
+RELEASE-OK: no

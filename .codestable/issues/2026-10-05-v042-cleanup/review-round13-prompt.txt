@@ -1,0 +1,30 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 13，**v0.4.3 放行确认轮**）。沙箱：/tmp/pc-v043-r4
+
+严格只读（不得写工作区 / git 写操作 / 改配置；临时文件只在 /tmp）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。独立判断，所有断言自己复跑。
+
+## 范围
+v0.4.3 = `git diff v0.4.2..HEAD`，冻结于 HEAD c9d4db6。审 12 在 e024595 上判 PASSED / RELEASE-OK: yes，
+随后只改了两类东西（不改行为语义）：
+1. `tests/run-all.mjs` 的卫生门禁从 `endsWith("\n\n")` 改为 `/\r?\n\r?\n$/`（补 CRLF 尾空行的漏报）。
+2. `tests/handoff-test.mjs` 补「解析器拒绝低于共享下限」的镜像断言（审 12 的 M-D：MIN 常量移走而解析器硬编码时，
+   旧断言全绿）。
+3. 文档/注释：审计 §9.13 计数、`config.ts` 的 `handoffThresholdRatio` 注释改引常量、`docs/handoff.md` 明确
+   「自动触发被拒绝（手动 `/handoff now` 不查阈值）」、`tests/autolearn-test.mjs` 补「首行即超上限」用例。
+
+## 请独立核验（只查这些 + 门禁）
+1. CRLF：构造一个 CRLF 尾空行的文件（例如把 `crlf.txt` 复制到临时副本再改），确认门禁点名；并确认 LF 与二进制仍正确。
+2. MIN 侧断言：复现审 12 的 M-D（MIN 常量 0.2 + 解析器下限硬编码 0.1），确认现在恰好红在
+   `the ratio parser refuses just below the shared minimum`；再确认「常量单独移动」仍全绿（读取方真的读了）。
+3. 文档一致性：`docs/handoff.md` 那句改后是否通顺且与代码一致（手动 `/handoff now` 确实不查阈值——
+   自己读 `handoff/run.ts` 的 now/run/force 分支确认）；审计 §9.13 的计数与你数出的断言条数是否一致。
+4. 门禁四项：`git diff --check v0.4.2..HEAD` 空；`node tests/run-all.mjs` 15/15 且卫生 ok；本地 master 与两个
+   push URL 同 sha；hygiene skill §10 的按行归属检查 0 不符。
+5. 自选 1 格单侧变异确认断言具名可红。
+
+## 判定规则（预先声明）
+- blocking / important → `CHANGES-REQUESTED` / `RELEASE-OK: no`。
+- 只剩 nit / suggestion / 已知残留 → `PASSED` / `RELEASE-OK: yes`。
+
+## 输出格式
+分桶，每条含 `file:line`、影响、修复边界。最后两行：`VERDICT: …`（附理由）与 `RELEASE-OK: yes/no`。

@@ -1,0 +1,59 @@
+# 独立审查报告 — lane A（审 12，v0.4.3 放行确认轮）
+
+- 判定模型：`deepseek/deepseek-flash`（独立复跑，全部断言自行构造验证；工作区只读，副本/探针均在 /tmp）。
+- 冻结点：`HEAD = e02459519e0e4a8f060d1bbf5514485df9a17a12`（`e024595`），`v0.4.3` tag 尚不存在；工作区脏项只有 `.agents/memory/HANDOFF.md`、`.agents/memory/project-context.json` 与未跟踪 `skill-candidates/`（会话运行时写入，运行套件前后未变化）。
+
+## 复核证据摘要（对应本轮 5 项要求）
+
+1. **耦合（两半都跑）**
+   - 常量只改 `MAX=0.9`（解析器不动，`/tmp/pc-mut-F`）：`parseRatio("0.9")=0.9`、`parseRatio("0.91")=undefined`、`parseRatio("0.95")=undefined`；validator 接受 0.9/拒绝 0.91；`/handoff threshold 0.93` 回显 `0.1-0.9|10-90%`；**全套件 15/15 全绿**——解析器确实跟着常量走。
+   - 旧形态（`MAX=0.9` + `parseRatio` 硬编码 0.1/0.95，`/tmp/pc-mut-E`）：**恰好一条具名红**——`tests/handoff-test.mjs:555 "the ratio parser refuses just above the shared maximum"`，整仓 `1 of 15 tests failed`，退出码 1（与 e024595 commit message 的声明一致）。
+   - validator 直测（`/tmp/pc-mut-A`，MIN=0.2/MAX=0.9）：磁盘 0.19/0.91 → 回落默认 0.4，0.2/0.9 → 接受。
+2. **卫生门禁**：工作区 `node tests/run-all.mjs` → `== repo hygiene ... ok` + `All 15 tests passed.`，exit 0。干净克隆 `/tmp/pc-hyg` 给 `LICENSE`（无扩展名）与 `README.md`（带扩展名）各加尾空行 → 两者都被 `   LICENSE` / `   README.md` 点名，摘要 `All 15 tests passed, but the repo hygiene check failed.`，exit 1；带 NUL 且以 `\n\n` 结尾的 `blob.bin` 不被点名，二进制单独存在时 gate `ok`、exit 0。
+3. **近边界文案**：独立构造 `delta = 1/20/99/100/101/129/500/1000`（`shown = floor − delta`），`delta=1/20` 两位读数相撞时输出精确整数（`the 77285-token threshold is below the 77286-token floor`），无任何自我矛盾；`lever` 两个分支都可达（“raise /handoff threshold…” 与 “no ratio fits this window…”）。单侧变异 `collide=false`（`/tmp/pc-mut-C`）→ 精确红 `tests/handoff-test.mjs:641 "the refusal never calls a number below itself"`，输出复现 `the 77.3k-token threshold is below the 77.3k-token floor`。
+4. **发布面**：`git diff --check v0.4.2..HEAD` 空（exit 0）；v0.4.3 无 tag、CHANGELOG 记「未发布」；技能正文窗口数字复算一致（1M→157,000、768K→157,001、600K→157,333、500K→179,975、400K→379,616、272K→251,616，与 `kneeTokens` + `usable−4000` 吻合）；审计 §9.13 源表「本仓 3,810 字符 / 18 技能」实测精确复现；无描述已删/已改机制的活动引用（旧 `MIN_RATIO/MAX_RATIO`、旧拒绝句、固定模式旧语义在活动面均无残留）。
+5. **首行超上限**：单条 9,000 字符 description → `- (1 more skill(s) not listed: the 8000-character inventory cap was reached)`，混合/空表/超大 N 均正确。
+
+## 分桶
+
+### blocking
+无。
+
+### important
+无。两个候选点（审计计数、MIN 侧断言缺失）经影响面评估只到 nit 级：生产代码行为正确、原始缺陷类（双侧硬编码）已被具名断言捕获，且不涉及用户面行为。
+
+### nit
+
+1. ``.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:384`：写「六条直连断言（…含…三条比例解析器↔常量耦合断言）」，但该块现有 **11 条 `check()`**（8 条下限/文案断言 + 3 条耦合；另有 3 条 e2e）。影响：v0.4.3 修复项 #5 声称已把计数改到与现状一致，实际只改了 3a0183b 时代的旧数；证据文档少报覆盖。修复边界：改为「11 条直连断言（8 条下限/文案，含 `baselineTokens` 包含性边界与两条近边界文案；另 3 条耦合）＋3 条 e2e」。
+2. `tests/handoff-test.mjs:558-561`：MIN 侧只有 `parseRatio(String(MIN)) === MIN`，缺「MIN 同理」的拒绝半条（`parseRatio(String(MIN−0.01)) === undefined`）。影响：单侧变异（常量 MIN=0.2、解析器只把下限硬编码为 0.1）时三条耦合断言仍全绿，而 `parseRatio("0.15")=0.15` 已越过共享范围（复现于 `/tmp/pc-mut-D`；该变异只有 e2e fixture 用 0.1 导致的两条红，属于 fixture 连带，不是耦合断言命中）。修复边界：补一条下界拒绝断言即可闭合。
+3. `extensions/project-context/shared/config.ts:46`：`handoffThresholdRatio` 的注释仍写死 `(0.1–0.95)`——「一个数一个源」后范围仍有一份拷贝，常量一动注释即漂移。修复边界：注释改引 `MIN_THRESHOLD_RATIO`/`MAX_THRESHOLD_RATIO` 或去掉数字。
+4. `tests/run-all.mjs:29`：`endsWith("\n\n")` 对 CRLF 尾空行（`\r\n\r\n`）不敏感；本仓已有 16 个 `i/crlf` 跟踪文件，且 `git diff --check --cached` 会报 `new blank line at EOF`（以 `crlf.txt` 实测），门禁本身给 `ok`。影响：门禁自称背书 `git diff --check` 的同一类瑕疵，却在 CRLF 文件上漏报（当前无在库违规）。修复边界：`/\r?\n\r?\n$/` 或按行尾判空行。
+
+### suggestion
+
+5. `tests/autolearn-test.mjs:27-57`：修复项 #4 专门为「第一行就超上限」而做，但六条新断言里没有这一场景（手动验证通过）。建议补一条单技能超长 description 的检查，防回退。
+6. `docs/handoff.md:88`：「比例给出的阈值低于 … 时，交接被拒绝」应写「自动触发被拒绝」——`/handoff now` 并不查 `resolveThreshold`（实测：status 渲染 `fixed … floor` 拒绝后，`/handoff now` 仍输出 `Handoff: dropping ~2.7k of context…` 并进入新会话）。第 14 行已说明手动不等阈值，本条只是措辞精确化。
+
+### learning
+
+- 「单源」声明的最强验证形态是**双向变异对**：常量单独移动必须全绿（证明读取方真的读了），旧硬编码形态必须恰好红在具名断言上（证明守卫真的有牙）。本次两半都独立复跑，建议作为以后单源改动的固定验收动作。
+- 近边界文案的碰撞条件是格式化函数（`fmtTokens` 在 `≥100k` 切 0 位小数、否则 1 位），因此「相撞才用精确整数」比「一律精确整数」更小、更准；其负向断言（正则反查自指句）比正向断言更能钉住回归。
+
+### praise
+
+- 耦合修复真实落地：validator、`parseRatio`、用法串、`largestThreshold` 四处共用导出一对常量，且已用突变证明。
+- 卫生门禁的工程细节正确：NUL 判二进制、覆盖无扩展名、结果独立于测试计数、失败点名文件并给出正确摘要/退出码。
+- 固定比例物理下限是拒绝门而非抬升，`/handoff status` 在固定模式下也点名原因；代码/CHANGELOG/docs/技能/审计的行为描述一致。
+- e024595 的 commit message 所列演示（唯一具名红）经复现完全属实。
+
+### residual-risk
+
+- 「本机合并清单 7,892/8,000（69 技能）」在本沙箱不可复验：本仓部分实测 3,810/18 精确吻合，但全局技能目录只有 2/51（环境差异，非代码问题）；放行时该数字仍以开发机记录为准。
+- 门禁在 `git ls-files` 失败（如从 tarball 运行）时静默跳过卫生检查但仍打印「All 15 tests passed.」——可接受，但意味着打包环境没有这道闸。
+
+## 判定
+
+全部 5 项修复均已在行为层独立复现；残余仅为文档计数/措辞、一条镜像测试用例、一条常量注释与一个 CRLF 边角，未发现 blocking/important。
+
+VERDICT: PASSED（五项修复真实落地且经两半变异与端到端回执复跑验证；剩余问题均为 nit/suggestion，不构成放行阻碍）
+RELEASE-OK: yes

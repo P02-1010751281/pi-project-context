@@ -1,0 +1,40 @@
+你是本仓 pi-project-context 的独立审查者（lane A，审 11，**v0.4.3 放行确认轮**）。沙箱：/tmp/pc-v043-r2
+
+严格只读（不得写工作区 / git 写操作 / 改配置；临时文件只在 /tmp）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。独立判断，所有断言自己复跑。
+
+## 范围
+v0.4.3 = `git diff v0.4.2..HEAD`，冻结于 HEAD ab21491。变更意图：清三条残留——固定比例模式改用与自适应
+相同的物理下限（含状态行不再隐瞒拒绝）、autolearn 清单截断可见、以及把「文件尾空行」做成套件门禁。
+
+审 10 在 057021d 上判 CHANGES-REQUESTED / RELEASE-OK: no，理由是发布面判据 `git diff --check v0.4.2..HEAD`
+非空（审计文末空行，v0.4.2 已犯过一次），另有 6 条 nit 与 4 条建议。之后落的修复：
+1. 审计尾空行收掉；`tests/run-all.mjs` 新增一个「跟踪文本文件不得以空行结尾」的仓库卫生检查（并在无 git 时跳过）。
+2. 固定模式 `no-window` 文案不再说 `auto`；`ThresholdRefusal` 的 JSDoc 补 `fixed-below-floor`。
+3. 清单截断的注释与 CHANGELOG 不再承诺「模型可点名 inspectSkill」，改为「知道列表不完整」；并说明标记本身不计入上限。
+4. 技能正文 floor 公式的旧键名改成 `MIN_DROP_TOKENS`。
+5. `/handoff threshold <ratio>` 的回执改为渲染整条状态行（拒绝立即可见）。
+6. 固定下限文案在「最大合法比例也过不了门」时改点 `lower /handoff budget recent`；`MAX_THRESHOLD_RATIO` 从
+   config 导出以与解析器共用同一个数。
+7. 测试：导出 `baselineTokens` 以精确钉住 `tokens < floor` 的**包含性边界**（等于 floor 放行、低一档拒绝）、
+   回执真实数字断言、清单标记计数恒等断言。
+
+## 请独立核验
+1. **卫生门禁**：自己跑 `node tests/run-all.mjs` 应 15/15 且卫生行为 ok；然后做负向对照（在一个**临时副本**里给
+   某个跟踪文件末尾加空行）确认它真的 FAILED 并点名文件；确认它不会误报（例如二进制/无 git 目录）。
+2. **边界语义**：`tokens === floor` 放行、`tokens < floor` 拒绝——用你自己的算法独立验证（可读 `baselineTokens`），
+   并确认 `MAX_THRESHOLD_RATIO` 导出的值与解析器一致（改一处应当只有一处需要改）。
+3. **回执**：`/handoff threshold <ratio>` 现在回什么？固定模式 `no-window` 文案还串不串 `auto`？
+   `thresholdRefusalText` 的两条固定文案数字与门是否一致（可复算）？
+4. **清单**：截断标记的计数是否等于被丢弃行数；标记是否可能超过上限、超出多少（自己量）。
+5. **发布面**：`git diff --check v0.4.2..HEAD` 空；CHANGELOG v0.4.3 三句、docs/handoff.md、审计 §9.13 与代码一致；
+   无描述已删/已改机制的活动引用（.codestable 冻结档案的历史提及不算）。
+6. 自选 1–2 格单侧变异确认断言具名可红。
+
+## 判定规则（预先声明）
+- blocking / important（用户可见错误、错误承诺、丢数据、发布面事实不实）→ `VERDICT: CHANGES-REQUESTED`。
+- 只剩 nit / suggestion / 已知残留 → `VERDICT: PASSED` / `RELEASE-OK: yes`。
+
+## 输出格式
+分桶（blocking / important / nit / suggestion / learning / praise / residual-risk），每条含 `file:line`、影响、修复边界。
+最后两行：`VERDICT: …`（附理由）与 `RELEASE-OK: yes/no`。

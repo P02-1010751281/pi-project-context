@@ -16,6 +16,10 @@ let failed = 0;
 const repoRoot = path.resolve(here, "..");
 const tracked = spawnSync("git", ["ls-files"], { encoding: "utf8", cwd: repoRoot });
 let hygieneFailed = false;
+if (tracked.status !== 0) {
+	// Not a git checkout (a tarball run, say): say so rather than letting the gate vanish silently.
+	console.log("== repo hygiene (no trailing blank line) ... skipped (git ls-files unavailable)");
+}
 if (tracked.status === 0) {
 	// Every tracked file, not just the common text extensions: `LICENSE` has no suffix, and a binary is
 	// skipped by its NUL byte rather than by guessing from the name.

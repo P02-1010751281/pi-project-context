@@ -1,0 +1,51 @@
+# v0.4.3 放行审查（lane A / 审 11）
+
+**记录**：判定模型 deepseek/deepseek-flash；沙箱 `/tmp/pc-v043-r2` @ ab21491；全程只读，负向对照与变异均只在 `/tmp` 副本进行。所有断言我已自己复跑（独立脚本 + 原始套件 + 4 个 /tmp 变异副本）。
+
+## blocking
+无。
+
+## important
+
+1. **`extensions/project-context/handoff/settings.ts:91` —— 修复 #6 宣称的「与解析器共用同一个数」没有兑现。**
+   `MAX_THRESHOLD_RATIO`（`shared/config.ts:121`）只被 config 校验器 `ratio()`（`config.ts:169`）和回执（`threshold.ts:245`）引用；真正把关用户输入的 `parseRatio` 仍硬编码 `0.1/0.95`，`run.ts:440` 的用法串也另写一份。commit 3a0183b 说「the parser's range and the receipt's advice cannot drift」，实际正是这两者仍各自为政。
+   **独立证据**：把常量改成 `0.9` 的 /tmp 副本里，`node tests/run-all.mjs` 仍 **15/15 全绿**；同副本 `parseRatio("0.95") === 0.95`，而 `ratio()` 视 0.95 非法——存盘 0.95 后下次加载静默回落到默认 0.4（实测）；窗口 86,000、floor 77,975 时回执给出 `no ratio fits`，但 `0.95×86,000 = 81,700 ≥ floor` 且 parseRatio 接受，建议与解析器直接矛盾。
+   **影响**：今天两个字面量都是 0.95，冻结版没有已发生的用户可见错误；但一旦按这个「单源」常量调上限，同一提交就会带来配置静默丢失（0.95→0.4）和错误回执建议。这是本轮声称修复项里的实际未完成件。
+   **修复边界**：`settings.ts:6` 已经 import 自 `../shared/config.ts`（无环），把 `parseRatio` 改用 `MAX_THRESHOLD_RATIO`（`MIN_RATIO` 同法导出）；`run.ts:440` 文案用插值；补一条把 parseRatio 上下限与常量钉住的单侧断言（M3 全绿正说明现在没有）。
+
+## nit
+
+1. `threshold.ts:249`：距 floor 50 token 内时 `fmtTokens` 把两侧都舍入成同一读数——实测 floor=77,975 时回执为 “the 78.0k-token threshold is below the 78.0k-token floor”。拒绝正确，但文案自相矛盾。影响：极小边界带内的可读性。修复边界：阈值/下限用更细格式或显式「低于」标注。
+2. `tests/run-all.mjs:31-35,52`：卫生失败时 15 个套件全 ok，摘要仍打印 “1 of 15 tests failed”（卫生是第 16 个检查）。退出码正确，只是计数误导。修复边界：单独渲染卫生结果或计入总数。
+3. `tests/run-all.mjs:21`：正则只覆盖带扩展名的文本文件，`LICENSE` 这类无扩展名文件尾部空行不会被这套门禁抓到（仍会触发 `git diff --check`）。修复边界：`git ls-files -z` + `git grep -I` 或补白名单。
+4. `threshold.ts:76`：`baselineTokens` 上方遗留旧的孤立 JSDoc（"Everything that is not conversation…"），紧贴新注释。删一行即可。
+5. `threshold.ts:245`：`largestRatio` 实际是 token 阈值而非比例，命名误导。改 `largestThreshold`。
+6. `.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:384-385,391`：§9.13 写于 057021d，之后 3a0183b 加了断言但计数未更新——HEAD 的 fixed 块是 **6 条直连 + 3 条端到端**（文中写 3+2），autolearn 截断是 **6 条 check**（文中写 4）。属低估证据，非夸大。修复边界：更新数字。
+7. `.agents/skills/pi-project-context-adaptive-handoff-threshold-review/SKILL.md:39`：本轮改过的公式行仍留 “window below ≈116K”——默认 baseline≈0/keep=20k 时该门在 W<≈48.4K 才拒绝，116K 只在重 baseline 场景出现。技能头已声明正文为旧形态、以 `docs/handoff.md` 为准，故只算残留文案。
+
+## suggestion
+
+1. 给 `parseRatio` ↔ `MAX_THRESHOLD_RATIO` 加单侧测试（或由常量生成 usage 文案），把 import 意图锁死。
+2. `inventory.ts:53-54`：首行本身超 cap 时会返回 `(none)` 且无截断标记；现实中不可达（`validSkillName` ≤64 字符、`skillDescription` 默认限 200 字符），但若日后放宽名字/描述上限就会复发静默截断。可把 `(none)` 分支移到截断判断之后作防御。
+
+## learning
+
+1. 卫生门禁读工作树全量 tracked 文本文件，是 `git diff --check v0.4.2..HEAD`（只看 diff 新增行）的**超集**；未改动的历史文件若已带尾空行，套件也会红。
+2. `fmtTokens` 的 0.1k 分辨率会让边界附近的「小于」在回执里看起来像「等于」。
+3. 单侧变异：M1（`<`→`<=`）只红 “a fixed threshold exactly at the floor resolves”；M2（标记计数 +1）只红 “the marker's count is exactly what was dropped”；M3（`MAX_THRESHOLD_RATIO`→0.9）全绿——常量耦合无测试覆盖。
+
+## praise
+
+- **卫生门禁**：原套件 `node tests/run-all.mjs` → `repo hygiene … ok` + 15/15、exit 0；临时副本给 `docs/handoff.md` 加尾空行后真的 `FAILED` 并点名该文件（`docs/fake.png` 未被误报）；无 git 目录静默跳过、exit 0。
+- **边界语义**：独立算出 baseline=49,975（contextTokens=25）、floor=77,975；`tokens === floor` 放行、`floor−1` 拒绝且 cause=`fixed-below-floor`；两条固定文案的阈值/下限与门复算一致。
+- **回执**：`/handoff threshold 0.1` 现在回整条状态行，实测 100k 窗口得到 `fixed 10% (the 10.0k-token threshold is below the 78.0k-token floor …; raise /handoff threshold or lower /handoff budget recent)`；80k 窗口得到 “no ratio fits” 变体；0.95 得到 `95% of window`；固定 no-window 为 `fixed 10% (the context window is not known yet)`，无 `auto` 串入。
+- **清单**：n=400/1000/100000 三档下标记计数都恰等于被丢弃行数；总长超限 36–38 字符（<100），列出正文 ≤8,000。
+- **发布面**：`git diff --check v0.4.2..HEAD` 空；CHANGELOG v0.4.3 三条修复、`docs/handoff.md`、§9.13 的机制描述与代码一致（除上述计数字面量）。
+
+## residual-risk
+
+- 已知残留：`CONTEXT.md` 快照停在 2a7f7d0（pi 再生文件的既有震荡）；本机合并清单 7,892/8,000，截断标记路径仍只有合成测试；R-2（dsh 侧 `handoffThinking` 读者）在 owner 侧；工作树脏（`HANDOFF.md`、`project-context.json`、`skill-candidates/`）不属于冻结 diff，不参与本次判定。
+- important #1 修复后 settings.ts 会 import config 常量（现无环，低风险），但应顺带补断言防回归。
+
+VERDICT: CHANGES-REQUESTED —— 修复 #6 未完成：`parseRatio`（settings.ts:91）仍硬编码 0.1/0.95，未与 `MAX_THRESHOLD_RATIO` 共用；当前无已发生故障，但「改一处只有一处」性质不成立，漂移即导致配置静默回落与错误回执建议。
+RELEASE-OK: no

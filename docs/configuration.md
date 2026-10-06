@@ -113,7 +113,9 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 `max-memory` 与四个特性级 `on|off` 从伞形移到本层命令；`/handoff` 的裸比例、`auto`、`target`、`keep`、`send`、`draft` 六个写法被
 `threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
-取值：`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。
+取值：`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。固定比例模式（`handoffThresholdAuto=false`）
+的阈值仍由比例与窗口决定，但低于物理下限时**自动触发会被拒绝**（手动 `/handoff now` 不查阈值）；见
+[handoff 预算与恢复](handoff.md) 的物理下限一段。
 `handoffThinking` 与 `/handoff thinking` 已在 v0.4.2 退役：它在本仓没有行为读者（只有那个动词写它），回执里
 「stored for the dsh profile」的承诺在本仓找不到证据支撑——v0.4.0 的证据只说两仓共享那七个改名拼写，本机的 dsh 产物里这两个键拼写 0 命中（跨仓不可复验，见审计 §9.12 R-2）。这是硬切而非别名：v0.4.1 里它仍是已知键、
 值会随写持久化，退役后它按未知键处理（忽略，下次写回时消失）。`mode`/`guard`/`lang` 照旧生效。

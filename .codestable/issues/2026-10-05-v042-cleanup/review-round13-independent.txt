@@ -1,0 +1,50 @@
+# lane A · 审 13 · v0.4.3 放行确认轮（HEAD c9d4db6）
+
+判定模型：deepseek/deepseek-flash。所有结论均由本人在沙箱复跑；工作区未写（`git status` 仍只有原有未跟踪 `.agents/memory/skill-candidates/`，`git diff HEAD` 为空），变异/构造均在 /tmp 整仓副本中进行。
+
+## 一、门禁复验（全部复跑通过）
+
+| 门禁 | 结果 |
+|---|---|
+| `git diff --check v0.4.2..HEAD` | 空（无输出） |
+| `node tests/run-all.mjs`（HEAD 原样） | hygiene ok，15/15，exit 0 |
+| 本地 `master` / `HEAD` | 均 c9d4db6 |
+| push URL ① forgejo `git ls-remote origin refs/heads/master` | c9d4db6 |
+| push URL ② github `git ls-remote ssh://git@ssh.github.com:443/…` | c9d4db6 |
+| hygiene skill §10 归属脚本 | 0 不符 |
+
+说明：本地 `ghmaster`(88acbba)、`ghmirror/master`(8b300dc) 是陈旧跟踪 ref，不是这两个 push URL 的目标；实际远端 master 已同 sha。
+
+## 二、CRLF / LF / 二进制与变异复现（/tmp 副本）
+
+- **CRLF**：tracked `crlf-probe.txt = 'hello\r\n\r\n'` → 门禁 `FAILED` 并点名 `crlf-probe.txt`，exit 1，摘要 `All 15 tests passed, but the repo hygiene check failed.` ✅
+- **LF**：`'hello\n\n'` → 点名 `lf-probe.txt`，exit 1 ✅
+- **二进制**：`'a\0b\n\n'` → NUL 跳过，hygiene ok，exit 0 ✅
+- **M-D**（`config.ts` MIN=0.2 + `settings.ts` 下限硬编码 0.1）：红 3 条 —— 目标断言 `the ratio parser refuses just below the shared minimum` 在列 ✅（另见 suggestion 1 的附带红）。
+- **常量单独移动**（仅 MIN=0.2，读取方真读）：4 条 parser 断言全绿 ✅（证明 settings.ts 确实读常量），但整文件非全绿（见 suggestion 1）。
+- **自选单侧变异**：`threshold.ts:118` 的 `<` 改 `<=` → 恰好 1 条红，具名 `a fixed threshold exactly at the floor resolves` ✅
+- **文档一致性**：`run.ts` 中 `resolveThreshold` 只有两处调用——`:31`（status 渲染）与 `:318`（`maybeTrigger` 自动路径）；`:506` 的 `now/run/force` 直接走 `runHandoff(pi,"force")`，不查阈值。`docs/handoff.md:88-89` 的「手动 `/handoff now` 不查阈值，见上」与代码一致，「见上」指向 `:14`（正确）。
+
+## 三、分桶
+
+### blocking（0）
+
+### important（0）
+
+### nit
+
+1. `/.codestable/audits/2026-10-05-context-cost-and-progressive-disclosure.md:384` — R-1 写「11 条直连断言（8 条下限与文案；3 条比例解析器↔常量耦合）」，实测 `tests/handoff-test.mjs:550-644` 为 **12 条直连**：parser 4 条（:550/:554/:558/:562）+ 下限/文案 8 条（:589/:593/:597/:609/:618/:627/:643/:644），另有 3 条 e2e（:670/:674/:685）。`c9d4db6` 新增的 below-min 断言属于 parser 组，子计数未从 3 改 4。影响：审计证据条数不实，且少算的恰是闭 M-D 的那条。修复边界：改为「12 条…（8 条…；4 条比例解析器↔常量耦合）」。
+2. 同文件 `:390` — autolearn 截断条目标「`tests/autolearn-test.mjs` 的六条断言」，该块实测 7 条 `check()`（:29/:40/:41/:42/:48/:52/:57）；若“六条”指仅截断相关（排除 :29 的基线断言）则成立，但文字未限定。影响：可数性歧义。修复边界：写「七条（含六条截断相关）」或显式限定口径。
+3. `docs/handoff.md:88` — 「自动触发被拒绝」略拗口，建议「自动触发会被拒绝」。仅措辞，语义与代码一致。
+
+### suggestion
+
+1. `tests/handoff-test.mjs:562` + `:658` — M-D 并非“恰好一条红”，且「常量单独移动仍全绿」在整文件层面不成立：e2e fixture 硬编码 `handoffThresholdRatio: 0.1`（:658），MIN 移到 0.2 后 `config.ts:323` 的校验器把它判非法并回落 `DEFAULT_CONFIG` 0.4（`config.ts:109`），于是 M-D 下红 3 条（:562 目标 + :674/:685），常量单独移动下红 2 条（:674/:685）。parser 耦合证明本身成立。影响：变异探针的“全绿/恰好红”口径在文档与自述里被夸大。修复边界（可选）：fixture 的比例与期望百分比从 `MIN_THRESHOLD_RATIO` 派生，或把注释/审计里的声明限定为“4 条 parser 断言”。
+2. `tests/run-all.mjs:30` — 正则在仅含空白的尾行上有漏报：`'hello\n \n'` 判定 false（门禁 ok），而 `git diff --check` 对同一内容报 `new blank line at EOF` + `trailing whitespace`（已实测）。影响：套件可绿而发布门禁红，与 CRLF 洞同类；此为 e024595 引入的既有残留，本轮只闭了 CRLF 半边。修复边界（可选）：如 `/\r?\n[ \t]*\r?\n$/` 或先按行剥空白再判空尾行。
+
+### 已知残留
+
+- 沙箱未跟踪目录 `.agents/memory/skill-candidates/`：门禁只看 `git ls-files`，无发布影响；非本轮产物。
+
+VERDICT: PASSED — 无 blocking/important；行为、文档、门禁、CRLF/MIN 变异均已独立复现，仅剩审计计数与测试夹具口径的 nit/suggestion。
+RELEASE-OK: yes
