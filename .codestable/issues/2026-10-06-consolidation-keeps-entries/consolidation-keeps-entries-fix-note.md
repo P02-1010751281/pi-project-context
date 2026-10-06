@@ -3,7 +3,7 @@ doc_type: fix-note
 issue: consolidation-keeps-entries
 status: implemented
 date: 2026-10-06
-implemented_in: 待填（提交后回填）
+implemented_in: ed51eac（提示层修复；随 v0.4.4 发布）
 relates_to: .agents/skills/pi-project-context-consolidation-prompt-rule/SKILL.md
 ---
 
@@ -19,6 +19,15 @@ relates_to: .agents/skills/pi-project-context-consolidation-prompt-rule/SKILL.md
 - **F3** 同类事件的更早两条回归行：`2026-10-05T14:09:16.272Z`（14 条）与 `2026-10-05T16:46:30.185Z`
   （`memory exceeded a section budget: 3 section(s) exceeded their budget and 20 whole entry(ies) were dropped`）。
   也就是说这是**反复发生**的一类损失，不是单次意外。
+- **F5（本 issue 落盘当天新增）** 把 F2 丢掉的条目补回并提交后，**下一次**渲染（`2026-10-06T04:38:57.357Z`，
+  仍是修复前的代码）**再次丢 10 条、0 新增**，文档 31,774 → 29,915 字符。同一次运行前还有一行
+  `2026-10-06T04:35:13.266Z … the memory changed while this pass's reply was being built; the reply was not
+  published and the newer content stays effective`——即补回的那一版被「陈旧回复拒发」正确保护，但随后一轮
+  仍按同一形状收敛到更短的文档。**两轮连续、净损失、无新增**，进一步排除「被上限逼的」这一解释；也说明这一
+  类损失在修复生效并重启前会持续复现。
+- **F6** 守卫的样本条目名与人工逐字比对不完全重合（守卫报 `The threshold ratio range has one exported source …`
+  缺失，而按前 60 字符比对该条仍在）：两者匹配宽容度不同，因此**不能**用「守卫只报 N 条」当作实际损失条数的
+  上界；本 issue 的条数以逐条比对为准。
 - **F4** 授权该行为的提示原文只有一句：`When over budget, merge duplicates within a section, deduplicate across
   sections, then drop the least durable entries.` 它把「删除」写成超预算时的**默认收尾动作**，而 F2 表明模型
   在并未超预算时也照做了——规则读起来像许可，而不是最后手段。
