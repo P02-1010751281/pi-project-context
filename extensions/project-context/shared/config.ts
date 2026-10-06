@@ -115,9 +115,9 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 /** Don't hand off unless at least this much context is actually dropped. */
 export const MIN_DROP_TOKENS = 8_000;
 export const MAX_KEEP_RECENT_TOKENS = 200_000;
-/** dsh's accepted range for `handoffThresholdRatio`. */
-const MIN_RATIO = 0.1;
-/** Also the largest fixed share a "no ratio fits" refusal may point at, so the two cannot drift. */
+/** dsh's accepted range for `handoffThresholdRatio`: the one source the parser, the validator and the
+ * "no ratio fits" refusal all read, so the three cannot drift apart. */
+export const MIN_THRESHOLD_RATIO = 0.1;
 export const MAX_THRESHOLD_RATIO = 0.95;
 
 export function configFile(projectRoot: string): string {
@@ -166,7 +166,7 @@ function bounded(value: unknown, min: number, max: number): number | undefined {
 }
 
 function ratio(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= MIN_RATIO && value <= MAX_THRESHOLD_RATIO ? value : undefined;
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_THRESHOLD_RATIO && value <= MAX_THRESHOLD_RATIO ? value : undefined;
 }
 
 /** dsh's accepted floor for `maxTokens`; also enforced by the `/project-context max-tokens` verb. */

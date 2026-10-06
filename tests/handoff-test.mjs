@@ -541,6 +541,24 @@ try {
 	} finally {
 		await rmTemp(fixedTmp);
 	}
+	// The ratio parser's range and the shared constants are one source: mutating the constant alone has to
+	// move the parser with it (settings.ts imports them rather than repeating the literals).
+	const [ratioSettings, ratioConstants] = await loadShared([
+		`${PC}/handoff/settings.ts`,
+		`${PC}/shared/config.ts`,
+	]);
+	check(
+		"the ratio parser accepts the shared maximum",
+		ratioSettings.parseRatio(String(ratioConstants.MAX_THRESHOLD_RATIO)) === ratioConstants.MAX_THRESHOLD_RATIO,
+	);
+	check(
+		"the ratio parser refuses just above the shared maximum",
+		ratioSettings.parseRatio(String((ratioConstants.MAX_THRESHOLD_RATIO + 0.01).toFixed(2))) === undefined,
+	);
+	check(
+		"the ratio parser accepts the shared minimum",
+		ratioSettings.parseRatio(String(ratioConstants.MIN_THRESHOLD_RATIO)) === ratioConstants.MIN_THRESHOLD_RATIO,
+	);
 	// The physical floor guards fixed mode too: a ratio that resolves below `baseline + keep + MIN_DROP`
 	// would hand off and drop almost nothing, so it is refused with its own cause rather than run. The two
 	// modules load through one registry so the settings object mutated here is the one the math reads.
@@ -605,6 +623,23 @@ try {
 		check(
 			"a fixed threshold below the floor is refused",
 			fixedHandoff.resolveThreshold(belowFloorCtx, belowFloorCtx.getContextUsage()) === undefined,
+		);
+		// `fmtTokens` rounds to 0.1k, so a threshold just under the floor can render the same as it: the
+		// sentence must not read "the 78.0k threshold is below the 78.0k floor".
+		const nearFloorCtx = makeCtx(tmp, {
+			sessionManager: makeSessionManager([firstTurn, secondTurn], "handoff-fixed-near-floor"),
+			mode: "tui",
+			getContextUsage: () => ({ tokens: 50_000, percent: 5, contextWindow: floorTokens * 10 - 10 }),
+		});
+		const nearFloorText = fixedHandoff.thresholdRefusalText(
+			"fixed-below-floor",
+			nearFloorCtx,
+			nearFloorCtx.getContextUsage(),
+		);
+		check("the near-floor refusal still reads as a refusal", /below the .*floor/.test(nearFloorText));
+		check(
+			"the refusal never calls a number below itself",
+			!/the ([\d.]+k)-token threshold is below the \1-token floor/.test(nearFloorText),
 		);
 	} finally {
 		fixedSettings.config.handoffThresholdAuto = savedAuto;

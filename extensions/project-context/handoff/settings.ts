@@ -3,7 +3,7 @@
  */
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, type ProjectContextConfig, getConfig, peekConfig, runIsDisabled, updateConfig } from "../shared/config.ts";
+import { DEFAULT_CONFIG, MAX_THRESHOLD_RATIO, MIN_THRESHOLD_RATIO, type ProjectContextConfig, getConfig, peekConfig, runIsDisabled, updateConfig } from "../shared/config.ts";
 import { fmtPct, fmtTokens } from "./format.ts";
 
 export let config: ProjectContextConfig = { ...DEFAULT_CONFIG };
@@ -88,7 +88,7 @@ export function parseRatio(input: string): number | undefined {
 	const value = Number(text);
 	if (!Number.isFinite(value)) return undefined;
 	const ratio = value > 1 ? value / 100 : value;
-	return ratio >= 0.1 && ratio <= 0.95 ? ratio : undefined;
+	return ratio >= MIN_THRESHOLD_RATIO && ratio <= MAX_THRESHOLD_RATIO ? ratio : undefined;
 }
 
 /** Accepts "12k", "12000", "1.5k". */

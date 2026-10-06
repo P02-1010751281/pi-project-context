@@ -73,8 +73,8 @@ export interface ThresholdOverride {
 	by: "quality" | "window" | "tier";
 }
 
-/** Everything that is not conversation: system prompt, tool schemas, injected memory/context. */
-/** The measured non-conversation baseline. Exported so tests can pin the floor boundary exactly. */
+/** The measured non-conversation baseline (system prompt, tool schemas, injected memory/context).
+ * Exported so tests can pin the physical-floor boundary exactly. */
 export function baselineTokens(ctx: ExtensionContext, usage: ContextUsage): number {
 	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 	const contextTokens = entries
@@ -242,11 +242,17 @@ export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionCon
 		case "fixed-below-floor":
 			// Name a lever that actually works with these numbers: when even the largest legal ratio cannot
 			// clear the floor, raising it is not a lever and only the carried-window budget is.
-			const largestRatio = Math.min(Math.round(MAX_THRESHOLD_RATIO * window), window - TIER_EDGE_MARGIN);
-			const lever = largestRatio >= floor
+			const largestThreshold = Math.min(Math.round(MAX_THRESHOLD_RATIO * window), window - TIER_EDGE_MARGIN);
+			const lever = largestThreshold >= floor
 				? "raise /handoff threshold or lower /handoff budget recent"
 				: "lower /handoff budget recent (no ratio fits this window at this baseline)";
-			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the ${fmtTokens(Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN))}-token threshold is below the ${fmtTokens(floor)}-token floor a worthwhile handoff needs at this baseline; ${lever})`;
+			const shown = Math.min(Math.round(config.handoffThresholdRatio * window), window - TIER_EDGE_MARGIN);
+			// `fmtTokens` rounds to 0.1k, so within ~100 tokens of the floor both numbers would read the
+			// same and the sentence would call a number below itself. Use the exact integers then.
+			const collide = fmtTokens(shown) === fmtTokens(floor);
+			const thresholdText = collide ? `${shown}` : fmtTokens(shown);
+			const floorText = collide ? `${floor}` : fmtTokens(floor);
+			return `fixed ${fmtPct(config.handoffThresholdRatio * 100)} (the ${thresholdText}-token threshold is below the ${floorText}-token floor a worthwhile handoff needs at this baseline; ${lever})`;
 		case "no-model-or-usage":
 			return "auto (the session model or its token usage is not known yet)";
 		case "window-too-small":

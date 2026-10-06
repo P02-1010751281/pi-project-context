@@ -51,7 +51,6 @@ export function inventoryText(skills: SkillInfo[]): string {
 		lines.push(line);
 		used += line.length + 1;
 	}
-	if (lines.length === 0) return "(none)";
 	if (lines.length < skills.length) {
 		// Say the list is incomplete instead of silently hiding the tail: the model then knows that a skill
 		// it cannot see is not a skill that does not exist, and an operator reading the prompt sees the cap
@@ -59,7 +58,7 @@ export function inventoryText(skills: SkillInfo[]): string {
 		// marker's own line (under 100 characters).
 		lines.push(`- (${skills.length - lines.length} more skill(s) not listed: the ${AUTOLEARN_INVENTORY_CHARS}-character inventory cap was reached)`);
 	}
-	return lines.join("\n");
+	return lines.join("\n") || "(none)";
 }
 
 /**

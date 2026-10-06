@@ -15,20 +15,24 @@ let failed = 0;
 // two release rounds in a row shipped one, so fail the suite instead of relying on a proofreader.
 const repoRoot = path.resolve(here, "..");
 const tracked = spawnSync("git", ["ls-files"], { encoding: "utf8", cwd: repoRoot });
+let hygieneFailed = false;
 if (tracked.status === 0) {
-	const text = /\.(md|ts|mjs|json|ya?ml|txt|sh|gitignore)$/;
+	// Every tracked file, not just the common text extensions: `LICENSE` has no suffix, and a binary is
+	// skipped by its NUL byte rather than by guessing from the name.
 	const offenders = tracked.stdout
 		.split("\n")
-		.filter((file) => file && text.test(file))
+		.filter(Boolean)
 		.filter((file) => {
 			try {
-				return readFileSync(path.join(repoRoot, file), "utf8").endsWith("\n\n");
+				const bytes = readFileSync(path.join(repoRoot, file));
+				if (bytes.includes(0)) return false;
+				return bytes.toString("utf8").endsWith("\n\n");
 			} catch {
 				return false;
 			}
 		});
 	if (offenders.length > 0) {
-		failed += 1;
+		hygieneFailed = true;
 		console.log("== repo hygiene (no trailing blank line) ... FAILED");
 		for (const file of offenders) console.log(`   ${file}`);
 	} else {
@@ -49,5 +53,7 @@ for (const test of tests) {
 		console.error(result.stderr);
 	}
 }
-console.log(failed === 0 ? `\nAll ${tests.length} tests passed.` : `\n${failed} of ${tests.length} tests failed.`);
-process.exit(failed === 0 ? 0 : 1);
+if (failed > 0) console.log(`\n${failed} of ${tests.length} tests failed.`);
+else if (hygieneFailed) console.log(`\nAll ${tests.length} tests passed, but the repo hygiene check failed.`);
+else console.log(`\nAll ${tests.length} tests passed.`);
+process.exit(failed === 0 && !hygieneFailed ? 0 : 1);

@@ -6,7 +6,7 @@
 import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { MAX_KEEP_RECENT_TOKENS, MIN_DROP_TOKENS, setFeature } from "../shared/config.ts";
+import { MAX_KEEP_RECENT_TOKENS, MAX_THRESHOLD_RATIO, MIN_DROP_TOKENS, MIN_THRESHOLD_RATIO, setFeature } from "../shared/config.ts";
 import { completeSubValues, completeValues, completeVerbs } from "../shared/complete.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
@@ -437,7 +437,11 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				}
 				const ratio = parseRatio(value ?? "");
 				if (ratio === undefined) {
-					notify(ctx, "Usage: /handoff threshold <auto|0.1-0.95|10-95%> (e.g. threshold 0.6)", "warning");
+					notify(
+						ctx,
+						`Usage: /handoff threshold <auto|${MIN_THRESHOLD_RATIO}-${MAX_THRESHOLD_RATIO}|${MIN_THRESHOLD_RATIO * 100}-${MAX_THRESHOLD_RATIO * 100}%> (e.g. threshold 0.6)`,
+						"warning",
+					);
 					return;
 				}
 				config.handoffThresholdAuto = false;
