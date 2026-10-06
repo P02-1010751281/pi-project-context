@@ -62,10 +62,16 @@ v0.4.1 先例是 3 轮；本轮 9 轮，因为每轮都在**发布文档/记忆�
 | 项 | 值 |
 | --- | --- |
 | 发布前 HEAD | `4f14bc3`（本地 master == forgejo == github） |
-| tag 对象 / peeled | 见「发布后补记」 |
-| `~/.pi` pin | 见「发布后补记」 |
-| 安装副本 HEAD / describe / 脏 | 见「发布后补记」 |
-| 真实安装态探针 | 见「发布后补记」 |
+| tag 对象 | `1a3ddeec211eb8be115a3c412f4980c87ab79519` |
+| tag 指向（peeled） | `4b4f9c3e5ef3bf8513fbac87a1174b53d4baafb8` |
+| forgejo | `ls-remote --tags 'v0.4.2*'` → `1a3ddeec211e` + `4b4f9c3e5ef3^{}` |
+| github 镜像 | 同上（两行均含 peeled） |
+| `~/.pi` pin 提交 | `a170e37`（`agent/settings.json` + `README.md` 改 `@v0.4.2`，已推送 pi-config `origin`） |
+| 安装命令 | `pi update --extensions`（拉取 `tag v0.4.2 -> FETCH_HEAD`，HEAD 落到 `4b4f9c3`） |
+| 安装副本 HEAD / describe / 脏 | `4b4f9c3e5ef3bf8513fbac87a1174b53d4baafb8` / `v0.4.2`（`fetch --tags` 后；此前为 `v0.4.1-26-g…`）/ 脏文件 0 |
+| 副本自测 | `node tests/run-all.mjs` → 15/15 |
+| 到位抽检（副本 `extensions/`） | `shutdownErrorRoot` 3 处、`MIN_DROP_TOKENS` 12 处、`force-auto` 7 处；`MIN_SUMMARIZE_TOKENS`/`estimatedAfter`/`cleanHeaders`/`newestMemoryArchiveSync` 0 处；`handoffThinking` 仅剩 `shared/config.ts` 两处**退役说明注释** |
+| 真实安装态探针 | `/tmp/pc-release-probe-v042`，默认设置：`pi -p "只回复两个字：收到"` → exit 0、回复「收到」；扩展生成 `.agents/memory/CONTEXT.md`（由整理 pass 渲染）、`session-logs/<id>/{session.jsonl,session.md}`（220 K）与 `INDEX.md`、`.gitignore`；`errors.log` 为空 |
 
 **需要重启 pi 才生效**：运行中的会话仍加载 v0.4.1 的模块。
 
@@ -80,4 +86,7 @@ v0.4.1 先例是 3 轮；本轮 9 轮，因为每轮都在**发布文档/记忆�
 
 ## 发布后补记
 
-见紧随其后的 `docs(records)` 提交（tag 对象、peeled、pin 提交、安装副本 HEAD/describe、探针结果）。
+本次发布期间没有改代码或文档内容：tag 落点 `4b4f9c3` 相对最后一轮评审的 `4f14bc3` 只多一个 CHANGELOG 定版
+（`未发布` → `2026-10-05`）与本证据文件本身，与 v0.4.1 的「tag 前只定版」先例一致。
+
+**需要重启 pi 才生效**：当前运行中的会话仍加载 v0.4.1 的模块（`pi update --extensions` 只更新了磁盘上的副本）。
