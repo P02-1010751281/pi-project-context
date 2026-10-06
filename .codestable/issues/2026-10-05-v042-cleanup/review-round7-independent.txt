@@ -1,0 +1,59 @@
+# Lane A 独立审查报告 — v0.4.2 发布放行轮（冻结 HEAD `611fcef`）
+
+判定模型：deepseek/deepseek-flash。严格只读：复跑前/后 `git status --porcelain` 逐字节一致（`M HANDOFF.md`、`M project-context.json`、`?? skill-candidates/`，均为入场固有会话态）；变异只在 `/tmp` 的 `git archive HEAD` 副本里做。
+
+## 硬门禁复跑（不采信任何记录）
+
+| 门禁 | 实测 | 结果 |
+|---|---|---|
+| `git diff --check v0.4.1..HEAD` | 无输出，exit 0 | ✅ |
+| `node tests/run-all.mjs`（仓内原树） | `All 15 tests passed.`，且工作区零变化 | ✅ |
+| local master / forgejo / github push URL | 三者均 `611fcef2b99a4473d272df8ab3bffb559f09c552` | ✅ |
+| §10 按行归属脚本（skill 原文原样跑） | 23 条 Index 行，**0 条不符** | ✅ |
+| 变异 A `shared/inject.ts:92` fence 判断 | 3 条具名红（fenced preamble / fenced split / shorter fence run），1/15 failed | ✅ |
+| 变异 B `memory/report.ts:28` `.agents/memory`→`.agents` | 恰好 1 条具名红 `a cwd that only has .agents is not the memory layer`，1/15 failed | ✅ |
+| 未变异副本 | 15/15（负控制） | ✅ |
+
+注入顺序探针（复核本轮指定的一点）：用 `tests/harness.mjs` 加载真实扩展，按 pi 1.0.3 dist 的 `emitBeforeAgentStart` 语义链式跑两个 handler（返回值整体替换、下一个 handler 的 `systemPrompt` getter 读到替换后的文本、按注册序执行）。实测 handler 数 2，最终标题序 **`["Project Context", "Project Memory"]`**。注册序由 `index.ts:47-48`（`registerArchive` 先于 `registerConsolidation`）决定。`memory/report.ts:364`、`archive/archive.ts:122` 均为 `${event.systemPrompt}\n\n## …` 追加——渲染 L19 现在写的「appended to the end」与代码一致。
+
+## blocking
+无。
+
+## important
+
+1. **`.agents/memory/MEMORY.md:122` — 残留的位置/顺序断言，且与代码、同发布 skill 矛盾。**
+   原文：`archive/archive.ts:122 - … the second per-turn injected block.` 代码仲裁者说反了：archive 的 `## Project Context` 是**第一个**被追加的块，`memory/report.ts:364` 的 `## Project Memory` 才是第二个（末尾）；同发布的 `prefix-cache-analysis/SKILL.md:14,21,44` 也说 memory 块在 end，`MEMORY.md:19` 说两者都追加到末尾。这正是本发布新增的 hygiene §10 段落（`98aa3a1`）要求「读构串代码、跨面互读、以代码为终审」的那一类断言，且该行本轮刚被改过（`:121`→`:122`，仅修行号未修序数）。
+   影响：策划记忆携带一个可被代码和同发布 skill 同时推翻的顺序断言，误导后续 prefix-cache 判断；属「发布面事实不实」。
+   修复边界：仅改这一行渲染文本（`the second` → `the first`，或去掉序数写成「the CONTEXT.md half of the two per-turn injected blocks」），重刷 `docs(memory)`；不动代码。其余位置类断言（L19 end、L37 边界两处、L42 first-look/at most two、L53/L61/L75/L84/L121/L133）逐一读过代码/文档，均一致。
+
+## nit
+
+- **`.agents/memory/CONTEXT.md:12`** — 「the last "summarize" word in code is gone」字面过头：`archive/session-log.ts:8` 仍有 `summarized`、`autolearn/skill.ts:65` 仍有 `summarizer`；CHANGELOG v0.4.2 的精确表述是「最后一个 `MIN_SUMMARIZE_*` 标识符」。CONTEXT 属预声明会话快照残留（停在 `2a7f7d0`），下次刷新时改写即可。
+- **`.agents/skills/pi-project-context-command-surface-audit/SKILL.md:28`** — 写 `/memory` 前缀为 `Project memory: `，实际 `report.ts:450` 与伞形同打 `Memory: `（v0.4.0 单前缀规则）。非本次 diff 引入（v0.4.2 只改了同行 `memoryStatusMessage`→`memoryStatusLine`）。
+- **陈旧技能正文（均在 v0.4.1..HEAD diff 之外，属历史遗留，不计本次回归）**：`adaptive-handoff-threshold-review/SKILL.md:15,17,18,20,31,32,33` 仍把 `handoffKeepTokens`/`handoffTargetTokens`、旧公式 `max(min(usable-4000,knee), baseline+keep+S)`（`docs/handoff.md` 现已明确禁止该抬升）、`summarizer` cap/`/handoff auto`/`summarize 125k` 当作现行；`headless-runs/SKILL.md:14,90,104` 仍用 `handoffKeepTokens`/`handoffLanguage`。建议下一次技能整理时正文刷新或 autolearn supersede。
+
+## suggestion
+
+- `CHANGELOG.md:6` 仍为「未发布」；按 v0.4.1 先例，tag 前落真实日期（发布步骤，不计缺陷）。
+- 把「序数/方向断言要跨面互读代码」维持为 render 提交前的固定探针（本轮 §10 新增段落已写，建议连同一条最小探针命令记入 skill，避免下次再靠人眼）。
+
+## learning
+- 按行归属全绿与位置断言正确是两套检查：本轮 §10 脚本 0 命中，但 `second` 这类序数只有「注册序 + 宿主链式语义」探针能看出，正是审 6 判否项的同一类残留，说明一次 render 只改一半仍会漏。
+- pi 的 `before_agent_start` 返回值是整体替换并按注册序链式传递，所以注入块顺序由 `index.ts` 的注册顺序决定，不由散文里的列举顺序决定。
+
+## praise
+- 四项硬门禁独立复跑全绿；两格单侧变异各自具名可红、负控制 15/15；`shutdownErrorRoot` 的 `.agents/memory`→`.agents` 变异正如 CHANGELOG 承诺「精确红一条」。
+- L19 的两处「front」是真修成「end」；CHANGELOG v0.4.2 逐句对码（handoffThinking 硬切不是改名、`parseConfig`/`updateConfig` 读回与整份重写、`handoffBudgetSummaryTokens` 活读者在 `threshold.ts:135` 且不进 auto 公式、`MIN_DROP_TOKENS` 纯更名值仍 8000、`scanDocument` 单遍历、CommonMark 关 fence、`shutdownErrorRoot` 精度修正）全部成立。
+- `docs/handoff.md` 的公式（`T0 = min(KNEE, U-4000)`，S 不入式，F 是拒绝门，固定比例免下限）与 `threshold.ts` 现码一致；退役叙事在 CHANGELOG/docs/config 注释/MEMORY 口径统一。
+
+## residual-risk（发布后处理项）
+- **R-2**：dsh 侧是否读 `handoffThinking` 跨仓不可复验；判据见审计 §9.12。本机工作区与 HEAD 的 `project-context.json` 都仍有 `"handoffThinking": "off"`，任何一次 v0.4.2 写回会将其静默丢弃。
+- **R-1**：固定比例模式无最小可丢下限（v0.4.1 起既存语义，`docs/handoff.md:86-89` 已记名）。
+- `CONTEXT.md` 会话快照停在 `2a7f7d0`（与 HEAD `611fcef` 不符）；autolearn inventory 截断贴边（~7,892/8,000）——均预声明残留。
+- 无其他运行时可见回归：5b01712 删除的 `!force` 分支确经两个调用点（`run.ts:500,504`，`force` 恒真）不可达，`maybeTrigger` 保留 `handoffEnabled` 门。
+
+## 对抗性一遍
+最可能的发布后用户可见错误：**R-2 硬切静默丢键**。最小复现：在带 `"handoffThinking": "session"` 的 `project-context.json` 上运行 v0.4.2，执行任一写配置路径（`/handoff threshold auto`、`/memory off` 再 `on`、`/project-context model off`），随后 `grep handoffThinking .agents/memory/project-context.json` 归零。判据：若 dsh 源码存在 `handoffThinking|handoffSummaryThinking` 的读取路径，则这是无提示的破坏性丢设置；若不存在，就是设计内硬切——本仓不可复验，按 R-2 记名。次高是文档面：上面 important 的 `MEMORY.md:122` 序数错误会误导 prefix-cache/注入面后续工作（非运行时错误，但属「发布面事实不实」）。
+
+`VERDICT: CHANGES-REQUESTED` — 四项硬门禁与归属检查全绿、变异具名可红，但发布面 `MEMORY.md:122` 仍有一条与代码及同发布 skill 相反的序数断言（archive 的 CONTEXT 块被写为 second，实际它是 first、memory 块才是 second/末尾），属发布面事实不实。
+`RELEASE-OK: no`

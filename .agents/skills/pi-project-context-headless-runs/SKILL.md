@@ -11,7 +11,7 @@ description: "Run headless pi against this extension: probe model routes for rev
 
 - Before launching a sandboxed independent-review round (`pi -p` over a read-only `/tmp` copy) or any headless helper call that must reach a custom provider.
 - Whenever a headless run reports `Model ... not found`, `Unknown provider "<id>"`, `402 Insufficient Balance`, an invalidated OAuth token, or hangs with zero output for many minutes.
-- After changing handoff code (`extensions/project-context/handoff/`), compaction-prompt handling, `handoffKeepTokens`/`handoffLanguage` logic, or memory write paths, to prove the feature works end-to-end: unit tests in `tests/*.mjs` do not exercise pi's real prompt/turn alignment.
+- After changing handoff code (`extensions/project-context/handoff/`), compaction-prompt handling, `handoffBudgetRecentTokens`/`handoffLang` logic, or memory write paths, to prove the feature works end-to-end: unit tests in `tests/*.mjs` do not exercise pi's real prompt/turn alignment.
 
 ## Part 1 — Probe a model route first
 
@@ -87,21 +87,24 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
    A run that passes `-nt` has no `read`/`bash` at all, so any test of "does the agent consult a file" measures nothing;
    use `--tools read,grep,find,ls` when the run needs tools, and keep `-nt` only when it must not act.
 
-2. Drive the session far enough to cross the handoff threshold (or temporarily lower `handoffKeepTokens` in `.agents/memory/project-context.json` in the sandbox) so `runHandoff` actually fires.
+2. Drive the session far enough to cross the handoff threshold (or temporarily lower `handoffBudgetRecentTokens` in `.agents/memory/project-context.json` in the sandbox) so `runHandoff` actually fires.
 
 3. Inspect the artifacts in `$sandbox/.agents/memory/`:
-   - `HANDOFF.md` — check headers/language match the configured `handoffLanguage` (`auto`|`zh`|`en`), and that old handoff prompts appear as the one-line `[handoff prompt omitted]` marker rather than being deleted.
+   - `HANDOFF.md` — check headers/language match the configured `handoffLang` (`auto`|`zh`|`en`), and that old handoff prompts appear as the one-line `[handoff prompt omitted]` marker rather than being deleted.
    - `MEMORY.md` + `memory.jsonl` — confirm a `replace` record was appended, not an overwrite outside the journal.
    - `memory-log-*.jsonl` / `MEMORY.md.memory-backup-*` — confirm backups were taken when a write occurred.
    - `errors.log` — confirm no unparseable-model-reply or lock errors.
 
-4. For language resolution, send a short Chinese user turn and repeat: the handoff doc headings should render in Chinese when `handoffLanguage: auto` resolves to `zh`.
+4. For language resolution, send a short Chinese user turn and repeat: the handoff doc headings should render in Chinese when `handoffLang: auto` resolves to `zh`.
+
+> **v0.4.x 更新（2026-10-05）**：键名已从 `handoffKeepTokens` / `handoffLanguage` 更到
+> `handoffBudgetRecentTokens` / `handoffLang`（正文已替换）；交接自 v0.4.1 起不生成摘要，HANDOFF.md 只有文件清单。
 
 ### Gotchas
 
 - Replay blocks must not open with `assistant(toolCall)` — Anthropic/Gemini routes reject it with 400. Verify the omitted-marker substitution preserved `findCutPoint` slicing and toolCall/toolResult pairing.
 - `session_shutdown` always runs a forced silent consolidation pass, so replacing a session produces extra `MEMORY.md` + backup writes — that is expected, not a bug.
-- Known pre-existing gap: when the whole session fits in `handoffKeepTokens`, `runHandoff` returns before any notify and the user sees a silent no-op. Do not mistake that for a failure of your change.
+- Known pre-existing gap: when the whole session fits in `handoffBudgetRecentTokens`, `runHandoff` returns before any notify and the user sees a silent no-op. Do not mistake that for a failure of your change.
 - `--mode json` does **not** emit the system prompt, so an injected-memory experiment cannot be verified from the transcript;
   infer it from the answer's shape (a fact from a kept section present, a fact from a dropped section absent).
 - The consolidation pass runs at `agent_settled` and writes `CONTEXT.md` + `session-logs/` into the sandbox, so one sandbox per

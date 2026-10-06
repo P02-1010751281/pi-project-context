@@ -25,7 +25,7 @@ frozen, because the ground rules below decide whether the change is allowed at a
 ## 2. One fact keeps one name — and one renderer
 
 - Shared wording lives in a module, not in the callers: `memory/status.ts::memoryStatusLine()` (+ `memoryStatusLevel()`) renders the
-  memory status line for `/project-context status` (prefix `Memory: `) and `/memory` (prefix `Project memory: `);
+  memory status line for `/project-context status` and `/memory` (both print the shared `Memory: ` prefix);
   `contextStatusLine()` renders the CONTEXT.md line for those same two.
 - The guard is the branch-equality block in `tests/memory-ops-test.mjs` (six fixtures: normal, empty, at the cap, poisoned, journal
   unreadable, file unreadable). Re-inlining a branch into either command turns it red.
