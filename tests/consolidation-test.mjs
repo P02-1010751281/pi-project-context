@@ -1069,9 +1069,11 @@ try {
 			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
 			// the document hitting its cap and point at a drop list that does not exist (review R2).
 			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
-			const didDrop = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, capNote: "3 whole entry(ies) were dropped from 2 section(s) because the memory document reached its character cap" });
+			const didDrop = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, samplesLogged: true, capNote: "3 whole entry(ies) were dropped from 2 section(s)" });
+			const throttled = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, samplesLogged: false, capNote: "3 whole entry(ies) were dropped from 2 section(s)" });
 			check("a per-item cut is not told as the document reaching its cap", !cutOnly.includes("reached its character cap") && !cutOnly.includes("dropped entries are listed"));
 			check("a real drop still names the cap and the drop samples", didDrop.includes("reached its character cap") && didDrop.includes("Samples of the dropped entries"));
+			check("a throttled pass does not claim its own samples reached the log", throttled.includes("reached its character cap") && !throttled.includes("Samples of the dropped entries") && throttled.includes("not this pass's"));
 
 			// The command path runs silently; it must still report the clip and leave a trace.
 			const factory = await loadDefault(`${PC}/index.ts`);
@@ -1661,7 +1663,7 @@ try {
 				check("the cap event reaches errors.log", log.includes("reached its cap"));
 				// The notice tells the reader the dropped entries are sampled in errors.log, so the log has to
 				// name them instead of only counting them (review R3).
-				check("the log names samples of what went, not only the count", /dropped entries: entry number \d/.test(log));
+				check("the log names samples of what went, not only the count", /dropped entries \(first 3\): entry number \d/.test(log));
 				check("the cap event is announced to the user", toasts.some((message) => message.includes("reached its character cap")));
 				check("the section path suggests no max-memory value", !toasts.some((message) => message.includes("max-memory")) && !log.includes("raise it with"));
 			} finally {

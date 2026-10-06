@@ -56,10 +56,15 @@
 
 `maxMemoryChars` 限制的是 `MEMORY.md` 正文，两条路径的裁剪方式不同：
 
-**分节路径**（结构化 tool 回复，或回复是规范的四节 bullet 文档）：渲染器**逐节**执行预算 —— 每节先从本节预算推出单项上限（`max(1, min(MAX_LIST_ITEM_CHARS, 本节预算 − 3))`）
-，单项按行边界截断（surrogate-safe），放不下的条目**整条丢弃**，标题与节序由代码拥有。单条永远放得进空节，所以 `正文长度 <= cap` 是**构造性成立**的。**渲染器不写任何截断标记**（写路径会把标记再抹掉）
-：丢弃信息只经返回值 `sectionDropped` / `droppedItems` / `itemTruncated` 上抛，在每项目每进程写一次 `errors.log` 并在通知 / 回复中提示，**不给数字建议**（按节份额下最小可行 cap 不是整数，
-`max-memory` 只取整，给了还会再裁）。
+**分节路径**（结构化 tool 回复，或回复是规范的四节 bullet 文档）：四段的份额是**目标值**，不是硬上限——唯一硬约束是
+`maxMemoryChars`。渲染器先把每段用不完的目标汇成一个池，超额段按超出比例借用（池够时精确等于各自超额，即**一条不丢**），
+只有整个文档到达 cap 时才整条丢弃条目。每段先按**借到的额度**推出单项上限（`max(1, min(MAX_LIST_ITEM_CHARS, 额度 − 3))`），
+单项按行边界截断（surrogate-safe），标题与节序由代码拥有。单条永远放得进空段，所以 `正文长度 <= cap` 是**构造性成立**的。
+**渲染器不写任何截断标记**（写路径会把标记再抹掉）：丢弃信息只经返回值 `sectionDropped` / `droppedItems` / `droppedSamples` /
+`itemTruncated` 上抛。
+每项目每进程写一次 `errors.log`，该行列出被丢条目的**样本**（最多 3 条、每条 ≤ 72 字符）。
+通知与回复里的「样本在 errors.log 里」只在本次真的写了那行时才说，被限流的后续 pass 改成「样本来自本项目第一次提示」。
+**不给数字建议**（总文档离上限还有多少不是可用余额，`max-memory` 只取整，给了还会再裁）。
 
 **逐字路径**（自由结构旧记忆、回复没有四节 bullet 结构）：保留头尾、丢弃中段，文末追加
 
@@ -75,10 +80,11 @@ marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.
 cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁一次。已进 journal 的内容才有机会留下 ⇒ **手工并回 `MEMORY.md` 不算持久化**（要持久就抬高 `maxMemoryChars` 或让内容进 consolidation 输出）。
 
 `MEMORY.md` 的顶层结构收敛到固定的 4 节：`Project` 20% / `Invariants` 40% / `Pitfalls` 25% / `Index` 15%（份额与每节说明定义在 `memory/schema.ts`）
-。consolidation prompt 先扣掉固定开销（`# Project Memory` 标题 + 4 个 `##` 节标题及其空行）再按 `maxMemoryChars` 算出每节字符预算，保证“逐节刚好填满”也不会超 cap；
+。consolidation prompt 先扣掉固定开销（`# Project Memory` 标题 + 4 个 `##` 节标题及其空行）再按 `maxMemoryChars` 算出每节的**目标**字符数，让模型知道该把内容控制在哪里；
+
 并要求长解释指针化到版本化 `docs/`（只指向**已存在且确实承载该细节**的路径，不虚构）。**四节归一后全空 = 不写 memory**（模型只回一堆标题时绝不拿骨架覆盖真记忆；此时仍会更新 context，并在回复里说明 memory 未变）
 。**记忆回归守卫**在裁剪前比较新旧 sections，报告 Invariants/Pitfalls 里消失的条目（只报、不拦，`Project`/`Index` 太易变不报）；任一侧无法解析成 sections 则跳过并只记一条诊断。
-按节优先序丢（S4）与符合度可见性仍待后续。
+（v0.4.5 起份额是目标值：渲染器把用不完的份额汇池、超额段按超额比例借用，只有文档到 cap 才丢条目——原先设想的「按节优先序丢」因此作废。）符合度统计仍待后续。
 
 `CONTEXT.md` 同样收敛到固定的 3 节：`Summary` 40%（另受 `MAX_SUMMARY_CHARS=6000` 约束，散文摘要保持短小）/ `Key points` 35% / `Open tasks` 25%，
 定义在 `memory/context-schema.ts`。consolidation prompt 与渲染器共用同一张表：先扣掉固定开销（`# Project Context`、`Last updated` 行、3 个节标题及空行、

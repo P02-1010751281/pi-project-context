@@ -4,8 +4,8 @@
  *
  * The two entry points used to format it separately and the branches had already drifted: the
  * umbrella line never reported a journal with no usable record, and every branch but the normal one
- * was worded twice. The body below is written to read after either prefix (`Memory: ` or
- * `Memory: `), so the commands only differ by that prefix.
+ * was worded twice. The body below is written to read after either entry point's prefix (both print
+ * `Memory: ` today), so the commands only differ by that prefix.
  */
 
 import { stat } from "node:fs/promises";
