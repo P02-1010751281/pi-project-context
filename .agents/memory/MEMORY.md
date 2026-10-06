@@ -94,7 +94,7 @@
 - extensions/project-context/shared/lang.ts - the single CJK/language owner used by both injected pointer blocks.
 - extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and buildMemoryInjection/buildContextInjection; shared/inject.ts::scanDocument is the fence-aware scan.
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
-- extensions/project-context/memory/report.ts - the four pi event registrations (session_start, before_agent_start injection, throttled agent_settled consolidate, guarded session_shutdown consolidate), refusal gating, the stale sentence and the side-effect skipping for refused replies; the cap/guard command replies (the `record_memory` tool lives in sections.ts).
+- extensions/project-context/memory/report.ts - the four pi event registrations (session_start, before_agent_start injection, throttled agent_settled consolidate, model-free session_shutdown flush since v0.4.6), refusal gating, the stale sentence and the side-effect skipping for refused replies; the cap/guard command replies (the `record_memory` tool lives in sections.ts).
 - extensions/project-context/archive/archive.ts:122 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the first of the two per-turn injected blocks (registered before the memory one).
 - extensions/project-context/memory/status.ts - memoryStatusLine()/memoryStatusLevel() plus contextStatusLine(); pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
 - extensions/project-context/memory/sections.ts - renderMemoryDocument's target-then-borrow allocator, memoryStructureOverheadChars, sectionsFromMarkdown and the dropped-item samples.
@@ -115,4 +115,4 @@
 - extensions/project-context/handoff/threshold.ts - the threshold math, refusal reasons, the guardrail receipt and the shared MIN_DROP_TOKENS floor both modes obey (renamed from MIN_SUMMARIZE_TOKENS in v0.4.2).
 - extensions/project-context/handoff/prompt.ts - SCAFFOLDING, buildHandoffPrompt (continuation prompt) and buildHandoffDocument (HANDOFF.md); buildHandoffPrompt accepts an optional pi compaction summary.
 - extensions/project-context/handoff/text.ts - replayMessagesFor/SPLIT_TURN_MARKER/REPLAY_MARKER and the replayable-role filter.
-- .codestable/issues/2026-10-06-handoff-shutdown-coupling/brief.md - the shutdown-coupling field fact, the existing guard and the disposition options (open: the owner has not chosen 1 or 3).
+- .codestable/issues/2026-10-06-handoff-shutdown-coupling/brief.md - the shutdown-coupling field fact, the existing guard and the disposition options (decided 2026-10-06: option 1, the model-free exit flush, with the fix note and the review round in the same directory).
