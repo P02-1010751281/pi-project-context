@@ -184,6 +184,12 @@ A prose paraphrase is not a fix either: replacing a dead name with a description
 "product-language instruction") leaves the claim just as unverifiable, so a line should name something greppable
 or say nothing.
 
+Attribution checks cannot see **position and ordering** claims. Round 6 found the render saying the two injected
+blocks sit "at the front of the system prompt" while the code appends them (`systemPrompt: ${event.systemPrompt}
+\n\n## …` in `memory/report.ts` and `archive/archive.ts`) and both the audit and the prefix-cache skill say the
+end. When a render line claims where something sits or which one comes first, read the code that builds the string
+and cross-read the same claim wherever else it appears; in a disagreement the code is the arbiter.
+
 ## 11. Re-check at every render, not once
 
 A render draws on the session's own context as well as the journal, so hand-cleaned external state
