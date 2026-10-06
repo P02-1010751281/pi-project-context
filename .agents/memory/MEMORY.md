@@ -129,7 +129,7 @@
 - extensions/project-context/shared/limits.ts - MAX_SKILL_BODY_CHARS 20000, the body cap candidate.ts and pass.ts enforce.
 - extensions/project-context/autolearn/inventory.ts - collectSkills() reads the provenance marker; inventoryText()/AUTOLEARN_INVENTORY_CHARS 8000 cap it; learnedBodies() feeds the merge prompt.
 - extensions/project-context/autolearn/skill.ts - SkillInfo/ProposedSkill shapes, autolearnProvenance()/withoutAutolearnProvenance()/skillBody()/promotedDocument(), MIN_SKILL_BODY_CHARS, UNSAFE_SKILL_PATTERNS; candidate.ts holds the collision gate and admission checks; prompt.ts holds the autolearn prompt builder (buildPrompt).
-- extensions/project-context/autolearn/pass.ts:102 - the autolearn aux call and its only tools site (RECORD_SKILL_TOOL), with the inspect backtrack round at pass.ts:142-153.
+- extensions/project-context/autolearn/pass.ts:102 - the autolearn aux call and its only tools site (RECORD_SKILL_TOOL), with the inspect backtrack round later in the same file (the `inspect`/`inspectSkill` branch).
 - extensions/project-context/handoff/run.ts - handoff transaction, newSession, replay filter, language selection, maybeTrigger (the only gate owner), the failure toast, and findCutPoint (pi's own export, imported at the top and called here).
 - extensions/project-context/handoff/settings.ts - saveConfig seven-key patch through updateConfig, plus parseRatio / parseTokenCount.
 - extensions/project-context/handoff/threshold.ts - the threshold math (window-end and pricing-tier bounds), refusal reasons and the guardrail receipt; MIN_DROP_TOKENS (renamed from MIN_SUMMARIZE_TOKENS in v0.4.2).
