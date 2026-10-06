@@ -46,6 +46,30 @@
 - 模型每轮自行删除/改写属提示层与模型能力边界，若要进一步收紧需独立议题。
 - CONTEXT.md 仍按段裁剪（有 truncation marker + 日志），是每轮重写的会话状态，不属同一故障。
 
-## 发布后补记
+## 发布后补记（2026-10-06）
 
-见紧随其后的 `docs(records)` 提交（tag 对象、peeled、pin 提交、安装副本 HEAD/describe、到位抽检、副本地测）。
+| 项 | 值 |
+| --- | --- |
+| tag 对象 | `d856f3aa1eac8e2d30ba4a3cefa04bf1f44cfc42` |
+| tag 指向（peeled） | `6e8170d05385ade8ae3f07c53ecd428abcc2f17d` |
+| 双远端 | `ls-remote --tags 'refs/tags/v0.4.5^{}'` 两端同为 `6e8170d`（`master` 亦同） |
+| `~/.pi` pin | `57eccbc`（settings.json + README.md 改 `@v0.4.5`，已推 pi-config `origin`） |
+| 安装 | `pi update --extensions`（`tag v0.4.5 -> FETCH_HEAD`，HEAD 落到 `6e8170d`） |
+| 副本 HEAD / describe / 脏 | `6e8170d` / `v0.4.5` / 0 |
+| 副本自测 | `node tests/run-all.mjs` → hygiene ok + **15/15** |
+| 到位抽检 | `memoryStructureOverheadChars`、`allocationFor`、`capSentenceFor`、`Dropped, e.g.`、`dropped entries (first` 均在；`samplesLogged` 0 处、`/project-context max-memory` 0 处 |
+
+**需要重启 pi 才生效**：运行中的会话仍加载旧模块（本次会话进程起于 v0.4.4 安装之前）。
+
+**发布后验收跑（安装版 v0.4.5，真实 flash，现场输入 138 条 / 31,993）**：`errors.log` **没有任何 cap 行**（渲染器 0 丢弃），
+渲染复核 `sectionDropped=0 droppedItems=0`；同一次 pass 里回归守卫记 `memory regression: 24 …`（exact-match 口径会把改写/合并
+算成删除），净条目 138 → 130（−8）——**这剩余部分是模型自身的整篇重写**，不是渲染器（见下）。
+
+## 结论与待 owner 决定
+
+- **本次修复的承诺已达成并实测**：文档还有余量时渲染器不再丢条目（现场输入、边界 fixture、2,000 组随机属性三处一致）。
+- **剩余损失的主因是模型自身重写**（本轮 −8 净、守卫 24 条 exact-match；历次样本 −1…−17），触发条件是记忆贴着上限
+  （31,993 / 32,000，余 7 字符）：模型每轮新增都必须靠删/压来腾位，而 flash 级模型压不动。
+  **决定**：抬 `maxMemoryChars`（`/memory max-memory <n>`，每会话多约 1,000 tokens 注入）或人工裁剪一次记忆。
+  该条已记 `.codestable/attention.md`。
+- 提示层（v0.4.4）已把「删」改成「压」，但对 flash 级模型不足；若要进一步收紧需独立议题（例如换辅助模型线路）。
