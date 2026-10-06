@@ -50,6 +50,20 @@ try {
 	check("naming another project stays allowed for ownership", budgeted.includes("naming another project is fine only to record who owns an open item"));
 	check("the caption opens the conversation block, before its content", budgeted.includes(`<recent-conversation>\n${boundaryCaption}\nconversation`));
 	check("the caption sits below the existing memory and context blocks", budgeted.indexOf(boundaryCaption) > budgeted.lastIndexOf("</existing-context>"));
+	console.log("\n=== the prompt tells the model to keep entries instead of dropping them ===");
+	// A render on 2026-10-06 added six facts and dropped eleven durable entries while the document shrank,
+	// so the drops were not forced by the cap; the compression default and the block caption are both
+	// pinned here because the rule alone was the wording that read as permission to delete.
+	const keepRule = "Keep every entry that is still true: outside a genuine budget overflow, no entry may disappear while rewriting the document";
+	const keepCaption = "The <existing-memory> block below is what has to survive this pass";
+	check("the prompt makes compression the default over deletion", budgeted.includes(keepRule) && budgeted.includes("then condense the wording"));
+	check("the prompt still allows deleting what is superseded", budgeted.includes("Delete only what is superseded or already covered elsewhere."));
+	check("the prompt no longer offers dropping entries as the over-budget step", !budgeted.includes("then drop the least durable entries"));
+	const captionAt = budgeted.indexOf(keepCaption);
+	check(
+		"the keeping caption sits at the memory block it protects",
+		captionAt > 0 && budgeted.slice(budgeted.indexOf("\n", captionAt)).startsWith("\n\n<existing-memory>"),
+	);
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
 	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
 	const freeFitted = fitMemoryInput("# Project Memory\n\n- a free-form fact\n", "", 8192, { maxTokens: 32768 });
@@ -104,7 +118,8 @@ try {
 	);
 	check(
 		"the prompt conditions the drop rule on being over budget",
-		schemaPrompt.includes("When over budget, merge duplicates within a section, deduplicate across sections, then drop the least durable entries."),
+		schemaPrompt.includes("Over budget, merge duplicates within a section and deduplicate across sections first, then condense the wording.") &&
+			schemaPrompt.includes("Delete only what is superseded or already covered elsewhere."),
 	);
 
 	console.log("\n=== M2: an overflowing reply is condensed once, not silently truncated ===");
