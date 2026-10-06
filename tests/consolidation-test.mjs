@@ -1069,11 +1069,10 @@ try {
 			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
 			// the document hitting its cap and point at a drop list that does not exist (review R2).
 			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
-			const didDrop = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, samplesLogged: true, capNote: "3 whole entry(ies) were dropped from 2 section(s)" });
-			const throttled = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, samplesLogged: false, capNote: "3 whole entry(ies) were dropped from 2 section(s)" });
+			const didDrop = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: true, capNote: "3 whole entry(ies) were dropped from 2 section(s). Dropped, e.g. first | second | third" });
 			check("a per-item cut is not told as the document reaching its cap", !cutOnly.includes("reached its character cap") && !cutOnly.includes("dropped entries are listed"));
-			check("a real drop still names the cap and the drop samples", didDrop.includes("reached its character cap") && didDrop.includes("Samples of the dropped entries"));
-			check("a throttled pass does not claim its own samples reached the log", throttled.includes("reached its character cap") && !throttled.includes("Samples of the dropped entries") && throttled.includes("not this pass's"));
+			check("a real drop still names the cap and the drop samples", didDrop.includes("reached its character cap") && didDrop.includes("Dropped, e.g."));
+			check("the reply names the dropped entries inline, not through a log pointer", didDrop.includes("Dropped, e.g. first | second | third") && !didDrop.includes(".agents/memory/errors.log"));
 
 			// The command path runs silently; it must still report the clip and leave a trace.
 			const factory = await loadDefault(`${PC}/index.ts`);

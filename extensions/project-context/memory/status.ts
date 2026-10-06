@@ -18,10 +18,10 @@ export function memoryStatusLine(memory: LoadedMemory, cap: number): string {
 	const size = memorySizeLabel(memoryDocumentChars(memory.text), cap);
 	// A journal that exists but yields nothing usable is the recovery case: say what rebuilds it.
 	if (memory.unreadable && memory.source.endsWith("memory.jsonl")) {
-		return `${memory.source} — the journal exists but has no usable record; delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (see .agents/memory/errors.log)`;
+		return `${memory.source} — the journal exists but has no usable record; delete it to rebuild from MEMORY.md, or restore from memory-log-*.jsonl (memory diagnostics go to .agents/memory/errors.log)`;
 	}
-	if (memory.unreadable) return `${memory.source} — exists but cannot be read; check its permissions (see .agents/memory/errors.log)`;
-	if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; see .agents/memory/errors.log`;
+	if (memory.unreadable) return `${memory.source} — exists but cannot be read; check its permissions (memory diagnostics go to .agents/memory/errors.log)`;
+	if (memory.damaged) return `${memory.source} (${size}) — ${memory.damaged} unusable line(s) skipped; memory diagnostics go to .agents/memory/errors.log`;
 	if (memory.poisoned) return `${memory.source} (${size}) — stored as raw JSON from the old bug; the next consolidation backs it up and rewrites it as Markdown`;
 	// A capped document ends with its own marker; surface it next to the knob that lifts it.
 	if (isMemoryTruncated(memory.text)) return `${memory.source} (${size}) — at the cap, so both ends were kept and the middle dropped; raise it with /memory max-memory <n>`;

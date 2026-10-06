@@ -40,8 +40,6 @@ type LastWriteInfo = {
 	capNote?: string;
 	/** Whole entries went, not just a per-item cut: the difference between a cap event and a trimmed line. */
 	entriesDropped?: boolean;
-	/** This pass wrote its dropped samples to errors.log; later passes in the same process do not. */
-	samplesLogged?: boolean;
 	/** The reply was not written for this reason, so the stored memory was kept. */
 	memoryKept?: boolean;
 	/** Which reason that was: nothing to store, too short to be a change, or a newer memory on disk. */
@@ -85,6 +83,19 @@ async function saveOverflowReply(projectRoot: string, text: string): Promise<str
 		await logError(projectRoot, "memory", `an over-cap reply was clipped and could not be kept locally: ${errorText(error)}`);
 		return undefined;
 	}
+}
+
+/**
+ * The cap sentence a person reads: what the cap cost, with the dropped entries inlined.
+ *
+ * The samples are here rather than behind a pointer because the errors.log line is written once per project per
+ * process: a later pass cannot promise its own entries are in that file, and naming them inline is true every
+ * time (review R5).
+ */
+function capSentenceFor(outcome: ConsolidateOutcome): string {
+	const sentence = sectionCapSentence(outcome);
+	if (outcome.droppedItems === 0 || outcome.droppedSamples.length === 0) return sentence;
+	return `${sentence}. Dropped, e.g. ${outcome.droppedSamples.join(" | ")}`;
 }
 
 /** The cap sentence for a section-based reply, naming only the components that triggered it. */
@@ -180,9 +191,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			let storedPoisoned = false;
 			let cappedMemory = false;
 			let cappedSections = false;
-			// Whether this pass wrote its dropped samples to errors.log; the notices read it, and the log line
-			// is once per project per process, so a later pass must not claim them (review R4).
-			let samplesLogged = false;
 			// The reply was built from a memory that has since changed, so it was not published: nothing
 			// below may describe a write that did not happen.
 			let memoryRefused = false;
@@ -225,7 +233,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					// The line is once per project per process, so a later pass in the same process must not
 					// claim its own dropped entries reached the log. Whether this pass wrote them is the fact the
 					// notices branch on (review R4).
-					samplesLogged = cappedSections && !memorySectionCapWarned.has(projectRoot) && outcome.droppedItems > 0;
 					if (cappedSections && !memorySectionCapWarned.has(projectRoot)) {
 						memorySectionCapWarned.add(projectRoot);
 						// Only a drop means the document hit its cap; a lone per-item cut is a bounded line, so it
@@ -256,7 +263,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				repaired: !memoryRefused && storedPoisoned,
 				capped: cappedMemory,
 				sectionsCapped: cappedSections,
-				...(cappedSections ? { capNote: sectionCapSentence(outcome), entriesDropped: outcome.droppedItems > 0, samplesLogged } : {}),
+				...(cappedSections ? { capNote: capSentenceFor(outcome), entriesDropped: outcome.droppedItems > 0 } : {}),
 				contextWritten: Boolean(update),
 				// The reply was not written for whatever reason — kept because it was empty, because it was
 				// too short to be a change, or because the memory moved on while it was being built. Either
@@ -311,8 +318,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						// A lone per-item cut is not a cap event, and pointing at a drop list that does not exist
 						// would send the reader to nothing.
 						outcome.droppedItems > 0
-							? `Memory: updated, but the document reached its character cap: ${sectionCapSentence(outcome)}. ${samplesLogged ? "Samples of the dropped entries are in" : "errors.log carries the samples from this project's first cap notice, not this pass's:"} .agents/memory/errors.log.${clippedNote}`
-							: `Memory: updated; ${sectionCapSentence(outcome)}. Details in .agents/memory/errors.log.${clippedNote}`,
+							? `Memory: updated, but the document reached its character cap: ${capSentenceFor(outcome)}.${clippedNote}`
+							: `Memory: updated; ${sectionCapSentence(outcome)}.${clippedNote}`,
 						"warning",
 					);
 				} else if (cappedMemory) {
@@ -569,8 +576,8 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 		// Same split as the automatic notice: only a drop is a cap event, and only then is there a drop
 		// list to point at.
 		return info.entriesDropped
-			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}. ${info.samplesLogged ? "Samples of the dropped entries are in" : "errors.log carries the samples from this project's first cap notice, not this pass's:"} .agents/memory/errors.log.${guard}`
-			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}. Details in .agents/memory/errors.log.${guard}`;
+			? `Memory: updated, but the document reached its character cap: ${info.capNote ?? "whole entries were dropped"}.${guard}`
+			: `Memory: updated; ${info.capNote ?? "entries were cut to their section's per-item cap"}.${guard}`;
 	}
 	if (info?.capped) return `Memory: updated, but it is at its maxMemoryChars cap: both ends were kept and the middle was dropped. Raise it with /memory max-memory <n> or trim MEMORY.md.${guard}`;
 	return `Memory: updated.${guard}`;

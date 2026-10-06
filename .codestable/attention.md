@@ -30,7 +30,7 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
 - **评审发现若要求"新增机制"**（而不是修正已有机制），评审与作者都要先问"对应哪条现场事实"；无则只记残留，不改设计。
 - **一个 issue 只做一个主题**：不把跨主题硬化并进来（`poison × 锁` 是反例）。设计行数 > 代码改动 ×3 时，先写一段"最小修复面"再开评审轮。轮次预算、停止规则与其余防复发纪律见 `.agents/skills/pi-project-context-independent-review/SKILL.md` 与 `.agents/skills/pi-project-context-curated-surface-hygiene/SKILL.md`。
 - **MEMORY.md 的绑定约束曾是「段配额」，2026-10-06 起改为「文档上限」（v0.4.5）。** 旧规则按四段固定 share
-  （0.2/0.4/0.25/0.15）逐段裁切：本仓内容需要 14.2/42.7/25.8/16.7%，Project 空余 1,850 而其余三段合计超 1,635，
+  （0.2/0.4/0.25/0.15）逐段裁切：本仓内容需要 14.2/42.7/25.7/16.7%，Project 空余 1,850 而其余三段合计超 1,635，
   总文档 31,774 < 32,000 却每轮丢 10–15 条（四次真实 pass）。口径与渲染器一致：段花费 = Σ(entry+3)，不含 `## H` 行。现在渲染器把用不完的配额汇池、超额段按超额比例借用，
   **只有整个文档到达 `maxMemoryChars` 才丢条目**；`errors.log` 的行也改为 `memory document reached its cap: …`
   （旧的 `memory exceeded a section budget:` 已不存在，别再按它做验收）。实现、变异矩阵、端到端对比与第 1 轮评审

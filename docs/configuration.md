@@ -63,7 +63,7 @@
 **渲染器不写任何截断标记**（写路径会把标记再抹掉）：丢弃信息只经返回值 `sectionDropped` / `droppedItems` / `droppedSamples` /
 `itemTruncated` 上抛。
 每项目每进程写一次 `errors.log`，该行列出被丢条目的**样本**（最多 3 条、每条 ≤ 72 字符）。
-通知与回复里的「样本在 errors.log 里」只在本次真的写了那行时才说，被限流的后续 pass 改成「样本来自本项目第一次提示」。
+通知与回复会把被丢条目的样本**直接写进句子**（`Dropped, e.g. …`），所以不依赖那行日志是否写了；日志行本身每项目每进程一次。
 **不给数字建议**（总文档离上限还有多少不是可用余额，`max-memory` 只取整，给了还会再裁）。
 
 **逐字路径**（自由结构旧记忆、回复没有四节 bullet 结构）：保留头尾、丢弃中段，文末追加
@@ -74,7 +74,7 @@
 _[memory truncated at N characters: M dropped]_
 ```
 
-marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知、显式 consolidation 回复和 `/project-context status` 中提示（含所需字符数与 `/memory max-memory` 建议 —— 这条路径下数字是准的）
+marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知与显式 consolidation 回复中提示所需字符数与 `/memory max-memory` 建议（这条路径下数字是准的）；`/project-context status` 只给出 `max-memory` 的占位提示，不带具体数字
 。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
 cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁一次。已进 journal 的内容才有机会留下 ⇒ **手工并回 `MEMORY.md` 不算持久化**（要持久就抬高 `maxMemoryChars` 或让内容进 consolidation 输出）。
