@@ -23,7 +23,7 @@ Started from the owner's "全修，无用就退役" instruction (plus handoffThi
 ## Open tasks
 
 - Frozen revision for 三审三校 is 2a7f7d0ed900; three independent review rounds plus three proofreads, then release v0.4.2 (annotated tag + ~/.pi pin bump + restart + evidence doc) if no residual remains.
-- Owner decision pending on making the autolearn inventory truncation observable (a prompt/receipt change) now that it is measured at 7,892/8,000 merged characters.
+- Closed in v0.4.3: the autolearn inventory truncation is observable now (the injected list ends with `- (N more skill(s) not listed: the 8000-character inventory cap was reached)`), and fixed-ratio mode obeys the same physical floor as adaptive mode with its refusal named on the status line.
 - Owner action plus restart, after any release: run one real TUI handoff to expose the A+B snap/anchor path for the first time, and confirm the cwd fallback boundaries.
 - Watch a real session JSONL for a read of .agents/memory/* as field evidence of progressive-disclosure compliance, and log it in the audit.
 - v0.4.2 已发布（2026-10-05，tag `1a3ddeec` / peeled `4b4f9c3`，pin `a170e37`；九轮独立评审后审8/审9 判 PASSED，证据 `.codestable/issues/2026-10-05-v042-cleanup/release-v0.4.2-evidence.md`）；本仓 `project-context.json` 仍带 `handoffThinking`，按硬切语义会在重启后第一次写回时消失。
