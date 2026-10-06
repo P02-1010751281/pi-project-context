@@ -32,3 +32,29 @@
   两者都是**无复发事实支撑的预防性改动**；按仓规，主张新机制前要有本仓现场事实。
 
 **重开条件（写死）**：`errors.log` 再出现一条栈中含 `teardownCurrent` 或 `newSession` 的行 ⇒ 重开本 issue，优先选 ①。
+
+## 选 ① 的后果（2026-10-06 代码核对，owner 未定）
+
+注册点是 4 个，但**只有 2 个真的写记忆内容**（`memory/report.ts`）：
+
+- `session_start` —— 只做布局迁移与配置提示，不写记忆内容；
+- `before_agent_start` —— 只注入，不落盘；
+- `agent_settled` —— `consolidate(ctx, false)`，自动、fire-and-forget、**被节流**：
+  判据 `turns - baseline < consolidateTurns(6) || gap < consolidateIntervalMs(5min)` ⇒ 要**同时**满 6 轮且满 5 分钟；
+- `session_shutdown` —— `consolidate(ctx, true, true)`，**强制**（绕过节流）、静默、在守卫里。
+
+外加一条手动：`/memory update`（强制）。强制路只有 `forceDedupeMs(15s)` 去重：距上次 pass 完成不足 15 秒时直接复用上次结果（不调模型），
+超过 15 秒就真跑一次。
+
+⇒ **今天保证「会话尾部进 MEMORY.md」的其实是 exit 那次强制 pass，不是被节流的 settle pass。**
+每次 pass 的成本 ≈ 1 次辅助模型调用 + 一份约 30 KB 的全文快照追加（本仓 `memory.jsonl` 4 条 = 121 KB）+ 一次全文 `MEMORY.md` 写；
+节流是这笔成本的唯一上限，而 exit 那次**绕过节流**（每个会话至多一次）。
+
+**选 ① 之后**的写入口＝自动 `agent_settled`（仍节流）＋ 手动 `/memory update`＋ 退出时只 flush（不调模型）。
+代价＝丢掉「退出时强制合并一次」：距上次自动 pass 的那段（最多 6 轮 / 5 分钟）可能永不进 `MEMORY.md`，只留在 `session-logs/` 归档里
+（pi 在 turn_end / agent_settled / session_shutdown 都归档，但归档只有指针可见，模型不会自己回去读）。收益＝teardown 路径上不再有网络调用，
+09-22 那条链的根因消失。
+
+**实现面**：`pass.ts` 抽一个不调模型的 flush（读 journal → fold → render → 写文件 + 采纳外部编辑；这三步已在 pass 内部，抽出来即可），
+`report.ts` 的 `session_shutdown` 调用点换过去，测试钉「shutdown 不调辅助模型」与「flush 仍写文件并采纳外部编辑」；
+`/memory update` 与 settle 路不动，CHANGELOG 记行为变化。

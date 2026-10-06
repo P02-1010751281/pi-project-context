@@ -52,3 +52,11 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
   `.codestable/issues/2026-10-06-consolidation-keeps-entries/release-v0.4.5-evidence.md`。
     **现状（2026-10-06）**：人工裁剪已执行两次（`8ffe467`、`778d38c`），当前 109 条 / 29,551 字符，余量 **2,449**；门槛规则＝余量 < ~2,000 时再裁一次（不抬上限）。
 - **改词汇先读 `.codestable/reference/vocabulary-conventions.md`。** 改命令、配置键、通知/状态文案、提示词小节或工具字段时，必须同一轮把代码、`docs/`、`CHANGELOG`、MEMORY 与那份规范一起改齐；只改一半算未完成（`Auto summarize target` 就是 v0.3.0 只改命令、没改通知留下的）。
+
+## 待决事项
+
+- **记忆层的 shutdown 耦合**（owner 未定）：现场只有一条链（`errors.log` 2026-09-22，模型调用抛错经 `consolidate` 逸出
+  `session_shutdown` handler 进 pi 的 runner），现有守卫已覆盖、此后无复发。三选一：
+  ① 退出只落盘、不调模型（代价＝最多 6 轮 / 5 分钟的尾部只留在归档里）；② handoff 侧隔离（只治症状）；
+  ③ 保持现状（teardown 上仍有那次强制模型调用，每个会话至多一次）。代码核对过的后果、每 pass 成本与实现面见
+  `.codestable/issues/2026-10-06-handoff-shutdown-coupling/brief.md`。
