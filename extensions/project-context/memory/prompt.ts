@@ -29,11 +29,12 @@ export function buildPrompt(
 		`Either way, the memory carries these exact sections, in this order, each within its budget (as the tool's memory member, or as \`## <section>\` headings under a \`# Project Memory\` heading):`,
 		...sections,
 		"Each entry is one self-contained statement on one line: no bullet prefix and no headings.",
-		// The 2026-10-06 render dropped eleven durable entries while the document shrank (30202 -> 29920
-		// characters), so it was never over budget: the old wording ("merge …, then drop the least
-		// durable entries") read as permission to delete. Compression is now the stated default and a
-		// deletion has to name a reason.
-		"Keep every entry that is still true: outside a genuine budget overflow, no entry may disappear while rewriting the document, and losing one is a defect rather than consolidation. Over budget, merge duplicates within a section and deduplicate across sections first, then condense the wording. Delete only what is superseded or already covered elsewhere.",
+		// The 2026-10-06 renders dropped entries without any budget pressure: the renderer enforces each
+		// section's budget and drops whole entries that no longer fit (sections.ts renderMemoryDocument),
+		// so the model has to spend the compression work the old wording skipped. "then drop the least
+		// durable entries" read as permission to delete and the retry below echoed it; both now ask for
+		// condensing first and allow a deletion only with a stated reason.
+		"Keep every entry that is still true: merge duplicates within a section, deduplicate across sections, then condense the wording until each section fits its budget above. Delete an entry only when it is superseded or already covered elsewhere — never to make room for a new one.",
 		"Prefer a pointer to an inline payload: keep the fact to one line and reference its source (for example a one-line invariant followed by `see docs/<topic>.md` or `file.ts:123`), never an inline formula, table, or command transcript. Point only at a path that already exists in this project and actually holds the detail; never invent a path. A detail with no home stays as one short line.",
 		"context is the current session's working state, rewritten from scratch each pass. It is state and pointers, not rules: do not duplicate facts that belong in memory, and do not carry over information that is already in memory.",
 		"context must be an object: summary (string, required), title (string), key_points (array of strings), open_tasks (array of strings). A context written as a Markdown string, or with key_points/open_tasks present but not arrays, is discarded and leaves the previous context in place.",
@@ -57,7 +58,7 @@ export function buildPrompt(
 		`Project root: ${projectRoot}`,
 		// Second layer, at the block whose content the reply rewrites: the rule above is where the loss
 		// is decided, this is where the text it applies to arrives.
-		"The <existing-memory> block below is what has to survive this pass: every entry still true must reappear, and pressure is answered by compressing an entry's wording, not by dropping the entry.",
+		"The <existing-memory> block below is what has to survive this pass: every entry that is still true must reappear, and a section that does not fit its budget is fixed by condensing its wording, not by dropping entries.",
 		"",
 		"<existing-memory>",
 		fitted.text || "(none)",

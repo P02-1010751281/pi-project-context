@@ -245,7 +245,7 @@ export async function consolidateProjectState(
 			// One bounded condensation attempt turns a silent loss into a curated shrink; if it fails or
 			// still does not fit, keep the first result and let the cap report speak.
 			const limit = config.maxMemoryChars;
-			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown exceeded the ${limit}-character cap, so its middle would be dropped. Retry this same consolidation and rewrite memory_markdown to fit at or under ${limit} characters: keep every durable fact, merge duplicates, and remove the least durable entries. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
+			const condensePrompt = `${promptFor(usedInput)}\n\nYour previous memory_markdown overflowed a section budget, so whole entries would be dropped when it is written. Retry this same consolidation and rewrite memory_markdown until every section fits the budget stated above: keep every durable fact that is still true, merge duplicates within a section, deduplicate across sections, then condense the wording — delete an entry only when it is superseded or already covered elsewhere. Return exactly one complete JSON object with string memory_markdown and object context; no prose or code fence.`;
 			let condensed: ResolvedReply | undefined;
 			try {
 				condensed = resolveReply(await call(condensePrompt, usedInput, false), false);

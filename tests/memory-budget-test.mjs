@@ -54,15 +54,19 @@ try {
 	// A render on 2026-10-06 added six facts and dropped eleven durable entries while the document shrank,
 	// so the drops were not forced by the cap; the compression default and the block caption are both
 	// pinned here because the rule alone was the wording that read as permission to delete.
-	const keepRule = "Keep every entry that is still true: outside a genuine budget overflow, no entry may disappear while rewriting the document";
+	const keepRule = "Keep every entry that is still true: merge duplicates within a section, deduplicate across sections, then condense the wording until each section fits its budget above";
 	const keepCaption = "The <existing-memory> block below is what has to survive this pass";
-	check("the prompt makes compression the default over deletion", budgeted.includes(keepRule) && budgeted.includes("then condense the wording"));
-	check("the prompt still allows deleting what is superseded", budgeted.includes("Delete only what is superseded or already covered elsewhere."));
+	check("the prompt makes compression the default over deletion", budgeted.includes(keepRule) && budgeted.includes("never to make room for a new one"));
+	check("the prompt still allows deleting what is superseded", budgeted.includes("Delete an entry only when it is superseded or already covered elsewhere"));
 	check("the prompt no longer offers dropping entries as the over-budget step", !budgeted.includes("then drop the least durable entries"));
 	const captionAt = budgeted.indexOf(keepCaption);
+	// N3: the caption has to be its own line, not text appended to the previous line, so the check
+	// anchors on a line start and a line end around it rather than on the phrase alone.
 	check(
-		"the keeping caption sits at the memory block it protects",
-		captionAt > 0 && budgeted.slice(budgeted.indexOf("\n", captionAt)).startsWith("\n\n<existing-memory>"),
+		"the keeping caption sits on its own line at the memory block it protects",
+		captionAt > 0 &&
+			budgeted.slice(0, captionAt).endsWith("\n") &&
+			budgeted.slice(budgeted.indexOf("\n", captionAt)).startsWith("\n\n<existing-memory>"),
 	);
 	console.log("\n=== S1/S3: fixed schema, per-section budgets, pointerized entries ===");
 	const { MEMORY_SECTIONS, memorySchemaOverheadChars, memorySectionBudgets } = await loadNamespace(`${PC}/memory/schema.ts`);
@@ -117,9 +121,9 @@ try {
 			schemaPrompt.includes("A detail with no home stays as one short line."),
 	);
 	check(
-		"the prompt conditions the drop rule on being over budget",
-		schemaPrompt.includes("Over budget, merge duplicates within a section and deduplicate across sections first, then condense the wording.") &&
-			schemaPrompt.includes("Delete only what is superseded or already covered elsewhere."),
+		"the prompt ties the drop rule to each section's budget",
+		schemaPrompt.includes("then condense the wording until each section fits its budget above") &&
+			schemaPrompt.includes("never to make room for a new one"),
 	);
 
 	console.log("\n=== M2: an overflowing reply is condensed once, not silently truncated ===");
@@ -136,7 +140,7 @@ try {
 		ctx.modelRegistry.complete = async (_model, context) => {
 			const prompt = context.messages[0].content[0].text;
 			prompts.push(prompt);
-			if (prompt.includes(`exceeded the ${cap}-character cap`)) {
+			if (prompt.includes(`overflowed a section budget`)) {
 				// The condensation compacts the memory but drops the context section.
 				return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: small }) }] };
 			}
@@ -150,9 +154,15 @@ try {
 		await pi.commands.get("memory").handler("update", ctx);
 		const written = await readFile(path.join(tmp, ".agents/memory/MEMORY.md"), "utf8");
 		const writtenContext = await readFile(path.join(tmp, ".agents/memory/CONTEXT.md"), "utf8").catch(() => "");
-		check("the first reply overflowed and the condensation ran", prompts.length === 2 && prompts[1].includes(`exceeded the ${cap}-character cap`));
+		check("the first reply overflowed and the condensation ran", prompts.length === 2 && prompts[1].includes(`overflowed a section budget`));
 		check("the condensed reply is written, not the truncated original", written.includes("- A short fact.") && !doc.isMemoryTruncated(written));
 		check("the prompt carried the real cap on both calls", prompts.every((p) => p.includes(`at or under ${cap} characters`)));
+		check(
+			"the condensation retry asks for compression, not for deleting the least durable",
+			prompts[1].includes("keep every durable fact that is still true") &&
+				prompts[1].includes("condense the wording") &&
+				!prompts[1].includes("remove the least durable"),
+		);
 		check("a condensed reply without context keeps the first reply's context", writtenContext.includes("FIRST CONTEXT"));
 	}
 
@@ -170,7 +180,7 @@ try {
 		ctx.modelRegistry.complete = async (_model, context) => {
 			calls += 1;
 			const prompt = context.messages[0].content[0].text;
-			if (prompt.includes(`exceeded the ${cap}-character cap`)) throw new Error("model call error: Connection error.");
+			if (prompt.includes(`overflowed a section budget`)) throw new Error("model call error: Connection error.");
 			return { content: [{ type: "text", text: JSON.stringify({ memory_markdown: big, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }] };
 		};
 		await pi.commands.get("memory").handler("update", ctx);

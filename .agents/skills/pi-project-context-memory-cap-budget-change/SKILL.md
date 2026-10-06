@@ -23,7 +23,7 @@ Changing anything about the memory character budget in `pi-project-context`: `ma
 
 4. **Tell the prompt the truth.** Pass the real hard cap (`maxMemoryChars`) and the current character count into `memory/prompt.ts`, and forbid omission/truncation markers in model output. Remove ineffective word-count wording like "below 6000 words" from prompts.
 
-5. **Overflow = one bounded condensation call.** If a reply to consolidate exceeds the cap, make exactly one condensation call (keep durable facts, merge duplicates, drop the least durable). Adopt it only if it fits; otherwise keep the original reply and let the existing cap warning speak. Silent tail-dropping is not acceptable.
+5. **Overflow = one bounded condensation call.** If a reply to consolidate overflows a section budget, make exactly one condensation call that tells the model to keep every still-true fact, merge duplicates, deduplicate across sections, then condense wording until each section fits; a deletion is allowed only for an entry that is superseded or already covered elsewhere. The renderer drops whole entries from an over-budget section, so the retry is the difference between a compressed memory and a lost one. Adopt it only if `renderMemoryDocument` reports no section dropped; otherwise keep the original reply and let the cap report speak. Silent tail-dropping is not acceptable.
 
 6. **Wire diagnostics, not silence.** The `errors.log` entry, non-silent pass warning, `/memory update` command reply, and `/project-context status` should all name the cap and what was dropped. Update `docs/architecture.md` if a new shared module was added.
 
