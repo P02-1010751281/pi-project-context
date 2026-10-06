@@ -20,8 +20,8 @@ This session turned the previous session's memory-loss finding into v0.4.4. The 
 
 ## Open tasks
 
-- Owner: after a pi restart, check the first consolidation pass against the v0.4.4 acceptance rule - no new `memory exceeded a section budget:` line and an entry count of at least 137; a shrinking count or a new line means the fix did not hold.
-- Owner: decide the second-layer section-share question (accept natural trimming / rebalance the shares to the content distribution / allow borrowing between sections, the last being a mechanism change needing its own design).
+- v0.4.4's acceptance rule is superseded: the string it watched (`memory exceeded a section budget:`) no longer exists and the pass-drops it counted were the renderer's per-section shares. v0.4.5 makes the shares targets and the log line `memory document reached its cap:`; a restart is still needed to load it.
+- Owner: the section-share question is decided and shipped (v0.4.5, shares are targets so only the document cap drops entries). New small decision: the memory now sits at ~99.9% of `maxMemoryChars`, so every pass that adds entries has to condense elsewhere - raise the cap (`/memory max-memory`) or curate the memory once.
 - Restart pi before the host reflects v0.4.4; the session that ran the install still loads v0.4.3 modules.
 - Owner plus host: run one real TUI handoff to expose the A+B snap/anchor path and the cwd fallback boundaries, and exercise `/handoff threshold <ratio>` in fixed mode so the refusal is seen live.
 - Watch a real session JSONL for a read of .agents/memory/* as field evidence of progressive-disclosure compliance, and log it in the cost audit.
