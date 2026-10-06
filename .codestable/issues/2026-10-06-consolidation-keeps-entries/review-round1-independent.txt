@@ -1,0 +1,53 @@
+# Lane A 第 1 轮独立复核（HEAD `65e9283`，判定模型 deepseek/deepseek-flash）
+
+工作区全程只读；变异在 `/tmp` 副本进行（原文件已还原，`git diff` 为空）。基线 `node tests/run-all.mjs` = 15/15 + hygiene ok。
+
+---
+
+## Important（⇒ CHANGES-REQUESTED）
+
+### I1. 修复说明的根因诊断与仓内现场记录不符：F2/F5 的丢条主要是渲染器段预算「整条丢弃」，不是模型删除
+- 位置：`.codestable/issues/2026-10-06-consolidation-keeps-entries/consolidation-keeps-entries-fix-note.md:20-27`（F5）、`:15-17`（F2）；同因写在 `prompt.ts:31-34` 注释与实现说明里。
+- 亲测证据：
+  - **F5 100% 可证**：`errors.log:169` 守卫只报 1 条，且样本恰是 threshold 条目的改写旧文。用 journal 的 04:38:57 写入（29,915）与 31,774 基线重建一个「保留全部条目、只含最终文件可见的 4 处改写、0 删除」的回复，`renderMemoryDocument(reply, 32000)` 输出与现场 `MEMORY.md` **逐字节相同**，且恰好丢 10 条（Invariants 4 / Pitfalls 2 / Index 4，`sectionDropped=3`）——即 F5 丢的 10 条全部由 `extensions/project-context/memory/sections.ts:124-138` 产生。
+  - **F2 ≥8/11 可证**：`errors.log:166` 守卫报 3，3 条样本正好是最终文件里被改写的三条旧文（Release evidence、/tmp sandboxes 100-130MB、Each review round）。外部编辑被 `loadMemory` 以 30,202 作为 existing（`store.ts:88,131-160`），所以守卫基线就是 30,202。30,202 → 29,920 逐条比对净失 5 Inv / 3 Pit / 3 Index = 11 条；守卫覆盖段的 8 条在回复里仍在（守卫只记到 3 条改写），只可能被渲染器丢掉。Index 3 条未被守卫覆盖，但 F5 已证同一渲染器会丢 Index 尾部。
+  - `errors.log:165` 16:46 的 `3 section(s) exceeded their budget and 20 whole entry(ies) were dropped` 是同一机制的明证，被 §1 当作「同类损失」列出却未归因。
+  - 现 HEAD 的 MEMORY.md（31,774）按段预算渲染本身就丢 9 条（预算 6384/12769/7981/4788 vs 实际 4534/13621/8220/5332）——超预算不是假设。
+- 影响：变更只改提示措辞，`sections.ts` 的段预算丢弃与 `pass.ts:243-278` 的 condensation 采纳条件都没动。**v0.4.4 不能声称修好本 issue 的现场损失**；F2/F5 里模型一条都没删。
+- 修复边界：更正 fix note §1/§2 的因果与计数，把「渲染器段预算整条丢弃」记为已确认机制并另立 issue（或在本 issue 明确标未修）；不要在无渲染面证据时写「合并通道不再丢策展条目」。
+
+### I2. §5 验收项 (a) 结构性无效（守卫看不见渲染器丢弃）
+- 位置：`fix-note.md:72-74` 的 (a)「errors.log 不再新增 memory regression 行」；`pass.ts:298-316` 守卫在**裁剪前**的 `sections` 上运行，`pass.ts:238/327` 写盘的却是 render 后的文本。F5 就是「守卫 1 行、文件少 10 条」的实例。
+- 修复边界：验收以 (b) 条目数对比 + `outcome.sectionDropped/droppedItems`（`report.ts:215` 的日志行）+ condensation 是否被采纳为准。
+
+### I3. 新规则与 condensation 重试的删除授权冲突，可能让机械丢弃更常发生
+- 位置：`prompt.ts:36`「Delete only what is superseded or already covered elsewhere」vs `pass.ts:248` 重试句「remove the least durable entries」；重试把整条 buildPrompt 重发后再加这句，两条删除授权在同一次调用里冲突。
+- `prompt.ts:36` 的「outside a genuine budget overflow」未把**段预算溢出**定义为 genuine overflow；`prompt.ts:48` 只说渲染器会「dropped whole」，读起来像兜底。在 31,774/32,000、3 段超预算的现状下，模型照主句保留全部、重试又不被采纳时，写盘的就是机械丢弃版（F5 正是此路径；重试无失败日志，但最终文件=第一版渲染）。
+- 修复边界：在 `prompt.ts:36` 或 caption 明确「段预算溢出也算 genuine overflow；合并/压缩后仍超允许按最不持久删除」，与 `pass.ts:248` 对齐；否则本 issue 应记 residual 并另立。
+
+---
+
+## Nit / Suggestion
+
+- **N1** `fix-note.md:16`：5+4+3=12 与「丢 11 条」矛盾；逐条比对（30,202→29,920）为 **5 Inv / 3 Pit / 3 Index = 11**（第 4 条 Pitfall 是 /tmp sandboxes 100-130→180MB 的数值改写，非净失）。建议改计数。
+- **N2** `tests/memory-budget-test.mjs:120`：断言名「conditions the drop rule on being over budget」漂移——新钉的第二段「Delete only…」本身不是超预算条件句。断言仍非重言（M1/M3 会红），但名称与内容不再严格对应。
+- **N3** `tests/memory-budget-test.mjs:63-66`：caption 断言钉的是 caption 行尾 + 空行 + 标签，**不要求 caption 独占一行**（拼在 `Project root:` 行尾且后接 `\n\n<existing-memory>` 仍通过）；比 §3 声称的「真实形状」弱一档。
+- **N4（注记副作用，Q3）风险低，可不改**：注记在 `<existing-memory>` 标签**之外**、与内容间有空行（`prompt.ts:58-62`），属指令区；已提交历史中从未出现指令句/边界注记（`git log -S` 两个方向均无命中），唯一先例是扩展自己写进内容里的截断标记（现另有禁写规则）；块内的 `<recent-conversation>` 注记也从未泄漏。可选：用 `[...]`/系统口吻再拉远距离。
+- **N5** `prompt.ts:60` caption 的「every entry still true must reappear」在 `fitted.clipped` 为真时对不可见条目不成立；`prompt.ts:54` 的「keep every fact you can see」已就近限定，歧义很小。
+
+---
+
+## 已复跑核验（Q1 / Q5 / Q6）
+
+- **变异矩阵**（`/tmp` 副本；还原后 `git diff` 为空）：
+  - M1 删规则句 → **恰 3 红**：`makes compression the default over deletion` / `still allows deleting what is superseded` / `conditions the drop rule on being over budget`。
+  - M2 删注记 → **恰 1 红**：`the keeping caption sits at the memory block it protects`（规则句不代偿）。
+  - M3 放回旧措辞 → **恰 4 红**：上述 3 条 + 负向钉 `no longer offers dropping entries as the over-budget step`。
+  - 还原后 `memory-budget-test` ALL OK；`node tests/run-all.mjs` **15/15**（含 hygiene）。
+- **断言单侧性（Q4）**：4 条新断言无一条同时覆盖两层；被改的既有断言未变重言（M1/M3 会红），但名称见 N2。
+- **成本（Q5）**：Δ 与输入无关 = (352−118)+1+192 = **427**；以 `projectRoot=/tmp/p`、`fitted=small`、`conversation=""`、cap=4000、currentChars=1234 量得 **4,145 → 4,572**，与 §4 完全一致；「约 107 tokens」是 427/4 估法，合理。
+- **诚实性（Q6）**：§5 如实写了「提示内容断言不证明模型照做」「渲染面验收未完成」，这部分没问题；问题在 §1 的事实诊断（I1），属准确性而非诚实性。
+- **规则自洽（Q2）逐条**：(b) 与 `prompt.ts:28`「Replace or remove superseded」兼容；(c) 与 clipped 句兼容（仅 N5 小歧义）；(a) 见 I3——机械裁切不是风险而是现状。补充精度：渲染器并非严格「段尾」丢，而是 `sections.ts:130-137` 先到先得、预算耗尽后放不下的整条丢。
+
+VERDICT: CHANGES-REQUESTED
+RELEASE-OK: no

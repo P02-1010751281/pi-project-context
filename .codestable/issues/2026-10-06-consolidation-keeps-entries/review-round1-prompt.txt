@@ -1,0 +1,43 @@
+你是本仓 pi-project-context 的独立审查者（lane A，issue `consolidation-keeps-entries` 第 1 轮）。沙箱：/tmp/pc-keep-r1
+
+严格只读（不得写工作区 / git 写操作 / 改配置；临时文件只在 /tmp）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。独立判断：所有断言自己复跑，不采信说明文档里的结论。
+
+## 变更范围（冻结于 HEAD 65e9283）
+1. `extensions/project-context/memory/prompt.ts`：把「超预算时…then drop the least durable entries」换成
+   「Keep every entry that is still true: outside a genuine budget overflow, no entry may disappear while
+   rewriting the document, and losing one is a defect rather than consolidation. Over budget, merge duplicates
+   within a section and deduplicate across sections first, then condense the wording. Delete only what is
+   superseded or already covered elsewhere.」
+   并在 `<existing-memory>` 标签前加一行注记（两层放置的第二层）。
+2. `tests/memory-budget-test.mjs`：新增 4 条断言；并改掉一条原本逐字钉旧句子的既有断言。
+3. `.codestable/issues/2026-10-06-consolidation-keeps-entries/consolidation-keeps-entries-fix-note.md`：修复说明。
+
+## 现场事实（用于判断改动是否切题，不必采信）
+- F2：2026-10-06T04:30:56Z 那次渲染丢 11 条（5 Invariants/4 Pitfalls/3 Index），文档 30,202 → 29,920 字符。
+- F5：补回并提交后，下一轮渲染（04:38:57Z，仍是修复前代码）**再丢 10 条、0 新增**，31,774 → 29,915。
+- 守卫是只记不拒发：`extensions/project-context/memory/pass.ts:318`。
+
+## 请独立核验（逐条亲测）
+1. **变异矩阵**：删规则句、删注记、把旧措辞放回，三格分别红在哪几条断言上？是否**恰好**红在本格对应的断言？
+   还原后是否 0 红？套件 `node tests/run-all.mjs` 是否 15/15？
+2. **规则自洽**：通读 `buildPrompt` 全文，新规则句与既有规则是否冲突或留下歧义——特别是
+   (a) 硬上限那句（`at or under N characters`，且「entries beyond a section's budget are dropped whole」）；
+   (b) 「Replace or remove superseded entries instead of appending」；
+   (c) `fitted.clipped` 那条「keep every fact you can see and condense instead of expanding」。
+   重点判断：**「未溢出不得消失」＋「只删已被取代/别处已覆盖」会不会把模型逼到超预算，从而触发渲染侧机械裁切
+   （那是从段尾整条丢，比模型挑最不重要的更差）？** 给出你的判断与依据。
+3. **注记的副作用**：注记紧贴 `<existing-memory>` 之前，模型是否可能把它**抄进产物**（本仓有过「省略标记被抄进
+   MEMORY.md」的先例，见 prompt.ts 里那条 Never write omission or truncation markers 的注释）？评估风险大小与
+   你依据的证据。
+4. **断言形状**：4 条新断言是否各自钉住自己那侧（不能一条断言同时代偿两层）？那条被改的既有断言是否仍保持原意
+   （「删除规则以超预算为条件」）而没有变成同义反复？注记断言钉的是行尾＋空行＋标签的真实形状吗？
+5. **成本声明**：`+427 字符（4,145 → 4,572）` 是否可复现（自己用 buildPrompt 量，说明你怎么量的）。
+6. **诚实性**：说明文档 §5 是否如实声明「提示内容断言不证行为」；有无把未完成的渲染面验收说成已完成。
+
+## 判定规则（预先声明）
+- blocking / important → `CHANGES-REQUESTED`。
+- 只剩 nit / suggestion / 已知残留 → `PASSED`，且**说明该变更是否可发版**（`RELEASE-OK: yes/no`）。
+
+## 输出格式
+分桶，每条含 `file:line`、影响、修复边界。最后两行：`VERDICT: …` 与 `RELEASE-OK: yes/no`。

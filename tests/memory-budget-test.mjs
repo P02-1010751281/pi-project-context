@@ -160,6 +160,9 @@ try {
 		check(
 			"the condensation retry asks for compression, not for deleting the least durable",
 			prompts[1].includes("keep every durable fact that is still true") &&
+				prompts[1].includes("merge duplicates within a section") &&
+				prompts[1].includes("deduplicate across sections") &&
+				prompts[1].includes("until every section fits the budget stated above") &&
 				prompts[1].includes("condense the wording") &&
 				!prompts[1].includes("remove the least durable"),
 		);

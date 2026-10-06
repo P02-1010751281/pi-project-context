@@ -1,0 +1,45 @@
+你是本仓 pi-project-context 的独立审查者（lane A，issue `consolidation-keeps-entries` 第 2 轮，**复核第 1 轮的更正是否成立**）。沙箱：/tmp/pc-keep-r2
+
+严格只读（不得写工作区 / git 写操作；变异只在 /tmp 副本内做并还原）。只有 read 与 bash。
+判定模型（记入本次记录）：deepseek/deepseek-flash。所有断言自己复跑。
+
+## 第 1 轮的结论（本轮要验证它，不是采信它）
+第 1 轮判 CHANGES-REQUESTED：根因不是「模型删条目」，而是**渲染器按段配额整条丢弃**
+（`extensions/project-context/memory/sections.ts::renderMemoryDocument`）；且重试句（`memory/pass.ts`）
+`remove the least durable entries` 与主规则方向冲突；验收项 (a)「errors.log 不再出现 memory regression」结构性无效
+（守卫跑在裁切之前）。
+
+## 本轮变更（冻结于 HEAD aaafd0b，含上一轮 commit `ed51eac`）
+1. `prompt.ts` 主规则句改为：`Keep every entry that is still true: merge duplicates within a section,
+   deduplicate across sections, then condense the wording until each section fits its budget above. Delete an
+   entry only when it is superseded or already covered elsewhere — never to make room for a new one.`
+2. `prompt.ts` 的 `<existing-memory>` 前注记改为「仍为真者必须复现；某段放不下用压缩措辞解决」。
+3. `pass.ts` 冷凝重试句改为同向（保住条目→段内合并→跨段去重→压到每段配额内；只删已被取代/别处已覆盖的），
+   并把 `exceeded the N-character cap, so its middle would be dropped` 改成 `overflowed a section budget, so
+   whole entries would be dropped`。
+4. `tests/memory-budget-test.mjs`：规则/注记断言按新措辞重钉；重试哨兵与断言同步；新增「重试句要求压缩」断言。
+5. `.agents/skills/pi-project-context-memory-cap-budget-change/SKILL.md` item 5 同步；
+   `.codestable/issues/2026-10-06-consolidation-keeps-entries/consolidation-keeps-entries-fix-note.md` 重写（根因更正）；
+   `.codestable/attention.md` 那条记录按实测更正。
+
+## 请逐条亲测
+1. **根因复核**：用 `sectionsFromMarkdown` + `memorySectionBudgets(32000)` + `renderMemoryDocument` 复核
+   「已提交的补回版（工作区 `git show HEAD:.agents/memory/MEMORY.md`）三处超配额、渲染丢 9 条、
+   丢掉的集合≈现场文件缺的那批」。给出你的实测数字。
+2. **段配额 vs 总上限**：算出「总文档 < 32,000 而某些段仍超配额」的存在性与量级（这是本 issue 的第二层）。
+3. **两处对齐**：`pass.ts` 的重试句是否已无 `remove the least durable`、是否与主规则同向？采纳条件
+   （`condensedRender.sectionDropped === 0`）是否与「重试要求压到每段配额内」自洽？
+4. **变异矩阵**（/tmp 副本，四格 + 还原）：主规则句、注记、旧主措辞、重试句回退；每格红在哪些断言？
+   是否**恰好**红在本格对应断言？M4（重试句）的联动红是否已注明（哨兵串耦合）？套件是否 15/15？
+5. **自洽与歧义**：新主规则与 (a) 硬上限句、(b) `Replace or remove superseded entries`、(c) `fitted.clipped`
+   那条是否冲突？「condense … until each section fits its budget above」是否会被误读成「必须精确等于配额」？
+6. **诚实性**：修复说明 §5 是否已把验收改为「渲染面（section budget 行消失 + 条目数不缩水）」并声明未验收？
+   是否还有残留的初版错误结论（例如仍写「模型删条目」）？
+7. **成本**：主提示 `+376 字符（4,145 → 4,521）` 与「重试路径再 +约 150」是否可复现（说明量法）。
+
+## 判定规则（预先声明）
+- blocking / important → `CHANGES-REQUESTED`。
+- 只剩 nit / suggestion / 已知残留 → `PASSED`，并给 `RELEASE-OK: yes/no`（可否发 v0.4.4）。
+
+## 输出
+分桶，每条含 `file:line`、影响、修复边界。最后两行：`VERDICT: …` 与 `RELEASE-OK: yes/no`。

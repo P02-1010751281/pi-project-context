@@ -32,7 +32,8 @@ CodeStable 所有落盘产出的正文用**中文**：plan / design、plan revie
 - **MEMORY.md 的绑定约束是「段配额」，不是总上限——丢条发生在渲染器，不在模型。** 现场证据（2026-10-06）：
   已提交版 31,774 字符里 Invariants +852 / Pitfalls +239 / Index +544 **超出各自配额**，Project 却只用了 71%，
   于是 `renderMemoryDocument`（`memory/sections.ts`）把放不下的**整条丢掉**（实测 `sectionDropped=3`、`droppedItems=9`，
-  丢掉的集合与现场文件缺的那批一致）；总文档离 32,000 还有约 1,800 字符**没用上**。
+  9 条丢弃全落在现场文件缺的那批里）。关键量级：Project 空额 1,850 **足以吸收** Invariants/Index/Pitfalls 合计
+  1,635 的超额，但固定 share 不允许借用——总文档余 1,798 却仍丢条目。
   `errors.log` 的 `memory exceeded a section budget: …` 是这条路径的日志，`memory regression:` 行则跑在裁切**之前**，
   **不能**当损失的度量或验收。守卫只记不拒发（`memory/pass.ts`）。
   已修的是提示层（主规则＋重试句都改成「压到每段配额内，只删可证过期者」，见

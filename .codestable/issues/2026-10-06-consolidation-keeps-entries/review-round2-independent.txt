@@ -1,0 +1,53 @@
+# 复核记录 — lane A（issue `consolidation-keeps-entries`，第 2 轮）
+
+判定模型：deepseek/deepseek-flash。工作区 `/tmp/pc-keep-r2`（HEAD `aaafd0b`）只读；变异全部在 `/tmp/rmut.RBUOBT` 副本内执行，工作区 `git status` 复核前后一致（仅原有 `M CONTEXT.md` / `M MEMORY.md` / `?? skill-candidates/`），未写入。
+
+## 逐项实测
+
+**1）根因复核 ✅（成立，且第 1 轮的「渲染器段配额整条丢弃」被逐条复现）**
+
+对 `git show HEAD:.agents/memory/MEMORY.md`（31,774 字符，137 条 = 18/54/38/27）实测：
+
+| 段 | 实测花费 / 配额 | 超支 |
+| --- | --- | --- |
+| Project | 4,534 / 6,384 | −1,850 |
+| Invariants | 13,621 / 12,769 | **+852** |
+| Pitfalls | 8,220 / 7,981 | **+239** |
+| Index | 5,332 / 4,788 | **+544** |
+
+`renderMemoryDocument(secs, 32000)` → `sectionDropped=3, droppedItems=9, itemTruncated=0`，输出 29,800 字符。丢的正是：4 条 Invariants（pin-host / MEMORY.md-render / knob-census / pointer-section）、2 条 Pitfalls（machine-bound-path / skill-candidates）、3 条 Index（sections-test / cost-audit / attention.md）。
+
+现场工作区是 29,915 字符、127 条（18/50/36/23）。与 HEAD 比：缺 14 条、增 4 条 = **净丢 10 条**；9 条确定性丢弃**全部**在缺的那批里；第 4 对差额里的第 10 条是 `tests/harness.mjs`（Index）。把现场 sections 加上 harness 再渲染，**逐字节等于现场文件**（`outLen=29915`，renderer 丢的就是 harness）——第 10 条也与段配额机制相容；仅凭现场文件不能排除「模型回复本身漏了它」。**结论：第 1 轮更正成立**；修复说明 `:41` 的「仅 1 条属改写差异」标签不准确（实为 4 对改写 + 1 条归属含糊的净丢），但不影响根因结论。
+
+**2）段配额 vs 总上限 ✅（存在，量级已测）**
+HEAD 版总文档 31,773 ≤ 32,000（余 227）却 3 段超 1,635；Project 空额 1,850 足以吸收。现场 04:38 那次：Index 超 87、丢弃时总余量约 1,960（丢后 2,085）。04:30 的 30,202 版余 1,798，Invariants +87 / Index +113，渲染丢 2。即「总文档远未贴顶而某段先撞配额」可稳定复现。
+
+**3）两处对齐 ✅**
+`pass.ts:248` 已无 `remove the least durable`，与 `prompt.ts:37` 同向（保住→段内合并→跨段去重→压缩措辞→只删被取代/别处已覆盖）。采纳条件 `pass.ts:268` `condensedRender.sectionDropped === 0` 与「每段装下」等价（渲染器只在段超配额时整条丢），对 sectioned 路径自洽；opaque 回退用 `exceedsMemoryCap` 判定，而重试句描述的是段机制——文字与判定不一致（见 suggestion 3）。
+
+**4）变异矩阵 ✅（4 格复跑，红点与说明一致）**
+副本内运行 `memory-budget-test.mjs` + 全套：M0 0 红、全套 15/15；M1 3 红（compression-default / superseded / ties-to-section-budget）；M2 **恰好 1 红**（caption 独占行）；M3 4 红（含负向钉）；M4 4 红 = 新钉 + 3 条哨兵串联动（first-reply-overflowed / condensed-written / condense-failure-logged），说明 `:77` 已注明耦合。四格全套都只红 memory-budget-test.mjs。
+
+**5）自洽/歧义**：(a) 硬上限句 `prompt.ts:49` 与主规则不冲突（一述执行机制、一述要求）；(b) `:28` Replace or remove superseded 与「只删被取代」一致；(c) `:54-55` `fitted.clipped` 与「保住可见事实」一致。「until each section fits」按 ≤ 读（配额写作 about N），无误读成「恰等于」的实质风险。
+
+**6）诚实性 ✅**（除下列数字精度外）：`:90-93` 已把验收改成渲染面（`memory exceeded a section budget` 行消失 + 条目数不缩水）并明写「已实现、未验收」；`:12-13` 有根因更正框，无残留「模型删条目」结论。
+
+**7）成本 ✅**：`git archive v0.4.3` 与 HEAD 用同一 fitted 输入跑 `buildPrompt`：5,127→5,503 = **+376**（空输入 4,108→4,484 同为 +376，绝对值差 37 属输入差异）；重试句尾部（去掉 `${promptFor}`）385→543 = **+158 ≈ 150**。可复现。
+
+## 分桶
+
+### nit
+1. `consolidation-keeps-entries-fix-note.md:41` — 「仅 1 条属改写差异」把净丢第 10 条（`tests/harness.mjs`）标成改写；影响：让「丢的集合≈现场缺的那批」听起来不够确定。修复边界：改成「9/9 确定性丢弃全在缺批内；另有 4 对原地改写；第 10 条（harness.mjs）与段配额渲染相容（渲染 field sections+harness 逐字节复现现场），但单凭现场无法排除模型遗漏」。
+2. `attention.md:35` 与 `fix-note:100` — 「总文档离 32,000 还有约 1,800 字符没用上」挂在 31,774 版上不成立（该版余 227）；1,798/2,085 属 30,202 与 29,915 现场。修复边界：把数字挂到对应版本，或改写为「Project 空额 1,850 足以吸收 1,635 的段超额，但固定 share 不允许借用」。
+
+### suggestion
+3. `memory/pass.ts:248` — 重试句只描述段配额机制，而 opaque 回退（`:243`, `:268`）走整体上限裁切；影响：罕见路径的机制描述失实，方向仍正确。修复边界：按 `render === undefined` 分支措辞，或写「超出预算（段配额或整档上限）」。
+4. `tests/memory-budget-test.mjs:161-164` — 重试句只钉了「keep…still true / condense / 无 remove least durable」，未钉「merge within a section / deduplicate across sections / until every section fits」；影响：局部回退可绿（全量回退被 M4 抓住）。修复边界：如需完整钉子，补两条 includes。
+5. 发布清单（非本轮代码）：CHANGELOG 尚无 v0.4.4 标题；按 v0.4.3 的模式，提示规则属行为变化，发布提交应补 dated `fix` 条目。
+
+### 已知残留（已有记录，不拦发）
+6. 固定 share（0.2/0.4/0.25/0.15）与本仓分布不符导致的第二层问题：已记 `attention.md`、fix-note §6，列为 owner 决策。
+7. 验收依赖后续现场渲染样本，当前未验收：fix-note §5 已声明。
+
+VERDICT: PASSED
+RELEASE-OK: yes
