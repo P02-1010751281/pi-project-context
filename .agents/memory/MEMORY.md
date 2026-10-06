@@ -46,6 +46,7 @@
 - pi's own skill spec blesses bundled resources: a skill directory may carry references/ and the executing agent reads them on demand by path relative to the skill directory, so layering is a sanctioned pi pattern, not an invention of this pipeline.
 - A design's code-size estimate runs low on this codebase (the external-edit design came in about 1.7x low); budget implementation accordingly.
 - A memory render draws on the session's own context as well as the journal, so external state deleted by hand can come back in the next render: re-check the boundary at every render commit and treat a prompt-level boundary line, not hand cleanup, as the durable fix.
+- Per-section shares (0.2/0.4/0.25/0.15) are targets, not caps: the renderer pools what under-target sections leave for the over-target ones, so only the whole document reaching `maxMemoryChars` drops entries (v0.4.5).
 - Project memory carries only durable, verifiable statements: no sibling commit distances, no sibling memory file sizes, no other projects' research values, no line numbers into MEMORY.md itself.
 - A field fact that needs a home goes into the audit that used it; a fact with no home stays out rather than being parked in this repo's memory.
 - Repository docs split by kind: architecture.md holds semantics only, field incidents belong in .codestable audits, and version-visible behavior changes belong in CHANGELOG.md.
