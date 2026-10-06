@@ -119,7 +119,7 @@
 - extensions/project-context/memory/injection.ts - the MEMORY.md keep/index section spec and the buildMemoryInjection/buildContextInjection entry points; shared/inject.ts::scanDocument (private) is the fence-aware document scan.
 - extensions/project-context/memory/store.ts - journal, atomic write, adoption block, publishKey exclusion predicate.
 - extensions/project-context/memory/report.ts - refusal gating, stale sentence, side-effect skipping (the `record_memory` tool itself is in memory/sections.ts); the before_agent_start MEMORY.md system-prompt injection; migrateProjectState call; the session_shutdown consolidate call with the shutdown:consolidate guard and its shutdownErrorRoot root choice.
-- extensions/project-context/archive/archive.ts:122 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the second per-turn injected block.
+- extensions/project-context/archive/archive.ts:122 - the before_agent_start that appends `## Project Context` plus the CONTEXT.md block to the system prompt, the first of the two per-turn injected blocks (registered before the memory one).
 - extensions/project-context/memory/status.ts - memoryStatusLine()/memoryStatusLevel() plus contextStatusLine(), pinned line-by-line by tests/memory-ops-test.mjs and tests/switches-test.mjs.
 - extensions/project-context/memory/pass.ts - ConsolidateOutcome.basisKey, single-flight throttled pass, modelBlocked parking.
 - extensions/project-context/memory/prompt.ts - buildPrompt with the consolidation rules, the recent-conversation block and the cross-project boundary statement.
