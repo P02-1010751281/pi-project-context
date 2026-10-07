@@ -1,0 +1,197 @@
+# 第 3 轮独立审查：转录缺失与恢复说明（非审查员原文）
+
+完整 transcript（12332 字节）只存在于 `/tmp/laneA-rev3-flash-*.txt`，该 tmpfs 在本轮后续被清理；当轮读取命令对每行做了
+`cut -c1-230`，所以会话日志里也没有全文。下面是从会话日志恢复出的**本会话对当轮发现的转述 + 截断片段**，不是审查员的报告原文。
+第 3 轮的发现与处置以 `shutdown-flush-review-report.md` 的「第 3 轮处置」表为准。
+
+补救：同一冻结修订 `284039e` 已重跑一轮，完整 transcript 见 `shutdown-flush-review-round3-rerun-independent.txt`。
+教训：transcript 生成后立刻复制进本目录，不要只留在 `/tmp`。
+
+---
+Round 3 findings:
+
+**I1 (important)**: The new mtime recheck has a TOCTOU: `onDisk`/`onDiskKey` are read at :119-120 (version V1), then `stat(file)` at :127 (version V2); the decision uses mtime(V2) but journals key(V1). The reviewer's injection probe shows: it can journal a STALE key (from V1) while the newer B (V2) is not adopted ⇒ since appendMemoryOp bumps the journal mtime to now, B's mtime becomes older than the journal ⇒ B is permanently superseded (valid memory regresses to stale A, and the journal is dirtied) ✗. Reachability: the window between :119 and :127 (no await between them in-process; only an external process can land in that microsecond window using rename) — so it's a microsecond external-only window, but the *consequence* (journal dirtied, newer content permanently shadowed) is worse than the pre-fix behavior (which just overwrote B, leaving the journal clean). Fix: make the decision's mtime and the bytes come from the same version (open+fstat+read, or stat→read→stat with equality re-check); also merge/align with adoptExternalEdit's read-then-stat.
+
+**I2 (important)**: the new branch has zero test coverage (mutation M11 deletes the whole block → both suites green). Fix suggestion: extract the check into a pure helper (e.g. `newerThanJournal(renderKey, renderMtime, journalMtime)`) or a stat-injectable helper, then a store-level case asserts the two orderings (V1 stale / V2 newer) without a concurrent injection ✓. That's a good, cheap seam ✓.
+
+**Nits**:
+- N1: the `typeof cwd` guard can't go red but isn't redundant ✓ (accept; it's a hardening).
+- N2: `runIsDisabled` gate still unpinned ⇒ add a switches-level case? The candidate: a test that sets run-disabled and fires shutdown. Hmm, how do tests set run-disabled? `switches-test.mjs:171-189` has a `--no-project-context` case ⇒ so there's a mechanism (a flag/env?). If cheap, add a shutdown step to that case ✓.
+- N3: architecture.md:102/:105 don't mention the new branch ⇒ sync ✓.
+- N4: the report's mutation numbering drifts (M5/M6 vs M7/M10 across rounds) ⇒ fix numbering ✓.
+- N5: wording "missing or older" vs the code's `mtimeMs > journal` (equal ⇒ rewrite) ⇒ refine to "not newer" ✓.
+
+Decision on the stop rule: Round 3's I1/I2 are legitimate (an untested branch is exactly the repo's recurring weakness; I1's fix is small and should also make the branch testable). So: fix I1 by *removing the duplicated stat* — the cleanest approach that addresses both I1 and I2: extract a small pure helper for the decision and reuse it in `adoptExternalEdit`? Let me think about the best design:
+
+`adoptExternalEdit` currently:
+```ts
+const renderKey = preRead.renderKey ?? renderKeyOf(await readOptional(memoryFile(projectRoot)), limit);
+if (!renderKey) return false;
+const foldedView = foldMemoryJournal(base.entries, limit);
+const renderInfo = await stat(memoryFile(projectRoot)).catch(() => undefined);
+const journalInfo = await stat(file).catch(() => undefined);
+if (renderKey === foldedView || !renderInfo || !journalInfo || renderInfo.mtimeMs <= journalInfo.mtimeMs) return false;
+await appendMemoryOp(file, "replace", renderKey);
+```
+Note: the same TOCTOU exists there (read at one point, stat later) — pre-existing ✓ (the reviewer noted "同样的 read-..." truncated, so they flagged it as a shared pattern).
+
+Clean fix for the flush's new branch: instead of re-reading + re-statting, **reuse `adoptExternalEdit`'s decision function**. I.e. extract:
+```ts
+/** Is the render newer than the journal, i.e. an edit the journal has not absorbed yet? */
+function renderSupersedesJournal(renderInfo, journalInfo) { return !!renderInfo && !!journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs; }
+```
+Hmm, that doesn't remove the TOCTOU (the stat is still separate from the read) but it unifies the criterion ✓.
+
+Better for I1: perform the read and the stat consistently: read via `open` + `fstat` + `read`? Hmm, `readOptional(file)` uses readFile. A simpler approach: `stat` FIRST, then read, then `stat` again; if the two mtimes differ, treat it as "changed under us" and adopt/retry (the loop) instead of writing ✓. Hmm.
+
+Hmm. Let me think about what the *guarantee* should be and what's the simplest code that keeps it:
+- The invariant I want: **the flush never overwrites bytes it has not journaled** (i.e. any write must be of a render the journal supersedes).
+- Practically: before writing, ensure the file's current bytes are the same as the ones I just compared against the fold, and that they're not newer than the journal.
+
+Approach: read the file bytes and stat *the same* content by comparing (a) the key computed from the bytes I read with (b) a stat of the file taken *before* and *after* the read: if the two stats agree on mtime+size, the read is consistent ✓ then compare that mtime with the journal ✓. That's exactly the reviewer's suggestion #2 ✓ and it's implementable in a small helper:
+
+```ts
+/**
+ * Read the render with its mtime taken around the read, so the decision and the bytes describe the same
+ * version of the file. A change between the two stats is reported as `changed`, and the caller re-adopts.
+ */
+async function readRenderWithMtime(file: string): Promise<{ text: string; mtimeMs?: number; changed: boolean }> {
+	const before = await stat(file).catch(() => undefined);
+	const text = await readOptional(file);
+	const after = await stat(file).catch(() => undefined);
+	if (!before || !after || before.mtimeMs !== after.mtimeMs || before.size !== after.size) return { text, mtimeMs: after?.mtimeMs, changed: true };
+	return { text, mtimeMs: after.mtimeMs, changed: false };
+}
+```
+Hmm, and then the flush's flow becomes:
+```ts
+		let adopted = false;
+		let render = await readRenderWithMtime(file);
+		for (let pass = 0; pass < 3; pass++) {
+			if (render.changed) { render = await readRenderWithMtime(file); continue; }   // hmm, hmm
+			if (!(await adoptExternalEdit(projectRoot, limit, { renderKey: renderKeyOf(render.text, limit) }))) break;
+			adopted = true;
+			render = await readRenderWithMtime(file);
+		}
+```
+Hmm, this is getting complicated. Hmm.
+
+Alternative simpler design that satisfies both I1 and I2 elegantly: **let the final write be conditional on a pure predicate over (renderKey, renderMtime, journalMtime) that a test can drive directly**, and take the render's mtime from the *same* stat used for the comparison... hmm.
+
+Hmm, step back: what if the flush's write-back path simply **delegates to the same criterion as the adopt**: i.e., after the loop, instead of writing, do:
+```ts
+		// Publish only a render the journal supersedes: read it once more with its mtime, and if it is
+		// newer (or changed under the read) treat it as an edit and adopt it instead of writing.
+		const render = await readRenderWithMtime(file);      // { text, mtimeMs, changed }
+		const renderKey = renderKeyOf(render.text, limit);
+		if (renderKey && renderKey === memoryComparisonKey(folded, limit)) return { adopted, written: false };
+		if (renderKey && (render.changed || render.mtimeMs === undefined || render.mtimeMs > journalMtime)) {
+			// a fresh edit (or a file changing under the read): journal it, never overwrite it
+			await appendMemoryOp(journal, "replace", renderKey);
+			await logError(...adopted...);
+			return { adopted: true, written: false };
+		}
+		// missing, or older than the journal: republish the fold
+		await backupMemoryBeforeWrite(file); ...
+```
+where `journalMtime` comes from a stat of the journal ✓ (already needed). And in the `changed` case we adopt the key of a possibly-inconsistent read — hmm, the reviewer's I1 is precisely that this can journal a stale key. Hmm, with the before/after stat check, `changed: true` means the read is untrustworthy ⇒ the safe action is NOT to journal it either! What's safe then? If the file changed under us, the *newer* bytes are the file's; journaling a possibly-stale key dirties the journal and shadows the new content ✗. Safest: don't write, don't journal, return `{adopted, written:false}` (leave the file as-is; the next pass consolidates from it ✓ — the file's content survives on disk and the next pass seeds/adopts it ✓ no loss ✓). Hmm, is that true? The next pass (`recordMemoryDocument`) reads the render, adopts it (`adoptExternalEdit` with the preRead) ⇒ yes, it gets journaled then ✓. So: on `changed`, bail out safely ✓ — no dirty journal, no overwrite ✓ — that's strictly better and simple ✓.
+
+So the rule:
+- read render with consistent mtime (before/after stat equal) ⇒
+  - key == fold's key ⇒ nothing ✓
+  - not newer than the journal (or missing) ⇒ republish the fold (with backup) ✓ [for the missing case: mtimeMs undefined ⇒ republish ✓]
+  - newer than the journal ⇒ journal it (adopt) and don't overwrite ✓
+- inconsistent read (changed mid-read) ⇒ return without writing and without journaling (leave the file; the next pass picks it up) ✓
+
+This is clean, satisfies the guarantee ("the flush never overwrites bytes it has not journaled, and never journals bytes it did not read consistently"), and the decision is *testable* via a helper seam: I can extract the mtime-consistency read into a helper and test the three orderings? Hmm, the reviewer's suggestion for I2: extract the *predicate* (e.g. `newerThanJournal(...)`) so a store-level test can drive it. Hmm, but my design's branching is inside `flushMemoryRender` (not testable directly). Hmm.
+
+For testability of the new branch (I2), the reviewer suggests extracting a seam. What seam makes the branch drivable from a test *without* a concurrency injection? Idea: the *branch* is reachable whenever the render is newer than the journal and differs from the fold — and after the adopt loop that can't happen... unless the loop *can't* adopt it for a reason the final check ignores. Hmm, e.g.: the loop's `adoptExternalEdit` requires `base.entries.length > 0` and the render being newer ✓; the final check has the same requirement ⇒ so unreachable without the race ✓ (as established). So the branch is inherently race-only ⇒ to pin it, the test must inject the race ⇒ which needs a seam.
+
+**Practical seam**: extract the whole "decide what the flush does with the current render" step into an exported pure-ish function, e.g.:
+```ts
+/** What a model-free flush does with the render it finds: publish the fold, keep an edit, or nothing. */
+export type FlushAction = "none" | "publish" | "keep-edit";
+export function flushActionFor(renderKey: string, renderMtimeMs: number | undefined, journalMtimeMs: number | undefined, foldKey: string): FlushAction {
+	if (!renderKey || renderKey === foldKey) return "none";
+	if (renderMtimeMs === undefined || journalMtimeMs === undefined) return "publish";   // hmm: render missing ⇒ publish ✓
+	if (renderMtimeMs > journalMtimeMs) return "keep-edit";
+	return "publish";
+}
+```
+Then a store-level test can assert the table: `flushActionFor("a", 100, 50, "b") === "keep-edit"`, `("a", 40, 50, "b") === "publish"`, `("", undefined, 50, "b") === "publish"`, `("b",*,*,"b") === "none"`, and the changed-read case handled outside ✓. That's a *real* pin on the decision logic ✓ (and it makes the guarantee readable) ✓. And it's a pure function ⇒ no concurrency needed ✓. Hmm, and the `changed` case: handle it in the caller (return none) ✓ and pin it by... hmm, not directly (needs the inconsistent read) ⇒ document ✓. Hmm, or make the helper take a `changed` flag ✓.
+
+Hmm, but is exporting another function against the "dead export" discipline? It's consumed by a test ⇒ fine ✓ (the repo's tests import internals ✓; the barrel doesn't need to re-export it — hmm, the test imports from `store.ts` directly? Tests use `loadNamespace(`${PC}/shared/project-state.ts`)` (the barrel) and `loadDefault`. For a new internal function, the test can `loadNamespace(`${PC}/memory/store.ts`)` ✓ (jiti can load it directly ✓ hmm, does store.ts import bare packages? It imports only relative modules + node builtins ✓ hmm, `local/limits` etc... it imports `../shared/...` modules which may import `@earendil-works/pi-coding-agent` (paths.ts does!) ⇒ with the harness's jiti aliases, bare imports resolve ✓ (the harness aliases pi packages ✓). The round-2 test already did `loadNamespace(`${PC}/shared/project-state.ts`)` which pulls in paths.ts ✓ and it worked ✓ ⇒ so loading store.ts directly works ✓.)
+
+OK. Design decided:
+1. `readRenderWithMtime(file)` (internal): stat → read → stat; returns `{text, mtimeMs, changed}`.
+2. `flushActionFor(renderKey, renderMtimeMs, journalMtimeMs, foldKey)` (exported for the test): the decision table including `changed`? Hmm, `changed` is known before calling; let me include it: `flushActionFor(renderKey, renderMtimeMs, journalMtimeMs, foldKey, changed)`. Hmm, five params is clunky. Alternative: keep `changed` in the caller: `if (render.changed) return { adopted, written: false };` (with a comment) and let `flushActionFor` handle the rest ✓. Hmm, but then the "changed ⇒ bail" behavior is untested... it's a one-liner with a comment ✓ acceptable? Hmm, I'd rather include it in the pure function so the whole decision is pinned: signature `flushActionFor({ renderKey, renderMtimeMs, changed }, { journalMtimeMs, foldKey })`. Hmm, over-engineering. Let me do a simple 4-arg pure function without `changed` and have the caller bail first (documented). Hmm, hmm. Let me include `changed` as a boolean arg — simple and complete:
+
+```ts
+/**
+ * What the exit flush does with the render it just read, as a pure decision a test can drive:
+ * `none` (the file already carries the fold), `keep` (an edit newer than the journal - journal it and
+ * leave the bytes alone), `publish` (missing or older - write the fold), or `recheck` (the file changed
+ * under the read, so neither the bytes nor the mtime can be trusted: touch nothing).
+ */
+export function flushActionFor(
+	renderKey: string,
+	renderMtimeMs: number | undefined,
+	journalMtimeMs: number | undefined,
+	foldKey: string,
+	changed = false,
+): "none" | "keep" | "publish" | "recheck" {
+	if (changed) return "recheck";
+	if (!renderKey || renderKey === foldKey) return "none";
+	if (renderMtimeMs !== undefined && journalMtimeMs !== undefined && renderMtimeMs > journalMtimeMs) return "keep";
+	return "publish";
+}
+```
+Hmm, `changed` as a default param at the end ✓.
+
+Then the flush:
+```ts
+		const [render, journalInfo] = await Promise.all([readRenderWithMtime(file), stat(journal).catch(() => undefined)]);
+		const action = flushActionFor(renderKeyOf(render.text, limit), render.mtimeMs, journalInfo?.mtimeMs, memoryComparisonKey(folded, limit), render.changed);
+		if (action === "none" || action === "recheck") {
+			if (action === "recheck") await logError(projectRoot, "memory", "the memory render changed while the exit flush was reading it; it was left for the next pass").catch(() => {});
+			return { adopted, written: false };
+		}
+		if (action === "keep") {
+			await appendMemoryOp(journal, "replace", renderKeyOf(render.text, limit));
+			await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
+			return { adopted: true, written: false };
+		}
+		await backupMemoryBeforeWrite(file);
+		await ensureMemoryGitignore(memoryDir(projectRoot));
+		await writeAtomic(file, folded);
+		return { adopted, written: true };
+```
+Hmm, and should the loop remain? With the `flushActionFor`-based decision, the loop still shrinks the window before this ✓ keep it ✓.
+
+And `adoptExternalEdit`'s own read-then-stat: should I also fix its TOCTOU (the reviewer noted the shared pattern)? Hmm, its worst case: it journals a *stale* key when the file changed between its read and its stat — hmm, its stat is taken *after* the read ⇒ if the file changed in between, the stat is newer (the new edit's mtime) ⇒ `renderInfo.mtimeMs > journalInfo.mtimeMs` may be true ⇒ it journals the *old* key (stale) ⇒ the new edit is shadowed (mtime ≯ journal's new mtime) ✗ — the same class of harm. Hmm. Fixing it: use `readRenderWithMtime` there too ⇒ if `changed`, return false (don't adopt) ✓ — hmm, but careful: `adoptExternalEdit` takes `preRead.renderKey` (from the write path's earlier read) ⇒ the same inconsistency exists in `recordMemoryDocument` (it reads the render up front, then adopts) ✓ — that's the pre-existing design (documented as the basisKey/recheck mechanism ✓). Hmm. Scope: touching `adoptExternalEdit`'s read/stat consistency improves things but expands the diff (and the write path's semantics are covered by the external-edit tests ✓). Hmm.
+
+Given the reviewer's I1 asks specifically about the new branch, and mentions adopting the same consistency in adopt as a suggestion ("同时建议与 adoptExternalEdit 同样的 read-..."), let me implement the consistency in BOTH places by routing both through `readRenderWithMtime` ✓ — hmm, but in `adoptExternalEdit`, `renderKey` may come from `preRead` (a caller-provided read) ⇒ the consistent read can't be enforced there. Hmm, so: in `adoptExternalEdit`, *when it reads the file itself* (`preRead.renderKey === undefined`), use the consistent read and bail on `changed` ✓; when the caller supplied the key, keep the existing behavior (the caller's own recheck covers it: `recordMemoryDocument` has the pre-publish `nowKey` recheck ✓ and my flush passes no preRead ✓ — hmm, my flush's loop calls `adoptExternalEdit` without preRead ✓ so it gets the consistent read ✓).
+
+Hmm, that's a reasonable, contained improvement ✓. Let me implement:
+- `readRenderWithMtime` (internal helper).
+- In `adoptExternalEdit`: replace the `await readOptional` + later `stat` with the consistent read when no preRead key:
+
+Hmm, careful: `adoptExternalEdit` needs `renderInfo.mtimeMs` (it stats the file) ✓ — with `readRenderWithMtime` I have `mtimeMs` ✓ so I can drop that stat ✓ (and `changed` ⇒ return false ✓). But when `preRead.renderKey` is given, I still need a stat ✓ (keep the current path) ✓. Hmm, that makes the function have two paths... Let me simplify: always call `readRenderWithMtime` (getting text + mtime + changed) and use `preRead.renderKey ?? renderKeyOf(text)` ✓ — so the read always happens (one extra read when the caller already read it — hmm, that's the "duplicate read" the round-1 reviewer flagged as S1: "flush 把 journal 读了两遍" hmm, different issue: this is the *render* read). Hmm: `recordMemoryDocument` calls `adoptExternalEdit(..., { journal: base, renderKey })` after reading `renderRaw` itself ⇒ an extra read of the render file (~30 KB) per pass — acceptable? It's one small file read in an already-IO-heavy path ✓. Hmm, but it changes `recordMemoryDocument`'s behavior: previously adopt used the *same* bytes the caller had read (important for its own key comparisons ✓ — the caller's `renderKey` is used later in the pre-publish recheck ✓ hmm, if adopt uses a *fresher* read, that's fine/better ✓). Hmm, wait: `recordMemoryDocument` passes `renderKey` computed from `renderRaw` and it relies on `adoptExternalEdit`'s decision being about *that* version ✓ (it asserts "the adoption below and the pre-publish check must compare the same bytes" in its comment!) ⇒ so overriding with a fresher read would break that documented intent ✗. So: keep `preRead.renderKey` honored as today (no extra read when given) ✓ and only use the consistent read when the key isn't supplied ✓. Two paths but each justified ✓. Hmm, hmm: but then the TOCTOU in adopt remains for the write path (pre-existing, documented, and mitigated by the pre-publish recheck ✓) — fine, out of this change's scope, and I'll say so ✓.
+
+Hmm, hmm. This is getting complex. Let me reconsider a MINIMAL solution to I1+I2 that avoids restructuring:
+
+Minimal: keep the current structure but replace the *final* `readOptional(file)` + later `stat(file)` pair with a single consistent read (via `readRenderWithMtime`), and use `flushActionFor` for the decision (exported, tested) ✓. Don't touch `adoptExternalEdit` (note the shared pre-existing pattern in the report as residual R2-like ✓). That addresses I1's harm (no stale journaling, no shadowing) and I2 (the decision is pinned by a pure-function test) ✓.
+
+Hmm, and the `changed` case: bail with a log ✓ (pinned by including `changed` in `flushActionFor` ✓).
+
+Let me now also handle the other round-3 items:
+- N2: pin `runIsDisabled` — add a shutdown step to the switches test's `--no-project-context` case ✓ (cheap: fire session_shutdown on a project with a hand edit + journal and assert untouched ✓). Hmm, how does switches-test simulate the flag? Let me look at its lines 171-189 ✓.
+- N3: architecture.md :102/:105 mention the new branch ✓.
+- N4: fix the mutation numbering in the report ✓.
+- N5: wording "missing or older" → "not newer than the journal" ✓ (MEMORY.md:23, architecture.md:102, the skill?).
+
+Then: suite, mutation check for the new pins (flushActionFor table test + runIsDisabled pin), commit, push, round 4.
+
+Hmm, this is a long session but the user said 继续 and the loop is converging (round 3's remaining items are the branch's consistency+coverage, and nits). Let me proceed.
+
+Let me first read switches-test.mjs:165-195 to see the run-disabled mechanism.
