@@ -20,12 +20,12 @@ Closed the open decision list by measurement instead of asking again, then execu
 
 ## Open tasks
 
-- Owner: option 1 is decided and implemented (v0.4.6 semantics: no merge at exit), through four review rounds; what is left for the owner is only the middle route - lowering the settle throttle, which costs more auxiliary calls.
-- Next session: the flush is landed and reviewed (rounds 1-4, all dispositions closed); the loop should stop once a round returns nits only. Watch two things: the local journal re-rendering older shutdown facts, and the entry path (adoptExternalEdit's consistent read) staying in step with the flush's.
+- Owner: option 1 is decided and implemented (v0.4.6 semantics: no merge at exit), through five review rounds; what is left for the owner is only the middle route - lowering the settle throttle, which costs more auxiliary calls.
+- Next session: the flush is landed and reviewed (rounds 1-6, round 6 PASSED); the loop should stop once a round returns nits only. Watch two things: the local journal re-rendering older shutdown facts, and the entry path (adoptExternalEdit's consistent read) staying in step with the flush's.
 - Next session: bump the host pin to v0.4.5 and restart, so live sessions stop running the previous tag's modules - the pin lag is the source of mixed-version adoption noise in the journal.
 - Next session: record the cache measurement in the prefix-cache skill (a same-session hand edit did not collapse cacheRead), which is the remaining doc fix from the earlier settlement.
 - Owner: decide whether to implement the autolearn B1' layering on the shape evidence alone or wait for a cost fact, and whether the fork 4/5/6 answers should be written into the design doc; the reopen condition is recorded either way.
-- Watch the curated headroom (2,449 characters) against the under-2,000 curate-again trigger.
+- Watch the curated headroom: MEMORY.md is 30,078 characters against the 32,000 cap (about 1,900 left), so the render is due for a hand curation before the next fact can be added; the write-path invariant "the journal append is guarded by a check that the file still holds those bytes" is the first entry that curation should make room for.
 - Sibling consumer repos (their call): test a pi-rendered MEMORY.md against HEAD before committing or merging it, merge back UniField's dropped curated block, decide on their unpushed local commits.
 
 <!-- latest-session-title: Closed four decisions by measurement, re-curated the render, and answered the shutdown-coupling question from code facts -->
