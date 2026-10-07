@@ -1,0 +1,105 @@
+# Lane A 独立审查报告 — 记忆层退出 flush 修复版（`eff6a56` / `9db1b00` / `f43193a`）
+
+**判定模型**：`deepseek/deepseek-flash`；**thinking 档**：`high`（环境实测 `PI_PROVIDER=deepseek`、`PI_MODEL=deepseek-flash`、`PI_REASONING_LEVEL=high`）。
+**被审范围**：`git diff 6d76e61..HEAD`，沙箱 `/tmp/pi-context-rev2`（HEAD=`f43193a`，字节一致副本）。
+**只读合规**：未写沙箱；基线 `node tests/run-all.mjs` 在整树副本 `/tmp/pi-rev2-work.2146667` 实跑 **15/15**；变异在最小副本 `/tmp/pi-rev2-mut`（仅 `extensions/`+`tests/`）与 `/tmp/pi-rev2-race` 执行。审查期间沙箱 `git status` 始终只有既有的 3 个 `.agents/memory` 渲染改动，未增加。
+
+---
+
+## important
+
+### I1. `store.ts:106-107` 的注释声称采纳循环关掉了覆盖窗口，但最后写回仍会覆盖未折叠的字节
+- `extensions/project-context/memory/store.ts:106-107`：
+  ```ts
+  // An edit can land between an adopt read and the write below; adopt until the render and the
+  // journal agree, so the flush never publishes a fold over bytes it did not fold in first.
+  ```
+  循环（`:109`）只是在 `adoptExternalEdit` 返回 true 时再试一次；一旦它返回 false（正常出口），flush 走 `readMemoryJournal → fold → readOptional(file)`（`:110-119`），若 `onDiskKey !== foldKey` 就无条件 `writeAtomic(file, folded)`（`:125`）。因此**在最后一次 adopt 读盘之后、`readOptional` 之前落下的手改，仍会被 fold 覆盖**——而且这次不 mtime 判断、不追加 journal。
+- 实测（`/tmp/pi-rev2-race`，在循环后插入一个模拟并发手改写）：`flushMemoryRender` 返回 `{"adopted":false,"written":true}`，磁盘上的并发手改 `CONCURRENT-HAND-EDIT` 被 `fold` 覆盖。也就是说循环把窗口从「一次 adopt 读 → 写」缩到「最后一次 adopt 读 → `readOptional`」，但**没有**兑现注释里的绝对保证。
+- 该窗口只在非锁写入者（人肉编辑 / 旧 build）下落地下手；同版本扩展走同一 `withMemoryLock`，会被串行化。
+- 修复边界：把写回前的 `readOptional` 结果当作「刚读到的 render」，复用 `nextRenderSupersedes`/adopt 语义——若是更新的不同字节，先 `appendMemoryOp(file,"replace",nowKey)` 保住它，再决定是否写 fold；做不到就至少把注释降级为「循环缩小但不消除窗口」，并与 fix note 的「写回的最后一个窗口」保持一致。注意：fix note 已经承认该残留，但代码注释（和 `:121-122` 的「a fresh edit would have been adopted above」）仍是强保证。
+
+### I2. `headless-runs` skill 的两条退出承诺与代码相反
+- `.agents/skills/pi-project-context-headless-runs/SKILL.md:106`：
+  > “Do not expect a consolidation pass, a `CONTEXT.md` write or **extra backup files** at exit, and **a project with no journal is left untouched (no memory directory, no lock)**.”
+- 与代码/本仓自己的更正冲突：
+  - 陈旧/撕裂 render 的重发路径会先 `backupMemoryBeforeWrite(file)`（`store.ts:123`），产生 `MEMORY.md.memory-backup-*`——新增测试「replacing a render backs it up first」正是在钉这件事；本轮 CHANGELOG `:13` 也写「写前备份」。
+  - 裸项目的 `.agents/memory` 由**存档层自己的锁**创建（`archive/archive.ts:139 → updateSessionIndex → withMemoryLock → shared/lock.ts:183 ensureMemoryGitignore`），注册顺序上存档 handler 先于记忆 handler；round1 报告与 fix note 都已实测更正过这一点。
+- 影响：headless 使用者按 skill 预期「退出无备份、无目录、无锁」会误判真实行为。
+- 修复边界：改成「该 flush 不调模型、不写 `CONTEXT.md`、不生成内容；但陈旧/撕裂重发会在写前留一份备份；flush 自身不取记忆锁，存档层仍可能建目录并取其锁」。
+
+---
+
+## nit
+
+- **N1（新诊断未钉）** `store.ts:115`：全损 journal 的 `logError(projectRoot,"memory",...)` 无任何测试。变异 M10（删掉该行）→ 全套绿。读侧 `loadMemory` 同状态返回 `unreadable`（`store.ts:202`），口径一致、但这条新日志会静默回退。修复边界：补一个 `flushMemoryRender` 直接用例（journal 全是坏行），断言日志与 `{written:false}`。
+- **N2（新增门未钉）** `report.ts:427,431`：`runIsDisabled()` 与 `config.memoryEnabled` 门都无测试。变异 M7（删 `memoryEnabled` 门）→ `run-all` 仍 15/15（无测试设 `runDisabled` 或 `memoryEnabled:false`+退出）。修复边界：加「`memoryEnabled:false` + journal + 较新手改」用例，断言 journal 不变、render 保留手改。
+- **N3（循环未钉）** `store.ts:109`：把三次采纳循环换成单次（M9）→ 测试全绿，循环的存在只靠推理。修复边界：store 级用例在两次 adopt 之间插入第二次编辑，或明说该并发面只由 I1 的残留风险覆盖。
+- **N4（渲染记录 stale）** `.agents/memory/CONTEXT.md:7,24-25`：提交的会话渲染仍写 “The owner has not yet picked” 与 “Next session: if the owner confirms option 1, implement it … extracted in pass.ts”，与 attention.md「已决定 ①、已实现」和 CHANGELOG 矛盾。它是会话态渲染（下次退出会被重写），故列 nit；但当前仓内记录不一致。修复边界：随本会话 render refresh 更新，或明确该文件由退出重写。
+- **N5（压缩过度）** `.agents/memory/MEMORY.md:23`：“adopt a hand-edited MEMORY.md into the journal, **re-render**, no model call”。flush 只在 render 缺失/陈旧撕裂时重发；干净退出带手改时文件不动。修复边界：改为「adopt … and republish the fold only when the render is missing or stale/torn」。
+- **N6（措辞）** `store.ts:95-96`：“a teardown must not create a memory directory (or take the cross-process lock) for it” 对 `flushMemoryRender` 成立，对整个 teardown 不成立（存档层）。与 I2 同一事实，可一并修正。
+- **N7（`ctx.cwd` 返回 undefined 的理论洞）** `report.ts:436`：守卫只挡「getter 抛错」。若 `ctx.cwd` 返回 `undefined`（不抛），catch 里的 `shutdownErrorRoot(..., cwd)` 会在 `join(undefined,…)` 抛错、使 handler reject。类型上是 `string`，实际不可达；若想彻底，可在守卫里同时要求 `typeof cwd === "string"`。
+
+---
+
+## learning
+
+- **`Date.now` 拨动是有效的，不造假红**：`report.ts` 的退出如果改回 `consolidate(ctx,true,true)`，`forceDedupeMs(15s)` 会因种子 pass 与退出相隔毫秒而把它去重——旧测试因此恒绿。测试把 `Date.now` 前拨 60s 后，M1 精确变红 5 条（含「退出无模型调用」「退出不合成内容」）。flush 自身不读 `Date.now`，所以拨动不会让修复路径产生假红。
+- **`onDiskKey` 与旧 `memoryComparisonKey` 并非严格等价，但差异是刻意的**：`memoryComparisonKey("")` 并不是空串——`normalizeMemoryDocument` 会补 `# Project Memory\n`（`document.ts:27,125-128`）。旧代码 `memoryComparisonKey(onDisk) === memoryComparisonKey(folded)` 在「缺 render + fold 恰为裸 header」时会判等、**不写**；新代码 `renderKeyOf("") === ""` 为假，于是重发 fold（`:120`）。对非空 render 两者逐字节同口径；纯空白 render 同旧（都写）；缺失 render 新行为即 I5 要的「重发」。所以这是修复点，不是回归。
+- **采纳循环的终止性成立**：每次 true 都 append `renderKey`，下一次 `foldedView` 已含该 key，`renderKey === foldedView` 立刻返回 false；最多 3 次，无热循环。
+
+---
+
+## praise
+
+- **B1 修复成立且可钉**：`report.ts:420-425` 把 `ctx.cwd` 只读一次到局部变量，try/catch 全程只用 `cwd`/`projectRoot`，catch 里 `getProjectRoot(...).catch(()=>undefined)` 与 `logError(...).catch(()=>{})` 都不再触碰 `ctx`。M3（还原 round1 的 `ctx.cwd` 二次读模式）红 1 条，修复版绿。
+- **写回三钉都是真钉**：M2（写错 fold）红 2 条；M5（删 `writeAtomic`）红 2 条；M6（删 `backupMemoryBeforeWrite`）红 1 条。round1 的「写回分支零覆盖」已被补上。
+- **无 journal 早退是双侧可验证的**：M4（删 `store.ts:104` 早退）→「gains no memory state」红、「flushes to nothing」仍绿，与 fix note 的单侧钉描述一致。
+- **采纳行为仍被端到端钉住**：删采纳/绕过循环会让「the file still carries the hand edit」「adopted into the journal」红，M1 亦复现（5 红）。
+- `git diff --check` 干净；extract-refactor 的等价性由 `external-edit-test.mjs` 在改动前后的一致性佐证。
+
+---
+
+## residual-risk
+
+- **R1（=I1 的残余）**：最后一次 adopt 读盘到 `writeAtomic` 之间的并发手改窗口仍存在，且写回不做 mtime/内容复核；只在非锁写入者下可达。fix note 已承认。
+- **R2**：陈旧规则本身会覆盖「内容更新但 mtime ≤ journal mtime」的 render（粗粒度 mtime 文件系统，或保留 mtime 的编辑器）。这是 `loadMemory`/`adoptExternalEdit` 既有的判据，非本次引入。
+- **R3**：`memoryEnabled` / `runIsDisabled` 门未经测试（N2）；`getConfig` 在裸项目退出路径上的副作用（legacy 迁移会建目录/取配置锁）未被 handler 级测试覆盖——直接测的是 `flushMemoryRender`。
+
+---
+
+## Test And QA Focus
+
+**能真红（非走场）**
+- M1 退出改回 `consolidate(ctx,true,true)`（`report.ts:432` 处）→ 5 红：no-model-call / file-carries-hand-edit / composed-nothing / republish-missing / replace-stale。
+- M2 写回错误 fold（`store.ts:125`）→ 2 红；M5 删 `writeAtomic` → 2 红；M6 删 `backupMemoryBeforeWrite` → 1 红。
+- M3 还原 `ctx.cwd` 二次读 → 1 红（stale-ctx 不 reject）。
+- M4 删无 journal 早退（`store.ts:104`）→ 1 红（gains no memory state）。
+- `Date.now` 拨动经 M1 证明有效，且不妨碍修复路径。
+
+**走场 / 假保证（删掉仍绿）**
+- M7 删 `config.memoryEnabled` 门（`report.ts:431`）→ 15/15 全绿。
+- M9 adopt 循环换单次（`store.ts:109`）→ 绿。
+- M10 删全损 journal 日志（`store.ts:115`）→ 绿。
+- `runIsDisabled` 门无任何测试设置 run-disabled，属纯走场。
+- 无 journal 的 handler 级路径未覆盖：测试直接调 `flushMemoryRender`，绕过 `getConfig`/存档层，因此「无记忆状态」只证明了 flush 本身。
+
+**变异矩阵（在整树/最小副本实跑，未变异基线 15/15）**
+
+| 变异 | 位置 | 实测红 | 仍绿（本应可红） |
+|---|---|---|---|
+| M1 退出改回 forced consolidate | `report.ts:432` | 5 | — |
+| M2 写回错误 fold | `store.ts:125` | 2 | — |
+| M3 去掉受保护 cwd 读 | `report.ts:420-426` | 1 | — |
+| M4 去掉无 journal 早退 | `store.ts:104` | 1 | flushes-to-nothing |
+| M5 删 `writeAtomic` | `store.ts:125` | 2 | — |
+| M6 删写前备份 | `store.ts:123` | 1 | — |
+| M7 删 `memoryEnabled` 门 | `report.ts:431` | 0 | 全部 |
+| M9 循环→单次 adopt | `store.ts:109` | 0 | 全部 |
+| M10 删全损 journal 日志 | `store.ts:115` | 0 | 全部 |
+
+---
+
+**结论**：第 1 轮的 blocking B1 与 I2/S2、I5 修复**成立**，无 journal 早退、写回+备份三钉、stale-ctx 守卫、文档（attention/CHANGELOG/architecture/MEMORY）与代码基本对齐；`Date.now` 钉法有效。剩余问题不是主路径回归，而是「**承诺多于代码**」这一类：`store.ts:106-107` 对采纳循环做了代码不成立的强保证（并发手改窗口仍在），以及 `headless-runs` skill 对退出备份/目录/锁的两条反向承诺。两者都是可低成本修正的文档/注释，但按本仓口径属重要；`FlushResult`/`runIsDisabled` 门/损坏日志/采纳循环缺钉。建议修完这四处记录与测试缺口后再放行。
+
+VERDICT: CHANGES-REQUESTED

@@ -5,6 +5,7 @@
 | 轮 | 日期 | 冻结修订 | 判定路由 | VERDICT | transcript | 零写入证明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 2026-10-06 | `6d76e61`（`d4d7ed3..6d76e61`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round1-independent.txt` | ✓：沙箱文件表与基线逐行一致；仅扩展自身在 `.agents/memory/` 的启动写入（skill 约定豁免）；live tree 被审两文件 md5 前后一致 |
+| 2 | 2026-10-06 | `f43193a`（`6d76e61..f43193a`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round2-independent.txt` | ✓：文件表与基线逐行一致；status 只多出扩展自身改写的 `.agents/memory/MEMORY.md`（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并
 `node tests/run-all.mjs`（15/15）。
@@ -36,7 +37,23 @@
 | R2 fix note 的「8/8 仓逐字节一致」无法在沙箱外复验 | residual | **接受**：改按代码层不变量论证 | 本目录 fix note |
 | R3 沙箱在审查期间被本机已安装的 v0.4.5 扩展改写 `.agents/memory/MEMORY.md` | residual | **接受**：那是扩展自身写入，非审查员写，零写入证明按约定豁免该目录 | — |
 
-## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2`，按备份复位，不用 `git checkout`）
+## 第 2 轮处置
+
+| 发现 | 严重度 | 处置 | 落点 |
+| --- | --- | --- | --- |
+| I1 采纳循环的注释是强保证，但循环后到 `writeAtomic` 之间仍能覆盖未折叠字节（审查员用跨进程竞态探针实测 `{adopted:false,written:true}`） | important | **已修（做真保证）**：写回前对刚读到的 render 重新按 mtime 判定——比 journal 新就 `appendMemoryOp` 保住它并放弃写回，注释改成代码能兑现的「永不覆盖比 journal 新的 render」+ 明确残留窗口 | `eff6a56` 之后（本目录记录提交的代码提交） |
+| I2 `headless-runs` skill 上一轮写入的反向承诺（退出无备份、裸项目无目录无锁） | important | **已修**：写明重发会先写 `MEMORY.md.memory-backup-*`；flush 自身跳过无 journal 项目，但存档层仍会取自己的锁并建 `.agents/memory/` | 本目录记录提交 |
+| N1 全损 journal 的新诊断无测试 | nit | **已补钉**：`a fully damaged journal leaves a trace`（变异 M10 红） | 代码提交 + 测试 |
+| N2 `runIsDisabled`/`memoryEnabled` 门无测试 | nit | **已补钉**：`memory off: the exit leaves the journal alone` / `... the hand edit in place`（变异 M7 红） | 代码提交 + 测试 |
+| N3 采纳循环无测试（单次化仍绿） | nit | **接受**：该分支只在并发写入窗口可达，套件无法在不注入内部钩子的情况下构造；证据是本轮审查员的跨进程竞态探针（transcript 内），故不引入测试钩子 | — |
+| N4 `CONTEXT.md` 渲染仍写「owner 未定」 | nit | **已修**：摘要与待办两行更新；该文件本是会话态渲染，下次 settle 会重写 | 记忆提交 |
+| N5 MEMORY.md「adopt … re-render」压缩过度 | nit | **已修**：改为「republish the fold only when the render is missing or older」 | 记忆提交 |
+| N6 `store.ts` docstring 把 flush 的约束写成整个 teardown 的 | nit | **已修** | 代码提交 |
+| N7 `ctx.cwd` 返回 `undefined` 的理论洞 | nit | **已修**：守卫加 `typeof cwd !== "string"` 早退 | 代码提交 |
+
+第 2 轮未新增 blocking；其结论「修复成立、无主路径回归，剩余为承诺多于代码」已按上表收口。R1（并发窗口残余）现在是**代码注释里写明**的已知残留，不再是未兑现的断言。
+
+## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` / `mut3`，按备份复位，不用 `git checkout`）
 
 | 变异 | 位置 | 变红 |
 | --- | --- | --- |
@@ -44,6 +61,8 @@
 | M2 写回内容换成错误 fold | `store.ts` | 2 条（缺 render 重发、陈旧 render 替换） |
 | M3 去掉 cwd 保护读 | `report.ts` | 1 条（stale-ctx 不 reject） |
 | M4 去掉无 journal 早退 | `store.ts` | 1 条（裸项目不留记忆状态）；「flushes to nothing」保持绿 = 单侧钉 |
+| M5 删 `memoryEnabled` 门（第 2 轮补钉） | `report.ts` | 1 条（memory off 时退出仍写） |
+| M6 删全损 journal 诊断（第 2 轮补钉） | `store.ts` | 1 条（诊断消失）；「flushes to nothing」保持绿 |
 
 ## 对审查结论的两处更正
 
