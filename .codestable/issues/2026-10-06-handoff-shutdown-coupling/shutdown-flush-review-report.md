@@ -9,6 +9,7 @@
 | 3r | 2026-10-06 | `284039e`（重跑） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round3-rerun-independent.txt` | ✓：沙箱 `git status` 只多 `.agents/memory/`（豁免项） |
 | 4 | 2026-10-06 | `e7e8178`（`284039e..e7e8178`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round4-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
 | 5 | 2026-10-06 | `5d6db4b`（`e7e8178..5d6db4b`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round5-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
+| 6 | 2026-10-06 | `c212fcf`（`5d6db4b..c212fcf`） | `deepseek/deepseek-flash` + thinking `high` | **PASSED** | `shutdown-flush-review-round6-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并
@@ -109,6 +110,26 @@
 | S3 adopt 静默放弃时留日志 | suggestion | **已做**：append 前复核拒绝时写 `errors.log` | 代码提交 |
 
 第 5 轮判 blocking 的那条是同一类缺陷的第三个站点；本轮把「判定与写入必须基于同一版本」收敛成**一处守卫 + 两条确定性回归**，并把重叠的第二处守卫删除（删它测试不变，故不是承重守卫）。
+
+## 第 6 轮：PASSED 与后续项
+
+第 6 轮判 **PASSED**（无 blocking、无 important；`c212fcf` 通过）。它确认单一守卫（`adoptExternalEdit` 的 append 前复核）
+同时覆盖自读与借键两条路径，删除重叠的 `read.changed` 早退没有回退（`changed` 仍有 `verify.changed` 与 `flushActionFor` 的
+`render.changed` 两个读者），钉子确定性、删守卫必红。该轮点名的后续项（均不改被审生产语义，故在 PASS 之后按文档/记录单独收口）：
+
+| 后续项 | 性质 | 处置 |
+| --- | --- | --- |
+| N1 FIFO 用例失败路径仍会挂起（`Promise.race` 取消不了阻塞 `open`） | 测试健壮性 | **登记**：成功路径确定、已连跑三次；失败路径当前不可达。真修需子进程硬超时或非阻塞打开 |
+| N2 `architecture.md` 对借键路径的措辞与代码有细微出入 | nit | **已修**：改为「其 mtime 判定取本调用的自读，并在 append 前校验该 key 仍是文件当前字节」 |
+| N3 三处漏写「render 为空」这一重发条件 | nit | **已修**：architecture.md / CHANGELOG.md / fix note 统一措辞 |
+| N4 `CONTEXT.md` 摘要写「五轮」而 Open tasks 仍写「四轮」 | nit | **已修** |
+| S1/S2 `loadMemory` 的纯读站点仍把旧字节与新 stat 配对 | suggestion / residual | **登记为 R-L1**，不在本 issue 修 |
+| S3 `readRenderWithMtime` 的 `changed` 是 mtime+size 启发式 | suggestion | **登记**：同尺寸同 mtime 的替换检测不到，属已记残留 |
+
+**新登记残留 R-L1**：`loadMemory`（注入/提示/状态读路径）把 render 的字节与 `stat` 分开取，理论上可读到「旧字节 + 新 mtime」；
+危害不升级，因为唯一的下游写路径用新的 `nowKey` 复检兜底。下次有空的改动窗口时按 S1 收敛到 `readRenderWithMtime`。
+
+**停止规则**：第 6 轮 PASSED 即本 issue 的审查闭环；剩余项都是测试健壮性与读路径残留，不属于「承诺多于代码」的写路径缺陷。
 
 ## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` … `mut7`，按备份复位，不用 `git checkout`）
 

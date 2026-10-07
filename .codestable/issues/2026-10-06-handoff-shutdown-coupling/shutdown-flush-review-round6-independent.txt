@@ -1,0 +1,85 @@
+# 独立审查报告（lane A，第 6 轮）— 单一 append 前复核的覆盖性、第四个读—stat 站点、新钉与记录自洽
+
+**判定模型**：`deepseek/deepseek-flash`；**thinking 档**：`high`（`PI_REASONING_LEVEL=high`）。
+**被审范围**：`git diff 5d6db4b..HEAD`，HEAD=`c212fcf`（`b37cb55` 代码+测试、`34baa6a` 记录、`c212fcf` 记忆渲染）。
+**只读合规**：沙箱 `/tmp/pi-context-rev6` 只读（仅读、`git log/diff/rev-parse`）；测试/变异/探针全部在整树副本 `/tmp/pi-rev6-work.efMzho` 内完成；未做任何 git 写操作，无 `git add/commit/checkout/stash/clean`。沙箱结束时 `git status --short` 仍只有扩展自身写入的 `.agents/memory/HANDOFF.md`、`project-context.json`（豁免项），HEAD 与起始一致。基线（副本）`node tests/run-all.mjs` → `All 15 tests passed`（该副本一度因我临时加入探针变 16，已说明，沙箱基线为 15）。
+
+---
+
+## blocking
+
+无。第 5 轮的 B1r 修复在自读与借键两条路径上都成立（见下）。
+
+## important
+
+无生产代码层的未闭合缺陷。唯一“承诺未完全兑现”的点在测试失败路径（见 N1），按本仓口径记为 nit，因为它不影响被审生产语义，且 `run-all.mjs` 的 60s `spawnSync` 超时兜底。
+
+## nit
+
+### N1. FIFO 用例的失败路径仍会挂起：`open` 的 10s `Promise.race` 只让断言失败，不终止进程
+- **file:line**：`tests/consolidation-test.mjs:1969`（`await Promise.race([open(raceFile, "w"), …reject…])`）。
+- **事实**：第 5 轮 N2 的处置写“写端 `open` 也套 10s `Promise.race` 超时；连跑 3 次稳定通过”，暗示失败路径已不挂起。但 `Promise.race` 只拒绝 JS promise，不取消底层对 FIFO 的阻塞 `open`。我用最小复现验证：`open(fifo,"w")` 与一个 2s reject 赛跑，超时后 `catch` 里 `rm` 掉 FIFO 再 throw —— node 仍不退出（`timeout 8 node` → `exit=124`），因为挂起的 `fs` 请求仍保持事件循环活跃。也就是说，若 `flushMemoryRender` 在成为 FIFO 读者之前就 reject（唯一现实触发是 `withMemoryLock` 5s 未取到锁），测试会先打印 FAIL、随后挂起，直到 `run-all.mjs` 的 60s 超时（standalone 直接跑则无限挂起）。
+- **影响**：纯测试健壮性；当前夹具里 `flushMemoryRender` 一定会走到 `readOptional` 成为读者，故成功路径确定（我连跑 3 次三断言全 OK），失败路径不可达但有陷阱。
+- **修复边界**：不要只加 `Promise.race`。要么在超时分支 `process.exit(1)` / 设置 `process.exitCode` 后强制退出，要么整段 FIFO 场景放子进程跑并由父进程硬超时，要么用 `fs.open` 的非阻塞语义（自旋 handler）代替阻塞写端。成功路径无泄漏（写端 close、读者 close、`rmTemp` 兜底）。
+
+### N2. `docs/architecture.md:106` 的措辞与代码有细微出入（“用本调用的自读做判定”）
+- **file:line**：`docs/architecture.md:106` vs `extensions/project-context/memory/store.ts:85-95`。
+- **事实**：借键路径的实际判定是：`renderKey = preRead.renderKey`（append 的值也是它），fold 等值判断与空值判断用的都是**借用键**；本调用的 `readRenderWithMtime` 只提供 `mtimeMs`，再由 `verify` 要求“文件当前字节的 key 恰等于该借用键”。因此“自带 render key 的调用方也用本调用的自读做判定”只在“mtime + 事后校验”意义上成立，不是逐字（判定用的 key 本身不是自读产物）。
+- **影响**：读者可能以为借键被直接丢弃；实际语义仍正确（verify 保证与当前文件一致）。**修复边界**：改为「自带 key 的调用方，其 mtime 判定取本调用的自读，并在 append 前校验该 key 仍是文件当前字节」。
+
+### N3. “重发触发条件”在 `CHANGELOG.md:13` 与 fix note 里少写了“空/空白 render”
+- **file:line**：`CHANGELOG.md:13`；`.codestable/.../shutdown-flush-fix-note.md`“有意保留”节；`docs/architecture.md:102`。
+- **事实**：`flushActionFor` 的 `publish` 条件是 `!renderKey`（缺失**或**空白/不可比较）或 `renderIsNewerThanJournal` 为假。三处文档只写“文件缺失 / 陈旧撕裂”，漏了“render 为空”这一条（测试 `flush decision: a missing render publishes the fold` 用的正是空 key）。
+- **影响**：措辞略窄，无行为偏差。**修复边界**：统一为“文件缺失、render 为空，或 journal 不旧于它”。
+
+### N4. `CONTEXT.md` 内“五轮”与“四轮”并存（第 5 轮 I1 只改了 Summary）
+- **file:line**：`.agents/memory/CONTEXT.md:7`（`has been through five review rounds`）vs `:23`（`through four review rounds`）、`:24`（`rounds 1-4, all dispositions closed`）。
+- **事实**：`c212fcf` 只改了 Summary 段（`git diff 5d6db4b..HEAD -- .agents/memory/CONTEXT.md` 仅 1 处），Open tasks 两行仍是 4 轮。第 5 轮 I1 的处置只声明改摘要句，未覆盖这两行，故这不是回退、而是残留的自相矛盾。
+- **影响**：该文件经 `archive.ts` 注入系统提示（`MEMORY.md:97` 自述），面向后继会话的事实不一致。**修复边界**：把 `:23/:24` 的“四轮/1-4”改为“五轮/1-5”（并落 journal op，避免下次渲染回退）。
+
+## suggestion
+
+- **S1**：把 `loadMemory` 的判定也收敛到 `readRenderWithMtime`（见 R1）。现在唯一未走一致性读的判定站点就是它；统一后 `renderKeyOf`/`renderIsNewerThanJournal` 的不变量只在 store 一处维护。
+- **S2**：若不想动 `loadMemory`，至少在报告残留节明确登记“读路径的 render 字节与 stat 可来自不同版本；只影响单次注入/提示/状态，写路径由 `nowKey` 复检兜底”，否则下一轮审查会把它当作新站点点名。
+- **S3**：为 `readRenderWithMtime` 的 `changed` 启发式（同尺寸 + 同浮点 mtime 检测不到）补一条注释或探针；第 5 轮 residual 已记，但代码里 `before?.size` 的局限没有明说。
+
+## learning
+
+- “同一版本”不变量必须逐站点覆盖**读取方**，而不只是写 journal 的那一处。第 3–5 轮连续收敛了 flush 复检、adopt 自读、adopt 借键；本轮探查发现 `loadMemory` 这条**纯读**站点仍保留“旧字节 + 新 stat”配对——它的危害之所以不升级，是因为唯一的下游写路径用新的 `nowKey` 复检兜住了它，而不是因为它本身安全。判据与读取分离时，安全性往往来自别处的二次校验，这是本仓最该避免的隐性依赖。
+- 单一守卫的收敛方向是对的：`adoptExternalEdit` 的 `verify` 同时服务自读与借键，删掉重叠的 `read.changed` 早退没有造成覆盖损失（`changed` 仍有 `verify.changed`、`flushActionOf` 的 `render.changed` 两个读者）。但“删它测试不变”只能证明它与 verify 重叠，不能证明任何 `changed` 判定都多余。
+- 变异红数必须逐条独立复位复测：我第一次把 M7/M8 并行施加在同一副本上，得到被污染的 4 红；串行复测才是 M7=1、M8=3。报告里的红数本身没错，错的是并行变异手法。
+
+## praise
+
+- **B1r 真的闭合了，而且是结构性的**：`adoptExternalEdit` 现在只有一条判定链——`readRenderWithMtime` 取一致快照 → 与 fold 比较 → `read.mtimeMs` 对 journal mtime → `verify` 复核“文件仍是那串 key” → 才 append（`store.ts:85-96`）。自读与借键共用同一条守卫，不再有“借用键例外”。我按真实语义推理了第 5 轮那个 `basisKey=seed` 场景：adopt 会在 verify 处拒绝，`loadMemory` 返回 V2，`basisKey` 复检保留 V2，不再有“陈旧 key 推高 journal mtime → 永久压住”。
+- **钉是承重且敏感的**：删掉 append 前复核 → `FAILURES: 6`，恰为 FIFO race 三断言 + 借键三断言（含正向对照）。第 5 轮“6 条”实测复核一致。
+- **确定性好**：`race` 三断言连跑 3 次全 OK；`rm→writeFile` 让 `before.size(0) ≠ after.size`，不依赖 mtime 粒度。
+- **删 `read.changed` 无行为回退**：`store.ts` 里 `changed` 仍有 `verify.changed`（`:92`）与 `render.changed`（`:178`）两个读者；`read.mtimeMs`/`read.text` 均被正确使用；`readRenderWithMtime` 返回值未被误用。
+- **红数矩阵与实测一致**：M1=5、M2=2、M5=1、M6=1、M7=1、M8=3、M9=1、M11=6，全部串行独立复位复测通过；报告 `M8=3` 的来源注释与代码相符。
+- **CHANGELOG/MEMORY 的语义行与代码一致**：`CHANGELOG.md:13`、`.agents/memory/MEMORY.md:23`、`:97` 与 `flushActionFor`/`report.ts` 的 model-free flush 描述逐条对得上；修复说明的状态行也已更新到第 5 轮。
+
+## residual-risk
+
+- **R1（本轮新增、未登记）`loadMemory` 的 read→stat 配对仍是“陈旧字节 + 新 mtime”**：`store.ts:279` `readOptional(target)` 读字节，`:285` 才 `stat(target)` 取 mtime，`:286` 再 `stat(journal)`；若 render 在两者间被替换，`external` 是替换前字节、mtime 是替换后文件的。我写了探针（`module.syncBuiltinESMExports` 只改 `readFile` 指向旧字节、`stat` 保持真实）：`loadMemory` 返回 external 的 V1、而磁盘是 V2 且比较用的是 V2 的 mtime。**可达性**：需并发写落在读与 stat 之间（微秒级外部窗口）。**危害**：只影响该次注入/提示/`/memory status` 的读数；它不写盘，无法单独推高 journal mtime；`recordMemoryDocument` 随后的 `nowKey`（`:244`）读的是新鲜字节，会拒绝发布。故不是 blocking，但确实是同一类缺陷的第 4 个站点，且不在 fix note/报告的 residual 列表里。修复边界见 S1/S2。
+- **R2（本轮新增、未登记）`rotateMemoryJournalIfNeeded` 的 copy→rename 窗口**：`journal.ts:108` 读 entries、`:131` `copyFile` 归档、`:137` `rename` 覆盖。若在 `readMemoryJournal` 之后、`rename` 之前有 append，归档副本与 `collapsed` 都不含该 append，rename 会丢掉它。**可达性**：所有协作写入都在 `withMemoryLock(memoryFile)` 下串行，故对扩展自身不可达；仅对手工改 journal / 抢锁的外部写可达。**危害**：journal 丢一条记录。属低概率残留，建议登记即可。
+- **R3（已登记，不重复报）最终写回窗口**：`recordMemoryDocument` 的 `nowKey`（`:244`）到 `writeAtomic`（`:253`）之间、以及 `flushMemoryRender` 的 `readRenderWithMtime`（`:176`）/备份到 `writeAtomic`（`:194`）之间的并发手改仍会丢；adopt 的“最后一次 verify 到 append”同理。报告“残留风险”节与 `MEMORY.md` invariant 已写明。
+- **R4（已登记）** `readRenderWithMtime` 的 `changed` 是 mtime+size 启发式，保留 mtime 或粗粒度 FS 下同尺寸替换检测不到；超帽手改“journal 裁剪键 / 磁盘原文”；settle 路仍可用散文回复换整篇记忆（本 issue 外）。
+
+## Test And QA Focus
+
+- **已跑（整树副本 `/tmp/pi-rev6-work.efMzho`）**：
+  - 基线 `node tests/run-all.mjs` → `All 15 tests passed`；`node tests/consolidation-test.mjs` 单独 ×3 → `ALL OK`，race 三断言与借键三断言每次 OK。
+  - 变异（按 `/tmp/store.ts.orig`、`/tmp/report.ts.orig` 复位，`diff -q` 校验复位成功，**串行**执行）：
+    - **M11**（删 append 前复核块，`store.ts:91-95`）→ **6 红**：race×3 + `borrowed key: a stale key is refused` + `the journal was left alone` + `the file's current key is still accepted`。复核第 5 轮“6 条”成立。
+    - M1（退出改回 `consolidate`）→ consolidation 5 红、switches 0 红（报告 5，成立）。
+    - M2（写回内容换成错误 fold）→ 2 红；M5（删 `memoryEnabled` 门）→ 1 红；M6（删全损 journal 诊断）→ 1 红；M7（`>`→`>=`）→ 1 红；M8（缺 render 判 `none`）→ 3 红；M9（删 `runIsDisabled` 门）→ 1 红。全部与报告矩阵一致。
+  - 独立探针：`tests/probe-loadmem.mjs`（临时，仅副本）证明 R1 的窗口：返回 stale V1、磁盘 V2、mtime 来自 V2。
+  - FIFO 失败路径最小复现：`open(fifo,"w")` 超时后即使 unlink FIFO 再 throw，node 仍不退出（`exit=124`）→ N1。
+- **记录核验**：`architecture.md:106`（N2 措辞）、`CONTEXT.md:7` vs `:23/:24`（N4）、`CHANGELOG.md:13` 与 fix note 触发条件（N3）、报告 `M8` 行=3 与 `M11` 矩阵条目（均一致）、第 5 轮处置表逐条对代码（I1 摘要已改、I2/N1/N2/N3/N4/S1/S2/S3 均已落点）。
+- **建议下一轮唯一必做**：把 R1（`loadMemory`）登记为已知残留或在代码里收敛；N1 若要根治需在超时分支强制 `process.exit(1)`/子进程隔离。二者都不改变本轮生产语义。
+
+---
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: PASSED
