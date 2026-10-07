@@ -8,6 +8,7 @@
 | 2 | 2026-10-06 | `f43193a`（`6d76e61..f43193a`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round2-independent.txt` | ✓：文件表与基线逐行一致；status 只多出扩展自身改写的 `.agents/memory/MEMORY.md`（豁免项）；live tree 被审两文件 md5 前后一致 |
 | 3r | 2026-10-06 | `284039e`（重跑） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round3-rerun-independent.txt` | ✓：沙箱 `git status` 只多 `.agents/memory/`（豁免项） |
 | 4 | 2026-10-06 | `e7e8178`（`284039e..e7e8178`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round4-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
+| 5 | 2026-10-06 | `5d6db4b`（`e7e8178..5d6db4b`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round5-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并
@@ -49,7 +50,7 @@
 | N1 全损 journal 的新诊断无测试 | nit | **已补钉**：`a fully damaged journal leaves a trace`（变异 M6 红） | 代码提交 + 测试 |
 | N2 `runIsDisabled`/`memoryEnabled` 门无测试 | nit | **已补钉**：`memory off: the exit leaves the journal alone` / `... the hand edit in place`（变异 M5 红） | 代码提交 + 测试 |
 | N3 采纳循环无测试（单次化仍绿） | nit | **接受**：该分支只在并发写入窗口可达，套件无法在不注入内部钩子的情况下构造；证据是本轮审查员的跨进程竞态探针（transcript 内），故不引入测试钩子 | — |
-| N4 `CONTEXT.md` 渲染仍写「owner 未定」 | nit | **已修**：摘要与待办两行更新；该文件本是会话态渲染，下次 settle 会重写 | 记忆提交 |
+| N4 `CONTEXT.md` 渲染仍写「owner 未定」 | nit | **部分修**：第 2 轮改了摘要句、第 5 轮改回（该文件每次 settle 由模型重渲染，手工修正会被回退；持久事实改放 MEMORY.md + journal） | 记忆提交 |
 | N5 MEMORY.md「adopt … re-render」压缩过度 | nit | **已修**：改为「republish the fold only when the render is missing or older」 | 记忆提交 |
 | N6 `store.ts` docstring 把 flush 的约束写成整个 teardown 的 | nit | **已修** | 代码提交 |
 | N7 `ctx.cwd` 返回 `undefined` 的理论洞 | nit | **已修**：守卫加 `typeof cwd !== "string"` 早退 | 代码提交 |
@@ -92,7 +93,24 @@
 
 第 4 轮全部处置完毕；新钉 M10 是本轮 blocking 的确定性复现（三红），其余红数见矩阵。
 
-## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` / `mut3` / `mut4` / `mut5`，按备份复位，不用 `git checkout`）
+## 第 5 轮处置
+
+| 发现 | 严重度 | 处置 | 落点 |
+| --- | --- | --- | --- |
+| **B1r** 借键路径（`recordMemoryDocument` → adopt）仍在读—stat 窗口；审查员用 FIFO + 真实 `basisKey` 语义复现「更新的手改在 journal 与磁盘双双消失」，并指出我新写的「由 pre-publish 复检兜底」承诺在真实时序下不成立 | blocking | **已修（结构收敛）**：adopt 不再区分自读/借键——一律用本调用的 `readRenderWithMtime` 做判定，并在 `appendMemoryOp` 前再核一次「文件仍是那串字节」，不满足就拒绝并记 `errors.log`。原来的 `read.changed` 早退被证明与其重叠（删掉它测试仍绿，见 M10 行），故删除，守卫只剩一处 | 代码提交 + 测试 |
+| I1 `CONTEXT.md` 摘要仍写「owner 未定、未实现」 | important | **已修**：摘要句改为「已决定并已实现、已过五轮」；并如实把第 2 轮 N4 的处置改为「部分修」——该文件由模型每次 settle 重渲染，手工修正不持久 | 记忆提交 |
+| I2 报告 M8 红数过时（写 2、实测 3，因第 4 轮补了边界断言） | important | **已修**：M8 → 3 条并注明来源 | 记录提交 |
+| N1 M11 悬空（矩阵里没有） | nit | **已修**：矩阵补 M11（本轮单一承重守卫，6 条红） | 记录提交 |
+| N2 FIFO 用例失败路径可能挂起而非失败 | nit | **已修**：写端 `open` 也套 10s `Promise.race` 超时；连跑 3 次稳定通过 | 代码提交 + 测试 |
+| N3 fix note 状态行停在「等待第 2 轮」 | nit | **已修** | 记录提交 |
+| N4 `CHANGELOG.md:13` 仍写「陈旧/撕裂」，未覆盖相等 mtime | nit | **已修**：改为「journal 不旧于它（含相等 mtime）」，并补「比 journal 新的手改只采纳、不改字节」 | 记录提交 |
+| S1 FIFO 断言补 `adopted === true` | suggestion | **已做** | 代码提交 + 测试 |
+| S2 为借键路径补确定性回归 | suggestion | **已做**：稳定文件 + 陈旧借键（拒绝）+ 当前键（接受）的正反对照，无需 FIFO | 代码提交 + 测试 |
+| S3 adopt 静默放弃时留日志 | suggestion | **已做**：append 前复核拒绝时写 `errors.log` | 代码提交 |
+
+第 5 轮判 blocking 的那条是同一类缺陷的第三个站点；本轮把「判定与写入必须基于同一版本」收敛成**一处守卫 + 两条确定性回归**，并把重叠的第二处守卫删除（删它测试不变，故不是承重守卫）。
+
+## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` … `mut7`，按备份复位，不用 `git checkout`）
 
 | 变异 | 位置 | 变红 |
 | --- | --- | --- |
@@ -103,9 +121,10 @@
 | M5 删 `memoryEnabled` 门（第 2 轮补钉） | `report.ts` | 1 条（memory off 时退出仍写） |
 | M6 删全损 journal 诊断（第 2 轮补钉） | `store.ts` | 1 条（诊断消失）；「flushes to nothing」保持绿 |
 | M7 把「比 journal 新」放宽为 `>=`（第 3 轮） | `store.ts` | 1 条（mtime 相等的时序） |
-| M8 缺 render 判成 `none`（第 3 轮，即抽表时抓到的回归） | `store.ts` | 2 条（写回钉 + 表断言） |
+| M8 缺 render 判成 `none`（第 3 轮，即抽表时抓到的回归） | `store.ts` | 3 条（写回钉 + 第 3 轮表断言 + 第 4 轮补的边界断言） |
 | M9 删 `runIsDisabled` 门（第 3 轮补钉） | `report.ts` | 1 条（disabled run 下退出不再只读） |
-| M10 取消 adopt 的一致性读（第 4 轮 blocking，FIFO 回归） | `store.ts` | 3 条（race 三断言） |
+| M10 取消 adopt 的一致性读（第 4 轮 blocking） | `store.ts` | 3 条（FIFO race 三断言）；此守卫在第 5 轮被并入 append 前复核（见 M11），该行保留为历史 |
+| M11 去掉 append 前复核（第 5 轮 B1r 的修复，单一承重守卫） | `store.ts` | 6 条（FIFO race 三断言 + 借键三断言含正向对照） |
 
 ## 对审查结论的两处更正
 

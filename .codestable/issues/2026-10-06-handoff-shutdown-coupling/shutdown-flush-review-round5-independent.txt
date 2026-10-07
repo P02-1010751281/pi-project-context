@@ -1,0 +1,109 @@
+# 独立审查报告（lane A，第 5 轮）— B1 修复的反向路径、新钉与渲染/报告自洽
+
+**判定模型**：`deepseek/deepseek-flash`；**thinking 档**：`high`（环境 `PI_PROVIDER=deepseek` / `PI_MODEL=deepseek-flash` / `PI_REASONING_LEVEL=high`）。
+**被审范围**：`git diff e7e8178..HEAD`，HEAD=`5d6db4b`（`d950910` 代码+测试、`3abad09` 记录、`5d6db4b` 记忆渲染）。
+**只读合规**：沙箱 `/tmp/pi-context-rev5` 只读；测试、变异、FIFO/借键探针都在整树副本 `/tmp/pi-rev5-work.vnigS2` 内执行；未做任何 git 写操作。沙箱 `git status --short` 仅剩扩展自身启动写入的 `.agents/memory/HANDOFF.md`、`project-context.json`（豁免项），HEAD 与起始一致。基线 `node tests/run-all.mjs` → `All 15 tests passed`。
+
+---
+
+## blocking
+
+### B1r.（第 4 轮 B1 的反向路径）`adoptExternalEdit` 的 borrowed-key 分支仍在原来的读—stat 窗口里，且本轮新写的“pre-publish 复检兜底”承诺在真实时序下不成立；更新的手改仍会从 journal 与磁盘双双消失
+- **file:line**：`extensions/project-context/memory/store.ts:78-88`（`borrowedKey === undefined ? readRenderWithMtime : undefined`；borrowed 时 `renderKey` 来自 `:210-211` 的早期 `readOptional`，mtime 来自 `:85` 的 `stat`）；对照例外声明 `store.ts:74-76`（注释）与 `docs/architecture.md:106`。调用点 `extensions/project-context/memory/store.ts:210-211`（`recordMemoryDocument`）与 `extensions/project-context/memory/report.ts:206`。
+- **事实/复现**（探针 `tests/probe-borrow2.mjs`，FIFO 让 `readOptional` 拿到旧字节 V1，路径已换成 V2；`basisKey` 取该 pass 的 prompt-time 记忆＝journal seed，即真实语义 `pass.ts:332 basisKey: existing.text`）：
+  ```
+  [basis = prompt-time seed (realistic)]
+    result: {"written":false,"kept":"… Older bytes handed to the reader.\n"}
+    journal has V2(replacement): false
+    effective memory source: journal | has V2: false | has OLD: true
+    flush result: {"adopted":false,"written":true}
+    disk after flush has V2: false | has OLD: true     ← V2 在 journal 与磁盘双双消失
+  ```
+  机制：`recordMemoryDocument` 早期读得 V1（`:210`），`adoptExternalEdit` 的 `stat` 已见 V2（`:85`），于是把**陈旧 key V1** 追加进 journal 并推新 journal mtime（`:87`）；随后 `:218` 的 basisKey 复检因 `current=V1 ≠ basisKey` 先返回 `kept=V1`，**永远走不到 `:235-236` 的 pre-publish 复检**。journal mtime 已被推过 V2，之后任何 pass 都判 `renderMtime(V2) <= journalMtime`，V2 再也无法被采纳；下一次 flush 走 `publish` 用 fold(V1) 覆盖磁盘。反向探针第二条（basisKey 恰等于 V1）才会走到复检并保住 V2 —— 说明“兜底”只对特例成立。
+- **影响**：与第 4 轮 blocking 同类的静默数据丢失（更新的用户手改在 journal 与磁盘都不留），只是发生在 `recordMemoryDocument` 的借键路由上。触发需要两次外部写（一次在模型调用期间，一次落在 `readOptional`→`stat` 窗口内），比自读路径窄，但窗口里还夹着对整个 journal 的 `foldMemoryJournal`（`:83`，同步遍历最多 512 KB），并非只有微秒级。
+- **修复边界**：让借键路径也做一致性读——`recordMemoryDocument` 用 `readRenderWithMtime` 取 render 并把 `changed` 透传到 `adoptExternalEdit`（`changed ⇒ return false`），或当 `preRead.renderKey` 提供时在 adopt 内重新 `readRenderWithMtime` 校验版本。改后此场景 adopt 直接放弃，`loadMemory` 会看到 V2 比未动的 journal 新而返回 V2，复检保留 V2，下一 pass 正常采纳。若选择维持现状，则必须删掉 `store.ts:74-76` 与 `docs/architecture.md:106` 里“pre-publish 复检兜底”的承诺，并在报告里记为**未关闭的 B1 同类**，不能写“第 4 轮全部处置完毕”。
+
+---
+
+## important
+
+### I1. `CONTEXT.md:7` 摘要仍写「owner 未定、未实现」，与已发布的 v0.4.6 语义及同文件 `:23` 正面矛盾；第 2 轮 N4、第 4 轮 I2 两度声称已修，实际未落
+- **file:line**：`.agents/memory/CONTEXT.md:7` vs `:12`、`:23`。
+- **事实**：HEAD 的 `:7` 仍是 `The owner has not yet picked; the implementation surface for option 1 is already sketched.`；`:23` 是 `option 1 is decided and implemented (v0.4.6 …)`；`CHANGELOG.md` v0.4.6 与 `report.ts:410-434` 一致实现。第 4 轮 I2 的 file:line 明确包含 `:7 摘要`，但 `5d6db4b` 只改了 `:12` 与 `:23-24`（`git diff e7e8178..HEAD -- .agents/memory/CONTEXT.md` 仅 2 处），`:7` 与 `e7e8178` 逐字节相同。第 2 轮报告 N4 也写「摘要与待办两行更新」，同样未兑现。
+- **影响**：CONTEXT.md 经 `archive.ts` 的 `before_agent_start` 注入系统提示（MEMORY.md 自述“two modules append … see archive.ts”），这是一句面向用户/后继会话的、与仓库现状相反的话，且正是本仓反复出现的“渲染把已修正事实回退”老毛病。
+- **修复边界**：把 `:7` 的结论改成已决定+已实现（或删去该从句），并把修正写进 journal op 以防下次渲染回退；报告第 2 轮 N4 的处置需改为“部分/未修”。
+
+### I2. 报告 M8 红数与当前测试不符（写 2，实测 3）
+- **file:line**：`shutdown-flush-review-report.md:106`。
+- **事实**：第 4 轮 N2 补了 3 条边界断言后，`store.ts:131 if (!renderKey) return "publish" → "none"`（M8 的精确定义）现在红 **3** 条：`the exit republishes a missing render`、`flush decision: a missing render publishes the fold`、`flush decision: a key with no file behind it still publishes`（我用副本实测，`FAILURES: 3`）。矩阵却仍写「2 条（写回钉 + 表断言）」，与它自称的合并矩阵口径不符。M5/M6/M7/M9 实测均与矩阵一致（各 1 条），M1=5、M10=3 也一致。
+- **影响**：红数是处置与回归的证据；M8 的过时计数会让后续审查误判新增边界断言的覆盖范围。
+- **修复边界**：把 M8 改为 3 条并注明其中一条来自第 4 轮 N2 的边界断言。
+
+---
+
+## nit
+
+### N1. `M11` 仍悬空，报告称“已注明”但矩阵无对应条目
+- **file:line**：`shutdown-flush-review-report.md:64`（`实测 M11`）与 `:86`（`M11 … 注明已由 7 条表断言覆盖`）。
+- **影响**：矩阵 M1–M10 中没有 M11，读者按第 3 轮表追溯会落空；“注明”只存在于处置行，不在矩阵。第 4 轮 I3 的修复只完成了一半。
+- **修复边界**：矩阵加一行 M11（注明是第 3 轮自编号、已被 `flushActionFor` 表断言覆盖），或把 `:64` 的括号改为复检分支名（不留裸编号）。
+
+### N2. FIFO 用例的失败路径可能挂起而非失败
+- **file:line**：`tests/consolidation-test.mjs:1971` 附近（`const fifoWriter = await open(raceFile, "w")`）。
+- **事实**：`open(raceFile,"w")` 没有超时也没有对 `flushing` 的 `.catch`。若 `flushMemoryRender` 在到达 FIFO 读之前就 reject（例如 `withMemoryLock` 5 s 未取到锁），写端会因永远没有读者而阻塞，测试挂起而不是报错；`Promise.race` 的 10 s 超时只覆盖 `flushing`，覆盖不到这个 open。
+- **修复边界**：给 open 也套 `Promise.race` 超时，或先 `flushing.catch(()=>{})` 并断言 reject 即失败。成功路径无泄漏（FIFO 已被普通文件替换、句柄 close、`rmTemp` 兜底），连跑 3 次均稳定通过。
+
+### N3. fix note 顶部状态行停在“等待第 2 轮审查”
+- **file:line**：`shutdown-flush-fix-note.md:3`。
+- **影响**：与已跑到第 5 轮的正文/待办节矛盾，读者会误判进度。**修复边界**：更新为“已过 1–4 轮，待第 5 轮”。
+
+### N4. `CHANGELOG.md:10-16` 用「陈旧/撕裂」描述重发条件，未覆盖相等 mtime
+- **file:line**：`CHANGELOG.md:14`。
+- **事实**：代码与其它三处文档（`MEMORY.md:23`、`architecture.md:102`、`headless-runs SKILL.md:106`）都已改成「journal 不旧于它 / not older」；CHANGELOG 仍写「陈旧/撕裂」。相等 mtime 且内容不同时确实会 `publish`，措辞略窄。
+- **修复边界**：改为「文件缺失、或 journal 不旧于它（含相等 mtime）时」。
+
+---
+
+## suggestion
+
+- **S1**：FIFO 用例的断言只查了 `written === false`；再补 `raced?.adopted === true`（修复后实测确为 `{adopted:true,written:false}`），把“采纳循环没有吞掉这次手改”也钉死。
+- **S2**：为 borrowed-key 路径补一条 store 级回归（同 B1r 的 FIFO 手法，走 `recordMemoryDocument` + `basisKey`），否则该窗口删掉“复检”也无人可红。
+- **S3**：`adoptExternalEdit` 因 `read.changed` 放弃时应留一条 `logError`（现在静默 return false），否则用户与审查都看不到“这次外部写被推迟”。
+
+## learning
+
+- “同一版本”不变量必须覆盖**每个自带读取的调用方**。第 3 轮的 learning 已经说过一次，本轮修复只闭合了 `flushRender` 自读，借键路由仍留同型窗口；`docs/architecture.md:106` 把例外写成“复检兜底”，但复检被更早的 basisKey 拒绝抢先，承诺就不成立。
+- 记录里的“已修”必须逐条对代码复验：CONTEXT `:7` 被第 2 轮 N4 和第 4 轮 I2 两次点名、两次写“已修”，HEAD 仍是原文——渲染态记忆会持续吃掉修正，除非把修正落成 journal op。
+- 红数矩阵会随补钉漂移：第 4 轮加边界断言后，M8 的实际红数从 2 变 3，矩阵未同步。
+
+## praise
+
+- 自读路径的修复是真的：重做 FIFO 注入后 `{adopted:true,written:false}`，journal 与磁盘都留新；删掉 `store.ts:80` 的一致性守卫（M10）三断言全红，证实钉有效且敏感。
+- 新钉确定性好：`node tests/consolidation-test.mjs` 连跑 3 次均 `ALL OK`，race 三断言每次 `OK`；`rm→writeFile` 使 `before.size(0) ≠ after.size`，不依赖 mtime 粒度。
+- 判据收敛干净：`renderIsNewerThanJournal` 一处同时服务 `flushActionFor` 与 adopt，`>`（相等即重发）语义与四态文档一致；`readRenderWithMtime` 对 ENOENT/EACCES/悬空符号链接/目录一律 `changed:false`（深链为统计目标 mtime），无新异常路径。
+- `MEMORY.md:23`、`:97` 与 `report.ts:410-434`、`CHANGELOG.md` 逐条相符，`unthrottled` 只剩报告里描述旧措辞的那一行，已无残留把退出说成模型 pass 的句子。
+
+## residual-risk
+
+- `readRenderWithMtime` 的 `changed` 是 mtime+size 启发式：同尺寸且 mtime 浮点相同（粗粒度 FS / 保留 mtime 的写法）检测不到；此时自读路径可能与 B1r 同源。
+- 读期间文件被删（`after` 未定义）时 `changed:false`、`mtimeMs:undefined` → flush 走 `publish` 重建 fold 并备份；属“缺失即重发”的预期行为，但并发删除会触发一次写。
+- 最终 `stat`→`writeAtomic` 的窗口（以及 `adoptExternalEdit` 循环退出→`writeAtomic` 的窗口）仍是第 2 轮已记录的已知残留，注释里已写明。
+- settle 路仍可用带 header 的散文回复换掉整篇记忆（第 1 轮 R1），本 issue 未覆盖。
+- 报告/记忆/CHANGELOG 三处修复依赖手工同步，渲染提交会再次回退（CONTEXT `:7` 已示范）；若不落 journal op，下一轮还会复发。
+
+---
+
+## Test And QA Focus
+
+- **已跑**（整树副本 `/tmp/pi-rev5-work.vnigS2`）：
+  - 基线 `node tests/run-all.mjs` → `All 15 tests passed`。
+  - `node tests/consolidation-test.mjs` × 3 → `ALL OK`（race 三断言每次 OK）。
+  - 变异复核（按备份复位，不用 `git checkout`）：M1=5 红、M5=1、M6=1、M7=1、M8=**3**（矩阵写 2）、M9=1（在 `switches-test.mjs`）、M10=3，均与代码路径相符；仅 M8 计数需更新。
+  - 独立探针：`probe-fifo.mjs`（自读路径 `{adopted:true,written:false}`，journal/磁盘均留新）；`probe-borrow2.mjs`（借键路径，`basisKey=seed` 时 `written:false`、`effective=journal`、flush 后磁盘 V2 被 V1 覆盖）；`probe-readrender.mjs`（ENOENT/regular/symlink/dangling/dir 边界）。
+- **必做**：按 B1r 修借键路径并补回归（S2），否则第 4 轮 blocking 只关了一半。
+- **记录核验**：修 `report.md:106` 的 M8 红数、`:64`/`:86` 的 M11 悬空、`CONTEXT.md:7`、`fix-note.md:3`；重跑一次 `git diff e7e8178..HEAD` 的文档提交逐行核对渲染事实。
+- **可选**：FIFO 用例给写端 open 加超时（N2），race 断言补 `adopted===true`（S1）。
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: CHANGES-REQUESTED
