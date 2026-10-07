@@ -1,0 +1,98 @@
+All verification complete. Here is my independent review.
+
+---
+
+# 独立审查报告（lane A，第 7 轮）
+
+**被审修订**：`git diff c212fcf..HEAD`，HEAD=`d87261a0987667c86a84047524679513054178fb`。
+**范围澄清**：`c212fcf..HEAD` 实际含 **3 个提交**（`5b01448` 记录、`c442b34` 记忆 docs、`d87261a` 测试+注释），并非任务书所写的「只有 `d87261a`」。本报告按实际 diff 审查。
+**只读合规**：沙箱 `/tmp/pi-context-rev7` 只读（仅 `read`/`git show/diff/rev-parse`/只读 `node -e`）；所有基线、变异、探针在整树副本 `/tmp/pi-rev7-work.zf6Mn0` 内完成；未做任何 git 写操作，被审两文件在副本内已按备份复位并 `diff -q` 校验。沙箱 `.agents/memory/` 的既有修改为扩展启动写入（豁免项），我未在沙箱跑过扩展。
+**路由/档位**：`deepseek/deepseek-flash` + thinking `high`。
+
+---
+
+## blocking
+
+### B1. 换成 `O_RDWR` 后，FIFO 夹具不再制造竞态：删掉 append 前复核只红 3 条（借键），race 三断言恒绿
+- **file:line**：`tests/consolidation-test.mjs:1969`–`1972`（`const flushing = flushMemoryRender(...)` + `await open(raceFile, constants.O_RDWR)`），关联 `:1973`–`1976` 的 `rm`→`writeFile`→`close` 顺序与 `:1982`–`1984` 三断言。
+- **事实（实测，副本内）**：
+  - 新夹具 + M11（删 `store.ts:91-95` 的复核块）→ **`FAILURES: 3`**，且恰为借键三条；race 三断言全 `OK`（连跑 7 次一致）。
+  - 旧阻塞 `"w"` 夹具（把 `:1972` 还原）+ 同一 M11 → **`FAILURES: 6`**（race×3 + 借键×3），与第 6 轮报告一致。
+  - 在 `readRenderWithMtime` 内插桩统计：新夹具 3/3 次运行读到旧字节 **0 次**（只读到 `Replacement that must survive.`，`beforeSize=62 afterSize=62 changed=false`）；旧夹具首次读即 `Older bytes…`、`beforeSize=0 afterSize=62 changed=true`。
+- **机理**：旧夹具的阻塞 `open("w")` 同时是一个**调度屏障**——在扩展读端打开 FIFO 之前，写端不会返回，于是「读者拿旧字节 + 随后的 stat 已是新文件」被确定性构造出来。`O_RDWR` 立即返回，写端可以抢在读者之前 `rm` 掉 FIFO 并 `writeFile` 回普通文件；读者随后打开路径得到的是**替换后的普通文件**，竞态根本没发生。于是 FIFO 的三条断言退化成「文件里有新内容、journal 里有新内容」的平凡检查（在 M11 下仍由 flush 的 `keep` 路径满足），不再对「把陈旧 key 写进 journal」敏感。
+- **影响**：这是本修订唯一改动测试的地方，也正是它把第 4 轮 blocking 的**唯一确定性复现**变成了死覆盖。`readRenderWithMtime` 的 `changed` 一致性逻辑（第 3/4 轮的核心 TOCTOU）自此没有任何测试在真正触发；将来把 `readRenderWithMtime` 改回「字节与 stat 不同源」只要有其它库补位就会绿灯。文档仍写着「自读 + 借键两条路都钉住、删守卫红六条」，属**承诺多于代码**。
+- **修复边界**：恢复「读者先于路径替换打开 FIFO」的同步，同时保留失败路径有界。可行做法：保留阻塞 `"w"`，另加一个 `setTimeout(() => { console.error(...); process.exit(1); }, 10_000)` 的硬看门狗（这正是新加 `process.exit(1)` 分支能兑现的事，不必依赖取消不了 `open` 的 `Promise.race`）；或把阻塞写端放进会被父进程硬超时/kill 的子进程；或用 `module.syncBuiltinESMExports` 包装 `readFile`/`stat` 确定性交出旧字节。修好后必须重新量 M11 红数并回填矩阵。
+
+---
+
+## important
+
+### I1. 记录把「六条红」写成当前钉子强度，HEAD 上已不成立
+- **file:line**：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md:148`（`M11 … 6 条`）、`:116`（第 6 轮「钉子确定性、删守卫必红」）、`.agents/memory/MEMORY.md:28`（`removing it reddens six checks across the self-read and borrowed-key paths`）、`.agents/memory/CONTEXT.md:13`（`Removing the guard reddens six checks across the self-read and borrowed-key paths`）。
+- **事实**：HEAD 实测 M11=3；「self-read」那条（FIFO race）已失效（见 B1）。报告 `:148` 作为**当前树内唯一**的变异矩阵，读到的人会以为 HEAD 仍红 6。
+- **影响**：记忆不变量与审查记录都在陈述一个更弱的覆盖为「已钉住」，正是本仓禁止的「承诺多于代码」；也会误导下一轮审查与后续重构。
+- **修复边界**：优先按 B1 修复夹具，再以实测值改写 `:148` 与两处「six checks」；若决定保留 `O_RDWR` 现状，则必须写明「self-read 路径不再被回归覆盖，守卫仅由借键正反断言钉住」，并删除「任意删守卫必红六条」的表述。注意 `.agents/memory/MEMORY.md` 是渲染产物，改它需按 curator 规则（当前已过 ~2,000 触发器，宜与手工 curation 一并进行）。
+
+---
+
+## nit
+
+- **N1** `extensions/project-context/memory/store.ts:119-121`：注释前两句（`changed` 判据 = mtime+size、同尺寸同 mtime 的替换不可见）与 `:122` 代码逐字相符；但收尾「the append-time verification in adoptExternalEdit is what closes the write path」把范围说过头——它只关掉 **adopt 的 append**，`flushMemoryRender` 自己的 `readRenderWithMtime`→`writeAtomic`（`:176`/`:194`）不受该复核保护。影响：轻度过强。修复边界：改为「closes the adopt append path」或在 flush 处另标该残留。
+- **N2** `docs/architecture.md:109`：`publish`（缺失或 journal 不旧于它 ⇒ 写回 fold）漏了「render 为空/不可比较」，而 `:102` 与 `flushActionFor`（`store.ts` `if (!renderKey) return "publish"`）都含它。影响：纯表描述不完整。边界：补「缺失/为空」。
+- **N3** `.agents/memory/CONTEXT.md`（HEAD 提交版）：`:15` 仍写 `Headroom after curation is 2,449 characters (108 entries / 29,551 characters)`，而 `:28` 已改成 `30,078 characters … about 1,900 left`，同一文件两个不一致的余量数字；且 `30,078` 是**字节数**，提交版 `MEMORY.md` 的 UTF-16 长度为 `30,076`（cap 按字符判）。影响：读者对「还能加多少」得到矛盾信号。边界：统一为一个当前口径（字符数优先），并同步 `:15` 或标注其为历史快照。
+- **N4** `.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-fix-note.md:3`：状态行仍写「经第 1–5 轮独立审查逐轮收口」，与报告的第 6 轮 PASSED 不一致。边界：改成第 1–6 轮（第 6 轮 PASSED）。
+- **N5** `tests/consolidation-test.mjs:1980`：`process.exit(1)` 会跳过外层 `finally { await rmTemp(...) }`，硬失败时泄漏临时目录。影响：仅失败路径的卫生问题。边界：可接受；若想干净，可在退出前 `rmSync` 或在看门狗里清理。
+- **N6**（范围）任务书写「只有 `d87261a`」，实际 `c212fcf..HEAD` 含 `5b01448`/`c442b34`。不是代码缺陷，但冻结修订应与 diff 范围一致，避免记录与审查错配。
+
+---
+
+## suggestion
+
+- **S1**（针对 B1）给 race 场景加一条「夹具确实制造了竞态」的断言/证据：例如让 `adoptExternalEdit` 拒绝时在 `errors.log` 留下的行被断言，或断言读者拿到的是旧字节。这样夹具一旦再次退化为「直接读到新文件」，测试会自己变红，而不是静默假绿。
+- **S2** 修好夹具后，在同一提交里重跑 M10/M11 并更新 `:147/:148` 与 `MEMORY.md:28`/`CONTEXT.md:13`；把「谁钉住哪条路径」拆成两行，避免再用一个总数概括两条不同路径。
+- **S3** `constants` 的 ESM 导入无问题（已跑通；`node:fs` 的具名导出在 `.mjs` 下可用，`O_RDWR=2`）。无需改动。
+
+---
+
+## learning
+
+- **阻塞式打开兼作调度屏障**：旧夹具用阻塞 `open("w")` 同时解决了两个问题——不丢数据地把读者放到临界区，以及让「读旧字节/看到新 stat」的时序确定化。把它换成非阻塞打开，只解决了「打开可能挂起」，却偷偷拿走了测试赖以成立的交织；**「消除 hang」与「保留 interleaving」是两个目标**，替换同步原语时必须分别验证。
+- **测试改动也要过变异矩阵**：全绿只证明测试通过，不证明它仍在触发被钉的缺陷。本轮若只跑 `run-all`，`O_RDWR` 的覆盖损失不会被发现；只有对同一冻结修订重跑 M11 才暴露。
+- 借键正反断言仍在，M11 整体仍能弄红套件，所以这是**部分**削弱而非完全失守——但记录不能把「部分」写成「两条路径都钉住」。
+
+---
+
+## praise
+
+- 借键路径的正反断言（`borrowed key: a stale key is refused` / `the journal was left alone` / `the file's current key is still accepted`）仍是承重钉子：M11 下稳定 3 红，套件不会漏过删守卫。
+- `process.exit(1)` 硬退出分支**实测可达且不被吞掉**（强制超时探针：打印 `FAIL race: the exit flush never returned within 10s`，`exit=1`），比上一轮靠 `Promise.race` 却仍挂事件的写法确实有改进。
+- 新注释关于 `O_RDWR`「不受读者是否存在影响」与「写端关闭后读者得到 EOF」两句，经最小探针逐字验证为真（`open` 0ms 返回；读者收到旧字节并在 close 后完成）。
+- 被审生产代码未改（`store.ts` 仅注释），append 前复核本身正确；基线 `node tests/run-all.mjs` 在字节一致副本上 `All 15 tests passed`。
+
+---
+
+## residual-risk
+
+- **RR1**（已登记，仍在）：`readRenderWithMtime.changed` 是 mtime+size 启发式，同尺寸且落在 FS 时间粒度内的替换不可见；配合 B1，现在没有任何测试在真正触发它的边界。
+- **RR2**（已登记 R-L1）：`loadMemory` 把 render 字节与另一个 `stat` 配对（`store.ts` 读路径），理论上「旧字节 + 新 mtime」，由写路径 `nowKey` 兜底。
+- **RR3**（已登记）：`flushMemoryRender` 最后一次读(`:176`)到 `writeAtomic`(`:194`)之间、以及 adopt 的最后一次复核到 append 之间仍有并发手改丢失窗口。
+- **RR4**（本轮新增的脆弱点）：FIFO race 三断言已不可能因生产回归变红；在 B1 修复前，任何经由 `readRenderWithMtime.changed`/自读一致性的回归都只有 `run-all` 的间接覆盖。
+
+---
+
+## Test And QA Focus
+
+在 `/tmp/pi-rev7-work.zf6Mn0`（`cp -a` 字节一致副本，HEAD 与沙箱一致）执行：
+
+- 基线：`node tests/run-all.mjs` → `All 15 tests passed`；`node tests/consolidation-test.mjs` ×2 → `ALL OK`。
+- **M11**（删 `store.ts:91-95` append 前复核，备份串行复位，`diff -q` 校验）：
+  - 新 `O_RDWR` 夹具：`FAILURES: 3`（仅借键三条），连跑 7 次一致；race 三断言每次 `OK`。
+  - 还原为旧阻塞 `"w"` 夹具：`FAILURES: 6`（race×3 + 借键×3）。
+- 插桩 `readRenderWithMtime`：新夹具 3/3 次运行旧字节读取 **0** 次；旧夹具 1 次且 `changed=true`（`beforeSize=0→afterSize=62`）。
+- FIFO 语义最小探针：`open(fifo,O_RDWR)` 无读者 0ms 返回；读者拿到已缓冲字节并在 `close` 后 EOF；阻塞 `open("w")` 无读者会挂起。
+- 超时分支：临时把 race 的 `flushing` 换成 never-resolve、超时缩到 300ms → 打印 FAIL 且 `exit=1`，证明 `process.exit(1)` 不被吞。
+- 记录核验：`report:148/:116`、`MEMORY.md:28`、`CONTEXT.md:13` 的「六条」与 HEAD 实测（3 条）不符；`architecture.md:102`/`:109`、`CHANGELOG.md:13`、fix note 的「render 为空」措辞除 `:109` 外均已覆盖；fix note 状态行仍停在 5 轮。
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: CHANGES-REQUESTED

@@ -10,6 +10,7 @@
 | 4 | 2026-10-06 | `e7e8178`（`284039e..e7e8178`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round4-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
 | 5 | 2026-10-06 | `5d6db4b`（`e7e8178..5d6db4b`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round5-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
 | 6 | 2026-10-06 | `c212fcf`（`5d6db4b..c212fcf`） | `deepseek/deepseek-flash` + thinking `high` | **PASSED** | `shutdown-flush-review-round6-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
+| 7 | 2026-10-07 | `d87261a`（`c212fcf..d87261a`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED（**blocking**） | `shutdown-flush-review-round7-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并
@@ -115,7 +116,7 @@
 
 第 6 轮判 **PASSED**（无 blocking、无 important；`c212fcf` 通过）。它确认单一守卫（`adoptExternalEdit` 的 append 前复核）
 同时覆盖自读与借键两条路径，删除重叠的 `read.changed` 早退没有回退（`changed` 仍有 `verify.changed` 与 `flushActionFor` 的
-`render.changed` 两个读者），钉子确定性、删守卫必红。该轮点名的后续项（均不改被审生产语义，故在 PASS 之后按文档/记录单独收口）：
+`render.changed` 两个读者），钉子确定性、删守卫必红（该结论在第 7 轮被自己改坏的夹具推翻，见下）。该轮点名的后续项（均不改被审生产语义，故在 PASS 之后按文档/记录单独收口）：
 
 | 后续项 | 性质 | 处置 |
 | --- | --- | --- |
@@ -130,6 +131,28 @@
 危害不升级，因为唯一的下游写路径用新的 `nowKey` 复检兜底。下次有空的改动窗口时按 S1 收敛到 `readRenderWithMtime`。
 
 **停止规则**：第 6 轮 PASSED 即本 issue 的审查闭环；剩余项都是测试健壮性与读路径残留，不属于「承诺多于代码」的写路径缺陷。
+
+## 第 7 轮：一个 blocking、六条 nit，以及它抓到的两处「说得多于实测」
+
+第 7 轮判 **CHANGES-REQUESTED**，blocking 只有一条，但它否掉的是**本修订唯一改测试的地方**：
+
+| 发现 | 严重度 | 处置 |
+| --- | --- | --- |
+| **B1** 把 FIFO 写端从阻塞 `"w"` 换成 `open(..., O_RDWR)` 后，夹具不再制造竞态：`O_RDWR` 立即返回，写端会抢在扩展读端之前 `rm`+`writeFile`，读者打开到的是**替换后的普通文件**。审查员插桩实测：新夹具 3/3 次读到旧字节 **0 次**，删 append 前复核只红 **3 条**（借键），race 三断言恒绿 —— 即第 4 轮 blocking 的唯一确定性复现变成了死覆盖 | **blocking** | **已修**：恢复阻塞 `"w"`（它同时是调度屏障：写端在读者打开 FIFO 前不返回） |
+| **I1** 我提交信息与报告里写「删守卫仍红 6 条」，而 HEAD 实测 3 条 | important | **已修**：修复后**实测** M11 = 6 红（race×3 + 借键×3），两处陈述与实测一致 |
+| N1 `readRenderWithMtime` 注释结尾承诺过宽（把 publish 侧也记到 append 复核头上） | nit | **已修**：注释现在写清两条写路径各自的守卫 |
+| N2 `architecture.md` 的 `publish` 行漏「render 为空」 | nit | **已修** |
+| N3 `CONTEXT.md` 的 headroom 行仍是策展前的数字 | nit | **已修**：改为 29,999 / 余量 2,001（策展后），Open task 行改为发布待办 |
+| N4 fix note 状态行停在「第 1–5 轮」 | nit | **已修**：改为「1–7 轮，每轮见报告」 |
+| N5 看门狗 `process.exit(1)` 会跳过临时目录清理 | nit | **接受**：仅失败路径卫生问题，已记录 |
+| N6 任务书写的 diff 范围与实际冻结修订不一致 | nit（流程） | **已修**：第 8 轮任务书写明精确范围 |
+
+**本轮最重要的一课（已入记忆）**：阻塞 `open` 不只是「会阻塞」——它是让「读—替换」竞态确定发生的**调度屏障**；换成非阻塞打开后测试仍然全绿，
+但竞态已经消失（只有删守卫的变异能看出来）。而**看门狗本身也不能用 `process.exit()`**：进程的 libuv threadpool 卡在该 FIFO open 上时
+`process.exit(1)` 不会结束进程（实测：一直活到外层 `timeout`），必须用不可延迟的 `SIGKILL`（实测 2,101ms 返回 137）。
+
+**诚实更正**：`d87261a` 的提交信息与当时的报告写「删守卫仍红 6 条」，但那次我并未在新夹具上重跑变异（旧夹具的 6 红结果被沿用）。
+第 7 轮抓出这一点，属本仓明确禁止的「承诺多于代码」；修复后该数字已实测。
 
 ## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` … `mut7`，按备份复位，不用 `git checkout`）
 

@@ -106,7 +106,7 @@ flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不
 要写回或采纳时，判定用的字节与 mtime 必须来自同一版本：自读都走 `readRenderWithMtime`，自带 render key 的调用方，其 mtime 判定取本调用的自读，
 并在 append 前校验该 key 仍是文件当前字节（残留窗口只剩最后一次核对到 append 之间）。
 最后一条由 `flushActionFor` 这张纯表表达：`recheck`（读取期间文件被替换 ⇒ journal 与文件都不动，留给下一次 pass）、
-`none`（文件已是 fold）、`keep`（render 比 journal 新 ⇒ 只采纳进 journal、原字节不动）、`publish`（缺失或 journal 不旧于它 ⇒ 写回 fold）。
+`none`（文件已是 fold）、`keep`（render 比 journal 新 ⇒ 只采纳进 journal、原字节不动）、`publish`（缺失、render 为空/不可比较，或 journal 不旧于它 ⇒ 写回 fold）。
 节流是这笔模型成本的唯一上限：每次 consolidation ≈ 一次辅助模型调用 + 一份全文快照追加进 `memory.jsonl` + 一次 `MEMORY.md` 写入。
 退出不生成内容（2026-10-06 决策 1），所以在两次 pass 之间结束的会话，其尾部只留在 `session-logs/` 归档里；缺口长度由节流决定，
 不是固定上界（记忆被故障策略 park 时，可以是整段会话）。
