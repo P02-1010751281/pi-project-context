@@ -46,7 +46,8 @@ export function nextRenderSupersedes(renderKey: string, nowKey: string, publishK
 }
 
 /** The comparison key of a render; an empty or missing document collapses to no key at all. */
-function renderKeyOf(raw: string, limit: number): string {
+/** The comparison key of a rendered memory document: what "the same memory" means across writers. */
+export function renderKeyOf(raw: string, limit: number): string {
 	return raw.trim() ? memoryComparisonKey(raw, limit) : "";
 }
 
@@ -61,7 +62,11 @@ type MemoryWriteResult = { written: true } | { written: false; kept: string };
  *
  * Callers hold the memory lock. `preRead` lets the write path hand over what it has already read.
  */
-async function adoptExternalEdit(
+/**
+ * Fold an edit made outside the extension into the journal, and report whether one was folded. Exported
+ * because the borrowed-key path is otherwise only reachable through a race or through a whole write pass.
+ */
+export async function adoptExternalEdit(
 	projectRoot: string,
 	limit: number = MAX_MEMORY_CHARS,
 	preRead: { journal?: Awaited<ReturnType<typeof readMemoryJournal>>; renderKey?: string } = {},
@@ -70,20 +75,24 @@ async function adoptExternalEdit(
 	const base = preRead.journal ?? (await readMemoryJournal(file));
 	if (base.unreadable) throw new Error(`memory journal exists but cannot be read: ${file}`);
 	if (base.entries.length === 0) return false;
-	// The key that gets compared must come from the same version of the file as the mtime that decides it.
-	// Reading the bytes and only then stat-ing the path would, when a replacement lands in between, journal
-	// the older bytes under the newer file's permission - and the newer edit, now behind the journal's
-	// mtime, would never be adopted again. A caller that hands in its own key keeps responsibility for that
-	// read; the write path rechecks before it publishes.
-	const borrowedKey = preRead.renderKey;
-	const read = borrowedKey === undefined ? await readRenderWithMtime(memoryFile(projectRoot)) : undefined;
-	if (read?.changed) return false;
-	const renderKey = borrowedKey ?? renderKeyOf(read?.text ?? "", limit);
+	// Every key this function journals is checked against the file's bytes twice, and the second check is the
+	// one that guards the append:
+	//  - a caller's key (the write path's, read before the model call) may be stale by now, so it decides
+	//    against this call's own consistent read rather than against a fresh stat of the path;
+	//  - a key read here may be stale by the time the append runs, so nothing is appended that the file no
+	//    longer holds. A stale key would push the journal's mtime past the newer edit and shadow it forever.
+	// The residual window (the last read to the append) is the one every write path in this module has.
+	const read = await readRenderWithMtime(memoryFile(projectRoot));
+	const renderKey = preRead.renderKey ?? renderKeyOf(read.text, limit);
 	if (!renderKey) return false;
 	if (renderKey === foldMemoryJournal(base.entries, limit)) return false;
-	const renderMtimeMs = read ? read.mtimeMs : (await stat(memoryFile(projectRoot)).catch(() => undefined))?.mtimeMs;
 	const journalInfo = await stat(file).catch(() => undefined);
-	if (!renderIsNewerThanJournal(renderMtimeMs, journalInfo?.mtimeMs)) return false;
+	if (!renderIsNewerThanJournal(read.mtimeMs, journalInfo?.mtimeMs)) return false;
+	const verify = await readRenderWithMtime(memoryFile(projectRoot));
+	if (verify.changed || renderKeyOf(verify.text, limit) !== renderKey) {
+		await logError(projectRoot, "memory", "a newer external edit arrived before the memory journal could record one; both were left for the next pass");
+		return false;
+	}
 	await appendMemoryOp(file, "replace", renderKey);
 	// Keep a trace of which pass folded in an edit that was made outside the extension.
 	await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");

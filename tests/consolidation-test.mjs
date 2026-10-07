@@ -1966,16 +1966,37 @@ try {
 			execFileSync("mkfifo", [raceFile]);
 			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
 			const flushing = flushMemoryRender(raceRoot, 32000);
-			const fifoWriter = await open(raceFile, "w");
+			const fifoWriter = await Promise.race([open(raceFile, "w"), new Promise((_, reject) => setTimeout(() => reject(new Error("no reader appeared for the FIFO within 10s")), 10_000))]);
 			await fifoWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes handed to the reader.\n");
 			await rm(raceFile);
 			await writeFile(raceFile, "# Project Memory\n\n## Project\n- Replacement that must survive.\n");
 			await fifoWriter.close();
 			const raced = await Promise.race([flushing, new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 10_000))]);
-			check("race: the exit reports a kept render, not a write", raced?.timedOut !== true && raced?.written === false);
+			check("race: the exit keeps the render and reports no write", raced?.timedOut !== true && raced?.written === false && raced?.adopted === true);
 			const raceJournal = await readFile(path.join(raceMem, "memory.jsonl"), "utf8");
 			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
 			check("race: the replacement is still the file's content", (await readFile(raceFile, "utf8")).includes("Replacement that must survive."));
+
+			// The borrowed-key path on a stable file: the key the write pass read before its model call can be
+			// stale by the time the append runs. Journalling it would push the journal past the replacement and
+			// shadow it, so a stale key has to be refused while the file's current key is still accepted.
+			const borrowRoot = path.join(flushTmp, "borrow");
+			const borrowMem = path.join(borrowRoot, ".agents/memory");
+			await mkdir(borrowMem, { recursive: true });
+			const borrowJournal = `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: "# Project Memory\n\n## Project\n- Journal seed before the borrowed key.\n" })}\n`;
+			await writeFile(path.join(borrowMem, "memory.jsonl"), borrowJournal);
+			const borrowPast = new Date(Date.now() - 60_000);
+			await utimes(path.join(borrowMem, "memory.jsonl"), borrowPast, borrowPast);
+			const borrowFile = path.join(borrowMem, "MEMORY.md");
+			const borrowText = "# Project Memory\n\n## Project\n- Replacement the borrowed key must not shadow.\n";
+			await writeFile(borrowFile, borrowText);
+			const { adoptExternalEdit, renderKeyOf } = await loadNamespace(`${PC}/memory/store.ts`);
+			const staleAdopt = await adoptExternalEdit(borrowRoot, 32000, { renderKey: renderKeyOf("# Project Memory\n\n## Project\n- The bytes the caller read before the model call.\n", 32000) });
+			check("borrowed key: a stale key is refused", staleAdopt === false);
+			check("borrowed key: the journal was left alone", (await readFile(path.join(borrowMem, "memory.jsonl"), "utf8")) === borrowJournal);
+			check("borrowed key: the replacement is still the file's content", (await readFile(borrowFile, "utf8")) === borrowText);
+			const freshAdopt = await adoptExternalEdit(borrowRoot, 32000, { renderKey: renderKeyOf(borrowText, 32000) });
+			check("borrowed key: the file's current key is still accepted", freshAdopt === true && (await readFile(path.join(borrowMem, "memory.jsonl"), "utf8")).includes("Replacement the borrowed key must not shadow."));
 		} finally {
 			await rmTemp(flushTmp);
 		}
