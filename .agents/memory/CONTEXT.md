@@ -9,7 +9,7 @@ Closed the open decision list by measurement instead of asking again, then execu
 ## Key points
 
 - The shutdown-coupling issue now reads as disposed: accept and record, one occurrence (2026-09-22), none since the guard, reopen condition is a new errors.log line carrying that stack; the guard wraps the whole session_shutdown handler.
-- Confirmed from report.ts that the four update points exist and that only the session_shutdown pass is unthrottled: agent_settled is throttled by consolidateTurns 6 AND consolidateIntervalMs 5min, and forceDedupeMs 15s dedupes repeated forced passes, so the automatic path can lag six turns or five minutes behind the conversation.
+- Confirmed from report.ts that the four update points exist and that only the settle pass runs a model: agent_settled is throttled by consolidateTurns 6 AND consolidateIntervalMs 5min, the exit flush (v0.4.6) makes no call at all, and forceDedupeMs 15s dedupes repeated forced passes, so the automatic path can lag six turns or five minutes behind the conversation.
 - Consequence for option 1 (flush-only shutdown): the exit-time contribution to MEMORY.md disappears; the tail stays in session-logs archives, which the model does not read back on its own; keeping 'clean on exit' without a teardown model call would require either accepting the gap or lowering the throttle (more aux calls).
 - Investigated whether 'memory regression' is another source of loss: it is not - errors.log records it only as a count (3/12/8/24) from an exact-match comparison, which counts a rewrite or a merge as a deletion, against net changes of -1..-8; keep it as a detector.
 - Headroom after curation is 2,449 characters (108 entries / 29,551 characters); the threshold rule is 余量 < ~2,000 -> curate again by hand, never raise maxMemoryChars, and it now records its own execution in the evidence file and attention.md.
@@ -20,8 +20,8 @@ Closed the open decision list by measurement instead of asking again, then execu
 
 ## Open tasks
 
-- Owner: pick the shutdown-coupling disposition. Option 1 (flush-only exit, no model call on the teardown path) is the owner's leaning and its cost is now spelled out: the throttled settle pass becomes the only automatic writer, so the session tail can stay in the archives; the alternative middle route is lowering the throttle, which costs more auxiliary calls.
-- Next session: if the owner confirms option 1, implement it - a non-model flush (load journal, fold, render, write, adopt external edits) extracted in pass.ts and wired into the session_shutdown call site in report.ts, with tests pinning 'shutdown makes no auxiliary call' and 'flush still writes and adopts', plus a brief.md decision entry and a CHANGELOG behavior note for the next version (v0.4.6 semantics: no merge at exit).
+- Owner: option 1 is decided and implemented (v0.4.6 semantics: no merge at exit), through four review rounds; what is left for the owner is only the middle route - lowering the settle throttle, which costs more auxiliary calls.
+- Next session: the flush is landed and reviewed (rounds 1-4, all dispositions closed); the loop should stop once a round returns nits only. Watch two things: the local journal re-rendering older shutdown facts, and the entry path (adoptExternalEdit's consistent read) staying in step with the flush's.
 - Next session: bump the host pin to v0.4.5 and restart, so live sessions stop running the previous tag's modules - the pin lag is the source of mixed-version adoption noise in the journal.
 - Next session: record the cache measurement in the prefix-cache skill (a same-session hand edit did not collapse cacheRead), which is the remaining doc fix from the earlier settlement.
 - Owner: decide whether to implement the autolearn B1' layering on the shape evidence alone or wait for a cost fact, and whether the fork 4/5/6 answers should be written into the design doc; the reopen condition is recorded either way.
