@@ -1,5 +1,4 @@
 import { execFileSync, spawn } from "node:child_process";
-import { constants } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, open, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -1967,18 +1966,22 @@ try {
 			execFileSync("mkfifo", [raceFile]);
 			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
 			const flushing = flushMemoryRender(raceRoot, 32000);
-			// O_RDWR on a FIFO returns immediately whether or not a reader is there, so the fixture cannot hang
-			// on the open the way a blocking "w" open can; the reader still sees EOF once this end closes.
-			const fifoWriter = await open(raceFile, constants.O_RDWR);
+			// A blocking "w" is what makes this fixture deterministic: the write end only returns once the reader
+			// holds the FIFO open, so the reader is guaranteed to take the older bytes below and only then stat
+			// the replacement. The watchdog is the failure path - a missing reader would block the open forever,
+			// a Promise.race cannot cancel it, and process.exit() does not end a process whose threadpool is
+			// stuck in that open (measured) - so the timer uses the one signal that cannot be deferred.
+			const watchdog = setTimeout(() => {
+				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 10s");
+				process.kill(process.pid, "SIGKILL");
+			}, 10_000);
+			const fifoWriter = await open(raceFile, "w");
 			await fifoWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes handed to the reader.\n");
 			await rm(raceFile);
 			await writeFile(raceFile, "# Project Memory\n\n## Project\n- Replacement that must survive.\n");
 			await fifoWriter.close();
-			const raced = await Promise.race([flushing, new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 10_000))]);
-			if (raced?.timedOut === true) {
-				console.error("FAIL race: the exit flush never returned within 10s");
-				process.exit(1);
-			}
+			const raced = await flushing;
+			clearTimeout(watchdog);
 			check("race: the exit keeps the render and reports no write", raced?.written === false && raced?.adopted === true);
 			const raceJournal = await readFile(path.join(raceMem, "memory.jsonl"), "utf8");
 			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
