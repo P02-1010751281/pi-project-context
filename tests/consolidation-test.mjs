@@ -2038,6 +2038,17 @@ try {
 			const damaged = await flushMemoryRender(path.join(gateTmp, "damaged"), 32000);
 			check("a fully damaged journal flushes to nothing", damaged.written === false && damaged.adopted === false);
 			check("a fully damaged journal leaves a trace", (await readFile(path.join(damagedMem, "errors.log"), "utf8").catch(() => "")).includes("holds no readable entry"));
+
+			// The write-back decision as a pure table: every ordering a concurrent writer can produce, without
+			// needing to inject one. `keep` is the branch a render newer than the journal lands in.
+			const { flushActionFor } = await loadNamespace(`${PC}/memory/store.ts`);
+			check("flush decision: the file already carries the fold", flushActionFor("A", 20, 10, "A", false) === "none");
+			check("flush decision: a missing render publishes the fold", flushActionFor("", undefined, 10, "F", false) === "publish");
+			check("flush decision: a render newer than the journal is kept", flushActionFor("A", 20, 10, "F", false) === "keep");
+			check("flush decision: an equal mtime is not newer, so the fold wins", flushActionFor("A", 10, 10, "F", false) === "publish");
+			check("flush decision: an older render is superseded", flushActionFor("A", 5, 10, "F", false) === "publish");
+			check("flush decision: a render that changed under the read is left alone", flushActionFor("A", 20, 10, "F", true) === "recheck");
+			check("flush decision: a changed file with nothing to publish is still left alone", flushActionFor("A", 20, 10, "A", true) === "recheck");
 		} finally {
 			await rmTemp(gateTmp);
 		}

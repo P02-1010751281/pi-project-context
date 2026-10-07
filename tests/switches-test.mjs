@@ -183,6 +183,18 @@ try {
 	);
 	const disabledInject = await runHandlers(pi2, "before_agent_start", ctx2, { systemPrompt: "base" });
 	check("no injection", disabledInject.every((result) => result === undefined));
+	// The exit flush obeys the same flag: with a journal and a newer hand edit on disk, the shutdown must
+	// fold neither into the journal nor over the render (mutation: drop the runIsDisabled gate).
+	const disabledMem = path.join(tmp, ".agents/memory");
+	await mkdir(disabledMem, { recursive: true });
+	const disabledJournal = `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: "# Project Memory\n\n## Project\n- Disabled journal seed.\n" })}\n`;
+	await writeFile(path.join(disabledMem, "memory.jsonl"), disabledJournal);
+	await writeFile(path.join(disabledMem, "MEMORY.md"), "# Project Memory\n\n## Project\n- Disabled hand edit.\n");
+	const disabledNewer = new Date(Date.now() + 5_000);
+	await utimes(path.join(disabledMem, "MEMORY.md"), disabledNewer, disabledNewer);
+	await runHandlers(pi2, "session_shutdown", ctx2);
+	check("disabled run: the exit flush leaves the journal untouched", (await readFile(path.join(disabledMem, "memory.jsonl"), "utf8")) === disabledJournal);
+	check("disabled run: the exit flush leaves the hand edit in place", (await readFile(path.join(disabledMem, "MEMORY.md"), "utf8")).includes("Disabled hand edit."));
 
 	console.log("\n=== the umbrella on|off is the target-less batch ===");
 	const FEATURE_KEYS = ["archiveEnabled", "memoryEnabled", "autolearnEnabled", "handoffEnabled"];

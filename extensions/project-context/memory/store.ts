@@ -85,6 +85,39 @@ async function adoptExternalEdit(
 /** What a model-free flush did: folded an external edit in, and/or rewrote a drifted render. */
 export type FlushResult = { adopted: boolean; written: boolean };
 
+/** Read the render with mtimes taken around the read, so its bytes and its time describe one version. */
+async function readRenderWithMtime(file: string): Promise<{ text: string; mtimeMs?: number; changed: boolean }> {
+	const before = await stat(file).catch(() => undefined);
+	const text = await readOptional(file);
+	const after = await stat(file).catch(() => undefined);
+	// A file replaced under the read would give the key of one version and the time of another, so the
+	// caller must journal neither and overwrite neither.
+	const changed = Boolean(after) && (before?.mtimeMs !== after.mtimeMs || before?.size !== after.size);
+	return { text, mtimeMs: after?.mtimeMs, changed };
+}
+
+/**
+ * What the exit flush does with the render it just read. A pure decision so a test can drive every
+ * ordering without a concurrent writer: `recheck` when the file changed under the read (neither the
+ * journal nor the file may be touched), `none` when the file already carries the fold, `keep` when the
+ * render is newer than the journal (journal the edit, leave the bytes alone), and `publish` when the
+ * render is missing or the journal is at least as new as it (write the fold).
+ */
+export function flushActionFor(
+	renderKey: string,
+	renderMtimeMs: number | undefined,
+	journalMtimeMs: number | undefined,
+	foldKey: string,
+	changed: boolean,
+): "none" | "keep" | "publish" | "recheck" {
+	if (changed) return "recheck";
+	// No render at all: there is nothing to keep, and the fold is what belongs on disk.
+	if (!renderKey) return "publish";
+	if (renderKey === foldKey) return "none";
+	if (renderMtimeMs !== undefined && journalMtimeMs !== undefined && renderMtimeMs > journalMtimeMs) return "keep";
+	return "publish";
+}
+
 /**
  * Publish what is already stored, without calling a model. A session teardown runs this instead of a
  * consolidation pass (2026-10-06, decision 1): the exit still folds a hand-edited `MEMORY.md` into the
@@ -95,9 +128,9 @@ export type FlushResult = { adopted: boolean; written: boolean };
  * A project with no journal has nothing to flush, and this flush must not create a memory directory or
  * take the cross-process lock for it, so that case returns before the lock (the archive layer takes its
  * own lock and directory independently). The render is rewritten only
- * when the file is missing or stale/torn against the journal; an edit that is merely different is folded
- * in and left on disk exactly as it was found (an over-cap hand edit keeps its own bytes, the journal
- * holding the clipped key). A clean exit writes nothing.
+ * when the file is missing or the journal is at least as new as it; a render the journal has not yet
+ * absorbed is journaled and left on disk exactly as it was found (an over-cap hand edit keeps its own
+ * bytes, the journal holding the clipped key). A clean exit writes nothing.
  */
 export async function flushMemoryRender(projectRoot: string, limit: number = MAX_MEMORY_CHARS): Promise<FlushResult> {
 	const journal = memoryJournalFile(projectRoot);
@@ -116,22 +149,22 @@ export async function flushMemoryRender(projectRoot: string, limit: number = MAX
 			if (state.damaged > 0) await logError(projectRoot, "memory", "the memory journal holds no readable entry; the exit flush left the render alone").catch(() => {});
 			return { adopted, written: false };
 		}
-		const onDisk = await readOptional(file);
-		const onDiskKey = renderKeyOf(onDisk, limit);
-		if (onDiskKey && onDiskKey === memoryComparisonKey(folded, limit)) return { adopted, written: false };
-		// Missing (nothing to keep), or a render the journal already supersedes (older, or torn). An edit
-		// that outran the adopt loop is newer than the journal, so it is folded in and left alone instead of
-		// being published over: the flush never replaces a render newer than the journal. The residual
-		// window is the one every write path has - an edit landing after this stat and before the write.
-		if (onDiskKey) {
-			const [renderInfo, journalInfo] = await Promise.all([stat(file).catch(() => undefined), stat(journal).catch(() => undefined)]);
-			if (renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
-				await appendMemoryOp(journal, "replace", onDiskKey);
-				await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
-				return { adopted: true, written: false };
-			}
+		const [render, journalInfo] = await Promise.all([readRenderWithMtime(file), stat(journal).catch(() => undefined)]);
+		const renderNow = renderKeyOf(render.text, limit);
+		const action = flushActionFor(renderNow, render.mtimeMs, journalInfo?.mtimeMs, memoryComparisonKey(folded, limit), render.changed);
+		if (action === "recheck") {
+			await logError(projectRoot, "memory", "the memory render changed while the exit flush was reading it; it was left for the next pass").catch(() => {});
+			return { adopted, written: false };
 		}
-		// Every other memory write backs the file up first; this one is no exception.
+		if (action === "none") return { adopted, written: false };
+		if (action === "keep") {
+			// An edit that outran the adopt loop: journal it, and never publish a fold over it.
+			await appendMemoryOp(journal, "replace", renderNow);
+			await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
+			return { adopted: true, written: false };
+		}
+		// The render is missing, or the journal is at least as new as it: republish the fold. Every other
+		// memory write backs the file up first; this one is no exception.
 		await backupMemoryBeforeWrite(file);
 		await ensureMemoryGitignore(memoryDir(projectRoot));
 		await writeAtomic(file, folded);
