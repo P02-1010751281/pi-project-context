@@ -70,12 +70,20 @@ async function adoptExternalEdit(
 	const base = preRead.journal ?? (await readMemoryJournal(file));
 	if (base.unreadable) throw new Error(`memory journal exists but cannot be read: ${file}`);
 	if (base.entries.length === 0) return false;
-	const renderKey = preRead.renderKey ?? renderKeyOf(await readOptional(memoryFile(projectRoot)), limit);
+	// The key that gets compared must come from the same version of the file as the mtime that decides it.
+	// Reading the bytes and only then stat-ing the path would, when a replacement lands in between, journal
+	// the older bytes under the newer file's permission - and the newer edit, now behind the journal's
+	// mtime, would never be adopted again. A caller that hands in its own key keeps responsibility for that
+	// read; the write path rechecks before it publishes.
+	const borrowedKey = preRead.renderKey;
+	const read = borrowedKey === undefined ? await readRenderWithMtime(memoryFile(projectRoot)) : undefined;
+	if (read?.changed) return false;
+	const renderKey = borrowedKey ?? renderKeyOf(read?.text ?? "", limit);
 	if (!renderKey) return false;
-	const foldedView = foldMemoryJournal(base.entries, limit);
-	const renderInfo = await stat(memoryFile(projectRoot)).catch(() => undefined);
+	if (renderKey === foldMemoryJournal(base.entries, limit)) return false;
+	const renderMtimeMs = read ? read.mtimeMs : (await stat(memoryFile(projectRoot)).catch(() => undefined))?.mtimeMs;
 	const journalInfo = await stat(file).catch(() => undefined);
-	if (renderKey === foldedView || !renderInfo || !journalInfo || renderInfo.mtimeMs <= journalInfo.mtimeMs) return false;
+	if (!renderIsNewerThanJournal(renderMtimeMs, journalInfo?.mtimeMs)) return false;
 	await appendMemoryOp(file, "replace", renderKey);
 	// Keep a trace of which pass folded in an edit that was made outside the extension.
 	await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
@@ -85,8 +93,16 @@ async function adoptExternalEdit(
 /** What a model-free flush did: folded an external edit in, and/or rewrote a drifted render. */
 export type FlushResult = { adopted: boolean; written: boolean };
 
-/** Read the render with mtimes taken around the read, so its bytes and its time describe one version. */
-async function readRenderWithMtime(file: string): Promise<{ text: string; mtimeMs?: number; changed: boolean }> {
+/** Whether the render's time is strictly ahead of the journal's: bytes the journal has not absorbed yet. */
+function renderIsNewerThanJournal(renderMtimeMs: number | undefined, journalMtimeMs: number | undefined): boolean {
+	return renderMtimeMs !== undefined && journalMtimeMs !== undefined && renderMtimeMs > journalMtimeMs;
+}
+
+/**
+ * Read the render with mtimes taken around the read, so its bytes and its time describe one version.
+ * Exported for the race that no ordinary fixture can produce: a replacement landing inside the read.
+ */
+export async function readRenderWithMtime(file: string): Promise<{ text: string; mtimeMs?: number; changed: boolean }> {
 	const before = await stat(file).catch(() => undefined);
 	const text = await readOptional(file);
 	const after = await stat(file).catch(() => undefined);
@@ -114,8 +130,7 @@ export function flushActionFor(
 	// No render at all: there is nothing to keep, and the fold is what belongs on disk.
 	if (!renderKey) return "publish";
 	if (renderKey === foldKey) return "none";
-	if (renderMtimeMs !== undefined && journalMtimeMs !== undefined && renderMtimeMs > journalMtimeMs) return "keep";
-	return "publish";
+	return renderIsNewerThanJournal(renderMtimeMs, journalMtimeMs) ? "keep" : "publish";
 }
 
 /**

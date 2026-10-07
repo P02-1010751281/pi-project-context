@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
@@ -1951,6 +1951,31 @@ try {
 			const refreshed = await readFile(path.join(flushMem, "MEMORY.md"), "utf8").catch(() => "");
 			check("the exit replaces a stale render with the journal's fold", !refreshed.includes("Stale render.") && refreshed.includes("Hand-curated at exit."));
 			check("replacing a render backs it up first", (await readdir(flushMem)).some((name) => name.startsWith("MEMORY.md.memory-backup-")));
+
+			// The race no ordinary fixture can produce, made deterministic by a FIFO: the writer hands the reader
+			// the old bytes, and by the time the read returns the path already holds the replacement. Without the
+			// consistent read the adopt journals the old key, the journal's mtime jumps past the new file, and the
+			// flush then publishes the fold over it - the newer edit survives in neither place.
+			const raceRoot = path.join(flushTmp, "race");
+			const raceMem = path.join(raceRoot, ".agents/memory");
+			await mkdir(raceMem, { recursive: true });
+			await writeFile(path.join(raceMem, "memory.jsonl"), `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: "# Project Memory\n\n## Project\n- Journal seed before the race.\n" })}\n`);
+			const racePast = new Date(Date.now() - 60_000);
+			await utimes(path.join(raceMem, "memory.jsonl"), racePast, racePast);
+			const raceFile = path.join(raceMem, "MEMORY.md");
+			execFileSync("mkfifo", [raceFile]);
+			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
+			const flushing = flushMemoryRender(raceRoot, 32000);
+			const fifoWriter = await open(raceFile, "w");
+			await fifoWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes handed to the reader.\n");
+			await rm(raceFile);
+			await writeFile(raceFile, "# Project Memory\n\n## Project\n- Replacement that must survive.\n");
+			await fifoWriter.close();
+			const raced = await Promise.race([flushing, new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 10_000))]);
+			check("race: the exit reports a kept render, not a write", raced?.timedOut !== true && raced?.written === false);
+			const raceJournal = await readFile(path.join(raceMem, "memory.jsonl"), "utf8");
+			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
+			check("race: the replacement is still the file's content", (await readFile(raceFile, "utf8")).includes("Replacement that must survive."));
 		} finally {
 			await rmTemp(flushTmp);
 		}
@@ -2039,8 +2064,9 @@ try {
 			check("a fully damaged journal flushes to nothing", damaged.written === false && damaged.adopted === false);
 			check("a fully damaged journal leaves a trace", (await readFile(path.join(damagedMem, "errors.log"), "utf8").catch(() => "")).includes("holds no readable entry"));
 
-			// The write-back decision as a pure table: every ordering a concurrent writer can produce, without
-			// needing to inject one. `keep` is the branch a render newer than the journal lands in.
+			// The write-back decision as a pure table: each ordering a concurrent writer can produce, plus the
+			// boundary inputs (a render or journal whose stat failed), without needing to inject a race.
+			// `keep` is the branch a render newer than the journal lands in.
 			const { flushActionFor } = await loadNamespace(`${PC}/memory/store.ts`);
 			check("flush decision: the file already carries the fold", flushActionFor("A", 20, 10, "A", false) === "none");
 			check("flush decision: a missing render publishes the fold", flushActionFor("", undefined, 10, "F", false) === "publish");
@@ -2049,6 +2075,9 @@ try {
 			check("flush decision: an older render is superseded", flushActionFor("A", 5, 10, "F", false) === "publish");
 			check("flush decision: a render that changed under the read is left alone", flushActionFor("A", 20, 10, "F", true) === "recheck");
 			check("flush decision: a changed file with nothing to publish is still left alone", flushActionFor("A", 20, 10, "A", true) === "recheck");
+			check("flush decision: an unstatable render is not treated as new", flushActionFor("A", undefined, 10, "F", false) === "publish");
+			check("flush decision: an unstatable journal is not treated as old", flushActionFor("A", 20, undefined, "F", false) === "publish");
+			check("flush decision: a key with no file behind it still publishes", flushActionFor("", 20, 10, "F", false) === "publish");
 		} finally {
 			await rmTemp(gateTmp);
 		}
