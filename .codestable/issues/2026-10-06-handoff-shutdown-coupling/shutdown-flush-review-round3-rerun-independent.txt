@@ -1,0 +1,118 @@
+I have completed the independent review. Here is the record.
+
+---
+
+# Lane A 独立审查报告 — 退出 flush 写回前复检、记录与记忆渲染
+
+**判定模型**：`deepseek/deepseek-flash`；**thinking 档**：`high`（环境实测 `PI_PROVIDER=deepseek`、`PI_MODEL=deepseek-flash`、`PI_REASONING_LEVEL=high`）。
+**被审范围**：`git diff f43193a..284039e`（`4376bb5` 写回前 mtime 复检、`6b6efa2` 记录、`284039e` 记忆渲染），冻结于 `284039e` 的字节一致副本 `/tmp/pi-rev3-rerun`。
+**只读合规**：未写沙箱（`git status` 仍只有既有的 `.agents/memory/HANDOFF.md`、`project-context.json` 两个会话态改动）；测试/变异/竞态实验全部在 `/tmp/pi-r3r-work.*`、`/tmp/pi-r3r-mut` 的整树副本内完成；`git diff --check` 干净。
+**实验证据**：基线 `node tests/run-all.mjs` 15/15；4 组变异；3 组基于 `fs/promises.stat` 包装 + `module.syncBuiltinESMExports()` 的确定性竞态探针。
+
+---
+
+## blocking
+
+无。
+
+---
+
+## important
+
+### I1. 写回前复检分支（`store.ts:126-133`）是本次提交的核心保证，却没有任何测试钉子
+- 位置：`extensions/project-context/memory/store.ts:126-133`。
+- 影响：我在最小副本 `/tmp/pi-r3r-mut` 删掉整段复检分支后，`consolidation-test.mjs`、`external-edit-test.mjs`、`memory-ops-test.mjs` **全绿**（基线亦 15/15）。提交信息列出的变异矩阵只覆盖 `memoryEnabled` 门与全损日志两条钉，复检本身缺席。这意味着「flush 永不覆盖比 journal 新的 render」这条唯一由该提交引入的安全网，可被未来重构静默删除而 CI 不红。
+- 修复边界：补一条 store 级用例，在采纳循环读盘之后、写回之前注入外部手改，断言 `{adopted:true,written:false}`、render 字节保留、journal 恰好 +1 条、未采纳的陈旧 key 不入 journal。该窗口**不需要给生产代码加钩子**：round-2 报告 N3 断言「套件无法构造」，但测试侧包装 `fs/promises.stat`（`module.syncBuiltinESMExports()`）即可精确落点，我已用此手法稳定复现（见 Test And QA Focus）。
+
+### I2. 复检把 `readOptional` 读到的内容与更晚的 `stat` 配对：内容/mtime 快照不一致时会「采纳陈旧字节」
+- 位置：内容读于 `store.ts:119`，mtime 读于 `store.ts:127`，随后 `store.ts:129` 追加的却是 `:120` 算出的旧 key。
+- 影响：若 render 在 `readOptional` 与 `stat` 之间被替换，则 `stat` 证明存在更新的 render，但代码追加的是**替换前的旧字节**。实测（`/tmp/pi-r3r-work.*/tests/race-probe3.mjs`，realistic 近-now mtime）：flush 返回 `{adopted:true,written:false}`；journal 采纳了陈旧 `OLD-C1`、未采纳新鲜 `RACE-C2`；`loadMemory` 因追加时间晚于 C2 的 mtime 而返回陈旧 C1，下一次 pass 会把 fold 覆盖到 C2 上——**新鲜的未采纳编辑被静默丢掉**。这直接违背提交自己写的「a render newer than the journal is appended to the journal and left alone」：被追加的并不是那个更新的 render。同一快照缺口也存在于 `adoptExternalEdit`（`store.ts:73` 读内容、`:76` 读 mtime，`:79` 追加），我实测该路径更糟（render 直接被 fold 覆盖，`{adopted:true,written:true}`），属既有模式；但新分支沿用了它，而不是关闭它。
+- 修复边界：让内容与 mtime 来自同一快照。最稳的是 `open(file)` + `handle.stat()` + `handle.readFile()`（同一 inode 的 fstat/read）；退一步是在复检 `stat` 之后立即重读内容并把**重读后的 key** 用于判等与追加。建议与 `adoptExternalEdit` 抽成一个共享判据，顺带消除下一条。
+
+---
+
+## nit
+
+### N1. 复检判据与 `adoptExternalEdit` 重复且措辞不同，存在漂移口
+- 位置：`store.ts:73-78`（`renderKey === foldedView && render.mtimeMs <= journal.mtimeMs` 则放弃）对比 `store.ts:120-128`（`onDiskKey === memoryComparisonKey(folded)` 且 `render.mtimeMs > journal.mtimeMs` 则采纳）。
+- 影响：两者今天等价（`onDiskKey` 与 `folded` 都已归一化），但 `memoryComparisonKey(folded, limit)` 比 `foldedView` 多套了一次 `decodePoisonedMemory`，且两个判据各维护一份。安全谓词复制两份，未来任一侧改动（例如给 adopt 加 poison 判定）都会让「退出时」与「consolidation 时」的采纳语义分叉。
+- 修复边界：抽出单一 `renderSupersedesJournal(renderKey, folded, renderInfo, journalInfo)` 或让 flush 直接复用 `adoptExternalEdit`，不再内联。
+
+### N2. 全损 journal 诊断对「合法但折叠为空」不对称
+- 位置：`store.ts:114-117`。
+- 影响：日志条件 `state.damaged > 0`。实测（`/tmp/pi-r3r-work.*/tests/diag-probe.mjs`）journal 为 `{"op":"replace","text":"   "}` 时 `entries>0, damaged=0, folded=""`：`loadMemory` 报 `unreadable:true`，而退出 flush 静默返回、`errors.log` 无痕。注释「the read path reports that state as unreadable, so leave a trace too」在这一类上不成立。
+- 修复边界：条件改为 `!folded && (state.damaged > 0 || state.entries.length > 0)`，或改注释与 `loadMemory` 口径一致。
+
+### N3. `runIsDisabled` 门与 `typeof cwd` 守卫仍无钉
+- 位置：`report.ts:429`、`report.ts:427`。
+- 影响：删 `typeof cwd !== "string"` 整树绿（变异 B）；round-2 的 N2 要求补两个门，本批只补了 `memoryEnabled`（`report.ts:433`，变异红 1 条，见下）。`runIsDisabled` 仍是纯走场。
+- 修复边界：加一个 `setRunDisabled(true)` 后跑 `session_shutdown`、断言 journal/render 不动的用例。`typeof` 守卫是防御性的，可只记录不改。
+
+### N4. 文档没有正面写出「更新于 journal 的 render 只采纳、不重发」这条本提交的主规则
+- 位置：`docs/architecture.md:102`、`CHANGELOG.md:13`、`.agents/memory/MEMORY.md:23`、`.agents/skills/pi-project-context-headless-runs/SKILL.md:106`。
+- 影响：四处都只说「缺失/陈旧/撕裂 → 重发」，没有一句说「比 journal 新 → 采纳、不重发」，而这正是 `284039e` 标题与 `store.ts:122-125` 的负载规则。方向不算错，但读者无法从文档推出 `flushMemoryRender` 的第 126-133 分支存在。
+- 修复边界：各加一个从句（如「a render newer than the journal is adopted into the journal and left in place」）。`SKILL.md:106` 新增的备份/存档层表述我已核对为真（`updateSessionIndex` 走 `withMemoryLock`，索引落在 `.agents/memory/session-logs/INDEX.md`），`MEMORY.md:23` 与 `CONTEXT.md` 的更新也与代码一致。
+
+---
+
+## suggestion
+
+- `flushMemoryRender` 的内联复检可以直接复用 `adoptExternalEdit(projectRoot, limit, { preRead })`（把已读的 render 传进去），这样 `adopted` 标志、日志与顺序都只有一份实现；I1 的钉子也只需钉一个入口。
+
+## learning
+
+- 只靠 mtime 的「更新即外部编辑」判据天生粗：它既不能识别「内容更新但 mtime 未前进」（round-2 R2），也无法避免 I2 的内容/mtime 快照缺口。若要真保证，需要同一 inode 的 fstat+read，而不是两次独立 syscall。
+- round-2 N3「并发窗口无法在套件里构造」不成立：测试侧包装 `fs/promises` 并经 `module.syncBuiltinESMExports()` 同步 ESM 命名导出，可以在不改生产代码的前提下精确落点，我据此把两类窗口都稳定复现了。
+- `Date.now` 拨动与竞态注入是两类互补的钉法：前者验「不该发生的模型调用」，后者验「不该发生的写」。
+
+## praise
+
+- 目标窗口确实被关上了：在采纳循环之后、写回之前注入外部手改，实测 `{adopted:true,written:false}`、render 字节保留、journal 恰好 +1 条、陈旧 key 不入 journal、`errors.log` 有 `adopted an externally edited MEMORY.md`——这是 `store.ts:126-133` 的真实作用，round-1/2 的 I1 在该窗口内成立。
+- 重复 append 被内容判等挡住：即便 render 持未来 mtime，第二次 flush 也因 `onDiskKey === foldKey` 提前返回，一次采纳只产出一条 journal 记录。
+- 陈旧 render 重发没有被新分支削弱：`replacing a render backs it up first` / `replaces a stale render with the journal's fold` 在删掉复检分支后仍绿，行为与 `store.ts:134-138` 一致。
+- 两个新门是真钉：删 `report.ts:433` → 1 红（`memory off: the exit leaves the journal alone`）；删 `store.ts:116` 日志 → 1 红（`a fully damaged journal leaves a trace`）；无 journal 早退（`store.ts:105`）依旧双侧可验。
+- 记录与记忆修正是准的：`SKILL.md:106` 的「有备份/存档层建目录取锁」、`MEMORY.md:23` 的「missing or older」、`CONTEXT.md` 的「round 2 已收口、只剩 closing round」都与代码事实一致；`shutdownErrorRoot` 的注释与实际 `existsSync(join(cwd,".agents","memory"))` 一致。
+
+## residual-risk
+
+- **R1 复检之后的写窗口**：在 `store.ts:127` 的 stat 之后、`store.ts:135` 的 `writeAtomic` 之前落下的手改仍会被覆盖（探针实测 `{adopted:false,written:true}`，注入的 render 丢失）。代码注释（`store.ts:124-125`）已明写，属已知残留，仅非锁写入者可触发。
+- **R2 内容/mtime 快照缺口（I2 的机制）**：`readOptional` 与 `stat` 之间的单次外部编辑会促成错误采纳；这是比 R1 更窄、但未在注释中命名的窗口。
+- **R3 垃圾/损坏 render 的采纳**：任何「更新且不同」的 render（包括损坏字节）都会按设计被采纳进 journal；继承自 `adoptExternalEdit`/`loadMemory`，非本提交引入，但新分支是该语义的又一处落点。
+- **R4 mtime 粒度/时钟偏移**：内容更新但 mtime ≤ journal 的 render 仍会被 fold 覆盖（round-2 R2 原样）；粗粒度文件系统或保留 mtime 的编辑器可达。
+- **R5 `getConfig` 在退出路径的副作用**：即使 `memoryEnabled:false` 或无 journal，`report.ts:431` 的 `getConfig` 仍可能因 legacy 迁移建 `.agents/memory/`；本轮新增的 memory-off 用例是先建目录后置 off，未覆盖该形态，属既有问题。
+
+---
+
+## Test And QA Focus
+
+**基线**：`/tmp/pi-r3r-work.6709` 整树副本，`node tests/run-all.mjs` = 15/15。
+
+**变异（`/tmp/pi-r3r-mut`，按原文件复位）**
+
+| # | 变异 | 位置 | 结果 |
+|---|---|---|---|
+| A | 删除写回前复检分支 | `store.ts:126-133` | `consolidation-test` / `external-edit-test` / `memory-ops-test` **全绿** ⇒ 复检无钉（I1） |
+| B | 删除 `typeof cwd !== "string"` | `report.ts:427` | `consolidation-test` **绿** ⇒ 守卫无钉 |
+| C | 删除 `if (!config.memoryEnabled) return;` | `report.ts:433` | `consolidation-test` **红 1**（`memory off: the exit leaves the journal alone`）⇒ 新钉有效 |
+| D | 删除全损 journal 日志 | `store.ts:116` | `consolidation-test` **红 1**（`a fully damaged journal leaves a trace`）⇒ 新钉有效 |
+
+**确定性竞态探针（测试侧包装 `fs/promises.stat`）**
+
+| 探针 | 注入点 | 观测 |
+|---|---|---|
+| 目标窗口 | 采纳 pass 的 render `stat` 返回**旧** info 后注入 | `{adopted:true,written:false}`，render 保留，journal +1，陈旧 key 未入，采纳日志有 ⇒ 目标窗口已关 |
+| R1 残留 | 复检 render `stat` 返回后注入 | `{adopted:false,written:true}`，注入字节丢失 ⇒ 写回后窗口仍在 |
+| I2 错采纳 | 复检 render `stat` 调用 `origStat` **之前**注入 | journal 采纳陈旧 C1，新鲜 C2 留盘但被 `loadMemory` 忽略（effective=C1）⇒ 快照缺口 |
+| I2 同型（既有） | 采纳 pass `stat` 调用前注入 | journal 采纳 C1，render 被 fold 覆盖，C2 丢失 ⇒ `adoptExternalEdit` 同缺口 |
+
+**走场/假保证**：A、B 两处删掉仍绿；`runIsDisabled` 门无任何用例设置 run-disabled；无 journal 的 handler 级路径（`getConfig`/存档层）仍只由直接调 `flushMemoryRender` 覆盖。
+
+**建议新增用例**：① 在采纳循环→写回之间注入外部手改的 store 级钉（I1）；② 同一 inode 快照修复后，注入 `readOptional`→`stat` 之间的编辑，断言采纳的是新鲜字节（I2）；③ `setRunDisabled(true)` 的退出不动作钉（N3）；④ 合法但折叠为空的 journal 也留痕（N2）。
+
+---
+
+**结论**：`4376bb5` 的复检在它命名的窗口内确实成立（未采纳字节不再被覆盖、无重复 append、陈旧重发未失效），`6b6efa2`/`284039e` 的记录与记忆修正基本准确，两个补钉与 `memoryEnabled` 门、无 journal 早退均自洽。但该安全网**零测试覆盖**（删掉全绿），且其内容/mtime 快照不一致会在更窄的窗口把陈旧字节采纳进 journal、静默丢掉真正的新鲜编辑，与提交自己声明的规则相抵。建议按 I1/I2 收口（补钉 + 同快照取内容与 mtime/抽共享判据），并顺带修 N1/N2/N4，再做收尾轮。
+
+（模型与 thinking 档：`deepseek/deepseek-flash`，thinking `high`。）
+
+VERDICT: CHANGES-REQUESTED

@@ -41,6 +41,10 @@
   按纪律，第 3 轮在这批修复之上跑。
 - 发布：CHANGELOG 用的是 v0.4.6（未发布）段；版本号（patch 还是 minor）由发布步决定。
 - 真机：宿主 pin 已是 `@v0.4.5`，本次改动要等下一个 tag + 重启才对运行中的会话生效。
+- **第 3、4 轮**：第 3 轮指出我最初的复检自身有读/stat 不同版本的 TOCTOU 且零覆盖——决策因此抽成纯表
+  `flushActionFor`（7 + 3 条断言）。第 4 轮把同一 TOCTOU 追到 `adoptExternalEdit`（blocking，FIFO 注入下更新的手改
+  在 journal 与磁盘双双消失），adopt 自读改为 `readRenderWithMtime`（`changed` 即放弃），判据收敛为
+  `renderIsNewerThanJournal` 一处，并补上 FIFO 确定性回归（删守卫即三红）。
 - 本 issue 之外的现场发现：settle 路能把一段带 header 的散文回复整篇发布（沙箱里由已安装的 v0.4.5 实测），
   建议另开 issue；详见审查报告的残留风险节。
 - 已写明的已知残留：写回的最后一个窗口（最后一次 stat 到 `writeAtomic` 之间落下的并发手改）与 `recordMemoryDocument`

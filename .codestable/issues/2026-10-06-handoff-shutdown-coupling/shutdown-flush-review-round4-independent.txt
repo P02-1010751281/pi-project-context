@@ -1,0 +1,113 @@
+# Lane A 独立审查报告（round 4）— 退出 flush 的 I1 修复、新钉与文档一致性
+
+**判定模型**：`deepseek/deepseek-flash`；**thinking 档**：`high`（环境 `PI_PROVIDER=deepseek` / `PI_MODEL=deepseek-flash` / `PI_REASONING_LEVEL=high`）。
+**被审范围**：`git diff 284039e..HEAD`，HEAD=`e7e8178`（`3db610c` 代码+测试、`1a4f4e2` 记录、`e7e8178` 记忆渲染）。
+**只读合规**：沙箱 `/tmp/pi-context-rev4` 只读；测试/变异在整树副本 `/tmp/pi-rev4-work.xu5WqL` 执行；未做任何 git 写操作。沙箱结束时 `git status --short` 仅剩扩展自身启动写入的 `.agents/memory/HANDOFF.md`、`project-context.json`（豁免项），HEAD 与起始一致。基线 `node tests/run-all.mjs` → `All 15 tests passed`。
+
+---
+
+## blocking
+
+### B1. round 3 的 I1 只修了 flush 末尾那次复检，同一读—stat TOCTOU 仍原样留在 `adoptExternalEdit`；更新的手改仍会被写进陈旧 key 并永久压住（数据丢失）
+- **file:line**：`extensions/project-context/memory/store.ts:73`（`readOptional`）与 `:76-77`（随后 `stat`）+ flush 调用它的 `:147-150`；对照修复点 `:89-96`（`readRenderWithMtime`）与 `:152-154`。
+- **事实/复现**：`adoptExternalEdit` 仍是「先读 render 字节（V1），后 stat（V2）」：判定用的是 V2 的 mtime，写进 journal 的是 V1 的 key。我用 FIFO 把读阻塞住，在读与 stat 之间落地一次外部写（`mkfifo` → 写入 V1 → `unlink` + 建 V2 普通文件 → 关写端），跑真实 `flushMemoryRender`：
+
+  ```
+  [control: stable V2 newer than journal] result={"adopted":true,"written":false}  journal V2=true disk V2=true
+  [race: V1 read, V2 lands before adopt stat] result={"adopted":true,"written":true}
+      journal V1=true  journal V2=false
+      disk V1=true  disk V2=false      ← 更新的 V2 从磁盘和 journal 双双消失
+  ```
+
+  机制与 round 3 记录的 I1 完全同类：adopt 把 V1（陈旧）当「新」append，`appendMemoryOp` 把 journal mtime 推到 V2 之后 ⇒ adopt 循环第二轮看到 `renderMtime <= journalMtime` 直接返回 false ⇒ V2 再也不会被采纳；随后 flush 的 `readRenderWithMtime` 看到的是稳定的 V2（`changed=false`），但 `renderMtime(V2) < journalMtime` ⇒ 判 `publish`，用 fold(**V1**) 覆盖 V2。修复点 `readRenderWithMtime` 只保护了 flush 自己的这一次读，管不到更早的 adopt 读。
+- **影响**：与 round 3 定性一致——journal 被写脏 + 更新的用户手改永久丢失；`store.ts:130-133` 的 docstring「a render the journal has not yet absorbed is journaled and left on disk exactly as it was found」和 `docs/architecture.md:102`「读取期间被替换的文件两者都不动」在该路径上不成立。窗口是微秒级外部写，但 round 3 对等价窗口即按 important 处理并要求修。
+- **修复边界**：让 `adoptExternalEdit` 自身的读也走一致性读——当 `preRead.renderKey` 未提供时用 `readRenderWithMtime`，`changed` 就返回 false（不入 journal、不写回，留给下一次 pass）；或在 flush 的决策里同时以 `render.changed`/adopt 的一致性读为准。`recordMemoryDocument` 的 `preRead.renderKey` 路径可维持现状（其 pre-publish recheck 会兜住），但需在注释里写明这是唯一例外。
+
+---
+
+## important
+
+### I1. 本轮记忆渲染把上一轮已改对的 `report.ts` Index 事实回退成假的
+- **file:line**：`.agents/memory/MEMORY.md:97`。`git show 284039e:.agents/memory/MEMORY.md` 是 `model-free session_shutdown flush since v0.4.6`；`e7e8178` 改成 `unthrottled model session_shutdown pass`。
+- **事实**：代码 `extensions/project-context/memory/report.ts:410-434` 的 `session_shutdown` 走 `flushMemoryRender`，全程无模型调用；`CHANGELOG.md:10-16`（v0.4.6）也写「退出只做不调模型的 flush」。同文件 `:23` 本轮刚改对（`flush only since v0.4.6 … no model call`），与 `:97` 自相矛盾。
+- **影响**：MEMORY.md 会被注入系统提示，这是一句「承诺代码不做的事」；下个会话/审查者按 `:97` 会以为退出仍是一次模型 pass。本仓 Pitfall 段自陈这就是复发性缺陷。
+- **修复边界**：把 `:97` 改回 flush 语义（模型无关），或整条 Index 行跟随 `e7e8178` 的目标只改 shutdown 描述。
+
+### I2. 本轮记忆渲染把 `CONTEXT.md` 的决策/实现状态回退到「owner 未定、待实现」
+- **file:line**：`.agents/memory/CONTEXT.md:23-24`（以及 `:7` 摘要）。`284039e` 的渲染写「option 1 … is executed: round 1 … round 2 … a closing round is what is left」；`e7e8178` 回退成「Owner: pick the shutdown-coupling disposition … Next session: if the owner confirms option 1, implement it」。
+- **事实**：代码已实现（`report.ts` + `store.ts`），issue `brief.md`、`CHANGELOG.md:10`、`MEMORY.md:118` 都写「decided 2026-10-06: option 1」。这与本 diff 的代码/记录方向相反。
+- **影响**：CONTEXT.md 同样被注入提示；读者会得到与仓库现状相反的结论（功能被认为未做、待 owner 决策）。
+- **修复边界**：恢复 `284039e` 的「已决定/已实现」措辞；若确实是渲染回退，应在 journal 里落下修正 op（报告「现场发现」声称已做，但 HEAD 未见）。
+
+### I3. 报告的变异编号仍不自洽，直接反证自己的 N4「已修」
+- **file:line**：`shutdown-flush-review-report.md:47`（N1 全损 journal 诊断 → 写「变异 M5 红」）、`:48`（N2 `runIsDisabled`/`memoryEnabled` 门 → 写「变异 M6 红」）、`:62`（I2 → 写「实测 M11」）、`:67`（N4 声称已统一为 M1–M9）。
+- **事实**：合并矩阵 `:82` 定义 **M5 = 删 `memoryEnabled` 门**、`:83` 定义 **M6 = 删全损 journal 诊断**。按矩阵，N1 应引 M6、N2 应引 M5 —— 现表恰好**互换**。`:62` 的 M11 不在 M1–M9 矩阵中（是 round-3 丢失 transcript 的自编号）。实测复核：M5 红 1、M6 红 1、M7 红 1、M8 红 2、M9 红 1，各变异本身都能红，问题只在编号引用。
+- **影响**：报告作为处置依据，其「统一编号」结论为假；逐条追溯会走错。
+- **修复边界**：N1→M6、N2→M5；把 M11 并入矩阵（如 M10）或在正文注明其来源；再复核 `:55` 对 round-2 自编号的说明与矩阵一致。
+
+### I4. round-3 的 transcript 证据链实际是断的：同名文件是 round 1 的报告，且报告引用的重跑文件不存在
+- **file:line**：`shutdown-flush-review-report.md:9` 与 `shutdown-flush-review-round3-recovered-excerpt.txt:7` 都指向 `shutdown-flush-review-round3-rerun-independent.txt`；该文件**不存在**（issue 目录仅 7 个文件）。
+- **事实**：现存 `shutdown-flush-review-round3-independent.txt` 与 `shutdown-flush-review-round1-independent.txt` 仅差末尾 2 行复制工具残留（`diff` 结果：只多 `[1 more lines …]`），内容是 **round 1 对 `6d76e61` 的报告**（B1/I1–I5），不是 `284039e` 的 round 3。
+- **影响**：报告表格把 round 3 的证据指向一个不存在的文件，而占位文件误导为别的修订；零写入/判决追溯失效。`1a4f4e2` 的 commit message 声称「rerun for a real one」，但产物未入库。
+- **修复边界**：删除或改名误导文件；把真实重跑 transcript 落盘，或删掉对 `...-rerun-...` 的引用并在表格注明「无独立 transcript，仅转述」。
+
+---
+
+## nit
+
+### N1. `docs/architecture.md` 的表格行与「同一版本」措辞有过宽处
+- **file:line**：`docs/architecture.md:102`（表格行）、`:106`（`要写回时还要保证判定用与写出的字节来自同一版本`）、`:95`（`只有两个时点会生成新内容`）。
+- **影响**：`:102` 只列 `publish` 条件、丢了 `none`（文件已是 fold 时不写），单看该行会以为当前文件也会被重发；`:106` 的「同一版本」在 adopt 路径不成立（B1），且「判定用与写出的字节」措辞把 render 字节与 fold 字节混在一起；`:95` 与 `:99`（session_start 会写 journal/render）并列时易读成矛盾（若「生成」专指模型生成则可接受）。
+- **修复边界**：`:102` 补一句「文件已是 fold 时不写」或把 `none` 并入行内；`:106` 限定为「flush 末尾复检」或随 B1 修复后再保留；`:95` 改成「生成**新**内容（模型）」以消歧。
+
+### N2. 纯表 7 条断言未覆盖全部组合，注释「every ordering」略微过头
+- **file:line**：`tests/consolidation-test.mjs:2043-2049`（注释与 7 条）。
+- **影响**：未覆盖 `journalMtimeMs === undefined` 且 renderKey 非空、`changed=true` 且 renderKey 空、`renderMtimeMs === undefined` 且 key 非空等组合；这些落进默认 `publish`，目前无论证也无测试。
+- **修复边界**：补 2–3 条边界断言（尤其 journal stat 失败、render 半删），或把注释收紧为「显著时序」。
+
+### N3. `--no-project-context` 退出钉只有一条断言真正区分变异
+- **file:line**：`tests/switches-test.mjs:195-196`（对应 M9）。
+- **影响**：M9（删 `runIsDisabled`）只红 `journal untouched`；`hand edit in place` 在 keep 分支下本来就绿，不区分「有门/无门」。钉子仍有效但比注释暗示的弱。
+- **修复边界**：保留即可；若要两条都区分，可再钉一条「render 不能被 fold 覆盖」的 stale-render 变体（换到旧手改时序）。
+
+---
+
+## suggestion
+
+- **S1**：为 B1 补一个确定性回归——把一致性读抽成可测边界（如导出 `readRenderWithMtime`），或给 adopt 路径留一个注入点，让「adopt 读 V1、stat V2」的时序在无并发进程时也能被断言成 `written:false` 且 journal/磁盘都保留 V2。当前该分支只能靠外部竞态探针，正好是本仓「零覆盖」老毛病。
+- **S2**：让 `adoptExternalEdit` 在自读时也 `changed ⇒ return false`（见 B1 修复边界），从结构上保证「同一版本」不变量只由一处维护。
+- **S3**：报告表格给每条变异附「实测红/绿」与「对应测试名」，避免 M5/M6 这类互换再次发生。
+
+## learning
+
+- TOCTOU 修复必须覆盖**所有**「读—stat」站点，而不是审查员点名的那一处；recovered excerpt 自己就写了「also merge/align with adoptExternalEdit's read-then-stat」，但代码只改了一处。
+- 渲染型记忆（MEMORY.md/CONTEXT.md）会静默回退已修正事实；渲染提交需要逐行对代码审计，而不是只看目标那一句。本轮 `e7e8178` 同时回退了 `:97` 与整个 CONTEXT 决策状态。
+- 「统一编号」的声明必须逐引用核对矩阵；本报告 N1/N2 的 M5/M6 互换正发生在声称已统一之后。
+
+## praise
+
+- `flushActionFor` 是实打实的改进：纯函数、可导出、可测；抽表当场抓出的 `!renderKey → none` 回归（缺 render 不再重发）已修，表断言与 `the exit republishes a missing render` 双红验证正确。
+- `readRenderWithMtime` 对 flush 末尾那次复检是对的：重做 race 后不再写脏 journal（control 与稳定 V2 时序均 `keep`）。
+- 新钉真实：我逐一复跑 M1–M9，红数分别 5/2/1/1/1/1/1/2/1，与矩阵一致；`>`→`>=` 红 1、缺 render→none 红 2、删 `runIsDisabled` 红 1 全部复核通过。
+- `headless-runs` SKILL.md:106 的「not newer than the journal（新于就只入 journal、不改字节）」与代码逐条相符。
+
+## residual-risk
+
+- `readRenderWithMtime` 的 `changed` 依赖 mtime+size：同尺寸且 mtime 浮点相同（粗粒度 FS 或同 mtime 重写）时检测不到，属启发式而非内容哈希；不过此时 adopt 的 stat 也会给出同样版本，主要风险仍落在 B1 的 adopt 路径。
+- 读期间文件被删（`after` undefined）时 `changed=false`，flush 会 `publish` 重建 fold；这是「缺失即重发」的预期行为，但意味着并发删除会触发一次写与备份。
+- 采纳循环结束到 `writeAtomic` 之间仍留有 round 2 已记录的极小窗口（与 `recordMemoryDocument` pre-publish 同级）。
+- settle 路仍可用一段对话式回复换掉整篇记忆（round 1 R1 / round 3 现场），本 issue 未覆盖。
+
+---
+
+## Test And QA Focus
+
+- **必做**：把 B1 的 FIFO/等价竞态做成**确定性**用例（或经 S1 的 seam），断言 `written:false`、journal 末行是 V2、磁盘是 V2；否则该缺陷随时可复现复发。
+- **补表**：`flushActionFor` 增加 `journalMtime=undefined`、`changed && renderKey=""`、`renderMtime=undefined && renderKey!=""` 三行断言。
+- **记录核验**：重跑 `git diff 284039e..HEAD` 的文档提交，逐行核对 `.agents/memory/MEMORY.md`/`CONTEXT.md` 是否再次把已修正事实回退；并修 report 的 M5/M6 互换、M11 与缺失的 rerun transcript。
+- **回归**：在整树副本跑 `node tests/run-all.mjs`（我已跑，15/15）；re-run M1–M9 应保持报告红数。
+- **无法在本环境确认**：真实 GUI/编辑器的原子保存是否用 rename（决定 adopt 竞态可达性）；live tree 与沙箱的 pin 差异（v0.4.5 vs HEAD）带来的混合版本噪声。
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: CHANGES-REQUESTED
