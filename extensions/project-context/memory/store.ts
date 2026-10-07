@@ -92,8 +92,9 @@ export type FlushResult = { adopted: boolean; written: boolean };
  * switch, and nothing here composes memory - a session that ends between settle passes keeps that tail
  * in the archive.
  *
- * A project with no journal has nothing to flush, and a teardown must not create a memory directory (or
- * take the cross-process lock) for it, so that case returns before the lock. The render is rewritten only
+ * A project with no journal has nothing to flush, and this flush must not create a memory directory or
+ * take the cross-process lock for it, so that case returns before the lock (the archive layer takes its
+ * own lock and directory independently). The render is rewritten only
  * when the file is missing or stale/torn against the journal; an edit that is merely different is folded
  * in and left on disk exactly as it was found (an over-cap hand edit keeps its own bytes, the journal
  * holding the clipped key). A clean exit writes nothing.
@@ -103,8 +104,8 @@ export async function flushMemoryRender(projectRoot: string, limit: number = MAX
 	const file = memoryFile(projectRoot);
 	if (!(await stat(journal).catch(() => undefined))) return { adopted: false, written: false };
 	return await withMemoryLock(file, async () => {
-		// An edit can land between an adopt read and the write below; adopt until the render and the
-		// journal agree, so the flush never publishes a fold over bytes it did not fold in first.
+		// An edit can land between an adopt read and the write below; adopt repeatedly to shrink that window,
+		// and see the recheck before the write for the bytes that outran this loop.
 		let adopted = false;
 		for (let pass = 0; pass < 3 && (await adoptExternalEdit(projectRoot, limit)); pass++) adopted = true;
 		const state = await readMemoryJournal(journal);
@@ -118,8 +119,19 @@ export async function flushMemoryRender(projectRoot: string, limit: number = MAX
 		const onDisk = await readOptional(file);
 		const onDiskKey = renderKeyOf(onDisk, limit);
 		if (onDiskKey && onDiskKey === memoryComparisonKey(folded, limit)) return { adopted, written: false };
-		// Missing (nothing to keep) or stale/torn (a fresh edit would have been adopted above): republish
-		// the journal's fold. Every other memory write backs the file up first; this one is no exception.
+		// Missing (nothing to keep), or a render the journal already supersedes (older, or torn). An edit
+		// that outran the adopt loop is newer than the journal, so it is folded in and left alone instead of
+		// being published over: the flush never replaces a render newer than the journal. The residual
+		// window is the one every write path has - an edit landing after this stat and before the write.
+		if (onDiskKey) {
+			const [renderInfo, journalInfo] = await Promise.all([stat(file).catch(() => undefined), stat(journal).catch(() => undefined)]);
+			if (renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
+				await appendMemoryOp(journal, "replace", onDiskKey);
+				await logError(projectRoot, "memory", "adopted an externally edited MEMORY.md into the memory journal");
+				return { adopted: true, written: false };
+			}
+		}
+		// Every other memory write backs the file up first; this one is no exception.
 		await backupMemoryBeforeWrite(file);
 		await ensureMemoryGitignore(memoryDir(projectRoot));
 		await writeAtomic(file, folded);

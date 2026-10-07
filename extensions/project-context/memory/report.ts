@@ -423,6 +423,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 		} catch {
 			return;
 		}
+		// The declared type is a string, but a ctx that returns nothing must not reach `path.join` below.
+		if (typeof cwd !== "string") return;
 		try {
 			if (runIsDisabled()) return;
 			const projectRoot = await getProjectRoot(pi, cwd);

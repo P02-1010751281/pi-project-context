@@ -1991,6 +1991,58 @@ try {
 		}
 	}
 
+	console.log("\n=== the exit flush is gated, and a damaged journal leaves a trace ===");
+	{
+		const gateTmp = await mkdtemp(path.join(os.tmpdir(), "pi-shutdown-gate-"));
+		try {
+			const gateMem = path.join(gateTmp, ".agents/memory");
+			await mkdir(gateMem, { recursive: true });
+			const gateFactory = await loadDefault(`${PC}/index.ts`);
+			const gatePi = makePi({ cwd: gateTmp });
+			await gateFactory(gatePi);
+			const gateEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`g${index}`, "user", `${marker} gate ${index}`, `2026-09-12T13:0${index}:00.000Z`));
+			const gateCtx = makeCtx(gateTmp, {
+				sessionManager: makeSessionManager(gateEntries, "gate-session"),
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					complete: async () => ({
+						content: [{
+							type: "text",
+							text: JSON.stringify({
+								memory_markdown: "# Project Memory\n\n## Project\n- Gate seeded.",
+								context: { title: "Gate", summary: "Gate.", key_points: [], open_tasks: [] },
+							}),
+						}],
+					}),
+				},
+			});
+			await consolidateNow(gatePi, gateCtx);
+
+			// A hand edit newer than the journal, then memory off: the exit must leave both alone.
+			const seededGate = await readFile(path.join(gateMem, "MEMORY.md"), "utf8");
+			await writeFile(path.join(gateMem, "MEMORY.md"), `${seededGate.trimEnd()}\n- Written while memory was on.\n`);
+			const newerGate = new Date(Date.now() + 5_000);
+			await utimes(path.join(gateMem, "MEMORY.md"), newerGate, newerGate);
+			const journalBeforeOff = await readFile(path.join(gateMem, "memory.jsonl"), "utf8");
+			await gatePi.commands.get("memory").handler("off", gateCtx);
+			await runHandlers(gatePi, "session_shutdown", gateCtx);
+			check("memory off: the exit leaves the journal alone", (await readFile(path.join(gateMem, "memory.jsonl"), "utf8")) === journalBeforeOff);
+			check("memory off: the exit leaves the hand edit in place", (await readFile(path.join(gateMem, "MEMORY.md"), "utf8")).includes("Written while memory was on."));
+
+			// A journal with nothing readable: the flush must report the state, not no-op silently.
+			const damagedMem = path.join(gateTmp, "damaged/.agents/memory");
+			await mkdir(damagedMem, { recursive: true });
+			await writeFile(path.join(damagedMem, "memory.jsonl"), "not json at all\n{\"op\":\"replace\"}\n");
+			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
+			const damaged = await flushMemoryRender(path.join(gateTmp, "damaged"), 32000);
+			check("a fully damaged journal flushes to nothing", damaged.written === false && damaged.adopted === false);
+			check("a fully damaged journal leaves a trace", (await readFile(path.join(damagedMem, "errors.log"), "utf8").catch(() => "")).includes("holds no readable entry"));
+		} finally {
+			await rmTemp(gateTmp);
+		}
+	}
+
 	console.log("\n=== the settle pass is still the automatic writer ===");
 	{
 		// Decision 1 rests on this: with the exit no longer composing, the throttled settle pass is what
