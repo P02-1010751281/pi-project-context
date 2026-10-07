@@ -116,7 +116,9 @@ export async function readRenderWithMtime(file: string): Promise<{ text: string;
 	const text = await readOptional(file);
 	const after = await stat(file).catch(() => undefined);
 	// A file replaced under the read would give the key of one version and the time of another, so the
-	// caller must journal neither and overwrite neither.
+	// caller must journal neither and overwrite neither. The test is mtime + size: a replacement that keeps
+	// both (a same-size edit inside the filesystem's timestamp granularity) stays invisible here, which is
+	// the accepted residual - the append-time verification in adoptExternalEdit is what closes the write path.
 	const changed = Boolean(after) && (before?.mtimeMs !== after.mtimeMs || before?.size !== after.size);
 	return { text, mtimeMs: after?.mtimeMs, changed };
 }

@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, open, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -1966,13 +1967,19 @@ try {
 			execFileSync("mkfifo", [raceFile]);
 			const { flushMemoryRender } = await loadNamespace(`${PC}/shared/project-state.ts`);
 			const flushing = flushMemoryRender(raceRoot, 32000);
-			const fifoWriter = await Promise.race([open(raceFile, "w"), new Promise((_, reject) => setTimeout(() => reject(new Error("no reader appeared for the FIFO within 10s")), 10_000))]);
+			// O_RDWR on a FIFO returns immediately whether or not a reader is there, so the fixture cannot hang
+			// on the open the way a blocking "w" open can; the reader still sees EOF once this end closes.
+			const fifoWriter = await open(raceFile, constants.O_RDWR);
 			await fifoWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes handed to the reader.\n");
 			await rm(raceFile);
 			await writeFile(raceFile, "# Project Memory\n\n## Project\n- Replacement that must survive.\n");
 			await fifoWriter.close();
 			const raced = await Promise.race([flushing, new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 10_000))]);
-			check("race: the exit keeps the render and reports no write", raced?.timedOut !== true && raced?.written === false && raced?.adopted === true);
+			if (raced?.timedOut === true) {
+				console.error("FAIL race: the exit flush never returned within 10s");
+				process.exit(1);
+			}
+			check("race: the exit keeps the render and reports no write", raced?.written === false && raced?.adopted === true);
 			const raceJournal = await readFile(path.join(raceMem, "memory.jsonl"), "utf8");
 			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
 			check("race: the replacement is still the file's content", (await readFile(raceFile, "utf8")).includes("Replacement that must survive."));
