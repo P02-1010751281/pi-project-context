@@ -21,6 +21,7 @@
 | 15 | 2026-10-08 | `5f76996`（= annotated tag `v0.4.8`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 important：上限门的 `reasoning` 取自会话模型、`/autolearn` 强制 pass 无前置提示；B1/B2/N1/N2/N3 确认已关，I1 被独立复核为**不成立**） | `shutdown-flush-review-round15-independent.txt` | ✓：`git status` 空、460 条文件表与基线逐行一致、被审六文件 md5 前后相同 |
 | 16 | 2026-10-08 | `8674fd2`（`v0.4.8` 之上的 `v0.4.9` 修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属文档：两处 docs 仍写「会话模型」并在括号里断言只读路径不解析辅助路由；3 nit 格式/措辞；S-1/S-2） | `shutdown-flush-review-round16-independent.txt` | ✓：`git status` 与基线一致、465 条文件表逐行一致、8 个被审文件 md5 前后相同 |
 | 17 | 2026-10-08 | `73da214`（`v0.4.9` 修复集 + 第 16 轮文档修复） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属措辞：第 16 轮新加的「重试只让它更早更清楚地失败」与 `fitMemoryInput` 的裁短路径相反；1 nit 属记录；S-1 复核登记诚实） | `shutdown-flush-review-round17-independent.txt` | ✓：`git status` 与基线一致、文件表逐行一致 |
+| 18 | 2026-10-08 | `63a825f`（残留清理集：R-A/R-F2 收窄 + R-2 + 看门狗） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；5 important：判据围栏/形状/诊断 + `hasConfiguredAuth` 硬依赖 + 撤回记录悬空引用；4 nit） | `shutdown-flush-review-round18-independent.txt` | ✓：`git status` 与基线一致、470 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -258,7 +259,7 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | N-4：`capCeilingWarning` 把 8192 预留说成界 | **已修措辞**：改 `plus a reserve of about N tokens`（不再 `up to`）；用例新增「含 `reserve of about` 且不含 `up to`」，变异恰红 1 条 |
 | N-5：v0.4.7 历史条目仍写「无标题」 | **已加交叉引用**（v0.4.8 条证明它带规范标题） |
 | R-A：结构测试接受面偏宽（带一条 bullet / 围栏 / 任意标题的散文仍可替换四节文档） | **登记为非目标**：这是第 14 轮 B1 指定的判据、文档如实写了接受面，且更窄的判据**没有现场事实**支撑（本仓规则：无现场事实的新机制进非目标）。重开条件＝出现「带 bullet 的会话回复替换了整篇记忆」的现场 |
-| R-B：重试对被请求上限封住的配置仍不可能成功 | **成立且已写明**：那类配置靠抬高上限或换辅助路由解决，重试只让它更早更清楚地失败（CHANGELOG 与架构文档已按此措辞） |
+| R-B：重试对被请求上限封住的配置补不上差额 | **成立且已写明**：那类配置靠抬高上限或换辅助路由解决；重试仍可在**裁短后的正文**上成功（`clipped`），只是补不上差额（第 18 轮 I-1/N-2 修掉了此处残留的绝对断言） |
 | R-C：既登记的 R-F2/R-F3 等 | 不重登；审查员实测行为与文档一致 |
 
 **本轮新增的可用规则**：任何只**读**一个模型属性（例如 `reasoning`）的调用方必须走 `peekAuxModel`，`resolveAuxModel` 只留给真正发起调用的路径；
@@ -279,6 +280,25 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 第 18 轮处置（2026-10-08，残留清理轮）
+
+**0 blocking**，但这一轮的 5 条 important 全部落在**我这次收窄引入的问题**上 —— 收窄本身是对的方向，实现却既漏了围栏、又误拒了合法形状，还把两类原因说成一句话。
+
+| 第 18 轮条目 | 处置 |
+| --- | --- |
+| I-1：`docs/architecture.md` 同一句里既写「重试不可能成功」又写「可能以 `clipped` 成功」自相矛盾（第 17 轮只改了后一个子句） | **已改口径**：改为「重试的预算仍被封在该上限内：它只能在裁短后的正文上再试（可能以 `clipped` 的缩短版成功），补不上这个差额」。`CHANGELOG` v0.4.8、`round15-fix-note.md` 与本报告第 15/17 轮行里的同款绝对断言一并改（N-2） |
+| I-2：判据不认围栏 ⇒ 「围栏里含 `## Project\n- x`」的散文被判成文档（误收） | **已修**：扫描器加围栏状态机（同族才闭合）；用例 `structured-prose-fenced-document`；去掉围栏跟踪恰红 1 条 |
+| I-3：收窄引入**误拒**（编号列表 / setext 标题 / HTML 标题下有条目的回复被拒），且诊断把它们说成「没有条目」 | **已修**：判据按本仓词汇认标题（ATX 任意级别 / setext / HTML）与条目（bullet 或编号列表）；两条诊断路径统一为 `not a writable memory document`（日志串与 toast 同步）。三种反向形状各有用例（必须**发布**而不是被拒）；去掉编号条目恰红 1 条、去掉 setext/HTML 标题恰红 2 条 |
+| I-4：R-2 只把 `find` 改可选，`hasConfiguredAuth` 仍是硬依赖，注释的承诺不成立 | **已修**：两个方法都改可选（缺失即「视为可用」），注释说明理由；新增「两个方法都缺仍回退会话模型」用例，去掉 `?? true` 恰红 1 条 |
+| I-5：撤回横幅引用不存在的「重新发布」节 | **已删悬空引用**；重新发布时再补该节 |
+| N-1：看门狗把整个夹具根删掉，连诊断用的 artifacts 一起清 | **已收窄**：只清 FIFO 子目录（`race` / `adopt`），`flushMem` 下的 errors.log 与备份留作诊断 |
+| N-2：两处旧句仍写「不可能成功 / 只让它更早更清楚地失败」 | **已改**（见 I-1 处置） |
+| N-3：文档说「小节标题」，实现接受任意 ATX 级别 | **已对齐**：文档改为「标题（ATX 任意级别 / setext / HTML）」 |
+| N-4：回复侧用例的存储是 2/4 节，保护它的是存储侧 OR 分支 | **已改**：回复侧用例改用规范四节存储；实测 M2（存储侧退回只认四节）**只红 1 条** —— 因为那些夹具的 `existing.text` 来自 journal fold（规范四节），耦合没有审查员推测的那么强，这一点如实记在此处 |
+| S：三类诊断拆分 | **未采纳**：只把两条路径统一成一句对两者都为真的措辞（真无条目 / 形状读不出），不为它新增分支 |
+
+**变异（本轮，副本里做）**：关掉回复侧判据红 **26**；去掉围栏跟踪红 **1**；条目不认编号红 **1**；标题不认 setext/HTML 红 **2**；存储侧退回只认四节红 **1**；去掉 `hasConfiguredAuth` 的 `?? true` 红 **1**。
 
 ## 残留清理（2026-10-08，v0.4.9 tag 撤回之后）
 

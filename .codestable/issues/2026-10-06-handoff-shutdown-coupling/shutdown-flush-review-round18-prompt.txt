@@ -1,0 +1,40 @@
+# Lane A 独立审查 — 冻结修订 `63a825f`（残留清理集，候选 `v0.4.9`，第 18 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev18`（本仓 `/tmp` 字节副本，停在待审修订）。
+**判定模型**：本轮由 `deepseek/deepseek-flash`（thinking `high`）给出。
+
+## 硬规则：只读
+
+- 不得写入工作区（`/tmp/pi-context-rev18` 只读）；不得 `git add/commit/checkout/stash/reset/clean`。
+- 要跑变异/探针，把沙箱复制到 `/tmp` 下你自己的目录再改，绝不动沙箱本体。
+
+## 背景
+
+- 上一轮（第 17 轮，冻结 `73da214`）**0 blocking**、唯一 important 属措辞，已改。
+- 之后 owner 指出：本仓约定是「**残留清完才发版**」，而 `v0.4.9` 曾在带着具名残留（R-A / R-2 / R-3）时被打 tag 并 pin。
+  处置：双远端 tag 删除、pin 与安装树回退到 `v0.4.8`，修复提交留在 `master`；随后逐条清残留，本轮审的就是这批。
+- 被审 diff：`git diff 73da214..HEAD`（本轮）与更完整的 `git diff 5f76996..HEAD`（v0.4.8 起的全部候选变更）。
+- 必读：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md` 的**残留清理**节、
+  **收链（第 17 轮之后）**节与轮次表；`.codestable/issues/2026-10-08-aux-call-reasoning-budget/` 下的
+  `release-v0.4.9-evidence.md`（顶部有撤回横幅）、`round15-fix-note.md`；`CHANGELOG.md` 的 v0.4.9 节；`docs/architecture.md` 的判据段。
+
+## 逐条验证声明
+
+| 项 | 声称 | 你要验的 |
+| --- | --- | --- |
+| **R-A**：结构测试接受面偏宽（带一条 bullet / 围栏 / 任意标题的散文仍能替换四节文档） | 回复侧判据改为「**至少一个小节标题、其下带条目**」；6 种散文形状 + 非规范存储各有用例；退回旧判据恰红 13 条 | 自己构造形状去破它：`> - x`（引用里带 bullet）、缩进 bullet、围栏里带 `## 标题\\n- x`、setext 标题（`Title\\n===`）、`1.` 编号列表、HTML 标题 `<h2>`、`# ` 后紧跟 bullet（无小节）……哪些仍被判成「文档」？哪些**本来合法却被误拒**（反向缺口同样重要：把合法的部分文档 `## Project\\n- x` 拒掉就是过度收窄）？ |
+| **R-F2**：存储侧只认规范四节 ⇒ 非规范记忆不受保护 | 存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」 | 这个「或」是否会让**本该更新**的路径被锁死（例如一个非规范存储 + 合法小节回复）？fresh 项目与 <40 字符存储的放开是否仍成立？ |
+| **R-2**：只读路径新增 `modelRegistry.find` 依赖 | `find` 改可选调用 + 回退会话模型 + 断言 | 去可选调用会硬失败（TypeError）而不是断言失败 —— 这条断言是否真的钉住了「缺失时回退」这个行为？有没有别处（`hasConfiguredAuth`）还是硬依赖？ |
+| **SIGKILL 失败路径留下临时目录** | 两个 FIFO 看门狗在 SIGKILL 前同步清临时树 | 清的是不是夹具的整个临时根？会不会把**证据**（例如要留的 errors.log/备份）也删掉，从而让失败的诊断消失？ |
+| **tag 撤回记录** | tag 已删、pin 回退、证据文件有撤回横幅、提交留在 master | 记录里是否还有**别处**声称 `v0.4.9` 已发布或已 pin（grep 一遍 `v0.4.9`、`f009fef`、`40e418e`）？两条「修不了」的残留（mtime+size 盲点、写回窗口）在文档/注释/报告里是否口径一致、有没有被写成「已修」？ |
+
+## 对抗性要求
+
+- 假设这批收窄里藏着生产 bug：重点是**误拒**（合法回复被丢弃 ⇒ 记忆再也更新不了）与**误收**（散文仍能覆盖记忆）两个方向。
+- 自己跑 `node tests/run-all.mjs`，并自己做变异（至少：回复侧退回旧判据、存储侧退回只认四节、去掉 `find` 的可选调用）。
+- 记录里每条用户可见句子（CHANGELOG、`docs/*.md`、诊断串、提示语）对着写它的代码路径读一遍。
+
+## 输出格式
+
+按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line`、影响、修复边界。
+末尾一行 `VERDICT: PASSED` / `VERDICT: CHANGES-REQUESTED` / `VERDICT: BLOCKED`；`## Test And QA Focus` 附命令与结果。

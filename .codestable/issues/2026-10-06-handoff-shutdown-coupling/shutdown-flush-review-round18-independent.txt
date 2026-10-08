@@ -1,0 +1,83 @@
+# Lane A 独立审查 — 冻结修订 `63a825f`（残留清理集，候选 `v0.4.9`，第 18 轮）
+
+工作目录 `/tmp/pi-context-rev18`（只读；变异在 `/tmp/laneA-rev18.RBhq` 副本中做，已用 `git checkout --` 还原）。
+
+## blocking
+
+无。收窄后的判据只在「拒绝写」方向起作用；我未能构造出数据丢失/崩溃/逃逸链。
+
+## important
+
+**I-1. `docs/architecture.md:128` 与第 129 行自相矛盾——第 17 轮 I-1 的修复不完整。**
+同一句里既写「请求上限**低于**「正文 + 实测隐藏思考」时重试**不可能成功**」，又写「重试只能在**裁短后的正文**上再试（可能以 `clipped` 的缩短版成功）」。第 17 轮的 finding 正是「封顶 ≠ 重试必失败」（`fitMemoryInput` 会裁短再试），修复只换了后一个子句，前一个绝对断言留在原地。代码路径 `memory/input.ts:37-106`（`clipToLineBoundary` + `fitMemoryInput`）直接证伪「不可能成功」。影响：用户可见文档自相矛盾，且仍保留已被推翻的强断言。修复边界：把 `docs/architecture.md:128` 的「重试不可能成功」改为「重试无法把完整正文放回该上限内」之类，与第 129 行一致。（同一句在 `document.ts` 的 clipped 路径上有代码依据。）
+
+**I-2. R-A 收窄仍放过「围栏里带小节标题+条目」的散文：误收方向未关死。**
+`extensions/project-context/memory/pass.ts:331-337` 的 `replyHeading`/`replyEntry` 只做逐行正则，不识别围栏（而同一模块的 `isHeadingOnlyDocument` 是有围栏状态机的）。实测：回复 `# Project Memory\n\n```\n## Project\n- the format I would write\n``` `（70 字）被判定为文档，整篇规范记忆被替换成这段代码围栏，toast 说 `Memory: updated.`。R-A 的账（报告「残留清理」节）写的是「带一条 bullet / 围栏 / 任意标题的散文仍能替换」，CHANGELOG v0.4.9 也写「回复必须至少有一个小节标题、其下带条目才算文档」——围栏内的 `##` 不是文档的小节标题，所以声明与行为不符。跨过 `OPAQUE_DOCUMENT_MIN_CHARS` 的围栏内容会覆盖记忆。修复边界：`replyIsDocument` 的扫描需带围栏状态（复用 `isHeadingOnlyDocument` 的 fence parity），或把「围栏内的 heading/entry」显式排除。若 owner 把 R-A 的「围栏」视为仍在范围内，这条应升级为 blocking——它是 fail-open（接受坏回复 → 覆盖记忆）。
+
+**I-3. R-A 收窄引入反向缺口（误拒），且给的理由是假的。**
+实测（规范四节存储）：
+- `# Project Memory\n\n## Project\n1. review …`（编号列表）→ 拒绝；
+- `Project\n=======\n- review …`（setext 标题）→ 拒绝；
+- `<h2>Notes</h2>\n- review …`（HTML 标题）→ 拒绝。
+三者都携带条目，却被 `pass.ts:349` 写成 `the consolidation reply carried no entries`，`report.ts:579` 又把它变成用户可见 toast `memory was kept unchanged (the reply carried no entries)`。旧判据（`replyHasStructure`）对这些形状是**接受**的（我复现：回退旧判据后这三例 `accepted=true`），所以这是本轮收窄新引入的过窄。影响：合法（虽非规范）的部分文档被静默丢弃、记忆不再更新，且诊断误导。修复边界：`replyEntry` 扩到有序列表/HTML 条目，或 `replyHeading` 支持 setext/HTML 标题；即便不改接受面，也至少把拒绝理由改成「无法读成文档」而非「carried no entries」。
+
+**I-4. R-2 只收窄了 `find`，同一函数的 `hasConfiguredAuth` 仍是硬依赖，注释的承诺不成立。**
+`extensions/project-context/shared/llm.ts:51`（及 `:57`）无条件调用 `ctx.modelRegistry.hasConfiguredAuth(...)`；只有 `:56` 的 `find` 变成可选。实测：传入 `{ hasConfiguredAuth: undefined }` 的「partial/mocked context」时 `peekAuxModel` 抛 `TypeError: ctx.modelRegistry.hasConfiguredAuth is not a function`，而注释（`:53-55`）声称只读路径「must not depend on a registry method a partial/mocked context may not carry」。真实 pi registry 两方法都有，所以无生产崩溃面，但被审运行时的不变量并未实现，且报告 R-2 行只写了「find 改为可选调用」。修复边界：要么给 `hasConfiguredAuth` 一个 `?.` 默认（无 auth 视作未授权），要么把注释改成「只对 `find` 做兼容，`hasConfiguredAuth` 是真实 registry 的硬契约」。
+
+**I-5. 撤回记录有一处悬空引用。**
+`.codestable/issues/2026-10-08-aux-call-reasoning-budget/release-v0.4.9-evidence.md:3` 的撤回横幅写「残留逐条清完后重新发版，见本文件末尾的「**重新发布**」节」，但全文（56 行，我按 tail 全文核对）没有这一节。全仓 grep `重新发布` 只此一处。影响：记录指向不存在的锚点，且暗示「重新发布」已发生/已记录——本轮尚未重新发版。修复边界：删掉该半句，或真的补一节（当前候选还没 tag，这一节应在重新发版后再写）。其余 tag 撤回声明**属实**（见 praise）。
+
+## nit
+
+**N-1. SIGKILL 看门狗清掉整个夹具根，连本可留作诊断的 artifacts 一起删。**
+`tests/consolidation-test.mjs:2113`、`:2150` 都是 `execFileSync("rm", ["-rf", flushTmp])`，而 `flushTmp` 是这整块「exit flush」夹具的根（`:2007` 的 `mkdtemp`），里面有 `flushMem/errors.log`、`memory.jsonl`、`*.memory-backup-*`，以及 `race/adopt/borrow` 三棵子树。诚实地说：该夹具正常路径的 `finally`（`:2186`）本来就 `rmTemp(flushTmp)`，所以成功/普通断言失败也会删；SIGKILL 路径删的是同一棵树，区别只是「hang 死后想复看 errors.log 时它已经没了」。建议：`rm` 前把 `flushMem/errors.log` 同步拷到 stderr 或保留，或只删 FIFO 的相关子目录。这是失败诊断性，不是正确性。
+
+**N-2. 被第 17 轮改掉口径的两处旧句仍在。**
+`.codestable/issues/2026-10-08-aux-call-reasoning-budget/round15-fix-note.md:36`「重试对被请求上限封住的配置仍**不可能成功**」；报告 `shutdown-flush-review-report.md:261`「成立且已写明…重试只让它更早更清楚地失败」。报告在 `:313/:319` 已更正同一 finding，同一文件里新旧口径并存。属历史记录层，建议加「（口径见第 17 轮更正）」以免读者取用旧句。
+
+**N-3. 文档说「小节标题」，实现接受任意 ATX 级别。**
+`pass.ts:331` 的 `#{1,6}` 让 `# Summary\n- x`（h1）也算文档；docs/architecture.md 的「小节标题」措辞略宽于实际实现。观感级。
+
+**N-4. R-A 的 6 个散文用例的存储侧其实是「部分四节」文档。**
+`tests/consolidation-test.mjs` 里 `before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n"` 只有 2/4 节，`sectionsFromMarkdown` 返回 `undefined`（我直接调过），保护它的是 R-F2 的 `≥40` 分支，不是规范解析分支。所以 R-A 与 R-F2 的测试是耦合的（这也解释了为什么「退回只认规范四节」恰红 13 条——两个测试块一起塌）。规范解析分支本身由用例 11（`structured-guard-opaque` 用完整四节存储）覆盖，所以不是缺口，但报告「6 种散文形状 + 非规范存储各有用例」宜写明这层耦合。
+
+## suggestion
+
+- 为反向缺口补用例：编号列表 / setext / HTML 标题 / `## X\n1. y`，以及「围栏内含 `##`+`-`」。当前 6 形状是单向的（只测「拒」），没有「这些曾被接受、现在是否该拒/该放的边界」对照。
+- 若维持「heading+entry」为唯一判据，建议把诊断分成三类：`carried no entries`（真的无条目）/ `could not be read as a document`（有条目但形状读不出）/ `too short to be a change`。现在的二分类会把 I-3 的合法条目报成「无条目」。
+- `round15-fix-note.md` 的 R-B 行与 CHANGELOG/architecture 对齐（见 N-2）。
+
+## learning
+
+- **收窄启发式时必须同时跑「反向」对照**：本轮把「有标记」换成「标题+条目」，正向用例（6 形状）全绿，反向（曾是合法文档的形状）无人测，于是 setext/编号/HTML 被静默误拒。旧判据对它们是接受的，因此这是本轮引入的行为差，不是既有残留。
+- **两个修复可能共享同一个测试夹具**：R-A 的用例靠 R-F2 的 OR 才成立；单看「变异恰红 13」会误以为两个守卫各自独立被钉住。记录里写清耦合，能避免下一轮误删一个时另一片变绿。
+
+## praise
+
+- **tag 撤回真实且可核**（我逐条验）：本仓 `git tag` 无 `v0.4.9`、最新为 `v0.4.8`；`40e418e`（= 原 peeled tag）与 `f06f7e1` 都是 `HEAD` 祖先（修复提交留在 `master`）；`~/.pi` 提交 `b5083dd`「revert pin to v0.4.8」，其 `settings.json` 为 `pi-project-context.git@v0.4.8`；安装副本 `describe=v0.4.8`、`HEAD=5f76996`、工作区干净。与横幅所述一致。
+- **R-A / R-F2 的变异声明准确**：我独立重做，两条变异在 `consolidation-test.mjs` 各得 `FAILURES: 13`（与 CHANGELOG/report 的「各红 13 条」一致）；`aeb3595` 的行为面确有变化（不是空转）。
+- **R-2 的断言确实钉住回退**：去掉 `?.` 后 `aux-model-test.mjs` 在断言执行前即以 `TypeError` 硬失败（报告已如实记下「不是 FAIL 行」）。
+- **残留台账诚实**：`release-v0.4.9-evidence.md` 顶部撤回横幅 + 报告「残留清理」节明确区分「可修已修」与「物理边界修不了」（mtime+size 盲点、写回窗口），并说明为什么不计入未清残留；`docs/architecture.md:106-107`、`store.ts:60` 与报告口径一致，没有把这两条写成「已修」。
+- `node tests/run-all.mjs` 在冻结修订上 `All 15 tests passed.`。
+
+## residual-risk
+
+- **两行的 `## Notes\n- review` 仍会替换整篇记忆**（`replyIsDocument=true` 即接受）。这是「比四节解析宽」的有意取舍，但对「非记忆形状的短标题+条目」没有下限保护；结合 I-2 的围栏变体，误收面比声明大。
+- **非规范散文存储 ≥40 字符后，后续散文回复再也进不去**：`storedIsDocument` 的 `≥40` 分支一旦成立，`!replyIsDocument` 的散文一律被拒。规范/小组回复不受影响（我实测 `partial-doc-project` 被接受），但「先写一段自由散文记忆」后该记忆无法再用散文更新——与 fresh 项目首条记忆放开构成同一判据的两面，建议在 docs 写明。
+- **`hasConfiguredAuth` 硬依赖**（I-4）在真实 pi 上不成灾，但任何未来只 mock `find` 的 harness 会在到达 `find` 前崩。
+
+## Test And QA Focus
+
+- **基线**：`cd /tmp/pi-context-rev18 && node tests/run-all.mjs` → `All 15 tests passed.`（15/15，含 `consolidation-test.mjs`、`aux-model-test.mjs`）。
+- **变异 A（回复侧回退旧 `replyHasStructure` + 存储侧回退 `sectionsFromMarkdown !== undefined`）**：`node tests/consolidation-test.mjs` → `FAILURES: 13`（6 形状×2 + 非规范×1），与声明一致。
+- **变异 B（存储侧只认规范四节：删 `≥40` OR）**：同套件 → `FAILURES: 13`（因 R-A 夹具的 `before` 本身只有 2/4 节，规范解析返回 `undefined`；已用 `sectionsFromMarkdown(before) === undefined` 单独确认）。
+- **变异 C（`ctx.modelRegistry.find?.(...)` → `find(...)`）**：`node tests/aux-model-test.mjs` → 断言前 `TypeError: ctx.modelRegistry.find is not a function`（进程非零退出）。
+- **对抗探针（我自己在 `/tmp/laneA-rev18.RBhq` 里端到端跑真实 pass）**，规范四节存储，结果：
+  - 误收：`fenced-heading-entry` → `accepted=true`（记忆被围栏覆盖，toast `Memory: updated.`）；`prose-with-quoted-code` 同。
+  - 误拒+假诊断：`numbered-list` / `setext-heading` / `html-heading` → `accepted=false`，toast `memory was kept unchanged (the reply carried no entries)`；旧判据下这三例 `accepted=true`（回退后复测确认是本轮新引入的差）。
+  - 正向：`partial-doc-project`（`## Project\n- x`）→ `accepted=true`（无误收窄）；`quote-bullet` / `bullet-before-heading` / `hash-no-space` → 正确拒绝。
+  - 小样本 toast 复核：`[numbered] toasts: [... "memory was kept unchanged (the reply carried no entries)."]`；`[fence-heading] toasts: [..., "Memory: updated."]`，内存首 6 行为 `# Project Memory\n\n```\n## Project\n- the format I would write`。
+- **R-2 依赖探针**：`peekAuxModel` 传 `{ hasConfiguredAuth: undefined }` → `TypeError: ctx.modelRegistry.hasConfiguredAuth is not a function`；传 `{ hasConfiguredAuth: () => true }`（无 `find`）→ 回退会话模型。
+- **只读**：原件 `git status --porcelain --untracked-files=all` 仍只有既存的 `.agents/memory/HANDOFF.md`、`.agents/memory/project-context.json`（扩展运行时态），无新增改动；变异均在副本中进行并已还原。
+
+VERDICT: CHANGES-REQUESTED
