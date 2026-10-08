@@ -66,6 +66,10 @@ try {
 		peekAuxModel(ctx, { provider: "nope", model: "y" }) === sessionModel && notifications.length === warnedBefore,
 	);
 	check(
+		"peek: a registry without find still falls back to the session model",
+		peekAuxModel(makeCtx(tmp, { model: sessionModel, modelRegistry: { hasConfiguredAuth: () => true } }), { provider: "aux", model: "small" }) === sessionModel,
+	);
+	check(
 		"peek: an unauthorized session model resolves to nothing",
 		peekAuxModel(makeCtx(tmp, { modelRegistry: { hasConfiguredAuth: () => false, find: () => undefined } }), { provider: "", model: "" }) === undefined,
 	);

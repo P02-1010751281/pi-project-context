@@ -311,24 +311,33 @@ export async function consolidateProjectState(
 		// reply that is nothing but headings would otherwise replace a real memory with a skeleton.
 		// The field case this closes: at settle a conversational opening line was published as the whole
 		// document, replacing a 29.9 KB four-section memory. That line *carried* the canonical
-		// `# Project Memory` title (`# Project Memory\n\nI'll review the frozen revision …`), which is why
-		// "no markdown heading anywhere" let the very shape it cites through: the title every document
-		// opens with is not evidence of a document. The test therefore runs on the body *after* the
-		// canonical header is stripped, and a reply counts as a document only when that body carries
-		// structure of its own - a heading, a bullet entry or a fence.
-		// This is long enough that the length rule in report.ts would not skip it, so it has to be refused
-		// here - but only when there is a sectioned document to lose (an opaque stored memory keeps the
-		// accepting path: registered residual R-F2), and only above that same length, so a short reply keeps
-		// its own "too short to be a change" report (registered residual R-F3).
-		const storedSections = sectionsFromMarkdown(existing.text);
+		// `# Project Memory` title (`# Project Memory\n\nI'll review the frozen revision …`).
+		// Round 15 then walked the acceptance face: "the body carries a heading, a bullet entry or a fence"
+		// still let `# Project Memory\n\nI'll do:\n- review` through - one bullet of prose replaced the
+		// whole memory. A reply is a document only when it carries at least one section heading with at
+		// least one entry under it: stricter than "some marker exists anywhere", looser than the full
+		// four-section parse, which deliberately sends anything unusual back to the verbatim path and
+		// would refuse a legitimate partial document (`## Project\n- x`).
+		// The *stored* side is judged by that same parse OR by substance, because a hand-written
+		// non-canonical memory (the field's six-section file) is exactly as much to lose as a canonical
+		// one, and a store below the floor (a fresh project) has nothing to protect.
 		const replyBody = resolved.result.memory.replace(/^\s*#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "");
-		const replyHasStructure =
-			/(^|\n)[ \t]*#{1,6}[ \t]/.test(replyBody) ||
-			/(^|\n)[ \t]*[-*+][ \t]/.test(replyBody) ||
-			/(^|\n)[ \t]*(```|~~~)/.test(replyBody);
+		const storedIsDocument =
+			sectionsFromMarkdown(existing.text) !== undefined ||
+			existing.text.replace(/^\s*#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "").trim().length >= OPAQUE_DOCUMENT_MIN_CHARS;
+		// Below that floor the length rule in report.ts skips the write and reports "too short to be a
+		// change" - the honest reason - so a short reply keeps that report (registered residual R-F3)
+		// instead of this refusal.
+		const replyHeading = /(^|\n)[ \t]*#{1,6}[ \t]/;
+		const replyEntry = /(^|\n)[ \t]*[-*+][ \t]/;
+		const replyIsDocument = replyBody.split("\n").some((line, index, all) => {
+			if (!replyEntry.test(`\n${line}`)) return false;
+			// An entry only counts under a heading: `I'll do:\n- review` is prose with a bullet in it.
+			return all.slice(0, index).some((earlier) => replyHeading.test(`\n${earlier}`));
+		});
 		const conversationalOpaque =
-			storedSections !== undefined &&
-			!replyHasStructure &&
+			storedIsDocument &&
+			!replyIsDocument &&
 			resolved.result.memory.trim().length >= OPAQUE_DOCUMENT_MIN_CHARS;
 		const semanticEmpty = sections ? sectionsSemanticallyEmpty(sections) : isHeadingOnlyDocument(resolved.result.memory) || conversationalOpaque;
 		if (semanticEmpty) {

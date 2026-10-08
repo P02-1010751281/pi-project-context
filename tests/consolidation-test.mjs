@@ -1876,6 +1876,47 @@ try {
 			}
 		}
 		{
+			// Round 15's R-A: the old "any heading / bullet / fence" test let a conversational reply with a
+			// single bullet replace a whole memory. A reply counts as a document only when a heading carries
+			// an entry under it, so every shape below is prose even though each one carries a marker.
+			const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n";
+			for (const [name, reply] of [
+				["prose-bullet", "# Project Memory\n\nI'll do the following:\n- review\n- record"],
+				["prose-star-bullet", "# Project Memory\n\nI'll do the following:\n* review"],
+				["prose-plus-bullet", "# Project Memory\n\nHere is what I will do next:\n+ review the frozen revision"],
+				["prose-fence", "# Project Memory\n\nI'll explain:\n```\nsome prose\n```"],
+				["foreign-heading", "# Project Memory\n\n# My Notes\n\nA long sentence with no entry under a heading at all."],
+				["prose-under-heading", "# Project Memory\n\n## Notes\n\nProse under a heading but still no entry."],
+			]) {
+				const handle = await project(`structured-prose-${name}`);
+				try {
+					await writeFile(memoryFile(handle.root), before);
+					const replyJson = JSON.stringify({ memory_markdown: reply, context: CONTEXT });
+					await pass(handle, () => ({ content: [{ type: "text", text: replyJson }], stopReason: "stop" }));
+					check(`${name} leaves the stored memory byte-identical`, (await readFile(memoryFile(handle.root), "utf8")) === before);
+					check(`${name} is reported as carrying no entries`, (await errorLogText(handle.root)).includes("carried no entries"));
+				} finally {
+					await rmTemp(handle.root);
+				}
+			}
+		}
+		{
+			// The stored side of the same guard (the R-F2 cousin): a hand-written non-canonical memory is a
+			// document too - the field's six-section file is exactly this shape - so prose must not replace
+			// it either. Only a store below the floor (a fresh project, pinned above) stays open.
+			const handle = await project("structured-prose-noncanonical");
+			try {
+				const sixSections = "# Project Memory\n\n## 权威文档\n- a\n\n## 不变量\n- b\n\n## 归属边界\n- c\n\n## 当前状态\n- d\n\n## 操作陷阱\n- e\n";
+				await writeFile(memoryFile(handle.root), sixSections);
+				const reply = JSON.stringify({ memory_markdown: "# Project Memory\n\nI'll review the frozen revision against the code and record the outcome.", context: CONTEXT });
+				await pass(handle, () => ({ content: [{ type: "text", text: reply }], stopReason: "stop" }));
+				check("a non-canonical stored memory is protected too", (await readFile(memoryFile(handle.root), "utf8")) === sixSections);
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
+		{
 			// 15. The other side of the same floor: below 40 characters the write is blocked by the length
 			// rule in report.ts instead, so the memory is kept and the toast names the real reason.
 			const BOUNDARY_39 = "Plain prose with no bullet entry at all";
@@ -2067,6 +2108,9 @@ try {
 			// stuck in that open (measured) - so the timer uses the one signal that cannot be deferred.
 			const watchdog = setTimeout(() => {
 				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 30s");
+				// SIGKILL cannot run the fixture's `finally`, so a failed run used to leave this tree behind
+				// (~40 KB per occurrence). Clear it here, synchronously, before the signal that cannot be deferred.
+				execFileSync("rm", ["-rf", flushTmp]);
 				process.kill(process.pid, "SIGKILL");
 			}, 30_000);
 			const fifoWriter = await open(raceFile, "w");
@@ -2101,6 +2145,9 @@ try {
 			const adopting = loadMemory(adoptRoot, 32000);
 			const adoptWatchdog = setTimeout(() => {
 				console.error("FAIL adopt: the FIFO fixture never got a reader within 30s");
+				// SIGKILL cannot run the fixture's `finally`, so a failed run used to leave this tree behind
+				// (~40 KB per occurrence). Clear it here, synchronously, before the signal that cannot be deferred.
+				execFileSync("rm", ["-rf", flushTmp]);
 				process.kill(process.pid, "SIGKILL");
 			}, 30_000);
 			const adoptWriter = await open(adoptFile, "w");

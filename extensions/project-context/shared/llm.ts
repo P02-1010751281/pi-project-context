@@ -50,7 +50,10 @@ function auxRouteFor(
 ): { model: NonNullable<ExtensionContext["model"]> | undefined; unavailable?: string } {
 	const sessionModel = ctx.model && ctx.modelRegistry.hasConfiguredAuth(ctx.model) ? ctx.model : undefined;
 	if (!config.provider || !config.model) return { model: sessionModel };
-	const configured = ctx.modelRegistry.find(config.provider, config.model);
+	// Optional call: this runs on read-only paths (status, max-memory), which must not depend on a
+	// registry method a partial/mocked context may not carry (independent review round 17, R-2). A real
+	// pi registry always has `find`, so the fallback only ever covers that boundary.
+	const configured = ctx.modelRegistry.find?.(config.provider, config.model);
 	if (configured && ctx.modelRegistry.hasConfiguredAuth(configured)) return { model: configured };
 	return { model: sessionModel, unavailable: `${config.provider}/${config.model}` };
 }
