@@ -92,7 +92,7 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
 					`Context file: ${await contextStatusLine(projectRoot)}`,
 				];
-// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
+				// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
 				// `provider`/`model` override decides that, not the session model (independent review round 15,
 				// I-A). `peekAuxModel` resolves it without the dead-route warning `resolveAuxModel` sends,
 				// which a status read must not do.

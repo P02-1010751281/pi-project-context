@@ -37,7 +37,7 @@ try {
 	check("defaults match dsh", defaults.maxTokens === 8192 && defaults.provider === "" && defaults.model === "");
 
 	console.log("\n=== resolveAuxModel ===");
-	const { resolveAuxModel, completeText } = await loadNamespace(`${PC}/shared/llm.ts`);
+	const { resolveAuxModel, peekAuxModel, completeText } = await loadNamespace(`${PC}/shared/llm.ts`);
 	const auxModel = { provider: "aux", id: "small" };
 	const sessionModel = { provider: "session", id: "big" };
 	const notifications = [];
@@ -56,6 +56,19 @@ try {
 	check("the fallback warns once", notifications.length === 1);
 	resolveAuxModel(ctx, { provider: "nope", model: "x" });
 	check("the fallback does not warn again", notifications.length === 1);
+	// `peekAuxModel` shares `auxRouteFor` with `resolveAuxModel`: same four branches, no warning. A reader
+	// that only needs a model property must not send the dead-route warning a status read cannot show.
+	check("peek: a configured route wins over the session model", peekAuxModel(ctx, { provider: "aux", model: "small" }) === auxModel);
+	check("peek: an empty route uses the session model", peekAuxModel(ctx, { provider: "", model: "" }) === sessionModel);
+	const warnedBefore = notifications.length;
+	check(
+		"peek: an unresolvable route falls back silently",
+		peekAuxModel(ctx, { provider: "nope", model: "y" }) === sessionModel && notifications.length === warnedBefore,
+	);
+	check(
+		"peek: an unauthorized session model resolves to nothing",
+		peekAuxModel(makeCtx(tmp, { modelRegistry: { hasConfiguredAuth: () => false, find: () => undefined } }), { provider: "", model: "" }) === undefined,
+	);
 	check("an unauthorized session model resolves to nothing", resolveAuxModel(makeCtx(tmp, { modelRegistry: { hasConfiguredAuth: () => false, find: () => undefined, complete: async () => ({ content: [] }) } }), { provider: "", model: "" }) === undefined);
 
 	let call;

@@ -486,7 +486,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
 				}
 				const config = await getConfig(projectRoot);
-// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
+				// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
 				// `provider`/`model` override decides that, not the session model (independent review round 15,
 				// I-A). `peekAuxModel` resolves it without the dead-route warning `resolveAuxModel` sends,
 				// which a status read must not do.
