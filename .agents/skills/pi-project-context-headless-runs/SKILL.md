@@ -110,3 +110,8 @@ pi -p --no-project-context --model "deepseek/deepseek-v4-pro" "Reply with exactl
 - The consolidation pass runs at `agent_settled` and writes `CONTEXT.md` + `session-logs/` into the sandbox, so one sandbox per
   variant is mandatory: in the 2026-10-05 progressive-disclosure probe a run's own hallucination came back as CONTEXT.md bait.
 - The keep budget is an upper bound; do not back-fill old prompts to "use" the budget — refilling breaks turn alignment.
+- A sandbox copy of the built repo needs `node_modules` for the extension's bare imports to resolve; the tests-only copies do not. Budget ~180 MB per sandbox and delete old ones after archiving their transcripts — accumulated probe/review copies once filled the 16 GB tmpfs and broke `cp -a`.
+- A review sandbox's status legitimately shows the extension's own writes under `.agents/memory/` — that is the single exemption in the zero-write proof; anything else the run touched is a real write.
+- A one-shot probe cannot exercise consolidation: automatic passes need ≥6 turns AND ≥5 min and `pi -p` is one-shot, so a short session legitimately leaves no `MEMORY.md` and no journal — record that as the probe's limit, not as a pass or a defect.
+- The flag set is `-ne -ns -np` (`--no-tools` is `-nt`; `-np` is prompt templates; mixing them once ran a round with no tools at all).
+- Heredocs in fixtures bite twice: a python heredoc cannot see the script's shell variables, so write the literal path in; a prompt assembled with a nested heredoc carries its own quotes, so pass the file as one argument; when a Chinese string match fails in a heredoc but works standalone, edit the file with the edit tool.
