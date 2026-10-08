@@ -44,7 +44,7 @@
 - **第 3、4 轮**：第 3 轮指出我最初的复检自身有读/stat 不同版本的 TOCTOU 且零覆盖——决策因此抽成纯表
   `flushActionFor`（7 + 3 条断言）。第 4 轮把同一 TOCTOU 追到 `adoptExternalEdit`（blocking，FIFO 注入下更新的手改
   在 journal 与磁盘双双消失），adopt 自读改为 `readRenderWithMtime`（`changed` 即放弃），判据收敛为
-  `renderIsNewerThanJournal` 一处，并补上 FIFO 确定性回归（删守卫即三红）。
+  `renderIsNewerThanJournal` 一处，并补上 FIFO 确定性回归（删守卫即三红（该值属第 4 轮当时的状态；第 5 轮收敛为单一守卫后为七红））。
 - 本 issue 之外的现场发现：settle 路能把一段带 header 的散文回复整篇发布（沙箱里由已安装的 v0.4.5 实测），
   建议另开 issue；详见审查报告的残留风险节。
 - 已写明的已知残留：写回的最后一个窗口（最后一次 stat 到 `writeAtomic` 之间落下的并发手改）与 `recordMemoryDocument`
