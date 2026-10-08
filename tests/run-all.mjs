@@ -46,6 +46,31 @@ if (tracked.status === 0) {
 	}
 }
 
+// A render bullet truncated mid-sentence (a replace that dropped the rest of the line) survives every token
+// check, so the two rendered surfaces get their own gate: each `- ` line must end in terminal punctuation.
+let renderFailed = false;
+if (tracked.status === 0) {
+	const bad = [];
+	for (const file of [".agents/memory/MEMORY.md", ".agents/memory/CONTEXT.md"]) {
+		let text;
+		try {
+			text = readFileSync(path.join(repoRoot, file), "utf8");
+		} catch {
+			continue;
+		}
+		for (const line of text.split("\n")) {
+			if (line.startsWith("- ") && !/[.!?;:`)"'\]]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
+		}
+	}
+	if (bad.length > 0) {
+		renderFailed = true;
+		console.log("== repo hygiene (render bullets end in punctuation) ... FAILED");
+		for (const line of bad) console.log(`   ${line}`);
+	} else {
+		console.log("== repo hygiene (render bullets end in punctuation) ... ok");
+	}
+}
+
 for (const test of tests) {
 	process.stdout.write(`== ${test} ... `);
 	// A hung test must fail the run instead of blocking CI forever.
@@ -60,6 +85,6 @@ for (const test of tests) {
 	}
 }
 if (failed > 0) console.log(`\n${failed} of ${tests.length} tests failed.`);
-else if (hygieneFailed) console.log(`\nAll ${tests.length} tests passed, but the repo hygiene check failed.`);
+else if (hygieneFailed || renderFailed) console.log(`\nAll ${tests.length} tests passed, but a repo hygiene check failed.`);
 else console.log(`\nAll ${tests.length} tests passed.`);
-process.exit(failed === 0 && !hygieneFailed ? 0 : 1);
+process.exit(failed === 0 && !hygieneFailed && !renderFailed ? 0 : 1);
