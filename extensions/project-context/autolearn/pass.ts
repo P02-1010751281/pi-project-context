@@ -66,6 +66,9 @@ export function registerAutolearn(pi: ExtensionAPI): void {
 				if (force) notify(ctx, "Autolearn: skipped — no authenticated model available", "warning");
 				return;
 			}
+			// A forced pass is one or two auxiliary calls; on a reasoning route that is minutes of silence
+			// with nothing on screen (the field case: a /memory update waited ~13 minutes). Say so first.
+			if (force) notify(ctx, "Autolearn: distilling this project's sessions… (a reasoning route can take minutes)");
 
 			const loadedMemory = await loadMemory(projectRoot, config.maxMemoryChars);
 			if (loadedMemory.unreadable) {

@@ -320,6 +320,19 @@ try {
 	await command.handler("", ctx);
 	check("injection body rejected", !(await exists(path.join(tmp, ".agents/skills/evil-workflow/SKILL.md"))));
 	check("rejection notified", String(ctx.notifications.at(-1)?.[0] ?? "").includes("evil-workflow"));
+	console.log("\n=== G2. a forced pass announces its wait before the auxiliary call (round 15, I-B) ===");
+	{
+		// A forced pass is one or two auxiliary calls; the field case waited ~13 minutes with nothing on
+		// screen. The notice must be on screen when the call starts, not merely somewhere in the log.
+		let sawNoticeBeforeCall = false;
+		ctx.modelRegistry.complete = async () => {
+			sawNoticeBeforeCall = ctx.notifications.some(([message]) => String(message).includes("distilling this project's sessions"));
+			return { content: [{ type: "text", text: JSON.stringify({ skill: null, inspect: [] }) }] };
+		};
+		await command.handler("", ctx);
+		check("the forced pass announces its wait before the call", sawNoticeBeforeCall);
+	}
+
 	console.log("\n=== H. automatic pass needs new material and a due interval ===");
 	await command.handler("on", ctx);
 	let automaticCalls = 0;
