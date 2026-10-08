@@ -221,8 +221,22 @@ export async function consolidateProjectState(
 			// reminder asks the model to condense. Anything else keeps the same budget with a strict
 			// reminder. A second failure still fails closed and never stores raw model output as memory.
 			const truncated = completion.stopReason === "length";
+			// `reasoningReserveTokens` is capped at 8192, and a route can spend far more on hidden thinking than
+			// that: the field case (Quantum_Matrix, 2026-10-08) spent 20489 tokens and left 11721 for a reply that
+			// needed ~33k, so the retry asked for the usual +4096 and was cut off again. Carry the spend the
+			// provider just reported into the retry's headroom, so a route that thinks this much gets room for it
+			// on the second call (the request still stops at the model's own limit and the configured ceiling).
+			const observedReasoning = truncated ? Number(completion.reasoningTokens ?? 0) : 0;
+			const retryHeadroom = Math.max(RETRY_OUTPUT_HEADROOM_TOKENS, observedReasoning);
 			usedInput = truncated
-				? fitMemoryInput(existing.text, existingContext, config.maxTokens, auxModel, config.maxOutputTokens, RETRY_OUTPUT_HEADROOM_TOKENS)
+				? fitMemoryInput(
+					existing.text,
+					existingContext,
+					config.maxTokens,
+					auxModel,
+					config.maxOutputTokens,
+					retryHeadroom,
+				)
 				: fitted;
 			const reminder = truncated
 				? "Your previous response was cut off by the output limit. Retry this same consolidation now; condense the memory and context so the complete JSON object fits in this response."
@@ -295,18 +309,26 @@ export async function consolidateProjectState(
 		const sections = resolved.sections;
 		// The opaque entry has no sections, so its half of the gate is "is this a document at all": a
 		// reply that is nothing but headings would otherwise replace a real memory with a skeleton.
-		// The field case this closes: at settle a conversational opening line (no heading, no bullet) was
-		// published as the whole document, replacing a 29.9 KB four-section memory. Such a reply is long
-		// enough that the length rule in report.ts would not skip it, so it has to be refused here - but
-		// only when there is a sectioned document to lose, and only above that same length, so a short
-		// reply keeps its own "too short to be a change" report.
+		// The field case this closes: at settle a conversational opening line was published as the whole
+		// document, replacing a 29.9 KB four-section memory. That line *carried* the canonical
+		// `# Project Memory` title (`# Project Memory\n\nI'll review the frozen revision …`), which is why
+		// "no markdown heading anywhere" let the very shape it cites through: the title every document
+		// opens with is not evidence of a document. The test therefore runs on the body *after* the
+		// canonical header is stripped, and a reply counts as a document only when that body carries
+		// structure of its own - a heading, a bullet entry or a fence.
+		// This is long enough that the length rule in report.ts would not skip it, so it has to be refused
+		// here - but only when there is a sectioned document to lose (an opaque stored memory keeps the
+		// accepting path: registered residual R-F2), and only above that same length, so a short reply keeps
+		// its own "too short to be a change" report (registered residual R-F3).
 		const storedSections = sectionsFromMarkdown(existing.text);
-		// "Not a document" is the strong test: no markdown heading anywhere. A reply that carries the document's
-		// own title but no entries is still the model re-emitting prose (test 11 pins that the guard reports its
-		// skip there), so it must keep the old path - only text with no heading at all is refused.
+		const replyBody = resolved.result.memory.replace(/^\s*#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "");
+		const replyHasStructure =
+			/(^|\n)[ \t]*#{1,6}[ \t]/.test(replyBody) ||
+			/(^|\n)[ \t]*[-*+][ \t]/.test(replyBody) ||
+			/(^|\n)[ \t]*(```|~~~)/.test(replyBody);
 		const conversationalOpaque =
 			storedSections !== undefined &&
-			!/(^|\n)[ \t]*#{1,6}[ \t]/.test(resolved.result.memory) &&
+			!replyHasStructure &&
 			resolved.result.memory.trim().length >= OPAQUE_DOCUMENT_MIN_CHARS;
 		const semanticEmpty = sections ? sectionsSemanticallyEmpty(sections) : isHeadingOnlyDocument(resolved.result.memory) || conversationalOpaque;
 		if (semanticEmpty) {

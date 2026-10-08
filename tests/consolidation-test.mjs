@@ -160,6 +160,9 @@ try {
 		const capTmp = await mkdtemp(path.join(os.tmpdir(), "pi-consolidation-cap-retry-"));
 		try {
 			await mkdir(path.join(capTmp, ".agents/memory"), { recursive: true });
+			// The ceiling decides how much of the observed reasoning spend the retry may ask for; the default
+			// 32768 would clamp the growth this case is about.
+			await writeFile(path.join(capTmp, ".agents/memory/project-context.json"), JSON.stringify({ maxOutputTokens: 131_072 }));
 			// Large enough that the fitted budget is driven by the memory, not by the 8192 default.
 			// Keep it multi-line: whole-line truncation drops an oversized single line entirely.
 			await writeFile(path.join(capTmp, ".agents/memory/MEMORY.md"), "# Project Memory\n\n## Project\n- old.\n" + ("x".repeat(200) + "\n").repeat(200));
@@ -177,7 +180,7 @@ try {
 				calls += 1;
 				budgets.push(options?.maxTokens);
 				prompts.push(context.messages[0].content[0].text);
-				if (calls === 1) return { content: [{ type: "text", text: '{"memory_markdown":"# Project Memory\\n\\n- cut' }], stopReason: "length" };
+				if (calls === 1) return { content: [{ type: "text", text: '{"memory_markdown":"# Project Memory\\n\\n- cut' }], stopReason: "length", usage: { reasoning: 20_000 } };
 				return {
 					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- recovered after the cap.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
 					stopReason: "stop",
@@ -187,6 +190,14 @@ try {
 			const memory = await readFile(path.join(capTmp, ".agents/memory/MEMORY.md"), "utf8");
 			const errors = await readFile(path.join(capTmp, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check("a truncated reply is retried once with a larger budget", calls === 2 && budgets[1] > budgets[0]);
+			// The field case spent 20489 hidden-reasoning tokens against a reserve capped at 8192, so the fixed
+			// +4096 headroom was not enough; the retry must carry what the first attempt actually spent.
+			const { RETRY_OUTPUT_HEADROOM_TOKENS } = await loadNamespace(`${PC}/shared/output-budget.ts`);
+			check(
+				"the retry carries the hidden reasoning the first attempt actually spent",
+				budgets[1] - budgets[0] >= 20_000 - RETRY_OUTPUT_HEADROOM_TOKENS,
+			);
+			check("the forced pass says it is consolidating before the wait", ctx.notifications.some(([message]) => message.includes("Memory: consolidating")));
 			check("the truncated retry asks the model to condense", prompts[1].includes("cut off by the output limit") && prompts[1].includes("condense"));
 			check("the retried pass writes the complete memory", memory.includes("recovered after the cap."));
 			check("a recovered truncation is not logged as a failure", !errors.includes("not a usable JSON object") && !errors.includes("output limit"));
@@ -1768,14 +1779,20 @@ try {
 			}
 		}
 
-		// 11. The guard says it was skipped when the new reply is opaque rather than silent.
+		// 11. Prose wearing the document's own title is still prose: `# Project Memory` is what every
+		// document opens with, so it cannot be the evidence that this reply is one. This is the shape of
+		// the field case quoted in round 1 of this issue's review, which v0.4.7 accepted while logging
+		// the guard's skip.
 		{
 			const handle = await project("structured-guard-opaque");
 			try {
-				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- p.\n\n## Invariants\n- an invariant\n\n## Pitfalls\n\n## Index\n- i\n");
+				const before = "# Project Memory\n\n## Project\n- p.\n\n## Invariants\n- an invariant\n\n## Pitfalls\n\n## Index\n- i\n";
+				await writeFile(memoryFile(handle.root), before);
 				const prose = "# Project Memory\n\nProject prose with no bullets at all, long enough to pass the length rule on its own.";
 				await pass(handle, () => ({ content: [{ type: "text", text: prose }], stopReason: "stop" }));
-				check("the guard reports its skip when the new reply is opaque", (await errorLogText(handle.root)).includes("did not produce sections"));
+				check("a titled prose reply leaves the stored memory byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("a titled prose reply is reported as carrying no entries", (await errorLogText(handle.root)).includes("carried no entries"));
+				check("a titled prose reply is not reported as a guard skip", !(await errorLogText(handle.root)).includes("did not produce sections"));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1811,24 +1828,36 @@ try {
 			}
 		}
 
-		// 15. The field case: at settle, a conversational opening line was published as the whole document,
-		// replacing a 29.9 KB four-section memory (v0.4.5 sandbox, observer's own session). An opaque reply
-		// with no section at all is not a memory document, so it must not replace one; an opaque reply that
-		// does carry a heading is still accepted, which is the markdown path this rule has to leave alone.
+		// 14. The field case, byte for byte. At settle this reply was published as the whole document,
+		// replacing a 29.9 KB four-section memory (v0.4.5 sandbox; the journal's 6th entry, quoted in
+		// `shutdown-flush-review-round1-independent.txt` and in the review report's residual section).
+		// It wears the canonical title and adds one conversational line, so it has no structure of its
+		// own - and the title is what every document opens with, which is why v0.4.7's "no markdown
+		// heading anywhere" test accepted the very shape it cites. The table adds the shapes round 14
+		// asked for: the same line without a title, a `#.` pseudo-heading (the character class after `#`
+		// is load-bearing) and the exact 40-character floor.
 		{
-			const handle = await project("structured-conversational-opaque");
-			try {
-				const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
-				await writeFile(memoryFile(handle.root), before);
-				const conversational = JSON.stringify({
-					memory_markdown: "I'll review the frozen revision against the code, tests, and my own probes, then record the outcome.",
-					context: CONTEXT,
-				});
-				await pass(handle, () => ({ content: [{ type: "text", text: conversational }], stopReason: "stop" }));
-				check("a conversational reply leaves the stored memory byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("a conversational reply is reported as carrying no entries", (await errorLogText(handle.root)).includes("carried no entries"));
-			} finally {
-				await rmTemp(handle.root);
+			const FIELD_REPLY = "# Project Memory\n\nI'll review the frozen revision against the code, tests, and my own probes, then record the outcome.";
+			const BOUNDARY_40 = "Plain prose with no bullet entry at all.";
+			check("the boundary fixture is exactly 40 characters", BOUNDARY_40.length === 40);
+			check("the field fixture keeps its canonical title", FIELD_REPLY.startsWith("# Project Memory\n\n"));
+			for (const [name, label, reply] of [
+				["field-title", "the field reply, with its canonical title", FIELD_REPLY],
+				["field-bare", "the same line without a title", FIELD_REPLY.replace("# Project Memory\n\n", "")],
+				["pseudo-heading", "a `#.` pseudo-heading plus prose", "#.Project\n\nProse that has no real heading and no bullet entry either."],
+				["boundary-40", "a reply of exactly the 40-character floor", BOUNDARY_40],
+			]) {
+				const handle = await project(`structured-opaque-${name}`);
+				try {
+					const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
+					await writeFile(memoryFile(handle.root), before);
+					const replyJson = JSON.stringify({ memory_markdown: reply, context: CONTEXT });
+					await pass(handle, () => ({ content: [{ type: "text", text: replyJson }], stopReason: "stop" }));
+					check(`${label} leaves the stored memory byte-identical`, (await readFile(memoryFile(handle.root), "utf8")) === before);
+					check(`${label} is reported as carrying no entries`, (await errorLogText(handle.root)).includes("carried no entries"));
+				} finally {
+					await rmTemp(handle.root);
+				}
 			}
 		}
 		{
@@ -1838,13 +1867,45 @@ try {
 				await writeFile(memoryFile(handle.root), before);
 				const document = JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- the re-emitted document.\n", context: CONTEXT });
 				await pass(handle, () => ({ content: [{ type: "text", text: document }], stopReason: "stop" }));
-				check("an opaque reply that is a document is still accepted", (await readFile(memoryFile(handle.root), "utf8")).includes("the re-emitted document."));
+				check("an opaque reply that is a document is still accepted", (await readFile(memoryFile(handle.root), "utf8")).includes("the re-emitted document."))
+				// The accepting path is where the guard's skip line belongs: it only runs when the pass
+				// actually considered writing, and the refusal above skips before that point.
+				check("the guard reports its skip on the accepting opaque path", (await errorLogText(handle.root)).includes("did not produce sections"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+		{
+			// 15. The other side of the same floor: below 40 characters the write is blocked by the length
+			// rule in report.ts instead, so the memory is kept and the toast names the real reason.
+			const BOUNDARY_39 = "Plain prose with no bullet entry at all";
+			check("the 39-character fixture is exactly one short of the floor", BOUNDARY_39.length === 39);
+			const handle = await project("structured-opaque-39");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n";
+				await writeFile(memoryFile(handle.root), before);
+				const reply = JSON.stringify({ memory_markdown: BOUNDARY_39, context: CONTEXT });
+				const { toasts } = await pass(handle, () => ({ content: [{ type: "text", text: reply }], stopReason: "stop" }));
+				check("the 39-character reply leaves the memory alone", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("the 39-character reply names the length rule, not emptiness", toasts.some((message) => message.includes("too short to be a change")));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+		{
+			// 16. A fresh project has nothing to lose, so the refusal must not block the first memory:
+			// that is what `storedSections !== undefined` buys, and this pins it.
+			const handle = await project("structured-opaque-fresh");
+			try {
+				const reply = JSON.stringify({ memory_markdown: "# Project Memory\n\nFresh prose that is long enough to be written.", context: CONTEXT });
+				await pass(handle, () => ({ content: [{ type: "text", text: reply }], stopReason: "stop" }));
+				check("a fresh project still writes its first memory from an opaque reply", (await readFile(memoryFile(handle.root), "utf8").catch(() => "")).includes("Fresh prose"));
 			} finally {
 				await rmTemp(handle.root);
 			}
 		}
 
-		// 14. A reply too short to be a change must not claim a write either — and must not claim the
+		// 17. A reply too short to be a change must not claim a write either — and must not claim the
 		// wrong reason: a short reply did carry text, so "carried no entries" would be false.
 		{
 			const handle = await project("structured-short-opaque");
@@ -1863,7 +1924,7 @@ try {
 			}
 		}
 
-		// 15. A condensation reply that is a DECORATED skeleton must not be adopted over the first,
+		// 18. A condensation reply that is a DECORATED skeleton must not be adopted over the first,
 		// real result: adopting it stored 91 bytes of headings and dropped everything the model wrote.
 		{
 			const handle = await project("structured-condense-decorated", { maxMemoryChars: 4000 });
