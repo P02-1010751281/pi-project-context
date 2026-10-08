@@ -59,10 +59,11 @@ if (tracked.status === 0) {
 		try {
 			text = readFileSync(path.join(repoRoot, file), "utf8");
 		} catch {
+			bad.push(`${file}: unreadable (skipped)`);
 			continue;
 		}
 		for (const line of text.split("\n")) {
-			if (/^\s*[-*+] /.test(line) && !/[.!?;:`)"'\]。））」』”’…]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
+			if (/^\s*[-*+] /.test(line) && !/[.!?;:`)"'\]。）、）」』”’…！？；：】]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
 		}
 	}
 	if (bad.length > 0) {
