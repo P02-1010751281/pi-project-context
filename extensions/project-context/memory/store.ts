@@ -279,17 +279,20 @@ export async function loadMemory(projectRoot: string, limit: number = MAX_MEMORY
 		// newer than the journal: that is an external edit (a hand edit or an older build), and
 		// `recordMemoryDocument` adopts those bytes into the journal on the next write.
 		const view = folded;
-		const renderRaw = await readOptional(target);
-		if (renderRaw.trim()) {
+		// One consistent read: the render's bytes and its time describe one version, so an edit that lands
+		// under the read cannot be adopted as the older bytes carrying the newer file's mtime (residual R-L1).
+		// A read that spans a replacement (`changed`) decides nothing here - the journal's fold stands - because
+		// this path must not pick a version it cannot vouch for; the next write re-reads and adopts then.
+		const renderRead = await readRenderWithMtime(target);
+		if (renderRead.text.trim() && !renderRead.changed) {
 			// Both sides are compared in normalized form: `foldMemoryJournal` returns a normalized
 			// document, so a raw trimmed render would never compare equal and the mtime would
 			// silently become the only rule (adopting our own output as if it were an edit).
-			const external = memoryComparisonKey(renderRaw, limit);
-			const renderInfo = await stat(target).catch(() => undefined);
+			const external = memoryComparisonKey(renderRead.text, limit);
 			const journalInfo = await stat(journal).catch(() => undefined);
 			// An empty key means the render was cleared by hand; the journal stays authoritative.
-			if (external && external !== view && renderInfo && journalInfo && renderInfo.mtimeMs > journalInfo.mtimeMs) {
-				return { text: external, source: target, poisoned: Boolean(decodePoisonedMemory(renderRaw.trim(), limit)), damaged: journalState.damaged };
+			if (external && external !== view && renderRead.mtimeMs !== undefined && journalInfo && renderRead.mtimeMs > journalInfo.mtimeMs) {
+				return { text: external, source: target, poisoned: Boolean(decodePoisonedMemory(renderRead.text.trim(), limit)), damaged: journalState.damaged };
 			}
 		}
 		return { text: view, source: journal, poisoned: false, damaged: journalState.damaged };

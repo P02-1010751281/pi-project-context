@@ -1991,6 +1991,36 @@ try {
 			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
 			check("race: the replacement is still the file's content", (await readFile(raceFile, "utf8")).includes("Replacement that must survive."));
 
+			// Residual R-L1: the pure-read path must not pair an older render's bytes with a newer stat. The same
+			// FIFO trick drives it - `loadMemory` reads while the path is replaced underneath - and the two possible
+			// outcomes differ: pairing bytes with a separately taken stat adopts the older bytes, the consistent
+			// read declines and lets the journal's fold stand. A stable file then proves adoption still happens.
+			const adoptRoot = path.join(flushTmp, "adopt");
+			const adoptMem = path.join(adoptRoot, ".agents/memory");
+			await mkdir(adoptMem, { recursive: true });
+			await writeFile(path.join(adoptMem, "memory.jsonl"), `${JSON.stringify({ ts: new Date().toISOString(), op: "replace", text: "# Project Memory\n\n## Project\n- Journal seed for the read race.\n" })}\n`);
+			const adoptPast = new Date(Date.now() - 60_000);
+			await utimes(path.join(adoptMem, "memory.jsonl"), adoptPast, adoptPast);
+			const adoptFile = path.join(adoptMem, "MEMORY.md");
+			execFileSync("mkfifo", [adoptFile]);
+			const { loadMemory } = await loadNamespace(`${PC}/shared/project-state.ts`);
+			const adopting = loadMemory(adoptRoot, 32000);
+			const adoptWatchdog = setTimeout(() => {
+				console.error("FAIL adopt: the FIFO fixture never got a reader within 30s");
+				process.kill(process.pid, "SIGKILL");
+			}, 30_000);
+			const adoptWriter = await open(adoptFile, "w");
+			await adoptWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes the read must not adopt.\n");
+			await rm(adoptFile);
+			await writeFile(adoptFile, "# Project Memory\n\n## Project\n- External edit newer than the journal.\n");
+			await adoptWriter.close();
+			const adopted = await adopting;
+			clearTimeout(adoptWatchdog);
+			check("read race: the journal's fold stands instead of the older bytes", adopted.source.endsWith("memory.jsonl") && adopted.text.includes("Journal seed") && !adopted.text.includes("Older bytes"));
+			check("read race: the file really was replaced under the read", (await readFile(adoptFile, "utf8")).includes("External edit newer than the journal."));
+			const stable = await loadMemory(adoptRoot, 32000);
+			check("read race: a stable newer render is still adopted", stable.source.endsWith("MEMORY.md") && stable.text.includes("External edit newer than the journal."));
+
 			// The borrowed-key path on a stable file: the key the write pass read before its model call can be
 			// stale by the time the append runs. Journalling it would push the journal past the replacement and
 			// shadow it, so a stale key has to be refused while the file's current key is still accepted.
