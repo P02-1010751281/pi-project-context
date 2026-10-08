@@ -14,7 +14,7 @@ import { capCeilingWarning, memoryCapUnsatisfiable } from "../shared/output-budg
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, flushMemoryRender, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
-import { consolidateProjectState, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
+import { consolidateProjectState, OPAQUE_DOCUMENT_MIN_CHARS, type ConsolidateOutcome, type RemovedEntries } from "./pass.ts";
 import { memoryStatusLevel, memoryStatusLine, contextStatusLine } from "./status.ts";
 import { buildMemoryInjection } from "./injection.ts";
 
@@ -167,7 +167,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// four-heading skeleton, for the opaque path a document that is nothing but headings. The opaque
 			// path additionally keeps its length rule, because there the text is normally the memory re-emitted.
 			const sectioned = outcome.kind !== "fallback-opaque";
-			const memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= 40);
+			const memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= OPAQUE_DOCUMENT_MIN_CHARS);
 			const existingContext = await readOptional(contextFile(projectRoot));
 			const update = outcome.result.context ?? (existingContext.trim() ? undefined : fallbackUpdate(ctx));
 			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {

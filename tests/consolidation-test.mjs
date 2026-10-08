@@ -1811,6 +1811,39 @@ try {
 			}
 		}
 
+		// 15. The field case: at settle, a conversational opening line was published as the whole document,
+		// replacing a 29.9 KB four-section memory (v0.4.5 sandbox, observer's own session). An opaque reply
+		// with no section at all is not a memory document, so it must not replace one; an opaque reply that
+		// does carry a heading is still accepted, which is the markdown path this rule has to leave alone.
+		{
+			const handle = await project("structured-conversational-opaque");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
+				await writeFile(memoryFile(handle.root), before);
+				const conversational = JSON.stringify({
+					memory_markdown: "I'll review the frozen revision against the code, tests, and my own probes, then record the outcome.",
+					context: CONTEXT,
+				});
+				await pass(handle, () => ({ content: [{ type: "text", text: conversational }], stopReason: "stop" }));
+				check("a conversational reply leaves the stored memory byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
+				check("a conversational reply is reported as carrying no entries", (await errorLogText(handle.root)).includes("carried no entries"));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+		{
+			const handle = await project("structured-opaque-document");
+			try {
+				const before = "# Project Memory\n\n## Project\n- keep me.\n";
+				await writeFile(memoryFile(handle.root), before);
+				const document = JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- the re-emitted document.\n", context: CONTEXT });
+				await pass(handle, () => ({ content: [{ type: "text", text: document }], stopReason: "stop" }));
+				check("an opaque reply that is a document is still accepted", (await readFile(memoryFile(handle.root), "utf8")).includes("the re-emitted document."));
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+
 		// 14. A reply too short to be a change must not claim a write either — and must not claim the
 		// wrong reason: a short reply did carry text, so "carried no entries" would be false.
 		{

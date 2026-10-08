@@ -31,6 +31,13 @@ type ConsolidateKind = "structured" | "fallback-sections" | "fallback-opaque";
 /** Entries the new memory no longer carries, for the regression guard's report. */
 export type RemovedEntries = { count: number; samples: string[] };
 
+/**
+ * The length from which an opaque reply is treated as a document candidate at all: below it the reply is
+ * normally the memory re-emitted in a handful of words, and report.ts names "too short to be a change"
+ * rather than emptiness. Both sides read this one number.
+ */
+export const OPAQUE_DOCUMENT_MIN_CHARS = 40;
+
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
 export type ConsolidateOutcome = {
 	result: ConsolidatedResult;
@@ -288,7 +295,20 @@ export async function consolidateProjectState(
 		const sections = resolved.sections;
 		// The opaque entry has no sections, so its half of the gate is "is this a document at all": a
 		// reply that is nothing but headings would otherwise replace a real memory with a skeleton.
-		const semanticEmpty = sections ? sectionsSemanticallyEmpty(sections) : isHeadingOnlyDocument(resolved.result.memory);
+		// The field case this closes: at settle a conversational opening line (no heading, no bullet) was
+		// published as the whole document, replacing a 29.9 KB four-section memory. Such a reply is long
+		// enough that the length rule in report.ts would not skip it, so it has to be refused here - but
+		// only when there is a sectioned document to lose, and only above that same length, so a short
+		// reply keeps its own "too short to be a change" report.
+		const storedSections = sectionsFromMarkdown(existing.text);
+		// "Not a document" is the strong test: no markdown heading anywhere. A reply that carries the document's
+		// own title but no entries is still the model re-emitting prose (test 11 pins that the guard reports its
+		// skip there), so it must keep the old path - only text with no heading at all is refused.
+		const conversationalOpaque =
+			storedSections !== undefined &&
+			!/(^|\n)[ \t]*#{1,6}[ \t]/.test(resolved.result.memory) &&
+			resolved.result.memory.trim().length >= OPAQUE_DOCUMENT_MIN_CHARS;
+		const semanticEmpty = sections ? sectionsSemanticallyEmpty(sections) : isHeadingOnlyDocument(resolved.result.memory) || conversationalOpaque;
 		if (semanticEmpty) {
 			// A reply with no entries at all renders as a bare four-heading skeleton, and an opaque reply
 			// that is only headings is the same thing with the headings lost. Writing either would replace
