@@ -85,7 +85,7 @@ session.jsonl ──► session.md ──► INDEX.md
 - 跨进程锁有 stale-lock recovery，释放时校验唯一 token，避免误删别的进程的锁。
 - `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时保留头尾、按整行丢弃中段并追加 marker；marker 自身不计入正文预算。
   cap 高到输出上限上界估算装不下时（`memoryReplyTokens` + reasoning 预留 > `max(maxTokens, maxOutputTokens)`）
-  在 `status` 和配置时点名；会话模型声明 `reasoning` 时把这部分隐藏思考也算进去（配置的辅助路由不在这些只读路径里解析）。
+  在 `status` 和配置时点名；**辅助调用路由**声明 `reasoning` 时把这部分隐藏思考也算进去（只读路径经 `peekAuxModel` 解析配置的辅助路由，不发 dead-route 告警）。
 - 限制由调用方显式传给 normalize、fold、comparison、load、write 和 legacy migration；没有进程级全局 cap，因此多项目不会串味。
 - OMP/旧布局在 `session_start` 迁移时使用当前项目的 `maxMemoryChars`，不会退回默认值。
 - 旧的 poisoned memory 只在内存中解码；下一次正常覆盖前才备份和修复，不在读取阶段产生副作用。
@@ -124,9 +124,9 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
   JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。该预留有 8192 的上限，而 route
   实测可能远超它（现场一次请求花掉 20489 token 隐藏思考），所以它只是首次尝试的估计，不是界。
 - 回复被输出上限截断（`stopReason: length`）时，先按更大的输出预算重试一次：至少 +4096 token，且不少于上一次实际花掉的
-  隐藏思考 token（provider 在 usage 里回报）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算
-  —— 请求上限**低于**「正文 + 实测隐藏思考」时重试不可能成功（现场需约 53.5k 而上限 32768），那种配置要靠抬高上限或换辅助路由
-  （reserve 增大），由提示词要求压缩；第二次仍截断则 fail closed，错误信息点名输出上限与实测的隐藏思考数，而不是泛化解析失败。
+  隐藏思考 token（provider 在 usage 里回报）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算（reserve 增大），
+  由提示词要求压缩。请求上限**低于**「正文 + 实测隐藏思考」时重试不可能成功（现场需约 53.5k 而上限 32768）：那种配置要靠抬高上限或换
+  辅助路由，重试只让它更早更清楚地失败；第二次仍截断则 fail closed，错误信息点名输出上限与实测的隐藏思考数，而不是泛化解析失败。
 - 其他不可解析回复先做一次有界重试并附加严格格式提醒；第二次仍失败则 fail closed，保留现有文件并把回复头写入 `errors.log`，不会把原始 JSON 当成 memory。
 - 非工具调用的纯 Markdown 回复分两种：`memory` 能解析出四节时按 `fallback-sections` 交给渲染器重新渲染；解析不出四节时按
   `fallback-opaque` 把**回复正文原样**作为 `MEMORY.md`（不经渲染器），只有整篇都是标题的「骨架」判为空、跳过写入并写诊断。
