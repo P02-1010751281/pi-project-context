@@ -576,7 +576,7 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	if (info?.memoryKept && report !== "unchanged") {
 		if (info.keepReason === "stale") return `${staleKeepSentence(Boolean(info.contextWritten))}${guard}`;
 		const clippedNote = report === "clipped" ? " The prompt also had to be shortened to fit the model output budget." : "";
-		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply carried no entries";
+		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply was not a writable memory document";
 		return `Memory: context updated; memory was kept unchanged (${why}).${clippedNote}${guard}`;
 	}
 	if (report === "clipped") {

@@ -328,13 +328,32 @@ export async function consolidateProjectState(
 		// Below that floor the length rule in report.ts skips the write and reports "too short to be a
 		// change" - the honest reason - so a short reply keeps that report (registered residual R-F3)
 		// instead of this refusal.
-		const replyHeading = /(^|\n)[ \t]*#{1,6}[ \t]/;
-		const replyEntry = /(^|\n)[ \t]*[-*+][ \t]/;
-		const replyIsDocument = replyBody.split("\n").some((line, index, all) => {
-			if (!replyEntry.test(`\n${line}`)) return false;
-			// An entry only counts under a heading: `I'll do:\n- review` is prose with a bullet in it.
-			return all.slice(0, index).some((earlier) => replyHeading.test(`\n${earlier}`));
-		});
+		// Fences are tracked, so a code block that merely *contains* `## Project\n- x` is prose, not a
+		// document (round 18's I-2), and the heading/entry vocabulary is the module's own: ATX at any level,
+		// a setext underline, an HTML heading, and entries as bullets or ordered markers (round 18's I-3 -
+		// a reply that carries entries under such a heading is a document and must be published, not refused).
+		let replyInFence: string | undefined;
+		let replySawHeading = false;
+		let replyIsDocument = false;
+		for (const line of replyBody.split("\n")) {
+			const trimmed = line.trim();
+			const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+			if (fence) {
+				// Only the same family closes it: a `~~~` block is not closed by a ``` line.
+				if (!replyInFence) replyInFence = fence[1][0];
+				else if (replyInFence === fence[1][0]) replyInFence = undefined;
+				continue;
+			}
+			if (replyInFence) continue;
+			if (/^#{1,6}[ \t]/.test(trimmed) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(trimmed) || /^=+[ \t]*$/.test(trimmed) || /^-{2,}[ \t]*$/.test(trimmed)) {
+				replySawHeading = true;
+				continue;
+			}
+			if (replySawHeading && /^([-*+][ \t]|\d+[.)][ \t])/.test(trimmed)) {
+				replyIsDocument = true;
+				break;
+			}
+		}
 		const conversationalOpaque =
 			storedIsDocument &&
 			!replyIsDocument &&
@@ -346,7 +365,7 @@ export async function consolidateProjectState(
 			// a real memory with nothing, so the write is skipped outright — and because that is a silent
 			// no-op from the outside, it always leaves a diagnostic.
 			if (existing.text.trim()) {
-				await logError(projectRoot, "memory", "the consolidation reply carried no entries; the stored memory was kept unchanged");
+				await logError(projectRoot, "memory", "the consolidation reply was not a writable memory document; the stored memory was kept unchanged");
 			}
 		}
 		// The guard runs on the sections this pass would actually write and on the stored memory, both

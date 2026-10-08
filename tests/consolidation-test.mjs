@@ -1630,7 +1630,7 @@ try {
 				check("the reply does not claim the memory was updated", !toasts.some((message) => /Memory: updated /.test(message)));
 				check("the reply says the memory was kept", toasts.some((message) => message.includes("memory was kept unchanged")));
 				check("no removal warning is raised for an unwritten memory", !toasts.some((message) => message.includes("no longer carries")));
-				check("the gate leaves an ordinary diagnostic", (await errorLogText(handle.root)).includes("carried no entries"));
+				check("the gate leaves an ordinary diagnostic", (await errorLogText(handle.root)).includes("not a writable memory document"));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1754,9 +1754,9 @@ try {
 					stopReason: "stop",
 				}));
 				check("a heading-only opaque reply leaves MEMORY.md byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("the skeleton is reported, not silently accepted", (await errorLogText(handle.root)).includes("carried no entries"));
+				check("the skeleton is reported, not silently accepted", (await errorLogText(handle.root)).includes("not a writable memory document"));
 				check("the skeleton does not claim an update", !toasts.some((message) => /Memory: updated /.test(message)));
-				check("the semantic-empty toast does say the reply carried no entries", toasts.some((message) => message.includes("carried no entries")));
+				check("the semantic-empty toast names the real reason", toasts.some((message) => message.includes("not a writable memory document")));
 			} finally {
 				await rmTemp(handle.root);
 			}
@@ -1791,7 +1791,7 @@ try {
 				const prose = "# Project Memory\n\nProject prose with no bullets at all, long enough to pass the length rule on its own.";
 				await pass(handle, () => ({ content: [{ type: "text", text: prose }], stopReason: "stop" }));
 				check("a titled prose reply leaves the stored memory byte-identical", (await readFile(memoryFile(handle.root), "utf8")) === before);
-				check("a titled prose reply is reported as carrying no entries", (await errorLogText(handle.root)).includes("carried no entries"));
+				check("a titled prose reply is reported as not writable", (await errorLogText(handle.root)).includes("not a writable memory document"));
 				check("a titled prose reply is not reported as a guard skip", !(await errorLogText(handle.root)).includes("did not produce sections"));
 			} finally {
 				await rmTemp(handle.root);
@@ -1854,7 +1854,7 @@ try {
 					const replyJson = JSON.stringify({ memory_markdown: reply, context: CONTEXT });
 					await pass(handle, () => ({ content: [{ type: "text", text: replyJson }], stopReason: "stop" }));
 					check(`${label} leaves the stored memory byte-identical`, (await readFile(memoryFile(handle.root), "utf8")) === before);
-					check(`${label} is reported as carrying no entries`, (await errorLogText(handle.root)).includes("carried no entries"));
+					check(`${label} is reported as not writable`, (await errorLogText(handle.root)).includes("not a writable memory document"));
 				} finally {
 					await rmTemp(handle.root);
 				}
@@ -1879,7 +1879,7 @@ try {
 			// Round 15's R-A: the old "any heading / bullet / fence" test let a conversational reply with a
 			// single bullet replace a whole memory. A reply counts as a document only when a heading carries
 			// an entry under it, so every shape below is prose even though each one carries a marker.
-			const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n";
+			const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
 			for (const [name, reply] of [
 				["prose-bullet", "# Project Memory\n\nI'll do the following:\n- review\n- record"],
 				["prose-star-bullet", "# Project Memory\n\nI'll do the following:\n* review"],
@@ -1894,7 +1894,40 @@ try {
 					const replyJson = JSON.stringify({ memory_markdown: reply, context: CONTEXT });
 					await pass(handle, () => ({ content: [{ type: "text", text: replyJson }], stopReason: "stop" }));
 					check(`${name} leaves the stored memory byte-identical`, (await readFile(memoryFile(handle.root), "utf8")) === before);
-					check(`${name} is reported as carrying no entries`, (await errorLogText(handle.root)).includes("carried no entries"));
+					check(`${name} is reported as not writable`, (await errorLogText(handle.root)).includes("not a writable memory document"));
+				} finally {
+					await rmTemp(handle.root);
+				}
+			}
+		}
+		{
+			// Round 18's I-2: the scan tracks fences, so a code block that merely *contains* a heading and an
+			// entry is prose - the previous regex would have read straight through the fence and published it.
+			const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
+			const handle = await project("structured-prose-fenced-document");
+			try {
+				await writeFile(memoryFile(handle.root), before);
+				const reply = "# Project Memory\n\nHere is a sample of what I saw:\n```\n## Project\n- a sample entry\n```\n";
+				await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: reply, context: CONTEXT }) }], stopReason: "stop" }));
+				check("a fenced pseudo-document is not a document", (await readFile(memoryFile(handle.root), "utf8")) === before);
+			} finally {
+				await rmTemp(handle.root);
+			}
+		}
+		{
+			// Round 18's I-3, the reverse direction: a reply whose entries sit under a numbered list, a setext
+			// heading or an HTML heading is a document, so it must be *published*, not refused. The narrowing
+			// must not close the door on shapes the previous acceptance took.
+			for (const [name, reply] of [
+				["numbered", "# Project Memory\n\n## Project\n1. numbered entry that must be published\n"],
+				["setext", "# Project Memory\n\nProject\n=======\n- setext entry that must be published\n"],
+				["html", "# Project Memory\n\n<h2>Project</h2>\n- html entry that must be published\n"],
+			]) {
+				const handle = await project(`structured-prose-reverse-${name}`);
+				try {
+					await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n");
+					await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: reply, context: CONTEXT }) }], stopReason: "stop" }));
+					check(`${name} entries are published, not refused`, (await readFile(memoryFile(handle.root), "utf8")).includes("must be published"));
 				} finally {
 					await rmTemp(handle.root);
 				}
@@ -1947,7 +1980,7 @@ try {
 		}
 
 		// 17. A reply too short to be a change must not claim a write either — and must not claim the
-		// wrong reason: a short reply did carry text, so "carried no entries" would be false.
+		// wrong reason: a short reply did carry text, so the emptiness wording would be false.
 		{
 			const handle = await project("structured-short-opaque");
 			try {
@@ -2110,7 +2143,9 @@ try {
 				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 30s");
 				// SIGKILL cannot run the fixture's `finally`, so a failed run used to leave this tree behind
 				// (~40 KB per occurrence). Clear it here, synchronously, before the signal that cannot be deferred.
-				execFileSync("rm", ["-rf", flushTmp]);
+				// Only the FIFO tree: the fixture's memory artifacts (and its errors.log) are what a
+				// failure needs to be diagnosable, so they stay (round 18 N-1).
+				execFileSync("rm", ["-rf", path.join(flushTmp, "race")]);
 				process.kill(process.pid, "SIGKILL");
 			}, 30_000);
 			const fifoWriter = await open(raceFile, "w");
@@ -2147,7 +2182,9 @@ try {
 				console.error("FAIL adopt: the FIFO fixture never got a reader within 30s");
 				// SIGKILL cannot run the fixture's `finally`, so a failed run used to leave this tree behind
 				// (~40 KB per occurrence). Clear it here, synchronously, before the signal that cannot be deferred.
-				execFileSync("rm", ["-rf", flushTmp]);
+				// Only the FIFO tree: the fixture's memory artifacts (and its errors.log) are what a
+				// failure needs to be diagnosable, so they stay (round 18 N-1).
+				execFileSync("rm", ["-rf", path.join(flushTmp, "adopt")]);
 				process.kill(process.pid, "SIGKILL");
 			}, 30_000);
 			const adoptWriter = await open(adoptFile, "w");
