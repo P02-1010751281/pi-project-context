@@ -1,0 +1,116 @@
+I have completed the verification. Here is my report.
+
+---
+
+# Lane A — Independent review, round 13 (collar round)
+
+- **Revision under review**: `git diff 5522370..HEAD` (`a715a4c` gate, `685d54c` memory, `72256d1` records, `d48f5d3` changelog), byte-identical copy at `/tmp/pi-context-rev13`.
+- **Isolation**: all runs in an independent `cp -a` at `/tmp/rev13-work-*`; the sandbox was read-only throughout. The only working-tree entries (`M HANDOFF.md`, `M project-context.json`) are the extension's own memory writes, not part of the diff. No git write, no live tree.
+- **Model / thinking**: `deepseek/deepseek-flash`, thinking **high**.
+
+## 1. The three state bits (code vs record/model-render layer)
+
+The round‑12 *important* is **genuinely closed**. The three places now state one fact, and it matches "round 6 PASSED, rounds 7–12 CHANGES all fixed, this revision awaits PASS":
+
+| place | text | aligned? |
+|---|---|---|
+| `CONTEXT.md:7` (Summary) | "As of round 6 … PASSed on c212fcf; rounds 7‑12 then returned CHANGES-REQUESTED and every item was fixed (… rounds 9-12 the records), and the final revision still awaits its PASS." | ✓ |
+| `CONTEXT.md:29` (`latest-session-title`) | same sentence (trailing period only difference) | ✓ |
+| `fix-note:3` | "第 6 轮在 `c212fcf` 给过 PASS，之后第 7–12 轮全部 CHANGES-REQUESTED 且每条都已修复（…第 9–12 轮记录），本修订待其 PASS" | ✓ |
+
+`grep` cross-check: no residual live "Closed the shutdown-coupling review chain", "待审查链给出 PASSED", "review converged", "six checks", or "three assertions" anywhere in `CONTEXT.md`/`MEMORY.md`/`HANDOFF.md`/fix-note/report. Those strings survive only inside the round‑11/12 transcripts as historical quotes — which is correct. The exact contradiction the round‑12 review flagged is gone.
+
+**But one sibling line was not swept**: `CONTEXT.md:11` still enumerates "rounds **9-11** on record details", while the Summary/title/fix-note now say "rounds **9-12**". Round 12 was itself a record-layer CHANGES round, so the enumeration undercounts by one — the same "updated in one place only" class the important just closed, one notch smaller (nit below).
+
+## 2. Character class (dedup) — verified as a *set*, not via green tests
+
+I parsed the literal from `tests/run-all.mjs:63` rather than trusting the suite:
+
+```
+class = .!?;:`)"'\]。）、」』”’…！？；：】
+count = 24, unique = 24, dups = []
+）  appears 1× (U+FF09)
+```
+
+**The duplicate is really gone** and the five full-width stops `！？；：】` are present. Round‑12 nit 1 → **fixed**.
+
+## 3. Open tasks
+
+`CONTEXT.md:22` is now the **only** v0.4.6-tag bullet; the pre-existing duplicate ("decide whether to cut a tag … (v0.4.6 semantics …)") was removed. The remaining bullets are unrelated tasks (review follow-ups, settle-path, cache measurement, autolearn, sibling repos). Round‑12 nit 2 → **fixed**.
+
+## 4. Round table and transcripts
+
+- The `## 轮次表` **contains rows 9, 10, 11, 12** (report lines 15–18), and the four files exist and are non-empty: round9 11 264 B, round10 7 975 B, round11 9 527 B, round12 11 034 B.
+- Provenance checked: the round 9/10/11/12 reports are present in the maintainer session log (`01a1167b-…/session.jsonl`) as `bash` toolResults (e.g. round 9 at `2026-10-08T01:31:45Z`, round 12 at `07:01:50Z`). The committed files are the captured outputs with line-wrapping/indentation normalized. **The round‑9 transcript did flow out** — it was simply never committed until this diff; there is **no falsity** in now listing it. The round‑12 transcript's "仓库里没有 round 9 / round 10 的 transcript" is a truthful statement about the *base* revision, superseded by this diff.
+- **New regression introduced by the fix**: the four new rows and the prose note were inserted *before* the pre-existing `| 3 |` row. At base, `| 3 |` immediately followed `| 8 |` (same table); at HEAD there is a blank line (19) + prose (20) + orphan `| 3 |` (21), so the GFM table now **ends at round 12** and the round‑3 lost-transcript row renders as a literal line, no longer a table row. See important 1.
+- Round‑table dates for rows 9–12 are `2026-10-07`, but those revisions commit on `2026-10-08` (`896808f` … `5522370`) and the recovered reviews ran `2026-10-08T01:31Z`–`07:01Z`; rows 10–12 also omit the commit range. Nit below.
+
+## 5. Code layer
+
+**代码层无未闭合项.** This diff changes **no production code** (`git log 5522370..HEAD -- extensions/` is empty); the only executable change is the test gate's character class. Independently reproduced in the copy:
+
+- Baseline: `node tests/run-all.mjs` → **All 15 tests passed**, both hygiene gates `ok`, exit 0.
+- Guard mutation (`store.ts:92`, `if (verify.changed || …)` → `if (false)`) → **`FAILURES: 7`** = race×4 + borrowed-key×3; the positive control `borrowed key: the replacement is still the file's content` stays green. Matches `report:204`, fix-note and `CONTEXT:13` to the digit.
+- Render gate non-vacuous: truncating one `MEMORY.md` bullet → `render bullets end in punctuation ... FAILED` + `All 15 tests passed, but a repo hygiene check failed`; restored → `ok`.
+
+---
+
+## blocking
+
+None.
+
+## important
+
+**1. The round-table fix orphans the pre-existing round‑3 row, silently dropping it from the rendered table (`report:19-21`).**
+- At `5522370` the table ran `… | 8 |` then `| 3 |` as consecutive rows (lines 14–15). Commit `72256d1` inserted the `9`–`12` rows and the `第 9–12 轮无代码层发现…` note **between them**, so the table now ends at `| 12 |` and `| 3 |` sits after a blank line + paragraph (`report:19,20,21`) — a GFM table is terminated by a blank line, so the row renders as literal text, not a row.
+- Impact: the durable `## 轮次表` audit artifact now omits round 3 (the lost-transcript entry) from the table it was just repaired for. This is a regression *introduced by this diff*, not carried over.
+- Fix boundary: move the `第 9–12 轮…` note below `| 3 |` (or reorder `| 3 |` up into the contiguous block) so every row stays inside one table.
+
+## nit
+
+1. **`CONTEXT.md:11` says "rounds 9-11 on record details"** while `:7`, `:29` and `fix-note:3` say "9-12". Round 12 was a record-layer CHANGES round, so this should read 9-12.
+2. **`fix-note:47` still nests full-width parentheses** — `（删守卫即三红（第 4 轮当时为三红；…））`. Round‑12 nit 4 asked for a single-level parenthetical; the wording improved but the nesting remains → partially applied.
+3. **`report:18` claims round 12's "1 important + 4 nit，全部已修"**, which overstates: nit 4 is only partially applied and nit 3 introduced the orphan row above. This is the repo's own "记录说得多于实测" pattern (round 7 I1).
+4. **Round-table dates/fields**: rows 9–12 are dated `2026-10-07` but commit `2026-10-08`; rows 10–12 list no commit range (`report:16-18`). Minor.
+5. **`CHANGELOG.md:6` dates `v0.4.6 — 2026-10-07`** while v0.4.6 is untagged (`git describe` = `v0.4.5-72-gd48f5d3`, `git tag -l v0.4.6` empty) and `CONTEXT.md:22` still lists "cut the v0.4.6 tag" as open. Historically CHANGELOG dates equal tag dates (v0.4.5 → 2026‑10‑06). Either cut the tag with that date or keep consistency.
+6. **`CONTEXT.md:3` "Last updated: 2026-10-07T13:10:48.382Z"** was not bumped by this manual edit (commits 2026‑10‑08).
+
+## suggestion
+
+- Add a self-check that parses the gate's character class and asserts `new Set(cls).size === cls.length`, so a re-introduced duplicate self-reddens instead of hiding behind green samples.
+- Add a structural assertion that the `## 轮次表` rows are contiguous (no blank line inside the table), which would have caught the orphan-row regression.
+- Extend "any size/headroom sentence names its gauge" (`MEMORY.md:42`) to the report/fix-note, as round 12 already suggested.
+
+## learning
+
+- Repairing a table by *inserting* rows can silently orphan rows that were already out of order — a blank line ends a GFM table, so table integrity must be checked as a block, not row-by-row.
+- Updating a state line to "rounds 9-12" without sweeping the sibling bullet (`:11`) reproduces the exact "not updated in all places" class the important had just closed.
+- Green tests cannot prove regex dedup: `[。））、]` and `[。）、]` judge every sample identically; only a set parse can tell them apart.
+
+## praise
+
+- The load-bearing round‑12 finding is truly fixed: three status surfaces now state one fact, and `grep` finds no residual live contradiction — only correctly-framed historical quotes.
+- Character class deduped (24/24 unique) and the full-width stops verified in-set; Open tasks deduplicated to a single v0.4.6 bullet.
+- Rounds 9/10/12 transcripts recovered from the session log and archived; all four `{9,10,11,12}` files exist and are non-empty, and their contents match the captured reviews — no fabrication.
+- Code untouched and independently reproduced: guard removal reddens exactly 7 (race×4 + borrow×3, positive control green), and the render gate reddens on a truncated bullet.
+
+## residual-risk
+
+- `CONTEXT.md` is model-re-rendered on each settle; hand-fixing `:7`/`:11` only guarantees this revision, so the same drift can return next session (the durable facts live in `MEMORY.md` + journal).
+- The recovered round 9/10 transcripts are re-wrapped/de-indented captures, not byte-exact outputs; a downstream per-round audit still cannot compare against an unedited artifact.
+- The §10 attribution script and the gate's remaining conservatism (N-series) are recorded follow-ups from earlier rounds, not touched here.
+
+## Test And QA Focus
+
+- Copy `/tmp/rev13-work-1337110` (`cp -a`); sandbox zero-write (only `M HANDOFF.md` / `M project-context.json`, the extension's own state).
+- `node tests/run-all.mjs` → `All 15 tests passed`, both hygiene gates `ok`, `EXIT=0`.
+- Guard mutation `store.ts:92` (`if (verify.changed || …)` → `if (false)`) → `FAILURES: 7` (race×4 + borrowed-key×3); `borrowed key: the replacement is still the file's content` green → code layer closed.
+- Render gate: truncated one `MEMORY.md` bullet → `render bullets end in punctuation … FAILED` + hygiene-failed summary, `EXIT≠0`; restored → `ok`.
+- Regex set parse: 24 code points / 24 unique / no dup; `）` once (U+FF09).
+- Table structure: rows 1,2,3r,4–12 contiguous, then blank+note, then orphan `| 3 |` (report:21).
+- Date cross-check: git commit dates (10‑08) vs table dates (10‑07) vs session-log review timestamps (10‑08T01:31Z–07:01Z).
+- Transcript provenance: round 9/10/11/12 outputs located verbatim in `session-logs/01a1167b-…/session.jsonl` toolResults.
+
+路由：`deepseek/deepseek-flash`，thinking 档 `high`。
+
+VERDICT: CHANGES-REQUESTED
