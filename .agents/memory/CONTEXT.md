@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-10-08T09:05:00.000Z
+Last updated: 2026-10-08T09:20:00.000Z
 
 ## Summary
 
@@ -17,7 +17,7 @@ The shutdown-coupling issue (2026-10-06-handoff-shutdown-coupling) is closed out
 - Nits fixed: the FIFO fixture's failure path is bounded again by restoring the blocking "w" open (it is the scheduling barrier) plus a 30 s SIGKILL watchdog, and the readRenderWithMtime comment now scopes journal-side guard (append-time recheck) versus publish-side (changed).
 - Post-fix mutation checks: removing the pre-append recheck reddens seven checks (race fixture four, borrowed-key three), the race case asserts the race happened and that the exit reports adopted=true/written=false, and the borrowed-key case has a positive control; suite green 3x in a row.
 - Review chain state: rounds 1-6 chased one TOCTOU class to a PASS on c212fcf; round 7 blocked on the fixture's scheduling barrier, round 8 on the curation, rounds 9-13 on record details; rounds 7-13 produced no code-layer finding (code unchanged since 7285eb2) and the chain was stopped by the stop rule on 2026-10-08.
-- Memory curation: MEMORY.md measures 31797 characters by memoryDocumentChars (31798 raw), i.e. 203 under the cap; this pass re-verified CONTEXT.md's quoted numbers against the final bytes with the real function and asserted the journal's last replace op equals the committed MEMORY.md - no commit was needed because the numbers were already consistent.
+- Memory curation: MEMORY.md measures 31344 characters by memoryDocumentChars (31345 raw), i.e. 656 under the cap. The 2026-10-08 retirement pass moved the sandbox/probe pitfall set into pi-project-context-headless-runs §Gotchas and freed ~1.8k characters; a later settle render spent most of that headroom on three new entries and rewrote one (verified: no durable rule from the previous render was dropped). The render grew because the session kept producing durable facts - that is the treadmill the retirement rule describes, not a defect.
 - What the curation restored: the nine durable rules the model render had dropped, including the RENAMED_KEYS re-scan method and the regression-guard-is-only-a-detector rule (neither has another home), plus a truncated phrase; the missing removed-line classification rule went into curated-surface-hygiene §12.
 - The two remaining review nits (S3-style comment scoping and FIFO failure-path hygiene) are fixed; the residuals kept are non-write-path: R-L1 (loadMemory's pure-read sites), the mtime+size heuristic in readRenderWithMtime, the SIGKILL path skipping temp-dir cleanup, and CHANGELOG.md:33 at 191 characters (the 160-character rule covers docs/*.md only).
 
