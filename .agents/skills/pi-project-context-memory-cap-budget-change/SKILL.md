@@ -52,7 +52,7 @@ Changing anything about the memory character budget in `pi-project-context`: `ma
    `tests/harness.mjs` loads modules the way production does, so a gauge taken through it is authoritative (run it from the repo root).
 
    Prompt-wording assertions only prove the wording shipped; real acceptance is a render fact. Take it on the **first pass after restart with the new tag installed**:
-   - count the `memory exceeded a section budget` lines in `.agents/memory/errors.log` before and after — the count must not rise;
+   - count the `CONTEXT.md was clipped (a section budget` lines in `.agents/memory/errors.log` before and after — the count must not rise (that is the real message prefix; there is no `memory exceeded a section budget` string);
    - count the entries (`grep -c '^- ' .agents/memory/MEMORY.md`) before and after — it must not fall.
    Do **not** accept on `memory regression:` lines: they are computed before the renderer clips, so they stay green while the render still loses entries.
 
