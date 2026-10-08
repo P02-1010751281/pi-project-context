@@ -16,10 +16,10 @@
   `# Project Memory\n\nI'll do the following:\n- review` 这种「散文里带一条 bullet」的回复仍能换掉整篇记忆。现在回复必须
   **至少有一个小节标题、其下带条目**才算文档；存储侧同时从「必须是规范四节」放宽为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」，
   于是手写的非规范记忆（现场那份六节文档）也受保护。判据按本仓自己的词汇认标题（ATX 任意级别 / setext / HTML）与条目
-  （bullet 或编号列表），并**跟踪围栏**：一段只是「围栏里含 `## Project\n- x`」的回复算散文。散文形状、反向形状（编号列表 /
-  setext / HTML 标题必须被发布而不是被拒）与非规范存储各有用例；把判据退回旧形态或退回「只认规范四节」各红 13 条断言。
+  （bullet 或编号列表），并**跟踪围栏**（与 `isHeadingOnlyDocument` 共用 `sections.ts` 的 `readFenceLine`/`fenceCloses`，长度与信息串规则都按 CommonMark）：一段只是「围栏里含 `## Project\n- x`」的回复算散文；标题必须顶格，裸 `---`/`=` 不算标题。散文形状、反向形状（编号列表 /
+  setext / HTML 标题必须被发布而不是被拒）与非规范存储各有用例；把判据退回旧形态红 13 条、退回「只认规范四节」红 1 条。
 - **诊断不再把「形状读不出」说成「没有条目」**（第 18 轮 I-3）：`carried no entries` 对「散文里带一条 bullet」这类回复是假的，
-  现在两条路径统一为 `not a writable memory document`（日志串与 toast 同步）。
+  现在两条路径统一为同一措辞：日志串写全（`the consolidation reply was not a writable memory document…`），toast 用短形式（`the reply was not a writable memory document`）。
 - **只读状态路径不再假定 `modelRegistry.find` 存在**（第 17 轮 R-2）：改为可选调用、缺失时回退会话模型，并有用例钉住这条回退。
 - **`/autolearn` 的强制 pass 也在等待前提示**（第 15 轮 important I-B）：v0.4.8 只给 `/memory update` 加了提示，而裸
   `/autolearn` 同样是 1–2 次辅助调用、同一条重推理路由，现场那种「十几分钟没有任何输出」的体感原样存在。

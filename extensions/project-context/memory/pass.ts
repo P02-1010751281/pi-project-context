@@ -19,6 +19,9 @@ import {
 	RECORD_MEMORY_TOOL,
 	normalizeMemoryEntry,
 	renderMemoryDocument,
+	fenceCloses,
+	readFenceLine,
+	type FenceToken,
 	sectionsFromMarkdown,
 	sectionsFromToolCall,
 	sectionsSemanticallyEmpty,
@@ -332,27 +335,47 @@ export async function consolidateProjectState(
 		// document (round 18's I-2), and the heading/entry vocabulary is the module's own: ATX at any level,
 		// a setext underline, an HTML heading, and entries as bullets or ordered markers (round 18's I-3 -
 		// a reply that carries entries under such a heading is a document and must be published, not refused).
-		let replyInFence: string | undefined;
+		let replyInFence: FenceToken | undefined;
 		let replySawHeading = false;
 		let replyIsDocument = false;
+		// The last line that could be underlined by a setext rule: a plain text line, not a bullet or marker.
+		let replyTextLine = "";
 		for (const line of replyBody.split("\n")) {
-			const trimmed = line.trim();
-			const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+			const fence = readFenceLine(line);
+			if (replyInFence) {
+				// Everything inside a block is content unless the line really closes it, by the same rule the
+				// heading-only gate uses (same character, at least as long, no info string) - round 19's B-1.
+				if (fence && fenceCloses(fence, replyInFence)) replyInFence = undefined;
+				continue;
+			}
 			if (fence) {
-				// Only the same family closes it: a `~~~` block is not closed by a ``` line.
-				if (!replyInFence) replyInFence = fence[1][0];
-				else if (replyInFence === fence[1][0]) replyInFence = undefined;
+				replyInFence = fence;
+				replyTextLine = "";
 				continue;
 			}
-			if (replyInFence) continue;
-			if (/^#{1,6}[ \t]/.test(trimmed) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(trimmed) || /^=+[ \t]*$/.test(trimmed) || /^-{2,}[ \t]*$/.test(trimmed)) {
+			if (line.trim() === "") continue;
+			// Headings must start at column 0: `    ## Project` is an indented code block, not a heading.
+			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line.trim())) {
 				replySawHeading = true;
+				replyTextLine = "";
 				continue;
 			}
-			if (replySawHeading && /^([-*+][ \t]|\d+[.)][ \t])/.test(trimmed)) {
-				replyIsDocument = true;
-				break;
+			// A setext underline only underlines the text line above it; a bare `---`/`=` separator is not a
+			// heading (round 19's B-2), which is why a text line has to precede it.
+			if (/^=+[ \t]*$/.test(line)) {
+				if (replyTextLine !== "") replySawHeading = true;
+				replyTextLine = "";
+				continue;
 			}
+			if (/^[-*+][ \t]|^\d+[.)][ \t]/.test(line.trim())) {
+				if (replySawHeading) {
+					replyIsDocument = true;
+					break;
+				}
+				replyTextLine = "";
+				continue;
+			}
+			replyTextLine = line.trim();
 		}
 		const conversationalOpaque =
 			storedIsDocument &&

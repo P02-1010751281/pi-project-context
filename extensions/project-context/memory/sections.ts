@@ -213,6 +213,25 @@ const DECORATION_RE = /^(?:(?:>\s*|[-*+]\s+|\d+[.)]\s+))*/;
 
 /** A fence line, capturing its family so a `~~~` block is not closed by a `````` line. */
 const FENCE_LINE_RE = /^(`{3,}|~{3,})\s*(.*)$/;
+
+/** A fence line as CommonMark reads it: a run of three or more backticks or tildes plus whatever follows. */
+export type FenceToken = { char: string; run: string; info: string };
+
+/** The fence line in `value`, or undefined when the line is not a fence line at all. */
+export function readFenceLine(value: string): FenceToken | undefined {
+	const match = FENCE_LINE_RE.exec(value);
+	return match ? { char: match[1][0], run: match[1], info: match[2].trim() } : undefined;
+}
+
+/**
+ * Whether `token` closes a block opened by `open`: the same character, at least as long, and nothing but
+ * whitespace after the run - an info string makes a line an opener, not a closer. Both readers of fences
+ * (the heading-only gate here and the opaque reply test in pass.ts) share this, so neither can mirror only
+ * half the rule (independent review round 19, B-1).
+ */
+export function fenceCloses(token: FenceToken, open: FenceToken): boolean {
+	return token.char === open.char && token.run.length >= open.run.length && token.info === "";
+}
 const THEMATIC_LINE_RE = /^(?:[-*_]\s*){3,}$/;
 const HTML_HEADING_LINE_RE = /^<h[1-6][^>]*>.*<\/h[1-6]>$/i;
 /**
@@ -301,7 +320,7 @@ export function isHeadingOnlyDocument(value: string): boolean {
 		const fence = fences[index];
 		if (fence) {
 			if (!openFence) openFence = fence;
-			else if (fence.char === openFence.char && fence.run.length >= openFence.run.length && fence.info === "") openFence = undefined;
+			else if (fenceCloses(fence, openFence)) openFence = undefined;
 			continue;
 		}
 		// The underline is tested on the RAW line: `- ===` is a bullet, not a setext underline.

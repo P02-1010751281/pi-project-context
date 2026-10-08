@@ -1887,6 +1887,17 @@ try {
 				["prose-fence", "# Project Memory\n\nI'll explain:\n```\nsome prose\n```"],
 				["foreign-heading", "# Project Memory\n\n# My Notes\n\nA long sentence with no entry under a heading at all."],
 				["prose-under-heading", "# Project Memory\n\n## Notes\n\nProse under a heading but still no entry."],
+				// Round 19's B-1: the fence rules are CommonMark's, so a longer opener is only closed by an
+				// equally long run and a closing fence may not carry an info string.
+				["fence-longer-opener", "# Project Memory\n\n````\ncode\n```\n## Project\n- a sample entry here\n```\n"],
+				["fence-info-string", "# Project Memory\n\n```\nprose\n```not-a-close\n## Project\n- a sample entry here\n"],
+				["fence-tilde-opener", "# Project Memory\n\n~~~~\ncode\n~~~\n## Project\n- a sample entry here\n"],
+				// Round 19's B-2: a bare separator is not a setext heading (nothing above it to underline).
+				["bare-rule-dashes", "# Project Memory\n\n---\n- a sentence long enough to pass the floor\n"],
+				["bare-rule-equals", "# Project Memory\n\n=\n- a sentence long enough to pass the floor\n"],
+				["bare-rule-two-dashes", "# Project Memory\n\n--\n- a sentence long enough to pass the floor\n"],
+				// Round 19's residual note: an indented `## Project` is an indented code block, not a heading.
+				["indented-heading", "# Project Memory\n\n    ## Project\n    - a sample entry here\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {
@@ -2143,8 +2154,8 @@ try {
 				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 30s");
 				// SIGKILL cannot run the fixture's `finally`, so a failed run used to leave this tree behind
 				// (~40 KB per occurrence). Clear it here, synchronously, before the signal that cannot be deferred.
-				// Only the FIFO tree: the fixture's memory artifacts (and its errors.log) are what a
-				// failure needs to be diagnosable, so they stay (round 18 N-1).
+				// Only this FIFO subtree: the fixture's memory artifacts live in `flushMem`, next to it, and
+				// they are what a failure needs to stay diagnosable (rounds 18 N-1 / 19 N-3).
 				execFileSync("rm", ["-rf", path.join(flushTmp, "race")]);
 				process.kill(process.pid, "SIGKILL");
 			}, 30_000);
