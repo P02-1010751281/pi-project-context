@@ -132,4 +132,7 @@ Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it
 - Consolidation must fail closed: never write an unparseable model reply as memory — prefer a failed pass, and let `errors.log` capture the raw reply head (≤4000 chars) while the UI shows only the first line.
 - External edits are detected with `memoryComparisonKey` in both `recordMemoryDocument` and `loadMemory`: content-equal renders are never adopted even with a newer mtime; a genuine external edit (different content + newer mtime) is folded as a `replace` record on the next write with an `errors.log` note.
 - Journal rotation at >512KB uses temp → archive → replace with rollback; the temp file name is `memory.jsonl.<epoch-ms>.<uuid>.tmp` so it matches both the memory gitignore and `cleanStaleTemps`.
+- Nothing prunes the `memory-log-*.jsonl` archives by count - only a duplicate archive from a crash after the copy is removed -
+  so they accumulate with use, each about the size of the journal that crossed the threshold. They are also the second net under
+  the rotation window (a deleted `memory.jsonl` rebuilds from them), so trimming them is a retention decision, never routine hygiene.
 - For changing the cap or budget wording itself, use `pi-project-context-memory-cap-budget-change`.

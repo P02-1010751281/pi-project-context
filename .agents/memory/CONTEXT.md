@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-10-08T09:20:00.000Z
+Last updated: 2026-10-08T09:48:00.000Z
 
 ## Summary
 
@@ -17,14 +17,14 @@ The shutdown-coupling issue (2026-10-06-handoff-shutdown-coupling) is closed out
 - Nits fixed: the FIFO fixture's failure path is bounded again by restoring the blocking "w" open (it is the scheduling barrier) plus a 30 s SIGKILL watchdog, and the readRenderWithMtime comment now scopes journal-side guard (append-time recheck) versus publish-side (changed).
 - Post-fix mutation checks: removing the pre-append recheck reddens seven checks (race fixture four, borrowed-key three), the race case asserts the race happened and that the exit reports adopted=true/written=false, and the borrowed-key case has a positive control; suite green 3x in a row.
 - Review chain state: rounds 1-6 chased one TOCTOU class to a PASS on c212fcf; round 7 blocked on the fixture's scheduling barrier, round 8 on the curation, rounds 9-13 on record details; rounds 7-13 produced no code-layer finding (code unchanged since 7285eb2) and the chain was stopped by the stop rule on 2026-10-08.
-- Memory curation: MEMORY.md measures 31344 characters by memoryDocumentChars (31345 raw), i.e. 656 under the cap. The 2026-10-08 retirement pass moved the sandbox/probe pitfall set into pi-project-context-headless-runs §Gotchas and freed ~1.8k characters; a later settle render spent most of that headroom on three new entries and rewrote one (verified: no durable rule from the previous render was dropped). The render grew because the session kept producing durable facts - that is the treadmill the retirement rule describes, not a defect.
+- Memory curation: MEMORY.md measures 31520 characters by memoryDocumentChars (31521 raw), i.e. 480 under the cap. The 2026-10-08 retirement pass moved the sandbox/probe pitfall set into pi-project-context-headless-runs §Gotchas and freed ~1.8k characters; a later settle render spent most of that headroom on three new entries, and the last 176 characters went to correcting a stale durable fact (journal rotation had been recorded as never having fired in the field, while five `memory-log-*.jsonl` archives sit beside the live journal). Both growths are the treadmill the retirement rule describes, not defects - but the headroom is now under the few-hundred-character line, so the next curation pass must retire skill-homed process rules rather than compress wording.
 - What the curation restored: the nine durable rules the model render had dropped, including the RENAMED_KEYS re-scan method and the regression-guard-is-only-a-detector rule (neither has another home), plus a truncated phrase; the missing removed-line classification rule went into curated-surface-hygiene §12.
 - The two remaining review nits (S3-style comment scoping and FIFO failure-path hygiene) are fixed; the residuals kept are non-write-path: R-L1 (loadMemory's pure-read sites), the mtime+size heuristic in readRenderWithMtime, the SIGKILL path skipping temp-dir cleanup, and CHANGELOG.md:33 at 191 characters (the 160-character rule covers docs/*.md only).
 
 ## Open tasks
 
 - Owner: restart pi so the running host loads the installed v0.4.6 - the clone is updated but modules are not hot-swapped, so mixed-version noise in errors.log persists until then.
-- Owner: the next memory curation must propose retirements, not formatting-only compression: the render sits ~200 characters under the cap (below the ~2000 headroom rule of thumb).
+- Owner: the next memory curation must propose retirements, not formatting-only compression: the render sits 480 characters under the cap (below the ~2000 headroom rule of thumb), so the retirement rule now applies to that pass.
 - DONE 2026-10-08: the settle-path finding is fixed rather than filed - an opaque reply that carries no markdown heading at all can no longer replace a stored four-section document (commit 95d29fc; the field case was the installed v0.4.5 sandbox publishing a reviewer's opening line as a 119-byte memory).
 - Owner: decide whether to open a fresh review round (no PASS since round 6) or accept the stop-rule closure. Two code fixes landed after the closure (R-L1 and the conversational-opaque refusal), each with its own mutation check and no independent round, so a fresh round now has a bigger surface to look at than the close-out note assumed.
 - DONE 2026-10-08: residual R-L1 is fixed (commit b7e2a31, loadMemory now reads the render once; probe `read race:` with a positive control, mutation reddens exactly one check). Still open as non-code items: readRenderWithMtime's mtime+size blind spot (a registered residual with its home in the report and docs/architecture.md), and the SIGKILL failure path's leftover temp directories (cosmetic: ~40 KB per failure, cleaned in /tmp on 2026-10-08 along with 4 GB of review sandboxes).
