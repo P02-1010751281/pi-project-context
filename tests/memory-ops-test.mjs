@@ -92,6 +92,12 @@ try {
 		check("a smaller cap fits the same ceiling", budget.memoryCapUnsatisfiable(20_000, 8_192, 32_768) === false);
 		check("a larger request cap lifts the ceiling", budget.memoryCapUnsatisfiable(40_000, 42_000, 32_768) === false);
 		check("the needed tokens include the JSON margin", budget.memoryReplyTokens(32_000) === 32_000 + budget.REPLY_OUTPUT_MARGIN_TOKENS);
+		// The field case (Quantum_Matrix, 2026-10-08) spent 20489 hidden-reasoning tokens against a reserve
+		// capped at 8192: a cap that fits the visible reply alone is still unsatisfiable on such a route.
+		check("a reasoning route is charged for its hidden thinking", budget.memoryCapUnsatisfiable(28_000, 8_192, 32_768, true) === true);
+		check("the same cap fits when the route does not reason", budget.memoryCapUnsatisfiable(28_000, 8_192, 32_768, false) === false);
+		check("the warning omits the reserve on a plain route", !budget.capCeilingWarning({ maxMemoryChars: 28_000, maxTokens: 8_192, maxOutputTokens: 32_768 }).includes("hidden reasoning"));
+		check("the warning names the reserve on a reasoning route", budget.capCeilingWarning({ maxMemoryChars: 28_000, maxTokens: 8_192, maxOutputTokens: 32_768 }, true).includes("hidden reasoning"));
 	}
 
 	console.log("\n=== M4: status reports the cap and the verb changes it ===");

@@ -39,19 +39,23 @@ export function memoryReplyTokens(maxMemoryChars: number): number {
  * The ceiling checked is `max(maxTokens, maxOutputTokens)`, an **upper bound** on what
  * `fitMemoryInput` may use. A resolved model whose own `maxTokens` is smaller, a reasoning reserve
  * or a large context can still clip below it, so a false "fits" is possible; the pass's own
- * `clipped` diagnostics cover those cases.
+ * `clipped` diagnostics cover those cases. `reasoning` also charges the hidden thinking a reasoning
+ * route spends out of the same cap: the field case spent 20489 tokens while the reserve is capped
+ * at 8192, so a cap that only fits the visible reply still gets its answer cut off there.
  */
-export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number, maxOutputTokens: number): boolean {
-	return memoryReplyTokens(maxMemoryChars) > Math.max(maxTokens, maxOutputTokens);
+export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number, maxOutputTokens: number, reasoning = false): boolean {
+	return memoryReplyTokens(maxMemoryChars) + reasoningReserveTokens(maxMemoryChars, { reasoning }) > Math.max(maxTokens, maxOutputTokens);
 }
 
 /**
  * The one sentence for a memory cap the configured output ceiling cannot re-emit. The umbrella
  * status, the set-time reply and the set-time warning all print it, so it cannot drift per caller.
  */
-export function capCeilingWarning(cap: { maxMemoryChars: number; maxTokens: number; maxOutputTokens: number }): string {
+export function capCeilingWarning(cap: { maxMemoryChars: number; maxTokens: number; maxOutputTokens: number }, reasoning = false): string {
 	const ceiling = Math.max(cap.maxTokens, cap.maxOutputTokens);
-	return `${cap.maxMemoryChars} chars needs about ${memoryReplyTokens(cap.maxMemoryChars)} output tokens to re-emit dense memory, above the output ceiling of ${ceiling}`;
+	const hidden = reasoningReserveTokens(cap.maxMemoryChars, { reasoning });
+	const reserve = hidden > 0 ? ` plus up to ${hidden} tokens of hidden reasoning on a reasoning route` : "";
+	return `${cap.maxMemoryChars} chars needs about ${memoryReplyTokens(cap.maxMemoryChars)} output tokens${reserve} to re-emit dense memory, above the output ceiling of ${ceiling}`;
 }
 
 /**

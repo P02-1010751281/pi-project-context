@@ -92,8 +92,12 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Context file: ${await contextStatusLine(projectRoot)}`,
 				];
 				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
-				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
-					lines.push(`Memory cap warning: ${capCeilingWarning(config)}; lower it with /memory max-memory <n> or raise maxTokens/maxOutputTokens.`);
+				// An unconfigured aux route falls back to the session model, so its `reasoning` flag is the honest
+				// signal for the hidden thinking that shares the same cap (a configured override is not resolved here
+				// on purpose: that call warns on a dead route, which a status read must not do).
+				const reasoningRoute = ctx.model?.reasoning === true;
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens, reasoningRoute)) {
+					lines.push(`Memory cap warning: ${capCeilingWarning(config, reasoningRoute)}; lower it with /memory max-memory <n> or raise maxTokens/maxOutputTokens.`);
 				}
 				if (runIsDisabled()) lines.push("This run is disabled by --no-project-context.");
 				notify(ctx, lines.join("\n"));

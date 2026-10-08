@@ -452,6 +452,10 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const verb = (parts[0] ?? "").toLowerCase();
 			const projectRoot = await getProjectRoot(pi, ctx.cwd);
 			if (verb === "update") {
+				// A forced pass is one or two auxiliary calls, and a reasoning route can take minutes for them: the
+				// field case ran ~13 minutes with no output before it failed (Quantum_Matrix, 2026-10-08), so say what
+				// is happening before the wait instead of leaving the command looking hung.
+				notify(ctx, "Memory: consolidating… (a reasoning route can take minutes)");
 				const report = await consolidate(ctx, true, true);
 				notify(ctx, consolidateReply(report, lastWrite.get(projectRoot)), report === "failed" || report === "clipped" ? "warning" : "info");
 				return;
@@ -481,10 +485,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
 				}
 				const config = await getConfig(projectRoot);
-				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens)) {
+				// The aux route is not resolved here (that call warns on a dead route); an unconfigured route falls
+				// back to the session model, whose `reasoning` flag decides whether hidden thinking shares the cap.
+				const reasoningRoute = ctx.model?.reasoning === true;
+				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens, reasoningRoute)) {
 					notify(
 						ctx,
-						`Memory cap set to ${config.maxMemoryChars} characters, but ${capCeilingWarning(config)}; raise maxTokens/maxOutputTokens too or replies can be truncated.`,
+						`Memory cap set to ${config.maxMemoryChars} characters, but ${capCeilingWarning(config, reasoningRoute)}; raise maxTokens/maxOutputTokens too or replies can be truncated.`,
 						"warning",
 					);
 				} else {
