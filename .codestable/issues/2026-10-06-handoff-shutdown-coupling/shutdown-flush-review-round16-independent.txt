@@ -1,0 +1,70 @@
+## Lane A 独立审查报告 — 冻结修订 `8674fd2`（`v0.4.8` 之上的修复集，候选 `v0.4.9`）
+
+审查对象：`git diff 5f76996..HEAD`（16 文件 / +405 −23），沙箱 `/tmp/pi-context-rev16` 只读使用；全部变异在 `/tmp/pi-laneA-*` 副本进行，沙箱本体未改（`git status` 终态只有审查前就存在的 `.agents/memory/` 两项）。判定路由：`deepseek/deepseek-flash` + `thinking high`（据记录）。
+
+### blocking
+
+无。
+
+### important
+
+**I-1（新）——两处当前文档仍把上限门的 reasoning 来源写成「会话模型」，并断言辅助路由不在只读路径解析；这正是 v0.4.9 修掉的行为。**
+- `docs/architecture.md:88`：「…会话模型声明 `reasoning` 时把这部分隐藏思考也算进去（**配置的辅助路由不在这些只读路径里解析**）。」
+- `docs/configuration.md:98`：「`maxMemoryChars + 1024` 加上 reasoning 预留（**会话模型声明 `reasoning` 时**最多 8192）…」
+- 影响：v0.4.9 新增 `peekAuxModel` 后，`status`（`index.ts:99`）与 `max-memory`（`report.ts:493`）**恰恰**在这些只读路径解析配置的辅助路由。我端到端实测（cap=28000 / 8192 / 32768）：
+  - 会话 plain + 无辅助路由 → 无告警；会话 reasoning + 无辅助路由 → 告警并带 `hidden reasoning`；
+  - 会话 plain + 辅助=`reasoning` → 告警并带 `hidden reasoning`；**会话 reasoning + 辅助=`plain` → 不告警**（调用走 plain 辅助路由，故正确地不报）。
+  最后一行直接证伪架构文档括号里的断言：若按文档，该配置应因会话模型 reasoning 而告警。CHANGELOG 与 `round15-fix-note.md` 都已写对，只有这两处 docs 没跟上——与本仓最典型的「用户可见句子与代码不符」同类，只是方向相反（代码多做、文档说没做），会误导后续维护者以为 I-A 仍存在或据此回退。
+- 修复边界：把两处改成「**辅助调用路由**声明 `reasoning` 时」（架构文档括号改成「只读路径经 `peekAuxModel` 解析配置的辅助路由，不发 dead-route 告警」）。不改代码。
+
+### nit
+
+**N-1（新）** `extensions/project-context/index.ts:95` 与 `extensions/project-context/memory/report.ts:489`：插入注释的首行落在第 0 列，缺少与下文一致的 tab 缩进（`cat -A` 可见其余三行以 `\t\t\t\t` 开头，首行无）。纯格式，但本仓有排版门禁文化。修复边界：给首行补缩进。
+
+**N-2（新）** `docs/architecture.md:128-129`：新插入的 R-B 子句把原有的「（reserve 增大）」与其先行词「重试可能保持或减少正文预算」隔开，现在读起来像在修饰「换辅助路由」。修复边界：把「（reserve 增大）」移回原句末或改写。
+
+**N-3（新）** `docs/configuration.md:159`：路由/输出预算段只写「`/memory update` 会在等待前先提示一句」，未提 `/autolearn` 强制 pass 现在也提示。属欠记录（非超承诺）。
+
+### suggestion
+
+**S-1** `tests/aux-model-test.mjs` 目前只直接测 `resolveAuxModel`；`peekAuxModel` 只由 M4b 间接覆盖两个分支。「不可解析」「有模型无 auth」分支没有直接断言。等价性由 `auxRouteFor` 单点结构保证，但可补一组直接断言（复用现有 scenario）把四个分支冻结。
+
+**S-2** 两处等待提示措辞各自演化（`Memory: consolidating…` / `Autolearn: distilling this project's sessions…`）；第 15 轮建议过抽同一常量，本轮未做。可留作后续。
+
+### learning
+
+- **只读路径现在依赖 `modelRegistry.find`。** 真实 pi 的 `ModelRegistry` 确实声明了 `find(provider, modelId)`（`pi-coding-agent/dist/core/model-registry.d.ts`），所以 `harness.mjs` 补 `find: () => undefined` 是补齐 mock、不是掩盖真实 API 差异——我在副本里删掉该行后仅 `aux-model-test.mjs` 变红，报 `TypeError: ctx.modelRegistry.find is not a function`（`index.ts:99` 状态路径），与真实 API 一致。结论：不构成生产崩溃面，但这是一条新的读路径依赖，值得知道。
+- **等价性可独立复核。** 我用探针逐分支对比：空路由+有/无 auth、可解析+有 auth、不可解析、有模型无 auth——`peekAuxModel === resolveAuxModel` 全成立；`resolveAuxModel` 仍按路由去重、每进程一次告警，且告警串逐字未变（`auxiliary model a/aux is unavailable; using the session model` / `no authenticated model available`）。`peekAuxModel` 不消耗告警名额。
+
+### praise
+
+- **I-A 的 `auxRouteFor` 抽取是行为保持的等价重构**，且用单点决策消除漂移；两个调用点确实都改了。
+- **四条作者声明的变异全部复现为各恰红 1 条**：index 调用点退回 `ctx.model?.reasoning` → 红 `status charges a configured reasoning aux route`；report 调用点退回 → 红 `the set-time warning charges the same route`；删 autolearn 前置提示 → 红 `the forced pass announces its wait before the call`；`reserve of about` 退回 `up to` → 红 `the warning calls the reserve an estimate, not a bound`。
+- **N-1/N-2/N-5 记录更正属实**：实测现场串 118 字符、落盘 119 字节（`normalizeMemoryDocument` 补尾换行），CHANGELOG v0.4.8 与 v0.4.7 交叉引用一致；`replyHasStructure = true` 实测 **11 红**，与报告第 14 轮表格改后的数字一致。
+- **I-B 的前置提示覆盖了所有强制 pass 入口**：`run()` 在 `auxModel` 解析后、`loadMemory` 与所有 `call` 之前提示；无材料 / 被节流绕过 / gate 拒绝（`archived.size===0`、`modelBlocked`、`autolearnEnabled=false`）都因 `force` 继续并经过该行；自动（settle）pass 走 `silent`、不提示，属既有的有意行为，CHANGELOG 如实限定为「强制 pass」。
+
+### residual-risk
+
+- **R-A（结构测试接受面偏宽）**：登记诚实——架构文档准确写出「正文自己带标题 / `- ` 条目 / 围栏才算文档」，未暗示「散文一律不能替换」；重开条件（出现「带 bullet 的会话回复替换了整篇记忆」的现场）可判。实测 `storedSections`/40 门等边界行为与文档一致。
+- **R-B（被请求上限封住的重试）**：CHANGELOG 与架构文档措辞与代码一致——`adaptiveOutputTokens` 的 `Math.min(…, Math.max(configured, ceiling))` 确实把重试封在 `max(configured, maxOutputTokens)` 内，32768 对「正文+20489」不可能成功。唯一瑕疵是 N-2 的括号错位。
+- **R-C（新变体）**：未发现需要新登记的变体。I-A 修复后读路径解析辅助路由，与真实调用同源；`peekAuxModel` 只多一次同步 `find`/`hasConfiguredAuth`，无新状态副作用。
+
+## Test And QA Focus
+
+在只读沙箱与 `/tmp/pi-laneA-*` 副本执行：
+
+- `node tests/run-all.mjs`（沙箱）：`All 15 tests passed.`（含 repo hygiene 与渲染标点门）。
+- `node tests/consolidation-test.mjs` / `memory-ops-test.mjs` / `autolearn-test.mjs`：均 `ALL OK`。
+- `git diff 5f76996..HEAD --check`：clean。
+- 变异（各在独立副本复位后跑）：
+  - index.ts 调用点退回 → `FAILURES: 1`（`status charges a configured reasoning aux route`）。
+  - report.ts 调用点退回 → `FAILURES: 1`（`the set-time warning charges the same route`）。
+  - 删 autolearn 前置提示 → `FAILURES: 1`（`the forced pass announces its wait before the call`）。
+  - `reserve of about` → `up to` → `FAILURES: 1`（`the warning calls the reserve an estimate, not a bound`）。
+  - `replyHasStructure = true` → `FAILURES: 11`（印证 N-2 更正）。
+  - 删 `harness.mjs` 默认 `find` → 仅 `aux-model-test.mjs` 失败（`TypeError … find is not a function`），其余 14 项绿。
+- 自写探针：
+  - 等价性：`peekAuxModel === resolveAuxModel` 在四分支全部成立，告警每进程一次、字符串逐字不变，peek 不消耗告警名额。
+  - 端到端（cap=28000）：plain 无路由=静默、reasoning 无路由=告警、plain 会话+reasoning 辅助=告警并带 `hidden reasoning`、**reasoning 会话+plain 辅助=静默** ⇒ 门确实跟随辅助路由。
+
+VERDICT: CHANGES-REQUESTED

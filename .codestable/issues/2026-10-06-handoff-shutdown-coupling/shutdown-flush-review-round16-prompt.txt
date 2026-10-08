@@ -1,0 +1,47 @@
+# Lane A 独立审查 — 冻结修订 `8674fd2`（`v0.4.8` 之上的修复集，候选 `v0.4.9`）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev16`（本仓 `/tmp` 字节副本，停在待审修订）。
+**判定模型**：本轮由 `deepseek/deepseek-flash`（thinking `high`）给出，这句话是记录的一部分。
+
+## 硬规则：只读
+
+- 不得写入工作区（`/tmp/pi-context-rev16` 只读）；不得 `git add/commit/checkout/stash/reset/clean`。
+- 要跑变异/写探针，把沙箱复制到 `/tmp` 下你自己的目录再改，绝不动沙箱本体。
+- 允许：读文件、`git status/diff/log/show`、`node tests/*.mjs`、`node tests/run-all.mjs`、在 `/tmp` 写探针。
+
+## 被审变更集
+
+- 冻结修订：`8674fd2`（= 已发布的 `v0.4.8`（`5f76996`）**之上**的修复集，尚未打 tag）。
+- 被审 diff：`git diff 5f76996..HEAD`（16 文件 / +405 −23）。上一轮（第 15 轮，冻结在 `5f76996`）给出 CHANGES-REQUESTED；
+  本轮的任务是判定它的条目**是否真的关掉、关得对不对**，并自己找新问题。
+- 必读：`.codestable/attention.md`；`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md`
+  （**第 15 轮处置**节 + 轮次表 + 残留风险 + 「收链后的修复」）；同目录 `shutdown-flush-review-round15-independent.txt`（上一轮原始结论）；
+  `.codestable/issues/2026-10-08-aux-call-reasoning-budget/round15-fix-note.md`；`CHANGELOG.md` 的 v0.4.9 与 v0.4.8 两节；
+  `docs/architecture.md`（flush 守卫段与输出预算段）。
+
+## 逐条验证「第 15 轮条目的关闭声明」
+
+| 第 15 轮条目 | 作者声称 | 你要验的 |
+| --- | --- | --- |
+| I-A（important）上限门的 `reasoning` 取自**会话模型**，而调用走 `resolveAuxModel` 的辅助路由 ⇒ 配置了重推理辅助路由时静默漏报 | 新增 `peekAuxModel`（与 `resolveAuxModel` 共用 `auxRouteFor`），两个调用点改用它 | `peekAuxModel` 与 `resolveAuxModel` 在**四个分支**（路由为空 / 可解析且有 auth / 不可解析 / 有模型但无 auth）是否行为一致？`resolveAuxModel` 的「每进程一次告警」语义是否**逐字未变**？两个调用点是否真的都改了？`ctx.modelRegistry` 的这类访问在状态读路径上会不会引入新的崩溃面（若某环境的 registry 缺 `find`）？ |
+| I-B（important）`/autolearn` 强制 pass 无前置提示 | 强制 pass 在辅助调用前回 `Autolearn: distilling this project's sessions…` | 提示是否在**所有**强制 pass 入口之前（含无材料、被节流绕过、gate 拒绝后仍继续调用模型的路径）？自动（settle 触发）pass 不提示 —— 这是有意还是漏？CHANGELOG 是否如实把范围限定为强制 pass（不许超承诺）？ |
+| N-4 可见句把 8192 预留说成界 | 改成 `plus a reserve of about N tokens` | 是否还有**别的**用户可见句子把预留说成界（状态行、错误信息、帮助文本、docs）？ |
+| I2 / N-3 架构文档缺 mtime+size 盲点 | 已补进 flush 守卫段 | 那句话是否准确（同尺寸 + 时间戳粒度）、有没有把「启发式」写成「保证」？ |
+| N-1 119/118 口径 / N-2 变异数字低报 / N-5 历史条目措辞 | 分别改了三处记录 | 口径是否自洽（磁盘 119 含尾换行、journal 的 `memory_markdown` 118）？第 14 轮处置表里的变异数字是否与实测一致？ |
+| R-A（结构测试接受面偏宽：带一条 `- ` 条目 / 围栏 / 任意 `# 标题` 的散文仍可替换四节文档） | 登记为**非目标**（第 14 轮 B1 指定的判据、文档如实写了接受面、更窄判据无现场事实） | 这个登记是否诚实（文档有没有反而暗示「散文一律不能替换」）？重开条件写得是否可判？ |
+| R-B（重试对**被请求上限封住**的配置仍不可能成功） | 已写明：要靠抬高上限或换辅助路由 | CHANGELOG 与架构文档的措辞是否与代码一致（含 `adaptiveOutputTokens` 的封顶行为）？ |
+| R-C 既登记残留（R-F2/R-F3 等） | 不重登 | 是否有**新**变体需要登记？ |
+
+## 对抗性要求
+
+- 至少一次「假设这个修复集里藏着生产 bug」的 pass：重点怀疑 `peekAuxModel` 与 `resolveAuxModel` 的分叉、`auxRouteFor` 抽出的那次重构是否等价、
+  以及测试改动（`tests/harness.mjs` 的默认 registry 补 `find`）是否**掩盖**了真实 API 的差异。
+- 自己跑 `node tests/run-all.mjs`，并**自己做变异**：至少各自钉一次「两个调用点的取值来源」「强制 pass 的前置提示」「N-4 措辞」，
+  给出红了几条、哪一条（作者声称各恰红 1 条）。若你得到不同结论，直接写出来。
+- 记录里每条用户可见句子对着写它的代码路径读一遍 —— 本仓最典型的发现就是「用户可见句子承诺了代码没做的事」。
+
+## 输出格式
+
+按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line`、影响、修复边界。
+末尾一行独立结论：`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`。
+`## Test And QA Focus` 节附你跑过的命令与输出要点。

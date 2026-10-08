@@ -19,6 +19,7 @@
 | 13 | 2026-10-08 | `d48f5d3`（`5522370..d48f5d3`） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round13-independent.txt` | ✓ |
 | 14 | 2026-10-08 | `0450fc4`（= annotated tag `v0.4.7`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 1 important**，自第 6 轮以来第一个代码层轮次） | `shutdown-flush-review-round14-independent.txt` | ✓：`git status` 与 457 条文件表均与基线一致；被审四文件 md5 前后相同 |
 | 15 | 2026-10-08 | `5f76996`（= annotated tag `v0.4.8`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 important：上限门的 `reasoning` 取自会话模型、`/autolearn` 强制 pass 无前置提示；B1/B2/N1/N2/N3 确认已关，I1 被独立复核为**不成立**） | `shutdown-flush-review-round15-independent.txt` | ✓：`git status` 空、460 条文件表与基线逐行一致、被审六文件 md5 前后相同 |
+| 16 | 2026-10-08 | `8674fd2`（`v0.4.8` 之上的 `v0.4.9` 修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属文档：两处 docs 仍写「会话模型」并在括号里断言只读路径不解析辅助路由；3 nit 格式/措辞；S-1/S-2） | `shutdown-flush-review-round16-independent.txt` | ✓：`git status` 与基线一致、465 条文件表逐行一致、8 个被审文件 md5 前后相同 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -261,6 +262,22 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **本轮新增的可用规则**：任何只**读**一个模型属性（例如 `reasoning`）的调用方必须走 `peekAuxModel`，`resolveAuxModel` 只留给真正发起调用的路径；
 两者共用 `auxRouteFor`，所以「机制对、取值错」这一类缺口不会因为两处各自演化而复发。
+
+## 第 16 轮处置（2026-10-08，冻结修订 `8674fd2`）
+
+**零 blocking、零代码层 finding**：第 15 轮的四条修复被独立复现（四条变异各恰红 1 条目标断言；`peekAuxModel` 与 `resolveAuxModel` 在四个分支等价、`resolveAuxModel` 的告警语义与告警串**逐字未变**），I2/N-3 的文档句与 N-1/N-2/N-5 的记录口径都被确认属实。本轮找到的全部落在**文档与格式精度**。
+
+| 第 16 轮条目 | 处置 |
+| --- | --- |
+| I-1：`docs/architecture.md` 与 `docs/configuration.md` 仍写「**会话模型**声明 `reasoning`」，架构文档的括号还断言「配置的辅助路由不在这些只读路径里解析」——v0.4.9 恰好改了这一点 | **已修**：两处改为「**辅助调用路由**声明 `reasoning`」；架构文档括号改为「只读路径经 `peekAuxModel` 解析配置的辅助路由，不发 dead-route 告警」。这是「代码多做、文档说没做」的反向漂移，审查员的实测（reasoning 会话 + plain 辅助 ⇒ 静默）直接证伪了旧括号 |
+| N-1：两处调用点注释首行缺 tab 缩进 | **已修**（4 个 tab，与下文一致） |
+| N-2：`docs/architecture.md` 新插入的 R-B 子句把「（reserve 增大）」与它的先行词隔开 | **已修**：括号移回原句末，R-B 另起一句 |
+| N-3：`docs/configuration.md` 只写 `/memory update` 的等待提示 | **已修**：改为「`/memory update` 与裸 `/autolearn` 都会在等待前先提示一句」 |
+| S-1：`peekAuxModel` 的「不可解析」「有模型无 auth」两个分支没有直接断言 | **已做**：`tests/aux-model-test.mjs` 补四分支直接断言；变异（让 peek 走会告警的 `resolveAuxModel`）恰红 1 条 |
+| S-2：两处等待提示措辞各自演化 | **登记为非目标**：两层提示各自命名本层动作是本仓词汇约定的**有意**行为（`Memory: consolidating…` / `Autolearn: distilling this project's sessions…`），不是漂移；共享子句只有「(a reasoning route can take minutes)」，抽常量的收益小于新增一层间接 |
+| R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
+
+**停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
 
 ## 对审查结论的两处更正
 
