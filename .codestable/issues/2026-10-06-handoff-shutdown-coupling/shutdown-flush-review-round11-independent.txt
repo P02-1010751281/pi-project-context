@@ -1,0 +1,95 @@
+# Lane A 独立审查 — 第 11 轮（被审 `efe3780`，`git diff 6dcec6f..HEAD`）
+
+只读核验：所有测试/变异在 `cp -a` 出来的 `/tmp/rev11-work-*` 副本跑；沙箱内未做任何写操作（仅工作区既有的 `M HANDOFF.md`/`M project-context.json` 会话态）。末行给判定与路由。
+
+## 逐条核验
+
+### 1. `CONTEXT.md:18` 尺寸/余量（B1）
+用三个口径对 committed `HEAD:.agents/memory/MEMORY.md` 实测：
+
+| 口径 | 值 |
+|---|---|
+| `wc -m`（raw 字符，含末尾换行） | **31681** |
+| `memoryDocumentChars()`（跑扩展真实函数） | **31680** |
+| `wc -c`（UTF-8 字节，两个 `§` 各多 1 字节） | 31683 |
+| cap 余量（`32000 - memoryDocumentChars`） | **320** |
+| cap 余量（`32000 - 31681`） | 319 |
+
+`CONTEXT.md:18` 写「31681 raw characters, 319 under the 32,000 cap」。
+- 与 **raw 字符数**口径一致（`wc -m=31681`，`32000-31681=319`）；也与本地 journal 最后一条 replace op 的 text 完全相同（该 op 的 `text` 即 31681 字符，佐证「equal to the committed bytes」为真）。
+- **与 cap 自身口径不一致**：cap 定义在 `memoryDocumentChars` 上，实测 31680，余量应为 **320**。第 10 轮实测的 `31,858/142` 正是 `memoryDocumentChars`（base 的 `wc -m=31859`、`memoryDocumentChars=31858`）；上一版文字也明写「by the cap's own measure (memoryDocumentChars) … headroom 273」。本修订把度量换成了 raw（含换行）却没换标签，故「319 under the 32,000 cap」按 cap 度量**差 1**。→ 见 `important#2`。
+
+`six`→`seven`、`three`→`four`：`git grep -n "six checks"`、`"three assertions"` 在全 tracked 非日志文件**0 命中**；`CONTEXT.md:7` 现为 seven、`:13` 为 seven/four；与 `MEMORY.md:26` 的 seven/four 一致。其余 `six`（six turns / six pre-v0.4 names）语义无关。**改全。**
+
+### 2. §10 归属脚本（I1）
+把 skill 里脚本原样跑在 HEAD：
+```
+lines matched=25  renamed-skipped=1  scanned=24  errors=0
+```
+Index 段共 25 条**文件归属行**（另有 1 条前言 `- Paths are relative to …`，非归属行，正则正确不匹配）。旧正则只中 23；新纳入的两条正是带行号的 `MEMORY.md:104 archive/archive.ts:122` 与 `:118 autolearn/pass.ts:102`。`re.sub(r":\d+$", …)` 把路径还原正确，两条均通过、0 报错。`:\d+` 剥离**未引入新误判**：误判的唯一来源是 `endswith("/"+path)` 的同尾路径；实测 `extensions/`+`tests/` 下**无重复 2 段后缀**，skill 新加的 residual 注释属实。
+
+### 3. 标点门（N1/N2/N3）
+`tests/run-all.mjs:65` → `/^\s*[-*+] /`；12 个反例实测：
+
+| 输入 | 结果 |
+|---|---|
+| `- x` / `  - x` / `\t- x` / `  * x` / `* x` / `+ x` 无标点 | **FAILED**（全部命中）✅ |
+| `- 中文句号。` / `- 中文（括注）` | ok（**不再误报**）✅ |
+| `- 中文感叹！` / `？` / `；` | FAILED —— 全角 `！？；` 仍在白名单外（新残留，见 nit） |
+| `*emphasis …*` 无空格 | ok（不误伤强调） |
+
+git 不可用时两门都打印 `... skipped (git ls-files unavailable)`（实测移走 `.git`），**不再静默**；`FAILED` → `renderFailed=true` → `exit=1`（实测），**退出码计入**。
+
+### 4. `docs/configuration.md`（R2）
+- 全文件最大行长 **159**（第 113 行），**0 条 >160**；原第 78 行 190 → 现 110。
+- 与上一版（`6dcec6f`）**去掉全部空白后内容一致**：字符数均 8496、字节口径亦相等；文件 177→178 行，纯换行。
+
+### 5. 新矛盾与数字一致性
+- 报告与 fix note 的核心数字都是 **7**：`report:198`（M11 行「加夹具自检后为 7 条…第 9 轮实测 FAILURES: 7」）、`fix note:3`「删守卫实测必红 7 条」。我独立复现（把 `store.ts` 的 append 前复核改成 `if(false)`）→ `FAILURES: 7`，且恰为 `race×4 + borrowed×3`，`borrowed key: the replacement is still the file's content` 保持 OK —— 与文字描述逐字吻合。
+- 新矛盾：**有 1 条**（CONTEXT 轮次叙述，见 `important#1`），非数字类。
+
+## 分桶
+
+### blocking
+无。
+
+### important
+1. **`CONTEXT.md` 轮次叙述仍是 round-6 快照，且与本修订刚改过的 fix note 直接冲突。** `:7` 写「Closed the … review chain … round 6 returned PASSED」、`:11`「Review chain closed: rounds 1–6 … round 6 PASSED」、`:15`「Doc-only follow-ups after the PASS」、`:17`「the two remaining nits … were left」；但同 HEAD 的 `fix note:3` 现写「**待审查链给出 PASSED**、发布与真机重启」，`report:134` 明确标注 round-6 的闭环结论「**已被第 7 轮推翻**」，报告表列有第 7/8 轮 blocking（夹具死覆盖、策展截断）。本仓有先例把 CONTEXT 的轮次信息当作 in-scope（`report:127` 曾把「五轮 vs 四轮」当 nit 修）。而且本次修订把该句从 six 改成 seven，等于在一个宣称「round 6 即闭环」的句子里引用了**round 8/9 才成立**的测量，句内自相矛盾。建议同步 `:7/:11/:15/:17` 与 `latest-session-title`（或在快照处显式标注「截至 round 6」）。
+2. **B1 只修好一半：余量用错了度量。** 数字 31681 对 raw 正确，但「319 under the 32,000 cap」应按 cap 自身度量（`memoryDocumentChars=31680`）写作 **320**；这正是第 10 轮与上一版文字所用的口径。虽只差 1，但 B1 的全部要点就是该行对 cap 的数字准确，故列 important 而非 nit；只要把行改成「31680 by the cap's own measure (memoryDocumentChars), headroom 320」或显式标注 raw-含换行口径即可。
+
+### nit
+1. 标点门终字符集重复了一个 `）`（U+FF09 出现两次），且缺全角 `！`(U+FF01) `？`(U+FF1F) `；`(U+FF1B) `：`(U+FF1A)、`】`；未来若出现以这些收尾的 CJK bullet 会误报（实测会 FAILED）。
+2. 门对 `readFileSync` 抛错（render 文件缺失/不可读）仍静默 `continue`，只有 git 失败被播报。
+3. `fix note:47`「删守卫即三红」是 round-4 历史值，与状态行「7 条」并存却未标注为历史（`report:198` 有 6→7 的注解，fix note 没有）。
+4. `CONTEXT.md` Open tasks 有两条几乎重复的「cut the v0.4.6 tag / bump the host pin」（策展合并残留，非本次 diff 引入）。
+
+### suggestion
+1. 在 `MEMORY.md:42` 的「write a render's size/headroom line last, from the final bytes」里点名度量（`memoryDocumentChars`），从源头避免 raw/cap 混用。
+2. 标点门补齐全角 `！？；：】` 并去重；把「render 文件缺失」也显式打印 skipped。
+3. 修 CONTEXT 轮次叙述时，把 round 7/8 的两条 blocking 修复（阻塞 `"w"` 调度屏障、被截断句补回）写进去，否则读者会以为第 6 轮后只做了文档收尾。
+
+### learning
+- `memoryDocumentChars` 与 `wc -m` 在本仓恰好差 1（标题 18 抵消了去换行），两者极易互相冒充；凡「headroom」句必须点名度量。
+- §10 的最小正确修复就是 `(?::\d+)?` 匹配 + `re.sub(r":\d+$")` 还路径；Index 的非归属前言行不能被算进 25。
+- 一个门禁的可靠性 = 终字符集 × skip 路径；N1/N2/N3 分别对应这两处，缺一即假绿。
+
+### praise
+- 第 10 轮列出的 8 项在 HEAD 上**逐条真落地**：删守卫复现 **7 红**（race×4 + 借键×3，且 borrow 内容断言保持绿）、§10 回到 **25/25、0 报错**、标点门覆盖缩进/嵌套/`*`/`+` 且中文句号不再误报、git 不可用会明说 skipped、fix note 状态行去轮次化、configuration.md 重排后空白归一内容逐字一致。8 项之外只余上面两处 important 与若干 nit。
+
+### residual-risk
+- `CONTEXT.md` 是带 `Last updated` 的模型渲染件（`report:104` 已记「每次 settle 重渲染、手改会被回退」），durable 事实在 `MEMORY.md`+journal；报告 `:134` 也已标注第 6 轮闭环被推翻。因此即使不改，沿指针阅读的人会被纠正；但文件本身仍会误导只读 CONTEXT 的读者。
+- `CHANGELOG.md:33` 191 字符，超出 `docs/*.md` 的 160 规则之外（规则只约束 docs），非本次 diff 引入。
+- 报告尾部仍留一段陈旧的「## 第 2 轮」（写「第 2 轮应跑在 `eff6a56` 之上」），非本次 diff 引入。
+
+## Test And QA Focus
+- 整树 `cp -a` 到 `/tmp` 后跑 `node tests/run-all.mjs` → **All 15 tests passed**，两门 `... ok`。
+- **变异**：`store.ts` 的 `if (verify.changed || renderKeyOf(...) !== renderKey)` → `if (false)` → `FAILURES: 7`，失败项 = `race×4`（含 self-check）+ `borrowed key×3`；borrowed 的 file-content 断言保持 OK。复位后 `git diff` 干净。
+- **§10**：skill 脚本原样跑 → `matched=25 / renamed-skipped=1 / scanned=24 / errors=0`；两条新纳入为 `:104`、`:118`。
+- **标点门**：12 个输入（plain/缩进/tab/`*`/`+`/嵌套/中文 `。`/`）`/`！`/`？`/`；`/强调）逐一跑，记录 exit 与门状态；另移走 `.git` 验证 skipped 文案与 exit 0。
+- **行长/内容**：Python `len()` 扫 `docs/*.md`，最大 159；与 `6dcec6f` 做「去空白后」字符/字节双口径比对 → identical。
+- **度量**：在副本内写 `zz-measure.mjs` 直接 `import { memoryDocumentChars }`（node v26.10.0）→ 31680；`wc -m/c` 交叉验证；解析 `memory.jsonl` 末条 replace op 与 committed 字节逐字比对 → 相等。
+- 未跑 live tree；未做任何 git 写操作。
+
+路由：`deepseek/deepseek-flash`，thinking 档 `high`。
+
+VERDICT: CHANGES-REQUESTED
