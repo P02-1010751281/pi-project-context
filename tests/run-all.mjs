@@ -49,6 +49,14 @@ if (tracked.status === 0) {
 // A render bullet truncated mid-sentence (a replace that dropped the rest of the line) survives every token
 // check, so the two rendered surfaces get their own gate: each `- ` line must end in terminal punctuation.
 let renderFailed = false;
+// One array is the source of both the match and the duplicate self-check, so a re-introduced stop character
+// shows up as a failure instead of hiding behind a green suite.
+const STOP_CHARS = [".", "!", "?", ";", ":", "`", ")", "\"", "'", "\\", "]", "。", "）", "、", "」", "』", "”", "’", "…", "！", "？", "；", "：", "】"];
+const STOP_CLASS = new RegExp(`[${STOP_CHARS.map((c) => c.replace(/[\\\]^-]/g, (m) => "\\" + m)).join("")}]$`);
+if (new Set(STOP_CHARS).size !== STOP_CHARS.length) {
+	renderFailed = true;
+	console.log("== repo hygiene (render bullets end in punctuation) ... FAILED (duplicate stop characters)");
+}
 if (tracked.status !== 0) {
 	console.log("== repo hygiene (render bullets end in punctuation) ... skipped (git ls-files unavailable)");
 }
@@ -63,7 +71,7 @@ if (tracked.status === 0) {
 			continue;
 		}
 		for (const line of text.split("\n")) {
-			if (/^\s*[-*+] /.test(line) && !/[.!?;:`)"'\]。）、」』”’…！？；：】]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
+			if (/^\s*[-*+] /.test(line) && !STOP_CLASS.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
 		}
 	}
 	if (bad.length > 0) {
