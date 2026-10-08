@@ -23,13 +23,13 @@ The shutdown-coupling issue (2026-10-06-handoff-shutdown-coupling) is closed out
 
 ## Open tasks
 
-- Owner: restart pi so the running host loads the installed v0.4.6 - the clone is updated but modules are not hot-swapped, so mixed-version noise in errors.log persists until then.
-- Owner: the next memory curation must propose retirements, not formatting-only compression: the render sits 480 characters under the cap (below the ~2000 headroom rule of thumb), so the retirement rule now applies to that pass.
+- DONE 2026-10-08: v0.4.7 released and pinned (annotated tag object 4936eac, peeled 0450fc4; `~/.pi` commit 0c33b0f bumps both settings.json and README.md; installed clone HEAD == peeled tag with describe v0.4.7, clean tree, marker `conversationalOpaque` present, installed consolidation-test and handoff-test green; probe /tmp/probe-v047-1791456654 wrote the archive artifacts and left no errors.log). Owner: restart pi - the running host still holds pre-v0.4.7 modules, so mixed-version noise in errors.log persists until then.
+- Owner: the next memory curation must propose retirements, not formatting-only compression: the render sits under the few-hundred-character headroom line (see the size line above), so the retirement rule applies to that pass.
 - DONE 2026-10-08: the settle-path finding is fixed rather than filed - an opaque reply that carries no markdown heading at all can no longer replace a stored four-section document (commit 95d29fc; the field case was the installed v0.4.5 sandbox publishing a reviewer's opening line as a 119-byte memory).
-- Owner: decide whether to open a fresh review round (no PASS since round 6) or accept the stop-rule closure. Two code fixes landed after the closure (R-L1 and the conversational-opaque refusal), each with its own mutation check and no independent round, so a fresh round now has a bigger surface to look at than the close-out note assumed.
+- Owner: the stop-rule closure was accepted for the v0.4.7 release instead of opening a fresh review round, so the two shipped fixes (R-L1 and the conversational-opaque refusal) carry mutation evidence only; opening a round is still the way to close that gap if a code PASS is wanted.
 - DONE 2026-10-08: residual R-L1 is fixed (commit b7e2a31, loadMemory now reads the render once; probe `read race:` with a positive control, mutation reddens exactly one check). Still open as non-code items: readRenderWithMtime's mtime+size blind spot (a registered residual with its home in the report and docs/architecture.md), and the SIGKILL failure path's leftover temp directories (cosmetic: ~40 KB per failure, cleaned in /tmp on 2026-10-08 along with 4 GB of review sandboxes).
 - Owner: decide whether to implement the autolearn B1' layering on the shape evidence alone or wait for a cost fact; the reopen condition is already recorded.
 - Sibling consumer repos (their call): test a pi-rendered MEMORY.md against HEAD before committing or merging it, merge back UniField's dropped curated block, decide on their unpushed local commits.
-- Next session: record the prefix-cache measurement in the prefix-cache skill (a same-session hand edit did not collapse cacheRead).
+- DONE 2026-10-08: the prefix-cache observation was already recorded in the prefix-cache skill (a same-session hand edit did not collapse cacheRead, 2048 -> 2432), so no new note was needed.
 
 <!-- latest-session-title: v0.4.6 released and pinned, memory curated at the cap, the two nits fixed; the review chain closed by the stop rule without a final PASS -->
