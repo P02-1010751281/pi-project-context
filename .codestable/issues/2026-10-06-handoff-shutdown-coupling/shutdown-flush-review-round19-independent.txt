@@ -1,0 +1,146 @@
+I have completed the independent verification. Below is my review.
+
+---
+
+# Lane A independent review — frozen revision `bef795e` (round 18 fix set, candidate `v0.4.9`, round 19)
+
+Scope verified: `git diff 63a825f..HEAD`, `git diff 5f76996..HEAD`, the report's round-18/残留清理/收链 sections, CHANGELOG v0.4.9, `docs/architecture.md`, `release-v0.4.9-evidence.md`, plus end-to-end probes and 8 mutations in a `/tmp` copy (`/tmp/laneA-rev19.DJofOQ`). Workspace left untouched (`git status` still only the two pre-existing `.agents/memory/` runtime files).
+
+## blocking
+
+**B-1. The reply-side fence state machine is incomplete: a code block can still be published as a document (fail-open).**
+`extensions/project-context/memory/pass.ts:339-347` opens a fence on `^(`{3,}|~{3,})` and closes on the **same character only**; it never compares the opening run length nor checks the closing line's info string. The module's own `isHeadingOnlyDocument` (`extensions/project-context/memory/sections.ts:304`) requires `fence.run.length >= openFence.run.length && fence.info === ""`. The fix's claim at `pass.ts:331` ("Fences are tracked") and `docs/architecture.md:140` / `CHANGELOG.md:17-19` ("围栏内的内容不算文档") is therefore false in constructible cases.
+
+Reproduced end-to-end (real pass through `/memory update`, canonical four-section store, reply body > 40 chars — all `REPLACED`):
+
+```
+# Project Memory
+
+````
+code
+```
+## Project
+- <entry>
+```
+```
+→ REPLACED   (4-backtick opened, 3-backtick closes it early; CommonMark keeps it open)
+
+# Project Memory
+
+~~~~
+code
+~~~
+## Project
+- <entry>
+→ REPLACED   (same for tildes)
+
+# Project Memory
+
+```
+prose
+```not-a-close
+## Project
+- <entry>
+→ REPLACED   (closing fence with an info string is not a closing fence)
+```
+
+Impact: fail-open — the whole stored memory is replaced by the code sample. This is exactly the R-A/I-2 class the round-18 fix was added to close, so the fix is incomplete, not a new feature. Fix boundary: store `{char, run}` on open and close only when the line's run length is `>=` the opening's and its info string is empty — i.e. hoist/export the predicate from `sections.ts` and call it from both sites (the repo already mandates a single decision point for `peekAuxModel`; the same reasoning applies here).
+
+**B-2. A bare `=` / `--` / `---` line counts as a "heading", so a conversational separator + bullet is accepted as a document (fail-open, new regression).**
+`pass.ts:348` tests `/^=+[ \t]*$/` and `/^-{2,}[ \t]*$/` as heading markers. A setext heading is a *text line underlined*; a standalone `---` is a thematic break and a standalone `=`/`--` is a paragraph, not a heading. `docs/architecture.md:139-140` and `CHANGELOG.md:17-18` sell this as "setext 下划线 / 至少一个标题".
+
+Reproduced (real pass, `REPLACED` at HEAD; the same inputs were **refused** at the round-18 frozen revision `63a825f`, i.e. this is a regression the fix introduced):
+
+```
+# Project Memory
+
+---
+- <a 78-char sentence>
+→ HEAD: REPLACED   (63a825f: kept)
+
+# Project Memory
+
+=
+- <same sentence>
+→ HEAD: REPLACED   (63a825f: kept)
+
+# Project Memory
+
+--
+- <same sentence>
+→ HEAD: REPLACED
+```
+
+Impact: trivial fail-open; a terse reply with a horizontal rule and one bullet overwrites memory, and the diagnostic never fires because `replyIsDocument=true` short-circuits `isHeadingOnlyDocument`. Fix boundary: make the `=+`/`-+` line a heading only when the previous non-blank line is a non-empty text line (the module's model: the underline marks the line *above* it); otherwise treat it as a separator. Add the reverse test (`---`/`=`/`--` + bullet must be **refused**), which the current suite lacks (the reverse tests only cover the shapes named in the finding).
+
+## important
+
+**I-1. `CHANGELOG.md:20` states a mutation count that no longer holds and contradicts the frozen record.**
+The sentence says the criterion "退回旧形态**或**退回「只认规范四节」**各红 13 条**". Independently:
+- reply-side old form (`replyHasStructure` = heading ∨ bullet ∨ fence) → `FAILURES: 13` ✓ (matches);
+- storage-side canonical-only → **1**, not 13 (`a non-canonical stored memory is protected too`).
+
+The report's own round-18 disposition records the corrected number (`shutdown-flush-review-report.md:300`: "存储侧退回只认四节红 1"), while the 残留清理 row still says 13 (`:311`). Since round 18 was *about* retiring stale absolute wording, leaving a stale count in the user-visible CHANGELOG is the same defect class. Fix: `…退回旧形态红 13 条、退回「只认规范四节」红 1 条`, and align `report:311`.
+
+## nit
+
+**N-1. `release-v0.4.9-evidence.md:3` now has an unclosed parenthesis after I-5's fix.**
+The dangling "见本文件末尾的「重新发布」节" is gone (grep confirms `重新发布` no longer occurs), but the replacement produced: `残留逐条清完后重新发版（发布时在本文件与审查报告的「残留清理」节。以下内容保留为…`. The `（` never closes and the clause has no verb. Fix: close it (`…「残留清理」节补记）。`) or drop the parenthetical.
+
+**N-2. `shutdown-flush-review-report.md:314` still describes the watchdog as removing "夹具的临时树"; the code now removes only the FIFO subtree** (`tests/consolidation-test.mjs:2148,2187`). Align the row with the round-18 disposition.
+
+**N-3. The watchdog comment at `tests/consolidation-test.mjs:2146-2148` overstates what survives.** It says "the fixture's memory artifacts (and its errors.log) … stay", but the `race`/`adopt` subtree's own `errors.log` is deleted with it; only `flushMem/errors.log` survives. Say which fixture's log stays (or copy it out before the `rm`).
+
+**N-4. Round-18 mutation list says "去掉 hasConfiguredAuth 的 ?? true 红 1 条" (`report:300`), while the R-2 row (`report:313`) correctly says the aux test fails with a `TypeError` before any FAIL line.** I reproduced the `TypeError` (`peekAuxModel`/`auxRouteFor`, exit 1, no `FAILURES:` summary), so the row is the accurate one; the count line should say "TypeError, not a FAIL".
+
+**N-5. "日志串与 toast 同步" (`CHANGELOG.md:22`) is only近似:** the log is `the consolidation reply was not a writable memory document…` (`pass.ts:368`) while the toast is `the reply was not a writable memory document` (`report.ts:579`). Both carry the new phrase, but they are not byte-identical.
+
+## suggestion
+
+- Add the two missing negative cases (B-1/B-2). They are the only holes I found and the suite is green on both.
+- Extract the fence parity into one exported helper in `sections.ts` and consume it from both `isHeadingOnlyDocument` and the reply scanner, so the "same family" half can never be copied without the run-length/info-string half again.
+- For setext, detect the *text line above* rather than the underline line — that removes the bare-separator class by construction rather than by a new exclusion.
+- Consider gating the opaque publish on `sectionsFromMarkdown(reply) !== undefined || explicit-partial-document` instead of a hand-rolled markdown subset; the current scanner already mis-accepts indented code (`    ## Project\n    - <entry>` → REPLACED, pre-existing since before `63a825f`).
+
+## learning
+
+- A state machine cannot be mirrored by half. The fix kept CommonMark's "same family" rule and dropped its run-length and info-string rules; the module already had the full predicate one file away.
+- "Recognize the module's vocabulary" for setext was implemented as "a line of `=`/`-`" rather than "a text line underlined by `=`/`-`". A vocabulary is a grammar, not a character set — that is how `---\n- x` slipped through.
+- The round-18 reviewer predicted the exact failure mode (unidirectional tests: only the shapes named in the finding are tested). The reverse tests cover numbered/setext/HTML but not the separator/longer-fence variants, so the suite stays green over the holes.
+
+## praise
+
+- **I-1/N-2 wording is now correct and consistent with code.** `docs/architecture.md:127-129` and `CHANGELOG.md:38` say the capped retry "只能在裁短后的正文上再试…补不上这个差额", which matches `fitMemoryInput`/`adaptiveOutputTokens` ("预算不增长、reserve 增大 ⇒ 正文被裁").
+- **I-3 reverse direction works.** Numbered / setext / HTML replies are published (verified end-to-end), and the unified `not a writable memory document` is true for both the "truly no entries" and "shape unreadable" paths; `report.ts:579` and `pass.ts:368` carry it.
+- **I-4 is correctly minimal.** Both registry calls are optional; with a real registry (both methods present, boolean returns) the branch and the dead-route warning are byte-for-byte unchanged; the new test pins the missing-method fallback (reverting it fails as a `TypeError`, as the report already disclosed).
+- **I-5's dangling reference is gone** (grep-confirmed).
+- **N-1 removes only the FIFO subtree** and leaves `flushMem` artifacts for diagnosis.
+- **N-4 verified independently:** the reply fixtures are now canonical four-section, and my storage-side mutation reproduces exactly 1 red, matching the disposition.
+- **Tag withdrawal is truthful and re-verified:** `git tag` has no `v0.4.9`; `git describe = v0.4.8-18-gbef795e`; `~/.pi` HEAD `b5083dd` pins `pi-project-context.git@v0.4.8`.
+- Baseline suite: `node tests/run-all.mjs` → `All 15 tests passed.`
+
+## residual-risk
+
+- After B-1/B-2 are closed, the reply-acceptance face remains a hand-rolled markdown subset that also accepts indented code blocks (`    ## Project\n    - x` → REPLACED; pre-existing) and only same-line HTML headings. Every convenience hook is another potential fail-open; the durable answer is a single shared parser.
+- `hasConfiguredAuth?.(…) ?? true` is a deliberate fail-open for a missing method. Benign on real pi (both methods exist and return boolean), but any future registry-shaped partial context will treat a possibly-unauthorized model as usable. The comment documents it; the security surface is unchanged only because the method is never actually absent on `ModelRegistry`.
+- The setext/thematic ambiguity (`---` after a paragraph is a setext heading, after a blank line a thematic break) is context the scanner ignores entirely.
+
+VERDICT: CHANGES-REQUESTED
+
+## Test And QA Focus
+
+- **Baseline** (read-only workspace): `cd /tmp/pi-context-rev19 && node tests/run-all.mjs` → `All 15 tests passed.` (27.7s).
+- **Mutations** (copy `/tmp/laneA-rev19.DJofOQ`, each restored afterwards; run `node tests/consolidation-test.mjs`):
+  - remove reply-side criterion (`replyIsDocument := true`) → **25** assertions red (26 `FAIL` lines incl. summary); named e.g. `prose-bullet leaves the stored memory byte-identical`, `a fenced pseudo-document is not a document`.
+  - reply criterion → old `replyHasStructure` → **13** red (`prose-*`, `foreign-heading`, `prose-under-heading`, fenced).
+  - delete fence branch → **1** red: `a fenced pseudo-document is not a document`.
+  - drop numbered-entry alternative → **1** red: `numbered entries are published, not refused`.
+  - drop setext + HTML heading alternatives → **2** red: `setext entries are published, not refused`, `html entries are published, not refused`.
+  - storage side → canonical-only (`storedIsDocument = sectionsFromMarkdown(...) !== undefined`) → **1** red: `a non-canonical stored memory is protected too` (matches N-4's "M2 只红 1 条").
+  - `hasConfiguredAuth` → hard call (drop `?? true`) → `node tests/aux-model-test.mjs` exits 1 with `TypeError: ctx.modelRegistry.hasConfiguredAuth is not a function` at `aux-model-test.mjs:70`, **0** FAIL lines (matches the record's disclosure).
+- **Adversarial end-to-end probes** (fresh temp projects, real `consolidateProjectState` via `/memory update`, canonical four-section store):
+  - refused (correct): single ``` / `~~~` fences, unclosed fence, mixed-family fence, `> ``` ` blockquote, `# Project Memory\n- entry` (title stripped).
+  - **accepted though they should not be**: 4-backtick/4-tilde opened then 3 closed; closing fence with info string; `---`/`=`/`--` + bullet; `    ## Project\n    - entry` (pre-existing).
+  - published (correct): `## Project\n1. …`, `Project\n=======\n- …`, `<h2>Project</h2>\n- …`, `## Project\n- …`, fence-then-real-document.
+  - **at `63a825f`** (old `pass.ts` swapped in): single fences published (the I-2 bug), `---`/`=` refused (so B-2 is a regression), numbered/setext/HTML refused (so I-3's reverse direction is real).
+- **Read-only check**: `git status --short` at start and end shows only the pre-existing `M .agents/memory/HANDOFF.md`, `M .agents/memory/project-context.json`; no new tracked/untracked changes; all mutations confined to the `/tmp` copy.

@@ -22,6 +22,7 @@
 | 16 | 2026-10-08 | `8674fd2`（`v0.4.8` 之上的 `v0.4.9` 修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属文档：两处 docs 仍写「会话模型」并在括号里断言只读路径不解析辅助路由；3 nit 格式/措辞；S-1/S-2） | `shutdown-flush-review-round16-independent.txt` | ✓：`git status` 与基线一致、465 条文件表逐行一致、8 个被审文件 md5 前后相同 |
 | 17 | 2026-10-08 | `73da214`（`v0.4.9` 修复集 + 第 16 轮文档修复） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属措辞：第 16 轮新加的「重试只让它更早更清楚地失败」与 `fitMemoryInput` 的裁短路径相反；1 nit 属记录；S-1 复核登记诚实） | `shutdown-flush-review-round17-independent.txt` | ✓：`git status` 与基线一致、文件表逐行一致 |
 | 18 | 2026-10-08 | `63a825f`（残留清理集：R-A/R-F2 收窄 + R-2 + 看门狗） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；5 important：判据围栏/形状/诊断 + `hasConfiguredAuth` 硬依赖 + 撤回记录悬空引用；4 nit） | `shutdown-flush-review-round18-independent.txt` | ✓：`git status` 与基线一致、470 条文件表逐行一致 |
+| 19 | 2026-10-08 | `bef795e`（第 18 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking，均在第 18 轮新加的判据里**：围栏闭合只比字符、裸分隔线当标题；1 important 属数字口径；5 nit） | `shutdown-flush-review-round19-independent.txt` | ✓：`git status` 与基线一致、472 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -281,6 +282,26 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
 
+## 第 19 轮处置（2026-10-08）
+
+两条 blocking 都出在**第 18 轮新加的扫描器**上，方向都是 fail-open；这一轮的价值就是把「手写半个状态机」的代价量出来了。
+
+| 第 19 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：围栏闭合只比字符 —— 四反引号开启器被三反引号提前闭合、带信息串的行被当闭合 ⇒ 围栏里的伪文档又会被发布 | **已修**：把 `isHeadingOnlyDocument` 里本来完整的规则抽成 `sections.ts` 的 `readFenceLine` / `fenceCloses`（同字符、长度不短于开启器、闭合行不得带信息串），两处共用；新增 3 条用例（长开启器、信息串、`~~~~`）。变异退回半规则红 **7** 条 |
+| **B-2**（blocking）：裸 `---` / `--` / `=` 被当成 setext 标题 ⇒ 分隔线 + 一条 bullet 就成了「文档」（相对第 18 轮是**回归**） | **已修**：setext 只认「上方是文本行」的 `=` 下划线（`-` 形式整个去掉，它与分隔线/列表天然歧义）；新增 3 条裸分隔用例。变异去掉「上方文本行」要求红 **3** 条 |
+| N-1（证据横幅括号未闭合） | **已修** |
+| N-2（报告仍写看门狗清「整棵临时树」） | **已改**为「清各自的 FIFO 子目录，记忆 artifacts 留给诊断」 |
+| N-3（看门狗注释夸大留存范围） | **已改**注释 |
+| N-4（变异口径与 R-2 行读起来矛盾） | **已写清两种变异**：保留 `?.` 只去 `?? true` ⇒ 断言红 1；连 `?.` 一起去 ⇒ `TypeError` 硬失败 |
+| N-5（「日志串与 toast 同步」只是近似） | **已改**为「同一措辞：日志串写全，toast 用短形式」 |
+| I-1（CHANGELOG 说两边各红 13） | **已改**：旧形态 13、只认四节 1（残留清理表同步） |
+| 建议：把围栏奇偶抽成共享助手 | **已采纳**（本轮 B-1 的修法） |
+| 建议：setext 按「上方文本行」判定 | **已采纳**（B-2 的修法） |
+| 建议：改用 `sectionsFromMarkdown` 作唯一判据 | **不采纳**：它要求四节齐全，会把合法的部分文档（`## Project\n- x`）误拒 —— 第 18 轮 I-3 正是这个方向 |
+| 残留风险：缩进代码块 `    ## Project\n    - x` 仍被接受 | **已顺手关掉**：标题必须顶格（新增用例），变异红 **3** 条 |
+| 残留风险：`hasConfiguredAuth?.(…) ?? true` 是刻意的 fail-open | **登记**：真实 pi 两个方法都存在且返回布尔；只有「registry 形状的部分上下文」会碰到，且方向是「视为可用」 |
+
 ## 第 18 轮处置（2026-10-08，残留清理轮）
 
 **0 blocking**，但这一轮的 5 条 important 全部落在**我这次收窄引入的问题**上 —— 收窄本身是对的方向，实现却既漏了围栏、又误拒了合法形状，还把两类原因说成一句话。
@@ -307,11 +328,11 @@ tag 已在双远端删除、pin 与安装树回退到 `v0.4.8`、修复提交留
 
 | 残留 | 处置 |
 | --- | --- |
-| **R-A**：结构测试接受面偏宽 —— 带一条 `- ` 条目 / 围栏 / 任意 `# 标题` 的散文仍能替换四节文档（第 15 轮实测 5 种形状） | **已修**：回复侧判据改为「**至少一个小节标题、其下带条目**」（比「任意标记」严，比「四节全解析」宽 —— 后者会把合法的部分文档 `## Project\n- x` 误拒）。6 种散文形状 + 非规范存储各有用例；把判据退回旧形态恰红 **13** 条 |
+| **R-A**：结构测试接受面偏宽 —— 带一条 `- ` 条目 / 围栏 / 任意 `# 标题` 的散文仍能替换四节文档（第 15 轮实测 5 种形状） | **已修**：回复侧判据改为「标题 + 其下条目」，按本仓词汇认标题与条目并跟踪围栏（ATX / setext / HTML；bullet 或编号）。散文形状（含围栏伪文档、裸分隔线、缩进标题）+ 反向形状 + 非规范存储各有用例；退回旧形态红 **13** 条、去掉围栏跟踪红 1 条、去掉编号条目红 1 条、去掉 setext/HTML 红 2 条 |
 | **R-F2**：存储侧只认规范四节 ⇒ 手写的**非规范**记忆不受保护（现场那份六节文档正是此形，即 R-F2 并非只关乎 fresh 项目） | **已修**：存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」；空/极小存储仍放开（fresh 项目的首条记忆有专门用例）。变异退回「只认规范四节」恰红 **13** 条 |
 | **R-F3**：短于 40 字符的回复由 `report.ts` 的长度规则拦写 | **不是残留**：那条规则给出更诚实的理由（`too short to be a change`）且不丢内容；39/40 两侧都有用例钉住 |
 | **R-2**：只读状态路径新增 `ctx.modelRegistry.find` / `hasConfiguredAuth` 依赖 | **已收窄**：`find` 改为可选调用、缺失时回退会话模型，并加断言；去掉可选调用会使 `aux-model-test` 以 `TypeError` 硬失败（不是 FAIL 行，也记在这里） |
-| **SIGKILL 失败路径留下临时目录**（~40 KB/次，纯外表） | **已修**：两个 FIFO 看门狗在 SIGKILL 之前同步 `rm -rf` 掉夹具的临时树 |
+| **SIGKILL 失败路径留下临时目录**（~40 KB/次，纯外表） | **已修**：两个 FIFO 看门狗在 SIGKILL 之前同步清掉**各自的 FIFO 子目录**（`race` / `adopt`），夹具的记忆 artifacts 留在 `flushMem` 里供诊断（第 19 轮 N-2 更正了「清整棵临时树」的旧描述） |
 | **`readRenderWithMtime` 的 mtime+size 盲点**（同尺寸且在时间戳粒度内的替换看不见） | **修不了，且已收窄到次要检测器**：要检测必须**再读一次**，那正是 v0.4.7 修掉的 TOCTOU 类；发布决策本身走**内容键**（`memoryComparisonKey`/`basisKey`/`nowKey` 比较的是字节，不是 mtime），所以盲点只影响「要不要把上一次看到的版本当作基准」这一次级判断。已写进 `docs/architecture.md`、`store.ts` 注释与本节 |
 | **写回窗口**（最后一次复核 → `writeAtomic` 之间可丢失并发手改） | **修不了**：POSIX 没有 compare-and-swap rename；能做的只是收窄窗口，而那要加机制 —— 按本仓的反增长规则不做。与 `recordMemoryDocument` 的 pre-publish 重读同级，已登记 |
 | **超帽手改**（journal 存裁剪键、磁盘留原文） | **不是残留**：有意的非破坏行为，已写进 docstring 与文档 |

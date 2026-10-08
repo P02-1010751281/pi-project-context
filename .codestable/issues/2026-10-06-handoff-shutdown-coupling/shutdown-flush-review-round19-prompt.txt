@@ -1,0 +1,39 @@
+# Lane A 独立审查 — 冻结修订 `bef795e`（第 18 轮修复集，候选 `v0.4.9`，第 19 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev19`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+
+## 硬规则
+
+- 不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`。要跑变异就先把沙箱复制到 `/tmp` 自己的目录再改。
+
+## 范围与背景
+
+- 被审 diff：`git diff 63a825f..HEAD`（本轮）与 `git diff 5f76996..HEAD`（`v0.4.8` 起全部候选变动）。
+- 上一轮（第 18 轮，冻结 `63a825f`）有 **0 blocking**、5 条 important，全部落在「不透明回复接受面收窄」的**实现**上（围栏未识别、
+  合法形状被误拒、诊断把两类原因说成一句、`hasConfiguredAuth` 仍是硬依赖、撤回记录悬空引用）。本轮审这批修复。
+- 必读：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md` 的**第 18 轮处置**、**残留清理**、
+  **收链（第 17 轮之后）**节与轮次表；同目录 `shutdown-flush-review-round18-independent.txt`；`CHANGELOG.md` 的 v0.4.9 节；
+  `docs/architecture.md` 的判据段与输出预算段；`.codestable/issues/2026-10-08-aux-call-reasoning-budget/release-v0.4.9-evidence.md`（顶部撤回横幅）。
+
+## 逐条验证
+
+| 第 18 轮条目 | 声称的修复 | 你要验的 |
+| --- | --- | --- |
+| I-1：同一句内「重试不可能成功」与「可能以 `clipped` 成功」自相矛盾 | 改为「预算仍被封在该上限内…补不上这个差额」 | 全仓是否**还有别的**地方把「封顶」写成「必然失败」（含 CHANGELOG 历史条目、`.codestable` 记录、skill 文本）？新句与 `fitMemoryInput` / `adaptiveOutputTokens` 的行为是否一致？ |
+| I-2：判据不认围栏（围栏内含 `## x` + `- y` 被当成文档） | 扫描器加围栏状态机（同族闭合） | 自己构造：`~~~` 块内含 `## x`+`- y`、嵌套/未闭合围栏、`> \`\`\``、四反引号、围栏后紧跟真文档……哪些仍被误收或被误拒？ |
+| I-3：误拒编号列表 / setext / HTML 标题下的条目；诊断把「形状读不出」说成「没有条目」 | 词汇按本仓自己的认（ATX 任意级别 / setext / HTML；条目为 bullet 或编号）；诊断统一为 `not a writable memory document` | 三种形状是否真的被**发布**（不是被拒）？诊断在新旧两类原因下是否都为真（真无条目 / 形状读不出）？还有没有第三种被误报成这两类的路径（例如 `sections` 解析成功但全空）？ |
+| I-4：`hasConfiguredAuth` 仍是硬依赖 | 与 `find` 一样改可选（缺失即视为可用） | 这个「缺失即视为可用」会不会**放宽**安全语义（例如把一个真的未授权模型当成可用）？`resolveAuxModel` 的 dead-route 告警语义是否仍与改动前逐字一致？ |
+| I-5：撤回横幅引用不存在的节 | 已删悬空引用 | 还有别的悬空引用/指向不存在文件或锚点的记录吗（grep `.codestable` 里的相对引用）？ |
+| N-1：看门狗删掉整个夹具根（连诊断 artifacts） | 只清 FIFO 子目录 | 失败路径现在会留下什么？留下的东西是否足以诊断（errors.log / 备份 / FIFO 是否清掉）？ |
+| N-2 / N-3 / N-4 | 旧句已改、文档措辞与实现对齐、回复侧用例改用规范四节存储 | 逐条核；N-4 里作者承认「M2 只红 1 条」的实测说明是否与你的复现一致？ |
+
+## 对抗性要求
+
+- 假设这批修复里还藏着生产 bug：两个方向都要试 —— **误收**（散文仍能覆盖记忆）与**误拒**（合法回复被丢弃 ⇒ 记忆再也更新不了）。
+- 自己跑 `node tests/run-all.mjs`；自己重做至少三条变异（关掉回复侧判据、去掉围栏跟踪、去掉编号/ setext 支持）并给出红数与红的断言名。
+- 记录里每条用户可见句子（诊断串、toast、CHANGELOG、docs）对着写它的代码路径读一遍。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节，每条给 `file:line`、影响、修复边界；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。
