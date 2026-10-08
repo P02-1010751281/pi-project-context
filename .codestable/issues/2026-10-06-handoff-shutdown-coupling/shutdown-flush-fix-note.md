@@ -1,6 +1,6 @@
 # 修复说明：退出改做不调模型的 flush（选项 ①）
 
-**状态**：已实现，并经多轮独立审查逐轮收口（第 3–5 轮收敛为 append 前的一次复核；第 7 轮 blocking 指出 FIFO 夹具的调度屏障被换成非阻塞打开、第 8 轮 blocking 指出策展截断了一句并丢失 durable 规则，均已修复；删守卫实测必红 7 条）。轮次明细见同目录 `shutdown-flush-review-report.md`；待审查链给出 PASSED、发布与真机重启。
+**状态**：已实现；第 6 轮在 `c212fcf` 给过 PASS，之后第 7–12 轮全部 CHANGES-REQUESTED 且每条都已修复（第 7 轮夹具调度屏障、第 8 轮策展、第 9–12 轮记录），本修订待其 PASS；轮次明细与 transcript 见同目录 `shutdown-flush-review-report.md`。
 改动只影响 `session_shutdown` 这一条路径，`agent_settled` 与 `/memory update` 未动。审查轮与逐条处置见
 `shutdown-flush-review-report.md`。
 
@@ -44,7 +44,7 @@
 - **第 3、4 轮**：第 3 轮指出我最初的复检自身有读/stat 不同版本的 TOCTOU 且零覆盖——决策因此抽成纯表
   `flushActionFor`（7 + 3 条断言）。第 4 轮把同一 TOCTOU 追到 `adoptExternalEdit`（blocking，FIFO 注入下更新的手改
   在 journal 与磁盘双双消失），adopt 自读改为 `readRenderWithMtime`（`changed` 即放弃），判据收敛为
-  `renderIsNewerThanJournal` 一处，并补上 FIFO 确定性回归（删守卫即三红（该值属第 4 轮当时的状态；第 5 轮收敛为单一守卫后为七红））。
+  `renderIsNewerThanJournal` 一处，并补上 FIFO 确定性回归（删守卫即三红（第 4 轮当时为三红；第 5 轮收敛为单一守卫后为七红））。
 - 本 issue 之外的现场发现：settle 路能把一段带 header 的散文回复整篇发布（沙箱里由已安装的 v0.4.5 实测），
   建议另开 issue；详见审查报告的残留风险节。
 - 已写明的已知残留：写回的最后一个窗口（最后一次 stat 到 `writeAtomic` 之间落下的并发手改）与 `recordMemoryDocument`

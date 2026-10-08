@@ -1,0 +1,90 @@
+# 独立审查报告（lane A，第 9 轮）
+
+**被审修订**：`git diff ba0147c..HEAD`，HEAD=`896808f`（`1830b1d` 看门狗+夹具自检、`b666be6` 记录与 skill、`37c1335` 记忆恢复、`896808f` CONTEXT 尺寸）。沙箱只读；基线/变异均在整树副本 `/tmp/pi-rev9-work.main` 与 `/tmp/pi-rev9-work.mut` 完成，未改沙箱任何文件，未做 git 写操作。**路由：`deepseek/deepseek-flash` + thinking `high`。**
+
+---
+
+## 第 8 轮处置的逐条核验（结论：B1/I1/I3/I4 成立，I2 规则已回，但新数字错）
+
+- **B1 已修**：`.agents/memory/MEMORY.md:60` 恢复为完整句 `…to resolve in a headless probe; the tests-only /tmp copies do not.`。全渲染标点扫描 0 违规（见 Test And QA）。
+- **I2 已修**：`c442b34` 被删的 9 条全部落地/合并且与代码一致：
+  `MEMORY.md:58` 词汇表指针（`.codestable/reference/vocabulary-conventions.md` 存在）；`:59` `/session-log` 裸调用只读 + 显式 `write`（`archive/archive.ts:146/177` 的 `write` verb 存在）；`:60` 显式 pathspec；`:61` 三条流程规则合并为一条总指针（三个 skill 目录均在）；`:62` knob 有无代码读者；`:92` 读 `legacyConfigPatch` 的 `RENAMED_KEYS`（`shared/config.ts:228` 存在）；`:93` regression guard 计数只作 detector（`memory/pass.ts:125/321` 行为一致）；`:94` `readRenderWithMtime` 的 mtime+size 残留（`store.ts:114-124` 注释一致）；第七项 Index 全部回填。`:118` 的已闭环 brief 指针未恢复，按第 8 轮意见可接受。
+- **I3 已修**：`shutdown-flush-fix-note.md:18` 现写「抽出并**导出** `adoptExternalEdit()`」，与 `store.ts:69` 的 `export` 一致。
+- **I4 已修**：`MEMORY.md:26` 补回 post-model `nowKey` 复核，`store.ts:247-253` 行为一致（改则 `appendMemoryOp(nowKey)`、不发布回复）。
+
+### important
+
+**1. 「删 append 前复核必红 8 条」实测为 7 条 —— 数字进了 committed render 与三处记录**
+- **file:line**：`.agents/memory/MEMORY.md:26`、`.agents/memory/CONTEXT.md:30`、`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-fix-note.md:3`、`.../shutdown-flush-review-report.md:198`。
+- **事实**：在副本里删除 `store.ts` 的 append 前复核（`const verify = …` + `if (verify.changed || …)` 整块）后，`node tests/consolidation-test.mjs` 连跑 3 次均为 **`FAILURES: 7`**：race×4（含新自检）+ 借键×3。借键第 4 条 `borrowed key: the replacement is still the file's content` **保持绿**——`adoptExternalEdit` 只写 journal、不重写文件，故它不会红。报告 M11 行的「借键四断言」把该正向对照误记为应红。
+- **影响**：这是本仓反复禁止的「记录说得多于实测」（第 7 轮 I1 即同类：写 6 实测 3）。数字已写进 durable render，下一轮会以「8」为基准复核。
+- **修复边界**：四处统一改为 **7**（或改述为「reddens seven checks: the four race assertions plus three of the four borrowed-key assertions; the fourth is the guard's green positive control」）。
+
+**2. Index 改为相对路径后，`curated-surface-hygiene` §10 的归属校验脚本整体失效**
+- **file:line**：`.agents/skills/pi-project-context-curated-surface-hygiene/SKILL.md:167`（`path = l.split(" - ")[0][2:].strip()`）与 `:177`（`if any(h == path for h in hits)`）对 `.agents/memory/MEMORY.md:98` 新头部「Paths are relative to `extensions/project-context/`」。
+- **事实**：脚本用 `git grep` 的仓库根相对路径（`extensions/project-context/memory/store.ts`）与 Index 行里的短路径（`memory/store.ts`）做 `==`。我按 §10 原样跑：旧 index（`c442b34`）报 0 处，新 index（HEAD）报 **47 处**虚假 "attributed to … but appears in …"。这正是 §10 存在的意义（第 10 轮抓到 4 个错挂符号），现在一跑全是噪声。
+- **影响**：机械化死指针/错归属检查静默失效；维护者要么误信 47 条、要么直接跳过，真实错挂会被淹没。
+- **修复边界**：脚本里把短路径补成 `${PC}/` 前缀（或在比较时同时匹配 `endswith(path)`），并让 §10 的规则文本与该前缀口径一致。
+
+### nit
+
+**3. CONTEXT.md 的 render 尺寸与代码的 cap 口径差 1**
+- **file:line**：`.agents/memory/CONTEXT.md:18`（`31728 characters … headroom 272`）。
+- **实测（committed `MEMORY.md`，HEAD=`896808f`）**：用 `document.ts::memoryDocumentChars`（经 harness 加载真实模块）= **31727**（headroom **273**）；原始 JS 字符串 `.length` = **31728**（headroom 272）；UTF-8 字节 = **31730**（headroom 270，文件含两个 `§`）。该行等于 raw 字符数，不等于 cap/status 用的 `memoryDocumentChars`。
+- **影响**：结论方向不变（273 ≪ 2,000 门槛，仍触发再策展），故非重要；但「characters/headroom」既谈 cap 就应给 cap 口径。
+- **修复边界**：写 `31727`（余量 273），或注明「文件 31728 字符，cap 口径 31727（含尾换行不计）」。
+
+**4. `docs/architecture.md:102` 单行 161 字符，超本仓 160 上限**
+- **file:line**：`docs/architecture.md:102`（`| session_shutdown | **不调模型的 flush**…`）。
+- **影响**：违反 `.agents/memory/MEMORY.md:44` 自订的「docs/*.md 不超 160」；该行由 `5b01448` 引入，**不在本被审 diff 内**，属既有问题，顺带记录。`docs/configuration.md:78`（190 字符）同理。
+- **修复边界**：仅在下次触碰这两文件的 commit 里按句界重排（formatting-only 需 whitespace 归一化证明）。
+
+### suggestion
+
+**5. 把 §12 的「bullet 必须标点收尾」做成测试门，而不是只写进 skill**
+- **file:line**：`.agents/skills/pi-project-context-curated-surface-hygiene/SKILL.md:203`；落点 `tests/run-all.mjs:22-52` 的 repo-hygiene 检查。
+- **影响**：现在是纯人工规则；B1 那种「替换截断半句」正是人工目检漏掉的。run-all 已有扫全部 tracked 文件的卫生检查，加一条「`.agents/memory/MEMORY.md`/`CONTEXT.md` 的每个 `- ` 行以 `.!?):]` 收尾」成本极低且确定。
+- **修复边界**：仅新增断言，不改渲染器；removed-line 分类仍需人工（无法机械判定 restored/merged）。
+
+### praise
+
+- **B1/I3/I4 真落地且与代码逐条对得上**（见上）；I2 的 9 条按「有家合并、无家写回」处理，口径与 §12 一致。
+- **新增夹具自检是有效的**：它挂在唯一的确定性竞态产物上（`store.ts:93` 的错误行）。当前夹具下始终绿；把 `"w"` 换回非阻塞打开时它必红——正好补上第 7 轮「死覆盖仍全绿」的洞，没有误红（连跑 3 次）。
+- **看门狗 30s 合理**：整文件 `consolidation-test.mjs` 约 8s，race 段 <1s，锁上限 5s；30s 远高于真实路径、又低于 `run-all` 的 60s 每测上限，实测 0 次误触发。
+- **基线干净**：副本内 `node tests/run-all.mjs` → `All 15 tests passed`（约 21s），含 repo-hygiene。
+
+### learning
+
+- **「删守卫必红 N 条」必须按 path 分别数，正向对照不算红**：`adoptExternalEdit` 只写 journal，所以借键路径的「replacement 仍是文件内容」永远绿；race 路径因为 `flushMemoryRender` 随后会 publish fold，才会把它打红。第 8 轮的 6（race×3+借键×3）是对的，加自检后应 7。
+- **改 committed render 的 Index 写法会震到以它为前提的机械脚本**：相对路径是内容改进，但 §10 脚本硬编码了根相对口径，属「改一处、忘一处消费者」的典型。
+
+### residual-risk
+
+- **RR1**（已登记）`readRenderWithMtime.changed` 的 mtime+size 启发式；`MEMORY.md:94` 记法准确。
+- **RR2**（已登记 R-L1）`loadMemory` 纯读站点字节/stat 不同源，写路径 `nowKey` 兜底。
+- **RR3**（已登记）flush 末次读→`writeAtomic`、adopt 末次复核→append 的并发手改窗口。
+- **RR4** 失败路径 SIGKILL 仍跳过 `finally` 清理（`tests/consolidation-test.mjs:1975-1977`），仅失败态卫生；`console.error` 后立刻 SIGKILL 可能丢最后一行，`run-all` 凭 exit≠0 仍判 FAILED。
+- **RR5** §12 三项检查仍全人工；只有标点项可低成本自动化（见 suggestion 5）。
+- **RR6** `docs/*.md` 160 字符规则无自动门（架构 102 行 + configuration 78 行）。
+
+---
+
+## Test And QA Focus
+
+副本 `/tmp/pi-rev9-work.main`（`cp -a` 字节一致）与变异副本 `/tmp/pi-rev9-work.mut`；沙箱未写、未 git 写。
+
+- **基线**：`node tests/run-all.mjs` → `All 15 tests passed`（~21s）；`node tests/consolidation-test.mjs` → `ALL OK`（~8s），race×4 + 借键×4 全绿，含新自检 `race: the fixture really replaced the file under the read`。
+- **变异（本轮关键）**：删 `store.ts` 的 append 前复核（`const verify` + `if (verify.changed || …)`）→ `FAILURES: 7`，另跑「只删 if 块」变体亦为 7；3 次一致。红项：race 4 条 + `borrowed key: a stale key is refused` / `the journal was left alone` / `the file's current key is still accepted`。**结论：应为 7，不是 8**（`borrowed key: the replacement is still the file's content` 是绿的正向对照）。
+- **口径实测**：`memoryDocumentChars(committed MEMORY.md)`=**31727**；raw `.length`=**31728**；UTF-8=**31730**（非 ASCII 仅两个 `§`）。cap=32000。
+- **标点检查**：`MEMORY.md` 与 `CONTEXT.md` 的 `- ` 行 0 条缺终止标点。
+- **removed-line 分类（`git diff c442b34..HEAD -- .agents/memory/MEMORY.md`）**：51 条 removed bullet 全部分类完毕，**无未分类丢失**：
+  - restored（改写仍在）：1,2,3,4,5,6,7,8,9,10,11,12,15,16,18,21,22,23,24,25,26-50。
+  - merged（合并进具名条目）：13,14→`MEMORY.md:61`；17→Heredocs 条；19,20→`Two failure modes recur` 条；16 后半→headless 条。
+  - retired-with-home：51（brief.md，issue 已闭环）；2 的「Release state v0.4.5」子句（代码已动，CHANGELOG v0.4.6 + CONTEXT Open tasks 承接口径）；7 的「byte growth / re-projection」子句（`audit-claim-verification:76` + `sibling-repo-memory-sync` skill）；24 的机制细节（adoption 规则本身）。逐条 grep 确认无「无家」条款。
+- **§10 归属脚本复跑**：按 skill 原文对新 `MEMORY.md` 跑 → **47 处**误报；对 `c442b34` 版 → 0 处。证明是本轮 Index 相对路径化引入的回归。
+- **自检是否误红**：不会。race 夹具在 `"w"` 阻塞打开下，`readRenderWithMtime` 第二读必现 key 不匹配 → `store.ts:93` 行必写；若夹具失去竞态（非阻塞打开/读者迟到），自检转红正是期望行为。`logError` 写 `<root>/.agents/memory/errors.log`，断言取 `raceMem`，路径正确。
+- **CHANGELOG/docs vs 代码**：v0.4.6「未发布」正确（最新 tag `v0.4.5`，`describe`=`v0.4.5-58-g896808f`）；`session_shutdown` flush 的四条件与 `store.ts::flushActionFor`、`docs/architecture.md:102` 一致；`errors.log` 键 `shutdown:flush` 与 `report.ts:439` 一致（`shutdown:consolidate` 只存在于历史）。
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: CHANGES-REQUESTED

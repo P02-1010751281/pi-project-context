@@ -1,0 +1,112 @@
+# Lane A 独立审查 — 第 12 轮（收口轮）
+
+被审 = `/tmp/pi-context-rev12`（`efe3780` 的字节一致副本），diff = `git diff efe3780..HEAD`（4 个提交：`7549644` 门禁、`f77e976` 记录、`22e9dc9` 记忆、`5522370` 第 11 轮 transcript）。只读规则遵守：所有测试/变异在 `cp -a` 出的 `/tmp/pi-context-rev12-harness` 跑；沙箱内未写任何文件（结束时 `git status` 仍只有扩展自身的 `M HANDOFF.md`/`M project-context.json`）。
+
+## 逐条核验（round 11 清单）
+
+| # | 第 11 轮条目 | 真落地？ | 证据 |
+|---|---|---|---|
+| important 1 | CONTEXT 轮次叙述是 round-6 快照、且与 fix note 冲突 | **部分** | 已覆盖 7/8（`:7`、`:11` 写出 round 7 barrier、round 8 curation、rounds 9-11 records）；但 `:7` 仍以 **Closed the shutdown-coupling review chain** 开场，而同 HEAD `fix-note:3` 写 **待审查链给出 PASSED**；`:30` `latest-session-title` 仍是 round-6 快照且未标「截至 round 6」 |
+| important 2 | 余量用 cap 自身度量 | **是** | 真函数实测见下 |
+| nit 1 | 标点门字符集重复 `）` 且缺全角 `！？；：】` | **部分** | `！？；：】` 已补且实测全绿；`）`（U+FF09）**仍出现两次** |
+| nit 2 | render 读不到时静默跳过 | **是** | `chmod 000 CONTEXT.md` → 门打印 `unreadable (skipped)`，`run-all` exit=1 |
+| nit 3 | fix note「删守卫即三红」未标历史 | **是** | `fix-note:47` 现注「该值属第 4 轮当时的状态；第 5 轮收敛为单一守卫后为七红」 |
+| nit 4 | CONTEXT Open tasks 两条重复 | **否** | `:22` 与 `:23` 仍是同一「cut v0.4.6 tag / bump host pin / restart」任务，仅改写了措辞 |
+| suggestion | 记忆/门把度量写清 | **部分** | `MEMORY.md:42` 已点名 `memoryDocumentChars`；门只补字符未去重 |
+| residual | CHANGELOG.md:33 超 160 | 仍未（非本次 diff；规则只管 `docs/*.md`） | 实测 191 字符；`docs/` 最大 159 |
+| residual | 报告尾部陈旧「## 第 2 轮」 | **是** | 已改为「（已被上面的轮次表取代）」并重写正文 |
+
+### 1. `memoryDocumentChars` 真函数对照（自查反例）
+
+在副本里经 `tests/harness.mjs` 的 jiti 加载器直接 `import` `extensions/project-context/memory/document.ts`，对 committed `HEAD:.agents/memory/MEMORY.md` 实测：
+
+| 口径 | 值 |
+|---|---|
+| `memoryDocumentChars()`（真函数） | **31797** |
+| raw 字符（code points / UTF-16 code units） | **31798** |
+| UTF-8 字节 | 31800 |
+| cap 余量 = `32000 − memoryDocumentChars` | **203** |
+| cap 余量 = `32000 − raw` | 202 |
+
+`CONTEXT.md:18` 写「31797 characters by the cap's own gauge (memoryDocumentChars; 31798 raw characters), i.e. 203 under the 32,000 cap」→ **与真函数一致，逐项吻合**。`MEMORY.md:42` 的「runs one character under the raw file count here」也成立（31798−31797=1）。**important 2 完全闭合。**
+
+### 2. 标点门（反例）
+
+- 终字符集实测：`.!?;:\`)"'\]。）、）」』”’…！？；：】`；`！ ？ ； ： 】` 五个全角停顿全部在集内。造 4+1 个 bullet（`…！`/`…？`/`…；`/`…：`/`…】`）跑真门 → 全部 **ok**、套件 15/15 绿。
+- **但去重未做**：直接解析字符类，`）` 出现 **2 次**（`。）、）」`）：`CLASS ARRAY` = `['.','!','?',';',':','`',')','"',"'",'\\',']','。','）','、','）','」','』','”','’','…','！','？','；','：','】']`，`counts>1: [['）',2]]`。重复在字符类里无功能损害，但第 11 轮 nit 1 的「去重」这半没落地。
+- 读不到 render：`renderFailed=true` → 最终 `exit=1`，退出码计入 ✅；git 不可用仍打印 `... skipped (git ls-files unavailable)`（未改）。
+
+### 3. §10 归属脚本
+
+skill 里脚本原样跑（副本内）：`matched=25 renamed-skipped=1 scanned=24 errors=0`。25 条 Index 归属行，含带行号的 `archive/archive.ts:122`、`autolearn/pass.ts:102`。**25/25、0 报，闭合。**
+
+### 4. 独立变异复现「7 红」
+
+把 `store.ts` 的 append 前复核改成 `if (false)`：`FAILURES: 7` = `race×4`（exit keeps render / fixture really replaced / journal holds replacement / replacement still file's content）+ `borrowed×3`（stale refused / journal alone / current key accepted）；`borrowed key: the replacement is still the file's content` 保持 OK。与 `report:198`、`fix-note:3`、`CONTEXT:13` 的「7」逐字吻合。**代码层无未闭合项。**
+
+### 5. 新矛盾扫描
+
+数字层无新矛盾：记忆的「one character under」、报告的 `FAILURES: 7`、fix note 的「7 条」、CONTEXT 的 cap 值全部交叉一致。**但发现一处记录层冲突**（见 important）和一处记录缺口（见 nit 3）：`CONTEXT:7` 称「rounds 9-11 then closed the records」、`report:198` 引用「第 9 轮实测」，而报告 `## 轮次表` 只到第 8 轮，且仓库里**没有 round 9 / round 10 的 transcript**（只有 round 11 与 round 1-8）。
+
+---
+
+## blocking
+
+无。
+
+## important
+
+1. **`CONTEXT.md:7` 的关闭宣告与同 HEAD 的 `fix-note:3` 状态行直接冲突，第 11 轮 important 1 未完全清掉。**
+   - `CONTEXT.md:7`：「**Closed the shutdown-coupling review chain**: … until round 6 returned PASSED on c212fcf …」。
+   - 同一 HEAD `shutdown-flush-fix-note.md:3`：「…；**待审查链给出 PASSED**、发布与真机重启。」
+   - 第 11 轮已判 CHANGES-REQUESTED（本轮即其上一轮），链尚未给出 PASS；因此至少有一处是假陈述（按 fix note 为准，`Closed` 不成立）。`CONTEXT.md` 是注入 system prompt 的会话状态面，这个假「已关闭」会被未来会话读到。
+   - 最小复现：`grep -n "Closed the shutdown-coupling review chain\|待审查链给出 PASSED" .agents/memory/CONTEXT.md .codestable/.../shutdown-flush-fix-note.md` → 两条并存。
+   - 附带：`CONTEXT.md:30` 的 `latest-session-title` 仍写「review converged: round 6 PASSED」，第 11 轮要求的「同步或标注截至 round 6」未做。
+   - 修法二选一：若链已关，把 `fix-note:3` 的「待审查链给出 PASSED」改为 PASS/收口事实；若未关，把 `CONTEXT:7` 开头改为「As of round 6 the TOCTOU chain PASSed; rounds 7–11 followed…」，并在 `:30` 标注快照轮次。二者必须同时改。
+
+## nit
+
+1. **标点门终字符集 `）` 仍重复**（U+FF09 ×2，见上 `counts>1`）。绿色测试证明不了去重，只有集合检查能；建议删一个 `）`。全角 `！？；：】` 已补全且有效。
+2. **`CONTEXT.md:22-23` Open tasks 仍是同一 v0.4.6 tag 任务的两次登记**（第 11 轮 nit 4 未落地）；`:23` 只是把措辞从「pinned to no release yet」改成「merged-but-untagged state…」。建议合并为一条。
+3. **轮次记录缺口**：`report` 的 `## 轮次表` 止于第 8 轮，而 `CONTEXT:7` 与 `report:198` 引用第 9/10 轮；仓库无 round 9、round 10 transcript。本轮新增的 round 11 transcript 也没进轮次表。建议补一行「9/10/11」或在表内注明只有 11 入档。
+4. `fix-note:47` 的历史值标注可用，但嵌套括号（`（删守卫即三红（…；…））`）可读性差；建议改为「（第 4 轮当时为三红；第 5 轮收敛为单一守卫后为七红）」。
+
+## suggestion
+
+- 把「凡 headroom/尺寸句必须点名度量」从 `MEMORY.md:42` 延用到 `CONTEXT` 与 fix note/报告：本仓 `memoryDocumentChars` 恰好比 raw 少 1，两种口径极易互相冒充。
+- 门的两处可测性（去重、skip 播报）建议加一条自检断言：解析字符类，`new Set(cls).size === cls.length`，使「重复」这类改动也能自红。
+- 若本轮定稿关闭链，请把 `latest-session-title` 与 `fix-note:3` 与 `CONTEXT:7` 三处一次改齐，并给报告轮次表补 9-11 行。
+
+## learning
+
+- 「链已关闭」与「待审查链给出 PASSED」是**同一状态位的两种写法**，必须同一次编辑；分处两文件时，任何单侧修改都会在下一轮立刻表现为矛盾。
+- 绿测试无法证明正则去重——`[。））、]` 与 `[。）、]` 对全部样本同判；只有对字符类做集合检查才能。
+- 本仓 `memoryDocumentChars` 与 raw 字符数在本 revision 差 **恰好 1**（标题 18 抵消去换行），headroom 差 1；不点名度量就必然被下一轮抓。
+
+## praise
+
+- 第 11 轮清单里**可代码化验证的项全部真落地**：真函数余量 31797/203、全角停顿 `！？；：】` 绿、unreadable 播报且 exit=1、§10 `25/25/0`、fix note 三红标为第 4 轮历史、报告旧节标为「已被轮次表取代」、`configuration.md` 已与 6dcec6f 去空白逐字一致、`docs/` 最大行 159。
+- 删守卫独立复现 **恰 7 红**（race×4 + borrow×3），且 `borrow` 的文件内容断言保持绿，与报告/fix note 的说明逐字吻合——记录层的数字这次是真的。
+- 整个套件 15/15，两个 repo hygiene 门 `ok`。
+
+## residual-risk
+
+- `CHANGELOG.md:33` 191 字符 > 160：规则只约束 `docs/*.md`，且非本次 diff 引入，属已记录残留。
+- `CONTEXT.md` 是每次 settle 由模型重渲染的会话态；即使本轮手工改掉 `Closed`，下一次渲染仍可能回退（持久事实在 `MEMORY.md` + journal）。这是把该条列 important 而非 blocking 的原因。
+- `MEMORY.md:42` 的「raw file count」措辞在孤立阅读时可在「字符 / 字节」间误读（此处按字符=31798 才成立）；`CONTEXT` 已消歧，属措辞级残留。
+- round 9/10 的判定与处置只散见于 `report:198` 与第 11 轮 transcript 的转述，无独立 transcript；若下游要按轮审计，这一段不可复验。
+
+## Test And QA Focus
+
+- 整树 `cp -a` 到 `/tmp/pi-context-rev12-harness`；沙箱本体零写（前后 `git status` 与 `md5sum` 对照）。
+- `node tests/run-all.mjs` → 15/15 通过，两个 hygiene 门 `ok`（副本内另跑一次含探针为 16/16）。
+- **真函数**：`harness.mjs` jiti 加载 `memory/document.ts`，`memoryDocumentChars(HEAD MEMORY.md)` → `31797`；`[...text].length` → `31798`；`Buffer.byteLength` → `31800`；`exceedsMemoryCap(...,32000)` → `false`。
+- **变异**：`store.ts` 的 `if (verify.changed || renderKeyOf(...) !== renderKey)` → `if (false)` → `FAILURES: 7`（race×4 + borrow×3），失败标签逐一列出后复位（文件恢复为与沙箱逐字节相同）。
+- **标点门**：直接解析字符类 + 5 个全角收尾 bullet 跑真门（全绿，退出 0）；`chmod 000 CONTEXT.md` 后跑真门（FAILED + exit 1）后恢复。
+- **§10**：skill 脚本原样跑 + 插桩计数 → `matched=25 renamed-skipped=1 scanned=24 errors=0`。
+- **记录一致性**：`grep` 冲突字符串、解析 Open tasks 重复、列 round transcript 文件名、比对 `CHANGELOG.md:33` 与 `docs/*.md` 行长。
+- 未跑 live tree；未做任何 git 写操作。
+
+路由：`deepseek/deepseek-flash`，thinking 档 `high`。
+
+VERDICT: CHANGES-REQUESTED

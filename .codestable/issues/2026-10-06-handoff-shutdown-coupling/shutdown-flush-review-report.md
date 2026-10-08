@@ -12,6 +12,12 @@
 | 6 | 2026-10-06 | `c212fcf`（`5d6db4b..c212fcf`） | `deepseek/deepseek-flash` + thinking `high` | **PASSED** | `shutdown-flush-review-round6-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 7 | 2026-10-07 | `d87261a`（`c212fcf..d87261a`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED（**blocking**） | `shutdown-flush-review-round7-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 8 | 2026-10-07 | `ba0147c`（`c212fcf..ba0147c`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED（**blocking**，出自策展） | `shutdown-flush-review-round8-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
+| 9 | 2026-10-07 | `896808f`（`ba0147c..896808f`） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round9-independent.txt` | ✓ |
+| 10 | 2026-10-07 | `6dcec6f` | 同上 | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round10-independent.txt` | ✓ |
+| 11 | 2026-10-07 | `efe3780` | 同上 | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round11-independent.txt` | ✓ |
+| 12 | 2026-10-07 | `5522370` | 同上 | CHANGES-REQUESTED（1 important + 4 nit，全部已修） | `shutdown-flush-review-round12-independent.txt` | ✓ |
+
+第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并

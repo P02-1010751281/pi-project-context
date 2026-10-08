@@ -1,0 +1,71 @@
+# Lane A — Independent review, round 10
+
+- **Revision under review**: `6dcec6f` (`git diff 896808f..HEAD`), byte-identical copy at `/tmp/pi-context-rev10`.
+- **Isolation**: all mutations ran in fresh `/tmp/pi-rev10-*` copies; the sandbox was only read. The two working-tree entries (`HANDOFF.md`, `project-context.json`) are the extension's own memory writes, not part of the diff.
+- **Model / thinking**: `deepseek/deepseek-flash`, thinking **high**.
+
+## Verification of the three round‑9 items
+
+**(1) 8 → 7 — partially fixed.** I deleted the append-time recheck (`store.ts:91-95`) in a copy and re-ran the suite: `FAILURES: 7`, exactly race×4 (`consolidation-test.mjs:1985,1989,1991,1992`) + borrowed-key×3 (`:2009,2010,2013`); `:2011` ("the replacement is still the file's content") stays OK. So 7 is the correct count and the "8 miscounted the `FAILURES: 7` summary line" note is right. **But** `CONTEXT.md:7` and `:13` still say "six checks" / "three assertions" (see B2).
+
+**(2) §10 attribution script — fixed for the reported 47.** Pre-fix line → 47 misattributions; the shipped suffix match → **0** (23 lines scanned). Residual assumption found in I1.
+
+**(3) CONTEXT size口径 — method fixed, values stale** (see B1); **architecture.md** is clean: old `:102` was 161 chars, now 86, whole file max 158, and all four `flushActionFor` conditions remain verbatim at `:108-109`.
+
+## Findings
+
+### blocking
+
+**B1 — `CONTEXT.md:18`: the size/headroom numbers are from the pass *before* the edit that grew the render.**
+- Evidence: `memoryDocumentChars(HEAD:.agents/memory/MEMORY.md)` = **31,858**, raw file = **31,859**, headroom = **142**; the line claims 31,727 / 31,728 / headroom 273. Those claimed values are the *journal's* last `replace` record (`memory.jsonl`, 31,728 raw chars) and the render at `896808f` — i.e. the state before `6dcec6f` itself edited `MEMORY.md` to the longer "seven checks…" sentence (same commit added the number and grew the file by 131). `loadMemory(root)` at HEAD returns `MEMORY.md` (render newer than journal), so the runtime cap measure is 31,858.
+- Impact: the next curator reads 273 headroom when there are 142 — same class as the round-8 I1 that round 9 was closing ("state the render's size from the render"). Trigger direction is unchanged (142 < ~2,000), but the number is wrong.
+- Fix boundary: re-measure the committed render (31,858/31,859, headroom 142), or label the pair explicitly as the curation/journal snapshot. Touch only `CONTEXT.md:18`.
+
+**B2 — `CONTEXT.md:7` and `:13`: the guard-removal count still contradicts the corrected number.**
+- `:7` "…that redden six checks when the guard goes"; `:13` "Removing the guard reddens six checks … the FIFO race case ran three times green with its three assertions". Authoritative: seven (MEMORY.md:26) and four race assertions (MEMORY.md:26, CONTEXT.md:30 latest-session-title). Round 8 already flagged `CONTEXT.md:13`; item (1) fixed the render, the two records and the title, not this line.
+- Impact: a current-state key point injected into future sessions disagrees with the corrected count in the same file.
+- Fix boundary: `six`→`seven`, `three assertions`→`four assertions` at `:7`/`:13`, or mark them as the round-6 measurement.
+
+### important
+
+**I1 — `SKILL.md:164/167` (§10): the script silently skips Index lines whose path carries a line number, so the "per line" claim has a hole.**
+- Evidence: the shipped regex `^- [\w./-]+\.(ts|mjs)\s*-` matches **23 of 25** path lines. `archive/archive.ts:122` and `autolearn/pass.ts:102` are skipped: the class `[\w./-]` cannot cross `:`, and after `.ts` the next char is `:` not ` - `. The extraction at `:167` (`l.split(" - ")[0][2:].strip()`) also assumes the path has no `:line` suffix.
+- This is the remaining "path must be complete" assumption: allow `(?::\d+)?` in the match and strip `:\d+` from `path` → 25/25 scanned, and I verified that still yields **0** misattributions (so nothing is currently hidden, but the two rot-prone line-pointer lines are unchecked).
+- Fix boundary: one optional group in `:164` plus a `re.sub(r":\d+$", "", path)` before the comparison.
+
+### nit
+
+**N1 — `tests/run-all.mjs:62`: the gate covers only column-0 `- ` bullets.** Indented (`  - `) and `* `/`+ ` bullets are invisible, even though the comment (`:49-50`) says "each `- ` line". No indented bullet exists today, so no false negative now. Fix boundary: strip leading whitespace and match `[-*+] ` if the render ever nests.
+
+**N2 — `tests/run-all.mjs:62`: the ASCII whitelist would flag legitimate non-`.` endings.** I confirmed `)`, `]`, backtick, quotes, `;`, `:`, `!`, `?` all pass (so the specific concern in the prompt is a non-issue). But `**`, `}`, `,`, `-`, `/`, `_`, `~` and CJK `。`/`）` would be flagged; none occur today. This is the right conservative trade-off (loosening it would weaken the truncation catch), so only note it if renders start mixing languages.
+
+**N3 — `tests/run-all.mjs:51-72`: the render gate vanishes silently when `git ls-files` fails**, unlike the trailing-blank-line gate which prints "skipped (git ls-files unavailable)". Fix boundary: mirror that `else` message.
+
+**N4 — `shutdown-flush-fix-note.md:3`: "待第 9 轮验证" is now stale** (round 9 has run and returned CHANGES-REQUESTED; this is round 10). Pre-existing wording, but the fix commit edited the same sentence. Fix boundary: replace the round reference.
+
+### residual-risk
+
+**R1 — the §10 script's suffix match can mask a wrong-file attribution** when two files share a basename or when `named` (which only ever holds basenames, because `/` is outside `[\w.-]`) names a file the symbol does not actually live in. Nothing abuses it today.
+
+**R2 — `docs/configuration.md:78` is 190 chars (> the skill's self-imposed 160); `CHANGELOG.md:33` is 191** (not `docs/*.md`, so §3 may not apply). Pre-existing, not touched by the diff, but the 160 rule is currently not global.
+
+### learning
+
+**L1 — hand-editing a render without journaling leaves a size/authority gap.** The "seven" fix was written straight to `MEMORY.md`; the journal still holds the 31,728-char text, and `loadMemory` now prefers the file. `adoptExternalEdit` will heal this on the next pass, but any size claim measured *before* such an edit (or from the journal) is stale by construction — measure after the edit.
+
+### praise
+
+The new gate is non-vacuous: truncating either `MEMORY.md` or `CONTEXT.md` produces `render bullets end in punctuation ... FAILED` with `exit 1` and the summary "All 15 tests passed, but a repo hygiene check failed"; the current revision reports `ok` and exits 0. The §10 suffix fix is real (47→0). `architecture.md` dropped the 161-char row to 86 without losing any of the four `flushActionFor` conditions.
+
+## Test And QA Focus
+
+- Baseline in the frozen copy: `node tests/run-all.mjs` → 15/15, both hygiene gates `ok`, `EXIT=0` (~22 s).
+- Truncated one `- ` bullet in `MEMORY.md` → gate `FAILED`, `EXIT=1`; same for `CONTEXT.md` → `FAILED`, summary correctly names the hygiene failure, `EXIT=1`.
+- Guard removal (`store.ts:91-95`) → `FAILURES: 7` = race×4 + borrowed-key×3; borrowed-key file-content assertion stays green (reproduced, not just read).
+- §10 script: old comparison = 47 misattributions; shipped script = 0; with `:line` lines included and stripped = 0 but 25/25 scanned (vs 23/25 shipped).
+- Sizes at HEAD: `memoryDocumentChars(MEMORY.md)=31858`, raw `=31859`, headroom `=142`; journal last `replace` `=31728` raw; `loadMemory` source = `MEMORY.md`.
+- `architecture.md`: `len>160` lines = 0 (max 158); old line 102 = 161 chars. The four conditions (recheck / none / keep / publish) match `flushActionFor` (`store.ts` pure table) one-for-one.
+- Regex probe: `)`, `]`, backtick, `"`, `'`, `;`, `:`, `!`, `?` pass; `**`, `。`, `）`, `,`, `-`, `/`, `}`, `_`, `~` fail.
+
+Model: `deepseek/deepseek-flash`, thinking high.
+VERDICT: CHANGES-REQUESTED
