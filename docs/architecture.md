@@ -130,14 +130,15 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 - 其他不可解析回复先做一次有界重试并附加严格格式提醒；第二次仍失败则 fail closed，保留现有文件并把回复头写入 `errors.log`，不会把原始 JSON 当成 memory。
 - 非工具调用的纯 Markdown 回复分两种：`memory` 能解析出四节时按 `fallback-sections` 交给渲染器重新渲染；解析不出四节时按
   `fallback-opaque` 把**回复正文原样**作为 `MEMORY.md`（不经渲染器），只有整篇都是标题的「骨架」判为空、跳过写入并写诊断。
-- 该原样写入在 2026-10-08 收窄：当存储的是可解析的四节文档、回复正文（**先剥掉规范标题 `# Project Memory`**）既没有自己的
-  标题、也没有 `- ` 条目、也没有围栏，且长度不低于 `OPAQUE_DOCUMENT_MIN_CHARS`（40，与 `report.ts` 判断「回复是否算变化」
-  同源读取）时，视为无可写内容 —— 跳过写入并写 `carried no entries` 诊断。判据必须先剥规范标题：现场那条开场白**带着**
-  `# Project Memory` 头（`# Project Memory\n\nI'll review the frozen revision …`），v0.4.7 只测「整篇没有任何标题」因此放过了
-  它，v0.4.8 起才真正覆盖（回归用例直接用逐字节的现场串）。
-- 两条已登记的边界，与上面的判据同一个条件：存储的记忆本身不是四节文档时拒绝不生效（`storedSections === undefined`，R-F2；
-  代价是 fresh 项目仍能写下第一条散文记忆，这是同一判据换来的一面）；短于 40 字符的回复不走拒绝，而由 `report.ts` 的
-  「是否算变化」长度规则拦住写入（R-F3），所以它不丢内容，只是报「too short to be a change」。
+- 该原样写入在 2026-10-08 两次收窄。第一步（v0.4.8）：判据先**剥掉规范标题 `# Project Memory`** 再看正文 —— 现场那条开场白
+  **带着**这个头（`# Project Memory\n\nI'll review the frozen revision …`），v0.4.7 只测「整篇没有任何标题」因此放过了它；
+  回归用例直接用逐字节的现场串。
+- 第二步（v0.4.9，独立审查第 15 轮的 R-A）：判据从「正文里有任意标题 / `- ` 条目 / 围栏」收窄为「**至少一个小节标题、其下带条目**」，
+  因为前者仍放过 `# Project Memory\n\nI'll do the following:\n- review` —— 一条 bullet 的散文就能换掉整篇记忆。三个条件同时成立才拒绝：
+  存储侧是文档（能解析成四节 **或** 剥离标题后 ≥ `OPAQUE_DOCUMENT_MIN_CHARS`=40 字符，所以手写的非规范记忆 —— 例如现场那份六节文档 ——
+  与规范文档同样受保护）、回复侧不是文档（没有「小节标题 + 其下条目」）、且回复长度不低于 40。
+- 低于 40 字符的回复不走这条拒绝，而由 `report.ts` 的「是否算变化」长度规则拦住写入，报更诚实的 `too short to be a change` ——
+  它不丢内容，也不是待修项。空存储（fresh 项目）同样不受拒绝，仍写下第一条记忆：这是同一判据的一面。
 
 因此 `CONTEXT.md` 的更新时间只在某次 pass 真正返回 context 时移动；它可以作为有效的新鲜度信号。
 
