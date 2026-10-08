@@ -1,0 +1,120 @@
+# 独立审查报告（lane A，第 8 轮）
+
+**被审修订**：`git diff c212fcf..ba0147c`（HEAD=`ba0147c88222e612a1a8fd807dee5148a7994b8e`），含 `d87261a`(夹具)、`7285eb2`(B1 修复)、`20720bc`(记录)、`ba0147c`(记忆策展)。
+**方法**：沙箱只读；所有基线/变异/插桩在整树副本 `/tmp/pi-rev8-work.dK2Pyb` 完成，未触碰沙箱文件、未做 git 写操作。**路由：`deepseek/deepseek-flash` + thinking `high`。**
+
+---
+
+## blocking
+
+### B1. 策展提交把一条 durable pitfall 截成半句，且未被第 7 轮发现
+- **file:line**：`.agents/memory/MEMORY.md:60` — `- A /tmp sandbox of the built repo needs node_modules for the extension's bare imports`（无句号、无后续）。
+- **事实**：`c442b34:.agents/memory/MEMORY.md:64` 是完整句 `…to resolve in a headless probe; the tests-only /tmp copies do not.`。追 journal：13:49 op（29,999）该行仍完整，14:05/14:08 op 已截断，committed MEMORY.md == 14:08 op（逐字节相同）。截断由 `ba0147c` 的策展引入，非渲染器整条丢弃（全文 30,359 < cap 32,000，无截断 marker，截断处在段中间）。
+- **影响**：丢失「tests-only 的 /tmp 副本不需要 node_modules」这一区分；产出的是语法不完整的 committed render。这正好违反本仓自己写进同一渲染的规则 `.agents/memory/MEMORY.md:41`（“a render that dropped a durable rule is restored before the commit”）。
+- **修复边界**：恢复完整句（或明确改写），并重跑一次「每条 bullet 以标点结尾」的结构检查——本案中该检查只命中 `:60` 一行，是廉价且确定的兜底。
+
+---
+
+## important
+
+### I1. `CONTEXT.md` 的余量/门槛结论与 committed render 不符，方向性误导
+- **file:line**：`.agents/memory/CONTEXT.md:18`。
+- **事实**：该行称策展到 `29,999`、`about 2,000 left, back above the ~2,000 hand-curation trigger`。实测 committed `MEMORY.md`：raw 30,359、`memoryDocumentChars`=30,358（用 `document.ts::memoryDocumentChars` 跑出），余量 **1,641 < ~2,000**。门槛规则在 `.codestable/attention.md:53`（“余量 < ~2,000 时再裁一次”）。29,999 对应的是 journal 13:49 的中间态，14:05/14:08 的两次手改把它推回 30,359。
+- **影响**：记录说“已回到门槛之上、无需再裁”，实际按本仓规则**已触发再次策展**；下一轮 curator 会据此跳过。第 8 轮 diff 的 review report `:145`（N3“已修：改为 29,999 / 余量 2,001”）也随之过时。
+- **修复边界**：以 committed render 重算（30,358 / 余量 1,641），如实写“门槛已触发”或把 29,999 标注为中间快照；同步 `shutdown-flush-review-report.md:145`。
+
+### I2. 策展丢失多条 durable 规则，且多数没有替代落点
+以 `git show c442b34:.agents/memory/MEMORY.md` 与 committed 版逐行比对，以下整条在 `ba0147c` 缺失（其中多数在 31,570 的模型渲染里就已丢，手改策展未按 `MEMORY.md:41` 恢复）：
+
+| old:line | 丢失的 durable 规则 | 替代落点 |
+| --- | --- | --- |
+| `:56` | Vocabulary 规则/终态/审计历史在 `.codestable/reference/vocabulary-conventions.md`，改动需同轮更新该文件+代码+docs/CHANGELOG+render | `reference/` 仍在，但 MEMORY 指针丢失 |
+| `:57` | `/session-log` 裸调用只读、写是显式 `write`，理由 pi 已在 turn_end/agent_settled/session_shutdown 归档 | 无（docs 未覆盖该决策） |
+| `:58` | 用显式 pathspec 提交、绝不 `git add -A`（失败会整批 abort，逐 slice `git show --stat`） | 部分在 `command-surface-audit`/`curated-surface-hygiene` skill |
+| `:59` | skill-candidates 是未跟踪管线态；晋升后仍被跟踪=异常；有 durable home 才可退役，但须能从 session-logs 恢复；两个目录都要 sweep | `curated-surface-hygiene` skill |
+| `:60` | Design doc 实现后即 design-frozen，banner 写实现提交，未建部分列 follow-up | `release-tag-and-pin-sync` skill |
+| `:61` | Knob 无代码读者才算无用；本地未用=使用证据非机制证据 | 无明确落点 |
+| `:89` | 推断的 migration-key 列表不是证据，要读 `legacyConfigPatch` 的 `RENAMED_KEYS` 复跑 | **无**（全树仅剩 Index 提 RENAMED_KEYS） |
+| `:90` | regression guard 记录数 3/12/8/24 会高报，只当 detector、不得变成 refuse-to-publish | **无**（`pass.ts`/`sections.ts` 里 guard 仍在） |
+| `:118` | `…/handoff-shutdown-coupling/brief.md` 的 Index 指针 | 无（issue 已闭环，可接受） |
+
+- **影响**：违背 `MEMORY.md:41` 的“先证明 HEAD 事实存活、再把 render 提交”。其中 `:89`/`:90` 两条是决策/方法类事实，没有别的家，属于实质丢失而非去冗余。
+- **修复边界**：按 skill/reference 是否有家逐条处置——有家的可只留一条总指针，无家的必须写回；写回后重跑余量（现余 1,641，需先腾空间，正好与 I1 的“应再裁”一致）。
+
+### I3. fix note 的变更表仍称 `adoptExternalEdit` 不导出，与代码相反
+- **file:line**：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-fix-note.md:18`。
+- **事实**：`extensions/project-context/memory/store.ts:69` 是 `export async function adoptExternalEdit`，且 `store.ts` 上方注释明说“Exported because the borrowed-key path is otherwise only reachable through a race…”；`tests/consolidation-test.mjs:2004` 正是从该导出取得它。该行却写“（无外部消费者，故不导出）”。
+- **影响**：变更记录与代码矛盾；未来 dead-export/审计会据此得出错误结论。属本仓反复警告的“记录说得多于代码”。
+- **修复边界**：改为“从 `recordMemoryDocument` 抽出并导出 `adoptExternalEdit`，供确定性借键回归驱动”。
+
+### I4. 合并条目本身与代码一致（已核），但“pre-publish 复核”一句在合并中消失
+- **file:line**：`.agents/memory/MEMORY.md:26`（新） vs `c442b34:26`（旧）。
+- **事实**：`adoptExternalEdit` 的 append 前复核（`store.ts:91-95`）与代码一致，实测删它必红 6 条（见 Test And QA）；`flushActionFor`（`store.ts:134-145`）与 `docs/architecture.md:102/105-109`、`CHANGELOG.md:13` 一致（`changed⇒recheck`、`!renderKey⇒publish`、`journal 不旧于它⇒publish`、`render 比 journal 新⇒keep`）。但旧 `:26` 结尾的“a pre-publish recheck appends the newer bytes to the journal before returning”在合并后不见了，而 `recordMemoryDocument` 的 `nowKey`/`nextRenderSupersedes`（`store.ts:247-253`）仍在；`MEMORY.md:27` 的 R-L1 用“the write path's own key recheck (nowKey) contains”一句含糊指代同一机制。
+- **影响**：机制描述只剩一半，容易让下一轮误以为该窗口无守卫。
+- **修复边界**：在 `:26` 补回“post-model `nowKey` 复核，若文件已被改则把新字节记入 journal 且不发布回复”，或把 R-L1 的指代写清。
+
+---
+
+## nit
+
+- **N1** `shutdown-flush-review-report.md:133` 仍以肯定语气写“第 6 轮 PASSED 即本 issue 的审查闭环”，而 `:135` 起第 7 轮又 blocking。建议加“已被第 7 轮推翻”的标记，避免读者停在 `:133`。
+- **N2** `tests/consolidation-test.mjs:1974` 的 10s 看门狗覆盖了取锁+整段 flush，而 `tests/run-all.mjs:52` 给每测试 60s。重载 CI 上取锁最长 5s+IO 时可能误杀通过态。建议看门狗只包住 `await flushing` 的等待，或抬到远低于 60s 但高于真实耗时（如 30s）。
+- **N3** `fix-note.md:3` “经第 1–7 轮逐轮收口”措辞偏乐观：第 7 轮是 CHANGES-REQUESTED 后修复、待第 8 轮。括号已说明，属表述问题。
+- **N4** `tests/consolidation-test.mjs:1976` `console.error` 后立刻 SIGKILL，stderr 若为异步管道可能丢最后的“FAIL race”行；`run-all` 仍能凭 exit≠0 判 FAILED，仅调试信息可能丢。
+- **N5** `SIGKILL` 跳过 `finally`，失败路径会泄漏 `mkdtemp` 目录（我复现出 `/tmp/pi-consolidation-*`、`/tmp/pi-shutdown-flush-*`、`/tmp/watchdog-repro-*`）。与第 7 轮 N5 同因，仅失败态卫生问题。
+
+---
+
+## suggestion
+
+- **S1**（承接第 7 轮 S1）给 race 用例加“夹具确实制造了竞态”的自检：断言 `errors.log` 出现“a newer external edit arrived before…”或让 `readRenderWithMtime` 的 `changed` 计数>0，使夹具一旦再被改成非阻塞打开就自红，而不是静默假绿。
+- **S2** 把 `readRenderWithMtime.changed` 的 mtime+size 启发式残留写进 `MEMORY.md`（目前只在 `store.ts:118-122` 注释里）；`MEMORY.md:27` 的“same-mtime external edits stay invisible”讲的是 `memoryComparisonKey`，不是这条。
+- **S3** 在 curator 流程里加一条机械检查：committed render 的每条 bullet 必须句末收尾、且与上一版做 removed-line 分类（restored/merged/retired-with-home）。B1 + I2 都靠人工目检漏掉了。
+
+---
+
+## learning
+
+- 第 7 轮的“阻塞 open 兼作调度屏障、换非阻塞会静默删竞态”已被正确写进 `MEMORY.md:59`；本轮插桩复现了同一形状（`beforeSize=0 → afterSize=62, changed=true`），教训的**记录**是对的。
+- 记忆策展的“restore dropped durable rules”不变量的执行，靠人工比对在 8 条规则 + 1 处截断上失守；需要 diff 驱动的机械校验（S3）。
+
+---
+
+## praise
+
+- **B1 真修好**：阻塞 `"w"` 已恢复（`tests/consolidation-test.mjs:1978`）。插桩 `readRenderWithMtime` 实测：读者拿到 `beforeSize=0` 的 `Older bytes…`，随后 stat 到 `afterSize=62` 的 replacement，`changed=true`（1/1，旧版第 7 轮的同款证据）。
+- **删 append 前复核必红 6 条**：在副本内删 `store.ts:91-95` → `FAILURES: 6`，恰为 race×3 + 借键×3（借键第 4 条“file's current key is still accepted”也为红）。与 `report:171` 的 M11=6 一致。
+- **看门狗成功路径不误触发**：连跑 5 次 consolidation（另加 2 次整树 `run-all`）0 次触发；`clearTimeout(watchdog)` 位于 `await flushing` 之后（`:1984`），位置正确。
+- **看门狗真兜住失败路径**：无读者最小复现（真实的 `flushMemoryRender` + 同一 10s/SIGKILL）在 ~10.2s 被杀，exit 137。
+- **`process.exit()` 无效的实测可独立复现**：阻塞 FIFO open 下 `process.exit(99)` 后进程活到外层 `timeout`（exit 124），SIGKILL 立即（137）。fix note 与 `MEMORY.md:59` 的断言成立。
+- **run-all 集成安全**：我用自 SIGKILL 的临时测试验证，`run-all` 报 `FAILED`、总 exit 1、无挂起；`spawnSync` 正常回收子进程，无僵尸。
+- 代码注释现在准确区分两条写路径各自的守卫（`store.ts:118-122`），与 `architecture.md:105-109` 一致。
+
+---
+
+## residual-risk
+
+- **RR1**（已登记）`readRenderWithMtime.changed` 是 mtime+size 启发式，同尺寸同 mtime 替换不可见。
+- **RR2**（已登记 R-L1）`loadMemory` 的纯读站点字节/stat 不同源，由写路径 `nowKey` 兜底。
+- **RR3**（已登记）flush 末次读→`writeAtomic`、adopt 末次复核→append 的并发手改窗口。
+- **RR4** 失败路径 SIGKILL 泄漏临时目录；10s 看门狗对重载 CI 偏紧。
+- **RR5** 夹具依赖 `mkfifo`（Windows 不可用）与 `SIGKILL` 自终止，属预存的平台限制。
+
+---
+
+## Test And QA Focus
+
+副本 `/tmp/pi-rev8-work.dK2Pyb`（`cp -a` 字节一致，HEAD 与沙箱一致；收尾已复位 `store.ts`，`git diff --stat extensions tests` 为空）。
+
+- 基线：`node tests/run-all.mjs` → `All 15 tests passed`（跑 3 次）；`node tests/consolidation-test.mjs` ×6 → `ALL OK`。
+- **插桩（(a)）**：`readRenderWithMtime` 内打日志，race 用例出现唯一一条 `beforeSize=0 afterSize=62 beforeM≠afterM changed=true head="…Older bytes handed to th"` —— 确认“读者旧字节 + 随后 stat 新文件”。
+- **变异（(b)）**：删 `store.ts:91-95` → `FAILURES: 6`（race×3 + 借键×3；借键的“still file's content”保持 OK）。
+- **看门狗成功路径（(c)）**：consolidation ×5 + run-all ×2，`grep "never got a reader"` = 0；`clearTimeout` 在 `await flushing` 之后。
+- **看门狗失败路径（(d)）**：`flushMemoryRender` 于无 journal 根目录直接返回→FIFO 无读者→10.2s 后 `SIGKILL`，exit 137；对照 `process.exit(99)` 版活到 `timeout`（exit 124）。
+- **run-all 信号处理**：加入自 SIGKILL 的临时测试 → `== zz-tmp-sigkill-test.mjs ... FAILED`，`1 of 16 tests failed`，exit 1（临时文件已删）。
+- **策展比对**：`memoryDocumentChars` 实测 c442b34=30,075 / 31,570 版=31,569 / committed=30,358 / 13:49 op=29,998；journal 手改 op 的 ts 为整分钟（`appendMemoryOp` 会写 ms，`journal.ts:27`），即 6 次手工写入，截断在 14:05 引入。
+- **记录核验**：`report:171` M11=6 与实测一致；`architecture.md:102/105-109` 与 `flushActionFor` 一致；`CHANGELOG.md:13` 一致；不一致项见 I1/I3。
+
+**本轮所用模型与 thinking 档**：`deepseek/deepseek-flash` + thinking `high`。
+
+VERDICT: CHANGES-REQUESTED

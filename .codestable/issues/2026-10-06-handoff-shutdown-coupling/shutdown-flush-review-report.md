@@ -11,6 +11,7 @@
 | 5 | 2026-10-06 | `5d6db4b`（`e7e8178..5d6db4b`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | `shutdown-flush-review-round5-independent.txt` | ✓：文件表与基线逐行一致；status 只多 `.agents/memory/`（豁免项） |
 | 6 | 2026-10-06 | `c212fcf`（`5d6db4b..c212fcf`） | `deepseek/deepseek-flash` + thinking `high` | **PASSED** | `shutdown-flush-review-round6-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 7 | 2026-10-07 | `d87261a`（`c212fcf..d87261a`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED（**blocking**） | `shutdown-flush-review-round7-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
+| 8 | 2026-10-07 | `ba0147c`（`c212fcf..ba0147c`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED（**blocking**，出自策展） | `shutdown-flush-review-round8-independent.txt` | ✓：文件表零写入；status 只多 `.agents/memory/`（豁免项） |
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 
 沙箱 `/tmp/pi-context-rev1`（`cp -a` 字节一致副本，441 个文件的基线）。审查员自己在 `/tmp/pi-rev1-work.*` 跑了 5 组变异并
@@ -130,7 +131,7 @@
 **新登记残留 R-L1**：`loadMemory`（注入/提示/状态读路径）把 render 的字节与 `stat` 分开取，理论上可读到「旧字节 + 新 mtime」；
 危害不升级，因为唯一的下游写路径用新的 `nowKey` 复检兜底。下次有空的改动窗口时按 S1 收敛到 `readRenderWithMtime`。
 
-**停止规则**：第 6 轮 PASSED 即本 issue 的审查闭环；剩余项都是测试健壮性与读路径残留，不属于「承诺多于代码」的写路径缺陷。
+**停止规则**：第 6 轮 PASSED 即本 issue 的审查闭环；剩余项都是测试健壮性与读路径残留，不属于「承诺多于代码」的写路径缺陷。（**该结论已被第 7 轮推翻**：第 6 轮之后的两条 nit 收尾里，我把 FIFO 夹具的调度屏障换成了非阻塞打开，race 变成死覆盖 —— 见下。）
 
 ## 第 7 轮：一个 blocking、六条 nit，以及它抓到的两处「说得多于实测」
 
@@ -142,7 +143,7 @@
 | **I1** 我提交信息与报告里写「删守卫仍红 6 条」，而 HEAD 实测 3 条 | important | **已修**：修复后**实测** M11 = 6 红（race×3 + 借键×3），两处陈述与实测一致 |
 | N1 `readRenderWithMtime` 注释结尾承诺过宽（把 publish 侧也记到 append 复核头上） | nit | **已修**：注释现在写清两条写路径各自的守卫 |
 | N2 `architecture.md` 的 `publish` 行漏「render 为空」 | nit | **已修** |
-| N3 `CONTEXT.md` 的 headroom 行仍是策展前的数字 | nit | **已修**：改为 29,999 / 余量 2,001（策展后），Open task 行改为发布待办 |
+| N3 `CONTEXT.md` 的 headroom 行仍是策展前的数字 | nit | **已修（后又修正）**：先写 29,999 / 2,001，第 8 轮指出那只是中间快照；现按 committed render 的实测重写，并如实说明门槛仍未满足 |
 | N4 fix note 状态行停在「第 1–5 轮」 | nit | **已修**：改为「1–7 轮，每轮见报告」 |
 | N5 看门狗 `process.exit(1)` 会跳过临时目录清理 | nit | **接受**：仅失败路径卫生问题，已记录 |
 | N6 任务书写的 diff 范围与实际冻结修订不一致 | nit（流程） | **已修**：第 8 轮任务书写明精确范围 |
@@ -153,6 +154,32 @@
 
 **诚实更正**：`d87261a` 的提交信息与当时的报告写「删守卫仍红 6 条」，但那次我并未在新夹具上重跑变异（旧夹具的 6 红结果被沿用）。
 第 7 轮抓出这一点，属本仓明确禁止的「承诺多于代码」；修复后该数字已实测。
+
+## 第 8 轮：修复成立，策展不成立
+
+第 8 轮判 **CHANGES-REQUESTED**，但它独立复现并确认了第 7 轮的修复（praise 三条）：
+阻塞 `"w"` 恢复后插桩实测读者拿到 `beforeSize=0` 的旧字节、随后 stat 到 `afterSize=62` 的 replacement、`changed=true`；
+删 append 前复核实测 **6 红**；看门狗连跑 5 次不误触发、无读者最小复现下 ~10.2s 被杀（exit 137）。
+blocking 出自**同一轮里的记忆策展**，与代码无关：
+
+| 发现 | 严重度 | 处置 |
+| --- | --- | --- |
+| **B1** 策展把一条 pitfall 截成半句（`A /tmp sandbox of the built repo needs node_modules…` 丢掉 ``; the tests-only /tmp copies do not.``），且我的 token 存活检查查不出「句子被截断」 | **blocking** | **已修**：补回完整句；新增**结构检查**（每条 bullet 必须标点收尾，本次只命中这一行）并写进 `curated-surface-hygiene` skill |
+| **I1** `CONTEXT.md` 称策展到 29,999、余量 2,001「已回到门槛之上」，与 committed render 不符（那是中间快照） | important | **已修**：按最终 render 重算并如实写「门槛仍未满足，下次策展须提出退休项而非只做格式压缩」 |
+| **I2** 逐行比对 `c442b34` 后，9 条 durable 规则在 `ba0147c` 缺失（多数在模型渲染里就已丢，策展未按渲染自己的恢复规则补回） | important | **已修**：无家的规则全部写回（`RENAMED_KEYS` 复跑法、regression guard 的 3/12/8/24 只作 detector、knob 有无代码读者、`/session-log` 裸调用只读）；有 skill 家的合成一条总指针；词汇表的指针恢复；已闭环 issue 的 brief 指针按审查意见不再恢复 |
+| **I3** fix note 仍称 `adoptExternalEdit` 不导出 | important | **已修**：改为「抽出并导出，供确定性借键回归驱动」 |
+| **I4** 合并条目时丢掉「post-model `nowKey` 复核：文件已改则记 journal、不发布回复」 | important | **已修**：补回 |
+| N1 报告 `:133` 的「审查闭环」结论未标注已被第 7 轮推翻 | nit | **已修** |
+| N2 看门狗 10s 覆盖取锁+整段 flush，重载机器可能误杀 | nit | **已修**：抬到 30s（`run-all.mjs` 每测 60s） |
+| N3 fix note 状态行措辞偏乐观 | nit | **已修** |
+| N4 `console.error` 后立刻 SIGKILL 可能丢最后一行 | nit | **接受**：`run-all` 凭 exit≠0 仍判 FAILED |
+| N5 SIGKILL 跳过临时目录清理 | nit | **接受**：仅失败态卫生 |
+| S1 让夹具自检「确实制造了竞态」 | suggestion | **已做**：race 用例新增断言——`errors.log` 必须出现「a newer external edit arrived before the memory journal could record one」；夹具再被改成非阻塞打开会**自红**而不是静默假绿 |
+| S2 把 `changed` 的 mtime+size 启发式残留写进记忆 | suggestion | **已做** |
+| S3 curator 流程加机械检查 | suggestion | **已做**：`curated-surface-hygiene` §12（标点收尾、removed-line 分类、token 检查的边界） |
+
+**本轮的两条教训**：一是**修复可以成立而策展不成立** —— 代码层被独立复现，记录/记忆层同时被砍内容；
+二是**token 存活检查不足** —— 它只证明字面还在，证明不了句子完整、语义未被合并吃掉，故必须配 removed-line 分类与结构检查（已入 skill 与记忆）。
 
 ## 对新钉的变异矩阵（`/tmp/pi-flushfix-mut2` … `mut7`，按备份复位，不用 `git checkout`）
 
@@ -168,7 +195,7 @@
 | M8 缺 render 判成 `none`（第 3 轮，即抽表时抓到的回归） | `store.ts` | 3 条（写回钉 + 第 3 轮表断言 + 第 4 轮补的边界断言） |
 | M9 删 `runIsDisabled` 门（第 3 轮补钉） | `report.ts` | 1 条（disabled run 下退出不再只读） |
 | M10 取消 adopt 的一致性读（第 4 轮 blocking） | `store.ts` | 3 条（FIFO race 三断言）；此守卫在第 5 轮被并入 append 前复核（见 M11），该行保留为历史 |
-| M11 去掉 append 前复核（第 5 轮 B1r 的修复，单一承重守卫） | `store.ts` | 6 条（FIFO race 三断言 + 借键三断言含正向对照） |
+| M11 去掉 append 前复核（第 5 轮 B1r 的修复，单一承重守卫） | `store.ts` | 6 条（第 5–8 轮实测，race×3 + 借键×3）；加夹具自检后为 **8 条**（race 四断言 + 借键四断言） |
 
 ## 对审查结论的两处更正
 

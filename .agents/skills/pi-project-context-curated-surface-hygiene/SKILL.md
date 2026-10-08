@@ -197,3 +197,13 @@ came back three times in the field. Re-run step 2 before committing any render. 
 is a boundary instruction in the consolidation prompt (`memory/prompt.ts`); that is a code change, so
 `extensions/` stops being byte-identical to the current tag and needs a new tag, `~/.pi` pin bump and
 session restart. Open that as an issue rather than slipping it into a docs commit.
+
+## 12. Mechanical checks after touching a render (added 2026-10-07, review rounds 7-8)
+
+A hand edit to a rendered surface must pass three mechanical checks before it is committed; all three exist because an eyeball pass missed a real loss.
+
+- **Bullet-ending punctuation**: every `- ` line in `MEMORY.md`/`CONTEXT.md` must end in terminal punctuation. A truncated entry (a `str.replace` whose replacement forgot the rest of the line) is invisible to a token check but caught here.
+- **Removed-line classification against the previous render**: `git diff` the previous committed render against the new one and classify every removed bullet as *restored* (its rule is still present, possibly reworded), *merged* (fused into another bullet that names it) or *retired-with-home* (a doc/issue/skill still carries it). Anything else is a loss and goes back in. Run this before committing, and re-run it when a later commit touches the same file.
+- **Token survival is necessary, not sufficient**: grepping that identifiers and thresholds still appear proves only that no string vanished. It cannot see truncation or a merge that dropped a clause.
+
+Restoring a dropped durable rule grows the render; prefer collapsing rules that already have a doc/issue/skill home into one pointer bullet over dropping a rule with no other home, and state the remaining headroom honestly (a render under `maxMemoryChars` is legal even when the soft curation trigger is still met).

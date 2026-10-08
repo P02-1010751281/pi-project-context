@@ -1,6 +1,6 @@
 # 修复说明：退出改做不调模型的 flush（选项 ①）
 
-**状态**：已实现，并经第 1–7 轮独立审查逐轮收口（第 3–5 轮修的是同一「读—stat 不同版本」类问题，收敛为 append 前的一次复核；第 7 轮 blocking 指出我把 FIFO 夹具的调度屏障换成非阻塞打开、race 变为死覆盖，已修复并实测删守卫必红 6 条）；待第 8 轮验证、发布与真机重启。
+**状态**：已实现，并经第 1–8 轮独立审查逐轮收口（第 3–5 轮修的是同一「读—stat 不同版本」类问题，收敛为 append 前的一次复核；第 7 轮 blocking 指出我把 FIFO 夹具的调度屏障换成非阻塞打开、race 变为死覆盖，第 8 轮又指出那次策展砍掉了 durable 规则并截断了一句，两者均已修复、删守卫实测必红 8 条）；待第 9 轮验证、发布与真机重启。
 改动只影响 `session_shutdown` 这一条路径，`agent_settled` 与 `/memory update` 未动。审查轮与逐条处置见
 `shutdown-flush-review-report.md`。
 
@@ -15,7 +15,7 @@
 
 | 文件 | 变化 |
 | --- | --- |
-| `extensions/project-context/memory/store.ts` | 把 `recordMemoryDocument` 内联的「采纳外部编辑」抽成内部函数 `adoptExternalEdit()`（无外部消费者，故不导出）；新增 `flushMemoryRender()`：无 journal 直接返回（不建目录、不取锁）→ 采纳循环到稳定 → 文件与 fold 的比较键相同时不写 → 否则写前备份、重发 fold |
+| `extensions/project-context/memory/store.ts` | 把 `recordMemoryDocument` 内联的「采纳外部编辑」抽成并**导出** `adoptExternalEdit()`（借键路径否则只能靠竞态触达，导出专供确定性回归驱动；见函数上方 JSDoc）；新增 `flushMemoryRender()`：无 journal 直接返回（不建目录、不取锁）→ 采纳循环到稳定 → 文件与 fold 的比较键相同时不写 → 否则写前备份、重发 fold |
 | `extensions/project-context/shared/project-state.ts` | barrel 导出 `flushMemoryRender`（`FlushResult` 无外部消费者，不导出） |
 | `extensions/project-context/memory/report.ts` | `session_shutdown` 从 `consolidate(ctx, true, true)` 换成 `flushMemoryRender(...)`，仍在同一个守卫内；`ctx.cwd` 只读一次且受保护（catch 不再触碰 `ctx`）；加 `runIsDisabled`/`memoryEnabled` 门；`logError` 键 `shutdown:consolidate` → `shutdown:flush` |
 | `tests/consolidation-test.mjs` | 8 个用 `session_shutdown` 驱动 consolidation 的用例改走显式 `/memory update`（主 e2e 两者都跑，只有它仍在 exit 断言存档层）；新增钉：退出无模型调用（`Date.now` 拨过去重窗，回退会红）、手改被采纳且有日志、退出不合成内容（mock 的退出回复带标记）、缺 render 重发且不追加 journal、陈旧 render 被 fold 替换且写了备份、无 journal 项目不落记忆状态、stale ctx 不 reject、settle 仍是自动写者 |
