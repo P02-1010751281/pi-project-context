@@ -4,7 +4,7 @@ Last updated: 2026-10-07T13:10:48.382Z
 
 ## Summary
 
-Closed the shutdown-coupling review chain: five CHANGES-REQUESTED rounds chased one TOCTOU class (the bytes a decision used and the mtime it trusted came from different reads) until round 6 returned PASSED on c212fcf and the rounds after it blocked on a fixture I had weakened and on a curation that truncated a bullet and dropped durable rules (both fixed); rounds 9-11 then closed the records, then fixed only documentation and recorded the leftovers. Round 3 (re-run after an empty transcript) found my own round-2 fix still had the hole and no coverage; round 4 escalated it to a blocking finding on the adopt path with a FIFO race probe that made a newer hand edit vanish from both journal and disk; round 5 escalated it again to the borrowed-key path recordMemoryDocument uses (its key is read before the model call, so it can be stale by append time) and also caught the promise I had just written into architecture.md. The fix collapsed to one load-bearing guard - adoptExternalEdit verifies immediately before the append that the file still holds those bytes, refusing and logging on mismatch - plus two deterministic regressions (FIFO race incl. adopted=true; stable file with a stale borrowed key refused, current key accepted) that redden seven checks when the guard goes. Docs, records and memory are committed and pushed to both push URLs; a doc-only round-6 record adds the PASS, the nit dispositions and residual R-L1.
+As of round 6 the shutdown-coupling TOCTOU chain PASSed on c212fcf; rounds 7-12 then returned CHANGES-REQUESTED and every item was fixed (round 7 the FIFO fixture's scheduling barrier, round 8 the curation, rounds 9-12 the records), and the final revision still awaits its PASS.
 
 ## Key points
 
@@ -19,7 +19,6 @@ Closed the shutdown-coupling review chain: five CHANGES-REQUESTED rounds chased 
 
 ## Open tasks
 
-- Owner: decide whether to cut a tag for the merged shutdown-flush work (v0.4.6 semantics: no merge at exit, model-free exit) and bump the host pin, then restart, so live sessions stop running the previous tag's modules - I offered to follow pi-project-context-release-tag-and-pin-sync.
 - Owner: cut the v0.4.6 tag, bump the host pin and restart, so live sessions stop loading the previous tag's modules; the code is merged and reviewed but unpinned, and the merged-but-untagged state keeps mixed-version noise in errors.log.
 - Follow-ups recorded in the review report, not blocking: converge loadMemory's read site per S1 (residual R-L1), make the FIFO test's failure path bounded (N1), and note the mtime+size heuristic at readRenderWithMtime (S3).
 - Open at the owner's call: the settle-path finding - the settle pass can replace the whole curated render with a conversational reply (field-observed in a sandbox under the installed v0.4.5) - which the report recommends as its own issue.
@@ -27,4 +26,4 @@ Closed the shutdown-coupling review chain: five CHANGES-REQUESTED rounds chased 
 - Owner: decide whether to implement the autolearn B1' layering on the shape evidence alone or wait for a cost fact, and whether the fork 4/5/6 answers go into the design doc; the reopen condition is recorded either way.
 - Sibling consumer repos (their call): test a pi-rendered MEMORY.md against HEAD before committing or merging it, merge back UniField's dropped curated block, decide on their unpushed local commits.
 
-<!-- latest-session-title: Shutdown-flush review converged: round 6 PASSED at c212fcf, code collapsed to one verified-before-append guard, removal reddens seven checks at the last measurement -->
+<!-- latest-session-title: As of round 6 the shutdown-coupling TOCTOU chain PASSed on c212fcf; rounds 7-12 then returned CHANGES-REQUESTED and every item was fixed (round 7 the FIFO fixture's scheduling barrier, round 8 the curation, rounds 9-12 the records), and the final revision still awaits its PASS -->
