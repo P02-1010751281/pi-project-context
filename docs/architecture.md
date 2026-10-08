@@ -99,7 +99,7 @@ session.jsonl ──► session.md ──► INDEX.md
 | `session_start` | 布局迁移与 legacy 记忆导入（经 `recordMemoryDocument` 写 journal 与 render），不调用模型 |
 | `before_agent_start` | 注入系统提示，不落盘 |
 | `agent_settled` | 自动 consolidation，受 `consolidateTurns`（默认 6 轮）与 `consolidateIntervalMs`（默认 5 分钟）**双重节流** |
-| `session_shutdown` | **不调模型的 flush**：采纳外部手改进 journal；文件缺失、render 为空、或 journal 不旧于它时用 fold 重发（写前备份）；比 journal 新的手改只入 journal、不写回；读取期间被替换的文件两者都不动；文件已是 fold 时不写 |
+| `session_shutdown` | **不调模型的 flush**：采纳外部手改进 journal，或按下面的条件用 fold 重发（写前备份），不生成新内容 |
 | `/memory update` | 显式强制 consolidation（`forceDedupeMs` 15 秒内去重重复的强制 pass） |
 
 flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不留记忆状态、不取跨进程锁），文件与 fold 的比较键相同时不写，

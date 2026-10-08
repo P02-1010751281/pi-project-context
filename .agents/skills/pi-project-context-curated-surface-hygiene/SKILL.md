@@ -174,7 +174,8 @@ for no, l in lines:
     named = set(re.findall(r"\b([\w.-]+\.(?:ts|mjs))\b", desc))
     for s in sorted(x for x in syms if not x.endswith((".ts", ".mjs")) and x not in skip):
         hits = files_containing(s)
-        if any(h == path for h in hits) or any(pathlib.Path(h).name in named for h in hits):
+        # The Index states its path prefix once, so `path` may be short: match by suffix as well.
+        if any(h == path or h.endswith("/" + path) for h in hits) or any(pathlib.Path(h).name in named for h in hits):
             continue
         print(f"MEMORY.md:{no} {s} is attributed to {path} but appears in {hits or 'nothing'}")
 PY

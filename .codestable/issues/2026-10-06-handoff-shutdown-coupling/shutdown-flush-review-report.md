@@ -195,7 +195,7 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | M8 缺 render 判成 `none`（第 3 轮，即抽表时抓到的回归） | `store.ts` | 3 条（写回钉 + 第 3 轮表断言 + 第 4 轮补的边界断言） |
 | M9 删 `runIsDisabled` 门（第 3 轮补钉） | `report.ts` | 1 条（disabled run 下退出不再只读） |
 | M10 取消 adopt 的一致性读（第 4 轮 blocking） | `store.ts` | 3 条（FIFO race 三断言）；此守卫在第 5 轮被并入 append 前复核（见 M11），该行保留为历史 |
-| M11 去掉 append 前复核（第 5 轮 B1r 的修复，单一承重守卫） | `store.ts` | 6 条（第 5–8 轮实测，race×3 + 借键×3）；加夹具自检后为 **8 条**（race 四断言 + 借键四断言） |
+| M11 去掉 append 前复核（第 5 轮 B1r 的修复，单一承重守卫） | `store.ts` | 6 条（第 5–8 轮实测，race×3 + 借键×3）；加夹具自检后为 **7 条**（race 四断言 + 借键三断言；借键的文件内容断言保持绿，因为 adopt 只写 journal）。第 9 轮实测 `FAILURES: 7`，此前写的 8 是数错了一行（把 `FAILURES: 7` 汇总行也当成断言） |
 
 ## 对审查结论的两处更正
 
