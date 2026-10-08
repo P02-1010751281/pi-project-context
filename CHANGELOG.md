@@ -3,6 +3,20 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.7 — 2026-10-08
+
+### 修复
+
+- **不透明回复不再替换整篇记忆**（issue `2026-10-06-handoff-shutdown-coupling` 收链后的修复）：非工具调用的纯 Markdown
+  回复（`fallback-opaque`，四节解析不出时回复正文**原样**成为 `MEMORY.md`）此前只要不是「整篇都是标题」就会被发布 ——
+  现场在 v0.4.5 的审查沙箱里，一条无标题无条目的会话开场白（119 字节）替换了 29.9 KB 的四节记忆。现在当**存储的是可解析
+  的四节文档**、回复**完全没有任何 markdown 标题**、且长度不低于 `OPAQUE_DOCUMENT_MIN_CHARS`（40，与判断「回复是否算
+  变化」同源读取）时，视为无可写内容：跳过写入并写 `carried no entries` 诊断。带标题但无条目的回复仍走原路（回归护栏
+  记录自己的 skip），更短的回复仍报「too short to be a change」。语义见 `docs/architecture.md` 的「consolidation 的安全语义」。
+- **`loadMemory` 改为一次读取**（审查报告的登记残留 R-L1）：纯读站点此前把 render 的字节与另取的 `stat` 配对，理论上可
+  读到「旧字节 + 新 mtime」；现在读一律走 `readRenderWithMtime`，读跨越替换（`changed`）时不采纳任何一版、journal 的
+  fold 继续当家。写路径的 append 前复核不变。
+
 ## v0.4.6 — 2026-10-07
 
 ### 变更
