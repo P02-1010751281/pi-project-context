@@ -1,0 +1,136 @@
+# Lane A 独立审查报告 — 冻结修订 `0450fc4` / `v0.4.7`
+
+审查对象：`b7e2a31`（`store.ts` 单次读取）+ `95d29fc`（opaque 标题缺失拒绝）。沙箱 `/tmp/pi-context-rev14`（HEAD=`0450fc4`，`git describe`=`v0.4.7`），审查期间零写入：`git status --porcelain` 为空，被审四文件 md5 终值 = `bf5f9807…` / `dc81ef17…` / `76a43000…` / `9d3b3168…`（与开始一致）。所有变异都在 `/tmp/mut-sandbox-l8qo5E` 副本里做，未触沙箱。
+
+---
+
+## blocking
+
+### B1. `95d29fc` 的拒绝条件不覆盖它要修的那条现场证据（回复带 `# Project Memory` 头）
+- `file:line`：`extensions/project-context/memory/pass.ts:307-310`（判据）、`:39`（阈值）
+- 现场原文（`.codestable/…/shutdown-flush-review-round1-independent.txt:102`，journal 第 6 条，119 字节）：
+
+  ```
+  # Project Memory\n\nI'll review the frozen revision against the code, tests, and my own probes, then record the outcome.
+  ```
+  实测该串 = **118 字符**（含 header；`.codestable/…/shutdown-flush-review-report.md:245` 引的是同一串，只是省略了 `\n\n` 拼接）。它**含 markdown 标题**，所以 `!/(^|\n)[ \t]*#{1,6}[ \t]/.test(memory)` 为 false，`conversationalOpaque` 不触发。
+- 影响：本条修复只关上「无标题开场白」这一变体；**记录在案的那条现场仍被原样接受，替换整篇四节记忆**。我的端到端探针（真扩展、真 `/memory update`、与现场一致的 settle 等价路径）：
+
+  ```
+  --- FIELD-CASE-B: header + conversational line (inside memory_markdown)
+      refused=false  storedChanged=true
+      log: ["… memory regression guard skipped: this pass did not produce sections"]
+      toasts: ["Memory: updated."]
+  --- A: plain conversational line, no header
+      refused=true   storedChanged=false
+      log: ["… carried no entries; the stored memory was kept unchanged"]
+  ```
+  `report.ts` 的 `memoryChanged = !semanticEmpty && (sectioned || memoryText.length >= 40)`（`report.ts:170`）随即把 「Memory: updated.」报给用户——事实与记录相反。
+- 修复边界（**不需要新机制**）：判据必须把 `# Project Memory` 头当作「不是文档的证据」而不是「是文档的证据」。最小改动方向：对回复先做 `parseMemoryValue`/`normalizeMemoryReply` 同口径的去头，再判「除 canonical 头外没有任何结构」（无 `- ` 条目、除首行外无 `#`、无围栏）；或把现在对 `resolved.result.memory` 的无标题测试改成对「回复去掉首行 canonical header 后的正文」的无标题测试。**注意副作用**：这会同时关掉 test 11 现在刻意保留的 `# Project Memory\n\n prose`（见 I3 的矛盾），作者必须明确选一边并同步测试/文档/CHANGELOG。
+
+### B2. 新增「现场用例」的回复载荷缺了现场证据里实际存在的 header；注释声明的现场与本用例不符
+- `file:line`：`tests/consolidation-test.mjs:1814-1831`（`structured-conversational-opaque`，注释写“The field case … 119 字节”），加上 `:1833-1843` 的正向对照
+- 影响：用例把现场那条 payload 去掉 `# Project Memory\n\n` 后才跑，所以在 B1 存在的情况下**全绿**，给出“现场已关”的假信心；而它的正向对照（“an opaque reply that is a document is still accepted”，`:1841`）接受的正是「带标题 + 无条目 + 长句」——与现场同形。变异矩阵证实该用例只钉住了「无标题」这一变体：把标题正则删掉（M2）该两条断言变红，但因为它用的 payload 本来就没有标题，它无法区分“现场被拒”与“现场未被拒”。
+- 修复边界：把该用例的 payload 换成**逐字节的现场串**（带 header；至少加第三条用例，同时保留现在这个无标题变体），并让 test 11 的正向对照明确成“有意接受 header+prose”——若作者决定接受它，就应当在记录里写明**那条现场仍未关**，而不是像 `release-v0.4.7`/CHANGELOG 那样呈现为已修（见 I3）。
+
+---
+
+## important
+
+### I1. `loadMemory` 新增的 `!renderRead.changed` 早退**零覆盖**：删掉它整套 441 条断言仍全绿
+- `file:line`：`extensions/project-context/memory/store.ts:287`（判据）、`tests/consolidation-test.mjs:2006-2019`（所谓 `read race` 三断言）
+- 实测：变异 `M4 = 删除 "!renderRead.changed"` → `fails=0, oks=441`。单点探针（同一条 FIFO 夹具）却显示被审代码的行为差异真实存在：
+
+  ```
+  ---- BASELINE  ---- source=memory.jsonl  text="# Project Memory…Journal seed…"
+  ---- M4 变异   ---- source=MEMORY.md    text="# Project Memory…Older bytes the read must not adopt…"
+  ```
+  即 `loadMemory` 在 M4 下确实把「旧字节 + 新 mtime」当成了外部编辑返回（R-L1 定义的那一版），**但测试的三个断言只查下游 artifact**，下游的 basisKey 复核（`store.ts:255-258`）会在任何情况下拒绝；声明的 `adopted.source.endsWith("memory.jsonl") && adopted.text.includes("Journal seed")` 因此对两种实现都成立。报告里「把实现还原成两读配对后恰红 1 条、其余 2 条仍绿」的论证不精确：M1（整块还原）确实红 1 条，但它红的是**旧代码在 mtime 阶段拒了旧字节**，不是 `changed` 早退；“恰红 1 条”被当成了这条早退的覆盖证据。
+- 修复边界（测试侧，**不需要新机制**）：在 `read race` 里追加一条能区分的断言（例如在该夹具里把替换文件 `utimes` 到 `Date.now()+60_000` 再断言 `loadMemory` 的 `source` 仍是 journal / 或直接断言 `readRenderWithMtime` 返回 `changed===true`）；否则应在报告里注明这条早退是「防御性、未被测试钉住」，而不是「变异恰红」。当前那句“把实现还原成两读配对后恰红 1 条”作为覆盖声明**超出了实测**。
+
+### I2. 当前实测下 `changed` 早退在文件系统粒度内其实常常不触发（与 I1 共同解释假绿）
+- `file:line`：`extensions/project-context/memory/store.ts:123-124`
+- 事实：`readRenderWithMtime` 的 `changed` 判据是 `before/after` 的 `mtimeMs+size` 比较；在同一毫秒内完成 `rm`+`writeFile` 的替换与 FIFO 一起被 stat 时，`before`/`after` 同 mtime 同 size 时 `changed=false`（这是我探针里 baseline 与 M4 在 `loadMemory` 层有时表现相同的另一个来源）。这属于已登记残留（同 mtime+size 的替换不可见），**不重新登记**；但它说明 new test 的“稳定性”部分来自启发式而不是来自 `!changed` 判断，I1 的覆盖缺口应据此收口。
+
+### I3. 记录自相矛盾：fix note 明文承认“带 header 的散文回复仍会替换整篇记忆”，CHANGELOG/架构文的 v0.4.7 段只写“无标题……已修”
+- `file:line`/记录：`shutdown-flush-fix-note.md` 待办节（“settle 路能把一段带 header 的散文回复整篇发布 … 建议另开 issue”）与残留风险节（`shutdown-flush-review-report.md:242-247`，现场串**带 header**）；对 `CHANGELOG.md:9-15` 与 `docs/architecture.md:126-130`（都只说“完全没有任何 markdown 标题”被拒）
+- 影响：两条陈述各自为真，但 fix note 没有说明“本修订已把带 header 的那条现场修掉”，而 CHANGELOG 与新增测试注释（`:1815`）给读者的印象是已修。以本仓自己的口径（“承诺多于代码”是特征缺陷）这是记录层的重要不一致：**代码做到的是“无标题变体”，现场证据是“有标题变体”**。
+- 修复边界：在 CHANGELOG/架构文/测试注释里补一句“带 canonical 头的同形回复仍走原路（test 11 行为），本条现场的有头变体未关”，或按 B1 的边界把行为真修掉；不需要新机制。
+
+---
+
+## nit
+
+### N1. 40 字符边界没有正/负对照
+- `pass.ts:39,310`。变异 `M3 = >= 40 → > 40` → `fails=0, oks=441`。边界实测（探针）：39 → “too short”、40/41 → “carried no entries”，两检查同源一致，但没有任何断言钉在 40/39。最小修法：在 15 的用例里补一条 40 字符（长 41 也测）的断言。
+
+### N2. 标题正则的字符类同样没被钉住
+- `pass.ts:309`。变异 `M7 = [ \t] → [ \t.]` → 全绿。`# ` 与 `#.`（`#.Project`）在这一步是不同语义，但没有用例区分；属边界测试缺口，修法同 N1（一条 `#Foo`/`#.` 形状即可）。
+
+### N3. 测试用例编号 `15` 重复
+- `tests/consolidation-test.mjs:1814` 与 `:1866`（“15. The field case…” 与 “15. A condensation reply…”）。纯可读性问题，改一个号即可。
+
+### N4. 现场字节数与实测差 1
+- 报告多处写“119 字节”，按 journal 的 `memory_markdown` 值实测 118 字节（89+29；`# Project Memory\n\n` = 17 字节 + 句子 101 字节）。差 1 不影响任何判据，但记录口径应统一（例如说明 119 含 JSON 外层引号或换行编码）。
+
+---
+
+## suggestion
+
+### S1. 让「标题+散文」的接受面收窄到显式决定
+如果作者认可自己 test 11 的“带标题但无条目仍走原路”，建议在 `pass.ts:303-310` 的注释里把这条**现场对照**写明（“本条现场的有头变体未关，另见 fix note 待办”），并在 CHANGELOG 同一处引用，避免下一轮把“无标题”误读为“现场已修”。若 owner 要求现场全关，则 B1 的最小修法见上（去 canonical 头后再判结构），代价是 test 11 行为要一起改。
+
+### S2. 给 `changed` 早退留一条可观察断言
+见 I1 的修法；另可在 `store.ts:287` 的注释里把“本早退当前没有区分性测试，由 basisKey 复核兜底”写明，让覆盖声明与事实一致。
+
+---
+
+## learning
+
+- **「测试注释声明的现场」必须与证据逐字节对齐。** 本修订的测试注释引用 119 字节的现场，却把现场里决定判据走向的 `# Project Memory\n\n` 省略了；省略的那 17 字节恰好是判据的充要证据。以后凡引用现场串，直接 `git show`/journal 行复制，不做手工缩写。
+- **一个只在“抓旧字节版/不抓旧字节版”之间切换的行为，必须有能观察该行为的断言。** 下游复核（basisKey / append 前复核）会在任何情况下把结果收敛到正确 artifact，所以只查 artifact 的断言对中间态守卫是死断言——本仓已经在第 7 轮吃过一次“夹具不再制造竞态后全绿”的亏，这次的形状不同（竞态还在，坏中间态没被观测量捕获），教训相同。
+- **启发式（mtime+size）本身会成为“测试为什么绿”的原因。** 当被修行为依赖文件系统粒度时，绿可能是粒度给的，不是代码给的；区分这两者需要把替换的时间戳显式拨动（`utimes`）。
+
+---
+
+## praise
+
+- `loadMemory` 的单次读取方向正确，且收敛彻底：模块内 render 竞争面只在写侧还剩一处已登记残留（`store.ts:262-264` 的选项读与 append 之间，pre-publish 复核+append 前复核两层兜底，与记录一致）；无 journal 的兜底分支 `readFile`（`store.ts:307-315`）不使用 mtime，不存在“读—stat 配对”问题。
+- `semanticEmpty` 跳过写入的副作用面审计结论：**干净**。我逐项核过 `report.ts:196-300`：`removed` 不计算（`pass.ts:324` 的 `if (!semanticEmpty)`）、cap/section-cap/poison 行与 overflow 副本全在 `if (!memoryChanged)` 内不可达、toast 走 `!memoryChanged` 的“memory was kept unchanged（原因正确分流 empty/short）”且 `keepReason` 与 `memoryChanged` 同源、`journal`/`lastOutcome`/`version`/`throttle` 都只记录本 pass 一致的状态，没有让下一次 pass 读到半写入的东西。CONTEXT 仍会按决定 6 更新，检查通过。
+- `report.ts:17,170` 与 `pass.ts:39` 共用 `OPAQUE_DOCUMENT_MIN_CHARS`，实测 39/40/41 与报告文案一致；CHANGELOG 的“与判断是否算变化同源读取”属实。
+
+---
+
+## residual-risk
+
+- **R-F2（本文新登记）**：拒绝只在 `storedSections !== undefined` 时生效（`pass.ts:303,308`）。存储为 opaque（JSON blob / 散文）时，同一会话开场白仍会替换整篇记忆——我的探针 `H`/`I` 实测 replaced。危害受“opaque 记忆远小于四节文档”限制，但这是 B1 同一类现场的第二扇门。
+- **R-F3**：短于 40 字符的会话句仍会替换整篇记忆（实测 39 字符保留、40 起拒绝）——这是长度阈值的代价，与“too short”文案自洽，但属于同一类风险。
+- 既登记、不重新登记：`readRenderWithMtime` 的 mtime+size 启发式、SIGKILL 失败路径临时目录、`CHANGELOG.md:47` 长度；另注意本目录**没有** `release-v0.4.7-evidence.md`（只有 `release-v0.4.6-evidence.md`），若发布清单要求该文件，这是发布侧缺口而非代码缺陷。
+
+---
+
+## Test And QA Focus（实测输出）
+
+- `node tests/consolidation-test.mjs`：`441 OK / 0 FAIL / ALL OK`（本报告上方两次复跑一致）。
+- `node tests/run-all.mjs`：`All 15 tests passed.`（含 repo hygiene 与渲染标点门）。
+- 变异矩阵（副本 `/tmp/mut-sandbox-l8qo5E`，每次先还原四文件）：
+
+  | 变异 | 结果 | 红 |
+  |---|---|---|
+  | M1 `loadMemory` 还原为两读配对 | fails=2 行 / 1 测试 | `read race: the journal's fold stands instead of the older bytes` |
+  | M2 标题正则 → `false`（永不认标题） | fails=3 行 / 2 测试 | `a conversational reply leaves…byte-identical`、`…carrying no entries`（正向对照仍绿） |
+  | M3 `>=40 → >40` | **全绿** | 无（N1） |
+  | M4 删除 `!renderRead.changed` | **全绿** | 无（I1，单点探针显示行为确实不同） |
+  | M5 `storedSections !== undefined → true` | **全绿** | 无（恒真无区分度，收窄同一目录的存储形状也不变） |
+  | M6 `changed` 恒为 true | 13 行 / 12 测试 | 大量写入路径断言 |
+  | M7 标题字符类 `[ \t] → [ \t.]` | **全绿** | 无（N2） |
+  | M8 标题判断取反 | 4 行 / 3 测试 | test 11 与两条新断言 |
+
+  **点名没承重的断言**：M3/M4/M7 三处全绿 = 40 边界、`!changed` 早退、标题字符类；其中 M4 是 I1 的实锤（该早退没有任何测试能区分）。
+- 新增用例的**正向对照**：有——`tests/consolidation-test.mjs:1833-1843`（带标题的 opaque 回复仍被采纳）与 test 11（标题+无条目走原路）都在变异 M2 下保持绿。但要注意该“对照”同时就是现场的同形变体（B2/I3），它证明的是“带标题仍被接受”，不是“现场已关”。
+
+---
+
+**对抗性一遍（找 bug 而不是确认它不存在）实际执行**：`/tmp/probe-adversarial.mjs`（7 个形状 × 真扩展）、`/tmp/probe2.mjs`（opaque 存储 3 形状）、`/tmp/probe-mtime2.mjs` + `/tmp/probe-m4.mjs`（FIFO 单点，baseline vs M4 在 `loadMemory` 层的行为差异）、`/tmp/probe-endpoints.mjs`（39/40/41/78 边界）、两次完整套件 + 7 个变异。所有临时产物只在 `/tmp`；沙箱终态 `git status --porcelain` 为空、HEAD=`0450fc4`、`git describe`=`v0.4.7`。
+
+VERDICT: CHANGES-REQUESTED

@@ -16,6 +16,8 @@
 | 10 | 2026-10-08 | `6dcec6f`（`896808f..6dcec6f`） | 同上 | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round10-independent.txt` | ✓ |
 | 11 | 2026-10-08 | `efe3780`（`6dcec6f..efe3780`） | 同上 | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round11-independent.txt` | ✓ |
 | 12 | 2026-10-08 | `5522370`（`efe3780..5522370`） | 同上 | CHANGES-REQUESTED（1 important + 4 nit：字符类去重与本 pass 的待办合并已落，表格行序与括号嵌套在本轮修复） | `shutdown-flush-review-round12-independent.txt` | ✓ |
+| 13 | 2026-10-08 | `d48f5d3`（`5522370..d48f5d3`） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round13-independent.txt` | ✓ |
+| 14 | 2026-10-08 | `0450fc4`（= annotated tag `v0.4.7`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 1 important**，自第 6 轮以来第一个代码层轮次） | `shutdown-flush-review-round14-independent.txt` | ✓：`git status` 与 457 条文件表均与基线一致；被审四文件 md5 前后相同 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -212,6 +214,8 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **上面那句只对收链时刻成立**：2026-10-08 收链之后又落了两处代码修复（见下「收链后的修复」），它们各自带变异检查，但没有独立审查轮覆盖。
 
+**第 14 轮进一步说明**：对冻结的发布修订 `0450fc4` 跑的这一轮是收链以来第一个**代码层**轮次，它给了 2 条 blocking —— 其中一条直接指出「v0.4.7 那条拒绝并不覆盖它自己引用的现场」（回复带着规范标题 `# Project Memory`，判据只测「整篇没有标题」）。收链时的「无代码层发现」只对当时的修订与其审查范围成立，不能当成对随后代码的结论。
+
 按本仓已记的停止规则（「每轮加机制就给下一轮加面；未收敛的增长是停下的信号」），本链在**第 13 轮停止**，方式不是 PASSED，而是：
 第 13 轮的条目已全部修复并自验（表格连续性、字符类唯一性自检、状态位三处一致），此后不再追 `CONTEXT.md` 的措辞 ——
 该文件是会话状态面，每次 settle 由模型重写，手改只保证当次一致，durable 事实在 `MEMORY.md` + journal 里。
@@ -224,9 +228,12 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | 项 | 现场事实 | 修复 | 钉它的探针与变异结果 |
 | --- | --- | --- | --- |
 | R-L1 `loadMemory` 的纯读站点 | 登记于本报告：render 的字节与 `stat` 分开取，理论上读到「旧字节 + 新 mtime」 | `loadMemory` 改用 `readRenderWithMtime`；读跨越替换（`changed`）时不采纳任何一版，journal fold 继续当家 | `read race:` 三断言，含稳定文件的**正向对照**（较新的外部编辑仍被采纳）；把实现还原成两读配对后恰红 1 条、其余 2 条仍绿 |
+| v0.4.7 拒绝条件不覆盖现场（第 14 轮 blocking B1） | 第 1 轮就记录的现场串**带** `# Project Memory` 头；v0.4.7 只测「回复整篇没有任何标题」，因此放过了它，而 CHANGELOG/架构文/测试注释都把它写成已关（I3/B2） | 判据先剥规范标题再要求正文自己带结构（标题 / `- ` 条目 / 围栏），并明确取消「带标题的散文仍走原路」这条 v0.4.7 行为；回归用例改为逐字节现场串 + 无标题变体 + `#.` 伪标题 + 40/39 边界 + fresh 项目 | 5 条变异各恰红对应断言（去剥标题红 5、结构恒真红 3、`storedSections` 恒真红 1、`>=`→`>` 红 2、标题字符类红 2），全套件 15/15 |
 | settle 时的不透明回复替换整篇记忆 | **现场**：装好的 v0.4.5 在审查沙箱里（审查员自己的会话）把会话开场白 `I'll review the frozen revision…` 当作整篇文档写入 `MEMORY.md`（119 字节替换 29.9 KB），只留下 backup 与 `memory regression guard skipped: this pass did not produce sections` | 不透明回复**完全没有任何 markdown 标题**、长度已达到「可能是文档」阈值（`OPAQUE_DOCUMENT_MIN_CHARS`，与 report.ts 单一来源）、而存储的是可解析的四节文档 ⇒ 视为无可写内容，走既有的 skip + `carried no entries` 诊断 | 新用例两条（存储记忆逐字节不变 + 留下 `carried no entries` 诊断）；**正向对照**：带标题的不透明 markdown 回复仍被采纳，测试 11 的「带标题但无条目」行为也保留；变异后恰红 2 条 |
 
-两处修复各跑过一次变异矩阵，且都跑过全套件（15 项）与渲染标点门。收链时未取的 PASS 仍未取 ——
+两处修复各跑过一次变异矩阵，且都跑过全套件（15 项）与渲染标点门。
+
+**对 R-L1「恰红 1 条」的精确化（第 14 轮 I1 的处置）**：第 14 轮称删掉 `!renderRead.changed` 早退后整套仍然全绿。我按「把该合取项换成 `true`」重测两次，二者都**确定变红 1 条**：`read race: the journal's fold stands instead of the older bytes`（基线同为 2/2 全绿），所以这条早退确实有可区分断言，I1 的「零覆盖」不成立；第 14 轮自己给的单点探针也显示该早退改变了 `loadMemory` 的返回（`source=MEMORY.md` 对 `source=memory.jsonl`），与「零覆盖」自相矛盾。它同时成立的另一半（I2）是本报告已登记的 mtime+size 启发式残留。收链时未取的 PASS 仍未取 ——
 这两处改动恰好说明「冻结修订」只在收链那一刻成立。
 
 
@@ -240,11 +247,9 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 ## 残留风险
 
-- **settle 路能用一段对话式回复换掉整篇记忆**（本 issue 之外，证据来自本轮现场）：审查期间沙箱里**本机已安装的 v0.4.5**
-  在 `2026-10-06T15:11:47Z` 把 `MEMORY.md` 从约 29.9 KB 换成 119 字节的
-  `# Project Memory\n\nI'll review the frozen revision against the code, tests, and my own probes, then record the outcome.`，
-  同时留下 `memory regression guard skipped: this pass did not produce sections` 与一份备份 ⇒ 现有守卫不拒「带 header 的散文回复」。
-  建议另开 issue（不在 ① 的范围）；重开条件＝再有同类现场，或 owner 指定。
+- **settle 路能用一段对话式回复换掉整篇记忆**：审查期间沙箱里**本机已安装的 v0.4.5** 在 `2026-10-06T15:11:47Z` 把
+  `MEMORY.md` 从约 29.9 KB 换成 119 字节的 `# Project Memory\n\nI'll review the frozen revision …`，留下
+  `memory regression guard skipped: this pass did not produce sections` 与一份备份。**v0.4.7 只关上了无标题变体（第 14 轮 B1），该现场形状直到 v0.4.8 才真正被拒**（判据先剥规范标题）。两条与判据同源的登记边界：存储的记忆本身不是四节文档时拒绝不生效（R-F2，代价是 fresh 项目仍能写下第一条散文记忆）；短于 40 字符的回复不走拒绝，由 report.ts 的长度规则拦住写入（R-F3，不丢内容）。
 - 写回的最后一个窗口：采纳循环结束到 `writeAtomic` 之间仍有极小窗口可丢失并发手改（与 `recordMemoryDocument` 的
   pre-publish 重读同级残留）。
 - 超帽手改：journal 存裁剪键、磁盘保留原文（键空间相等、字节空间不等）——有意的非破坏行为，已写进 docstring。
