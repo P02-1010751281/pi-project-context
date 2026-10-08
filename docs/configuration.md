@@ -75,7 +75,8 @@
 _[memory truncated at N characters: M dropped]_
 ```
 
-marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知与 `errors.log` 中给出所需字符数与 `/memory max-memory` 建议（这条路径下数字是准的）；显式 consolidation 回复与 `/project-context status` 只给 `max-memory` 的 `<n>` 占位，不带具体数字
+marker 行不计入正文 cap。超限时在每项目每进程写一次 `errors.log`，并在通知与 `errors.log` 中给出所需字符数与 `/memory max-memory` 建议（这条路径下数字是准的）；
+显式 consolidation 回复与 `/project-context status` 只给 `max-memory` 的 `<n>` 占位，不带具体数字
 。journal 写入、fold、外部编辑比较、load、legacy 读取和 OMP migration 使用同一个显式 cap。
 
 cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁一次。已进 journal 的内容才有机会留下 ⇒ **手工并回 `MEMORY.md` 不算持久化**（要持久就抬高 `maxMemoryChars` 或让内容进 consolidation 输出）。

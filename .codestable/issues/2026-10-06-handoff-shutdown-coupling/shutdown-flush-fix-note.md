@@ -1,6 +1,6 @@
 # 修复说明：退出改做不调模型的 flush（选项 ①）
 
-**状态**：已实现，并经第 1–8 轮独立审查逐轮收口（第 3–5 轮修的是同一「读—stat 不同版本」类问题，收敛为 append 前的一次复核；第 7 轮 blocking 指出我把 FIFO 夹具的调度屏障换成非阻塞打开、race 变为死覆盖，第 8 轮又指出那次策展砍掉了 durable 规则并截断了一句，两者均已修复、删守卫实测必红 7 条：race 四断言 + 借键三断言（借键的文件内容断言因 adopt 只写 journal 而保持绿））；待第 9 轮验证、发布与真机重启。
+**状态**：已实现，并经多轮独立审查逐轮收口（第 3–5 轮收敛为 append 前的一次复核；第 7 轮 blocking 指出 FIFO 夹具的调度屏障被换成非阻塞打开、第 8 轮 blocking 指出策展截断了一句并丢失 durable 规则，均已修复；删守卫实测必红 7 条）。轮次明细见同目录 `shutdown-flush-review-report.md`；待审查链给出 PASSED、发布与真机重启。
 改动只影响 `session_shutdown` 这一条路径，`agent_settled` 与 `/memory update` 未动。审查轮与逐条处置见
 `shutdown-flush-review-report.md`。
 

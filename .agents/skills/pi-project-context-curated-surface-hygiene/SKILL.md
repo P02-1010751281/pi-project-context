@@ -161,10 +161,10 @@ def files_containing(sym):
                        capture_output=True, text=True)
     return r.stdout.split()
 doc = pathlib.Path(".agents/memory/MEMORY.md").read_text(encoding="utf-8")
-lines = [(i + 1, l) for i, l in enumerate(doc.splitlines()) if re.match(r"^- [\w./-]+\.(ts|mjs)\s*-", l)]
+lines = [(i + 1, l) for i, l in enumerate(doc.splitlines()) if re.match(r"^- [\w./-]+\.(ts|mjs)(?::\d+)?\s*-", l)]
 skip = {"MEMORY", "HANDOFF", "CONTEXT", "INDEX", "README"}
 for no, l in lines:
-    path = l.split(" - ")[0][2:].strip()
+    path = re.sub(r":\d+$", "", l.split(" - ")[0][2:].strip())
     desc = l.split(" - ", 1)[1] if " - " in l else ""
     if "renamed from" in desc:
         continue
@@ -175,6 +175,8 @@ for no, l in lines:
     for s in sorted(x for x in syms if not x.endswith((".ts", ".mjs")) and x not in skip):
         hits = files_containing(s)
         # The Index states its path prefix once, so `path` may be short: match by suffix as well.
+        # Residual: a suffix match cannot tell two files with the same trailing path apart. This repo has no such
+        # pair; if one appears, compare `path` against the git path segment-by-segment instead.
         if any(h == path or h.endswith("/" + path) for h in hits) or any(pathlib.Path(h).name in named for h in hits):
             continue
         print(f"MEMORY.md:{no} {s} is attributed to {path} but appears in {hits or 'nothing'}")
