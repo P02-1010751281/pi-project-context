@@ -1,0 +1,60 @@
+# Lane A 独立审查 — 冻结修订 `5f76996`（annotated tag `v0.4.8`）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev15`（本仓在 `/tmp` 的字节一致副本，已复位到冻结修订）。
+**判定模型**：本轮的判定由 `deepseek/deepseek-flash`（thinking `high`）给出，请把这句话当作记录的一部分。
+
+## 硬规则：只读
+
+- 不得写入工作区（`/tmp/pi-context-rev15` 视为只读）；不得 `git add/commit/checkout/stash/reset/clean`。
+- 需要跑变异或写脚本时，把沙箱**复制**到 `/tmp` 下你自己的目录（如 `cp -a /tmp/pi-context-rev15 /tmp/pi-rev15-work.$RANDOM`）再改，绝不动沙箱本体。
+- 允许并鼓励：读文件、`git status/diff/log/show`、`node tests/*.mjs`、`node tests/run-all.mjs`、在 `/tmp` 里写探针。
+
+## 被审变更集
+
+- 冻结修订：`5f76996`（= `v0.4.8`，已发布并 pin）。被审 diff：`git diff 0450fc4..HEAD`（`0450fc4` = `v0.4.7`，上一轮审过的修订）。
+- 范围：16 个文件、+432/−64 行。代码面四处：`extensions/project-context/memory/pass.ts`（不透明回复判据 + 截断重试）、
+  `extensions/project-context/shared/output-budget.ts`（上限门计入 reasoning 预留）、`extensions/project-context/memory/report.ts`
+  （`/memory update` 等待前提示）、`extensions/project-context/index.ts`（调用点传 reasoning）。测试面：`tests/consolidation-test.mjs`、
+  `tests/memory-ops-test.mjs`。文档面：`CHANGELOG.md`、`docs/architecture.md`、`docs/configuration.md`。
+- 应先读：`.codestable/attention.md`、`.codestable/issues/2026-10-06-handoff-shutdown-coupling/` 下的
+  `shutdown-flush-review-report.md`（轮次表 + 收链说明 + 收链后的修复）、`shutdown-flush-review-round14-independent.txt`（上一轮的原始结论）、
+  `shutdown-flush-fix-note.md`；`.codestable/issues/2026-10-08-aux-call-reasoning-budget/brief.md` 与 `release-v0.4.8-evidence.md`。
+
+## 本轮要独立验证的「关闭声明」（不要继承任何一轮的结论，自己实证）
+
+上一轮（第 14 轮，冻结修订 `0450fc4`）给出 CHANGES-REQUESTED：2 blocking + 1 important + 4 nit。作者声称 v0.4.8 已全部处理。
+请逐条独立核验，并明确指出**哪条没关、哪条关得不彻底**：
+
+| 编号 | 上一轮的发现 | 作者声称的处置 |
+| --- | --- | --- |
+| B1 | `95d29fc` 的拒绝条件不覆盖它要修的现场证据：现场那条回复**带** `# Project Memory` 头，而 v0.4.7 只测「整篇没有任何 markdown 标题」 | 判据改为**先剥掉规范标题**，再要求正文自己带结构（标题 / `- ` 条目 / 围栏）才算文档 |
+| B2 | 新增「现场用例」的载荷缺了现场实际存在的 header，注释声明的现场与用例不符 | 用例改为逐字节的现场串（`tests/consolidation-test.mjs` 里 `FIELD_REPLY` 字面量） |
+| I1 | `loadMemory` 新增的 `!renderRead.changed` 早退**零覆盖**：删掉它整套 441 条断言仍全绿 | 作者称无法复现：按「把该合取项换成 `true`」重测两次都确定红 `read race: the journal's fold stands instead of the older bytes`（基线 2/2 全绿）⇒ 判为 I1 不成立。**请你自己重做这个实验**，并给出你的实测（红几条、哪条） |
+| I2 | `changed` 早退在文件系统粒度内常常不触发 | 登记为残留（`readRenderWithMtime` 的 mtime+size 启发式），写在报告与 `docs/architecture.md` |
+| I3 | 记录自相矛盾：fix note 承认「带 header 的散文回复仍会替换整篇记忆」，CHANGELOG/架构文只写「无标题……已修」 | CHANGELOG、`docs/architecture.md`、fix note、审查报告同步改写 |
+| N1 | 40 字符边界没有正/负对照 | 补 40/39 两侧与 fresh 项目用例 |
+| N2 | 标题正则的字符类没被钉住（`#.` 形状） | 补 `#.` 伪标题用例 |
+| N3 | 用例编号 `15` 重复 | 重新编号 |
+| N4 | 记录里的现场字节数（119）与实测（journal `memory_markdown` = 118）差 1 | **未处理**（记录未说明口径）——请判定这算 nit、important 还是可接受残留 |
+
+另外，v0.4.8 里有**三处从未被任何审查轮看过的代码**（本次现场事实见 `brief.md`；现场仓库是消费方仓库，其记忆/配置只作只读证据）：
+
+| 修复 | 声称 | 你要验的 |
+| --- | --- | --- |
+| 截断重试带上实测隐藏思考 | 重试的 headroom = `max(4096, 上一次 usage 花掉的隐藏思考 token)`；理由是实测一次请求 32210 输出 token 里 20489 花在隐藏思考，而预留上限只有 8192 | 这个算式在代码里是不是真的这样落地（含首次估算、上限封顶、错误信息里的数）？固定 +4096 会不会在别处仍然生效？重试仍截断时的 fail-closed 路径与措辞是否与实测一致？ |
+| 上限门计入 reasoning 预留 | `memoryCapUnsatisfiable` / `capCeilingWarning` 在模型声明 `reasoning` 时把最多 8192 的隐藏思考算进估算 | 传入的 reasoning 标志在**每个**调用点是否都取对了（会话模型 vs 辅助模型配置）？`maxTokens`/`maxOutputTokens`/`maxMemoryChars` 的组合边界（例如 `maxTokens` 小于预留）会不会给出错误结论或漏报？ |
+| 等待前提示 | `/memory update` 先回 `Memory: consolidating… (a reasoning route can take minutes)` | 提示是否在**所有**会进入长辅助调用的入口都出现（其它动词、自动 pass、flush）？提示与真实等待时长的关系是否被夸大（不许承诺代码做不到的事）？ |
+
+## 对抗性要求
+
+- 至少做一次「假设这个变更里藏着生产 bug」的对抗性 pass，重点放在**新判据的接受面**：剥标题 + 结构测试之后，什么样的回复仍能替换一篇四节文档？
+  带 `- ` 条目的散文？围栏包着的散文？只有 `# 任意标题` + 长句？请给出逐字节的构造与实际结果。
+- 判据与 `report.ts` 的长度规则、`OPAQUE_DOCUMENT_MIN_CHARS = 40`、`memoryComparisonKey` 的交互是否自洽。
+- 记录里的每条**用户可见句子**（CHANGELOG、`docs/*.md`、提示语、错误信息）都对着写它的代码路径读一遍：这条仓历史里最典型的发现就是「用户可见句子承诺了代码没做的事」。
+
+## 输出格式
+
+按严重度分节给出：`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk`。
+每条要给 `file:line`、影响（谁会看到什么错误结果）、以及**修复边界**（最小修法）。
+末尾必须有一行独立结论：`VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` 或 `VERDICT: BLOCKED`。
+`## Test And QA Focus` 节请附你实际跑过的命令与输出要点（套件总数、变异结果）。

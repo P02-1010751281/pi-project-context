@@ -18,6 +18,7 @@
 | 12 | 2026-10-08 | `5522370`（`efe3780..5522370`） | 同上 | CHANGES-REQUESTED（1 important + 4 nit：字符类去重与本 pass 的待办合并已落，表格行序与括号嵌套在本轮修复） | `shutdown-flush-review-round12-independent.txt` | ✓ |
 | 13 | 2026-10-08 | `d48f5d3`（`5522370..d48f5d3`） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（记录层） | `shutdown-flush-review-round13-independent.txt` | ✓ |
 | 14 | 2026-10-08 | `0450fc4`（= annotated tag `v0.4.7`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 1 important**，自第 6 轮以来第一个代码层轮次） | `shutdown-flush-review-round14-independent.txt` | ✓：`git status` 与 457 条文件表均与基线一致；被审四文件 md5 前后相同 |
+| 15 | 2026-10-08 | `5f76996`（= annotated tag `v0.4.8`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 important：上限门的 `reasoning` 取自会话模型、`/autolearn` 强制 pass 无前置提示；B1/B2/N1/N2/N3 确认已关，I1 被独立复核为**不成立**） | `shutdown-flush-review-round15-independent.txt` | ✓：`git status` 空、460 条文件表与基线逐行一致、被审六文件 md5 前后相同 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -228,7 +229,7 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | 项 | 现场事实 | 修复 | 钉它的探针与变异结果 |
 | --- | --- | --- | --- |
 | R-L1 `loadMemory` 的纯读站点 | 登记于本报告：render 的字节与 `stat` 分开取，理论上读到「旧字节 + 新 mtime」 | `loadMemory` 改用 `readRenderWithMtime`；读跨越替换（`changed`）时不采纳任何一版，journal fold 继续当家 | `read race:` 三断言，含稳定文件的**正向对照**（较新的外部编辑仍被采纳）；把实现还原成两读配对后恰红 1 条、其余 2 条仍绿 |
-| v0.4.7 拒绝条件不覆盖现场（第 14 轮 blocking B1） | 第 1 轮就记录的现场串**带** `# Project Memory` 头；v0.4.7 只测「回复整篇没有任何标题」，因此放过了它，而 CHANGELOG/架构文/测试注释都把它写成已关（I3/B2） | 判据先剥规范标题再要求正文自己带结构（标题 / `- ` 条目 / 围栏），并明确取消「带标题的散文仍走原路」这条 v0.4.7 行为；回归用例改为逐字节现场串 + 无标题变体 + `#.` 伪标题 + 40/39 边界 + fresh 项目 | 5 条变异各恰红对应断言（去剥标题红 5、结构恒真红 3、`storedSections` 恒真红 1、`>=`→`>` 红 2、标题字符类红 2），全套件 15/15 |
+| v0.4.7 拒绝条件不覆盖现场（第 14 轮 blocking B1） | 第 1 轮就记录的现场串**带** `# Project Memory` 头；v0.4.7 只测「回复整篇没有任何标题」，因此放过了它，而 CHANGELOG/架构文/测试注释都把它写成已关（I3/B2） | 判据先剥规范标题再要求正文自己带结构（标题 / `- ` 条目 / 围栏），并明确取消「带标题的散文仍走原路」这条 v0.4.7 行为；回归用例改为逐字节现场串 + 无标题变体 + `#.` 伪标题 + 40/39 边界 + fresh 项目 | 5 条变异各恰红对应断言（去剥标题红 5、结构恒真红 11（第 15 轮实测更正；我自己当时只跑了部分断言）、`storedSections` 恒真红 1、`>=`→`>` 红 2、标题字符类红 2），全套件 15/15 |
 | settle 时的不透明回复替换整篇记忆 | **现场**：装好的 v0.4.5 在审查沙箱里（审查员自己的会话）把会话开场白 `I'll review the frozen revision…` 当作整篇文档写入 `MEMORY.md`（119 字节替换 29.9 KB），只留下 backup 与 `memory regression guard skipped: this pass did not produce sections` | 不透明回复**完全没有任何 markdown 标题**、长度已达到「可能是文档」阈值（`OPAQUE_DOCUMENT_MIN_CHARS`，与 report.ts 单一来源）、而存储的是可解析的四节文档 ⇒ 视为无可写内容，走既有的 skip + `carried no entries` 诊断 | 新用例两条（存储记忆逐字节不变 + 留下 `carried no entries` 诊断）；**正向对照**：带标题的不透明 markdown 回复仍被采纳，测试 11 的「带标题但无条目」行为也保留；变异后恰红 2 条 |
 
 两处修复各跑过一次变异矩阵，且都跑过全套件（15 项）与渲染标点门。
@@ -236,6 +237,30 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 **对 R-L1「恰红 1 条」的精确化（第 14 轮 I1 的处置）**：第 14 轮称删掉 `!renderRead.changed` 早退后整套仍然全绿。我按「把该合取项换成 `true`」重测两次，二者都**确定变红 1 条**：`read race: the journal's fold stands instead of the older bytes`（基线同为 2/2 全绿），所以这条早退确实有可区分断言，I1 的「零覆盖」不成立；第 14 轮自己给的单点探针也显示该早退改变了 `loadMemory` 的返回（`source=MEMORY.md` 对 `source=memory.jsonl`），与「零覆盖」自相矛盾。它同时成立的另一半（I2）是本报告已登记的 mtime+size 启发式残留。收链时未取的 PASS 仍未取 ——
 这两处改动恰好说明「冻结修订」只在收链那一刻成立。
 
+
+## 第 15 轮处置（2026-10-08，冻结修订 `5f76996` / v0.4.8）
+
+上一轮的三条 blocking/important 是本轮的验证对象；结果 **B1/B2 确认已关**，**I1 被独立复核为不成立**（审查员自己重做两种等价变异 —— `&& true` 与整体删除 —— 各恰红 1 条
+`read race: the journal's fold stands instead of the older bytes`，与我的复测一致：第 14 轮那条是误报），**I3 基本关**。本轮真正的收获是两处 v0.4.8 新代码里的重要缺口。
+
+| 第 15 轮条目 | 处置 |
+| --- | --- |
+| B1 / B2 / N1 / N2 / N3 | 审查员端到端与变异独立复现，**已关**，不改代码 |
+| I1（零覆盖） | 见上：**误报**，不改代码 |
+| I-A：上限门的 `reasoning` 取自 `ctx.model`（会话模型），而调用走 `resolveAuxModel` 的辅助路由 ⇒ 配置了重推理辅助路由时静默漏报 | **真缺陷，已修**：新增 `peekAuxModel`（与 `resolveAuxModel` 共用 `auxRouteFor` 单一决策点，前者不发 dead-route 告警），两个调用点改用它；`tests/memory-ops-test.mjs` 的 M4b 分别钉 `status`（`index.ts`）与 set-time（`report.ts`）两个入口，并带正向对照（清空辅助路由后同一 cap 静默）；两条变异各恰红 1 条 |
+| I-B：`/autolearn` 空动词的强制 pass 无前置提示，同一条重推理路由上原样静默 | **真缺口，已修**：强制 pass 在辅助调用前回 `Autolearn: distilling this project's sessions…`；新用例断言的是「`complete` 被调用的那一刻提示已在通知里」，不是「日志里存在」；删提示恰红 1 条 |
+| I-C：`release-v0.4.8-evidence.md` 在本轮沙箱里不存在 | **冻结点所致，无需处置**：本轮冻在 tag 上，而该证据按本仓惯例落在**打 tag 之后**的独立提交（`4d2bc43`），`master` 上有它 |
+| I2 / N-3：`docs/architecture.md` 缺 mtime+size 盲点 | **已补**：写进 flush 守卫段。审查员是对的 —— 任务书当时声称「写在报告与 docs/architecture.md」不实（实际只在报告与本渲染里） |
+| N-1：119 / 118 字节口径 | **已说明**：CHANGELOG 的 v0.4.8 条区分了磁盘字节（119，含尾换行）与 journal 的 `memory_markdown` 值（118） |
+| N-2：变异矩阵「结构恒真红 3」低报 | **已更正**：实测 `replyHasStructure = true` 红 **11** 条（本报告第 14 轮处置表的那格已改） |
+| N-4：`capCeilingWarning` 把 8192 预留说成界 | **已修措辞**：改 `plus a reserve of about N tokens`（不再 `up to`）；用例新增「含 `reserve of about` 且不含 `up to`」，变异恰红 1 条 |
+| N-5：v0.4.7 历史条目仍写「无标题」 | **已加交叉引用**（v0.4.8 条证明它带规范标题） |
+| R-A：结构测试接受面偏宽（带一条 bullet / 围栏 / 任意标题的散文仍可替换四节文档） | **登记为非目标**：这是第 14 轮 B1 指定的判据、文档如实写了接受面，且更窄的判据**没有现场事实**支撑（本仓规则：无现场事实的新机制进非目标）。重开条件＝出现「带 bullet 的会话回复替换了整篇记忆」的现场 |
+| R-B：重试对被请求上限封住的配置仍不可能成功 | **成立且已写明**：那类配置靠抬高上限或换辅助路由解决，重试只让它更早更清楚地失败（CHANGELOG 与架构文档已按此措辞） |
+| R-C：既登记的 R-F2/R-F3 等 | 不重登；审查员实测行为与文档一致 |
+
+**本轮新增的可用规则**：任何只**读**一个模型属性（例如 `reasoning`）的调用方必须走 `peekAuxModel`，`resolveAuxModel` 只留给真正发起调用的路径；
+两者共用 `auxRouteFor`，所以「机制对、取值错」这一类缺口不会因为两处各自演化而复发。
 
 ## 对审查结论的两处更正
 
