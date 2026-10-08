@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-10-07T13:10:48.382Z
+Last updated: 2026-10-08T00:20:00.000Z
 
 ## Summary
 
@@ -8,7 +8,7 @@ As of round 6 the shutdown-coupling TOCTOU chain PASSed on c212fcf; rounds 7-12 
 
 ## Key points
 
-- Review chain: rounds 1-6 chased one TOCTOU class to a PASS on c212fcf; round 7 blocked on the FIFO fixture's scheduling barrier being replaced with a non-blocking open, round 8 on the curation, rounds 9-11 on record details; all on deepseek/deepseek-flash with thinking high, each in a byte-identical /tmp sandbox with zero-write proof.
+- Review chain: rounds 1-6 chased one TOCTOU class to a PASS on c212fcf; round 7 blocked on the FIFO fixture's scheduling barrier being replaced with a non-blocking open, round 8 on the curation, rounds 9-13 on record details; all on deepseek/deepseek-flash with thinking high, each in a byte-identical /tmp sandbox with zero-write proof.
 - Code fix b37cb55: adoptExternalEdit judges against its own read and re-verifies immediately before appendMemoryOp that the file still holds those bytes; mismatch refuses the append and logs. The overlapping read.changed early exit was proven non-load-bearing and deleted.
 - Removing the guard reddens seven checks across the two paths (the FIFO race case now carries four assertions, including its own check that the race happened); the race case ran green three times in a row and the borrowed-key case has a positive control.
 - Two side-findings fixed on the way: extracting flushActionFor exposed a real regression (a missing render had stopped being republished) and the render had twice reverted the corrected shutdown facts in MEMORY.md:23/:97 and CONTEXT.md - restored, then written into the local journal in the extension's own op shape so later renders stop reverting them.
