@@ -84,8 +84,8 @@ session.jsonl ──► session.md ──► INDEX.md
 - 写入顺序在 `MEMORY.md.lock` 内完成：追加 journal、必要时轮换、备份、原子替换 render。
 - 跨进程锁有 stale-lock recovery，释放时校验唯一 token，避免误删别的进程的锁。
 - `maxMemoryChars` 默认 32000，范围 4000–200000。正文超限时保留头尾、按整行丢弃中段并追加 marker；marker 自身不计入正文预算。
-  cap 高到输出上限上界估算装不下时（`memoryReplyTokens` > `max(maxTokens, maxOutputTokens)`）
-  在 `status` 和配置时点名。
+  cap 高到输出上限上界估算装不下时（`memoryReplyTokens` + reasoning 预留 > `max(maxTokens, maxOutputTokens)`）
+  在 `status` 和配置时点名；会话模型声明 `reasoning` 时把这部分隐藏思考也算进去（配置的辅助路由不在这些只读路径里解析）。
 - 限制由调用方显式传给 normalize、fold、comparison、load、write 和 legacy migration；没有进程级全局 cap，因此多项目不会串味。
 - OMP/旧布局在 `session_start` 迁移时使用当前项目的 `maxMemoryChars`，不会退回默认值。
 - 旧的 poisoned memory 只在内存中解码；下一次正常覆盖前才备份和修复，不在读取阶段产生副作用。
@@ -119,15 +119,23 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 - JSON 在 `context` 前截断，但仍恢复出 `memory_markdown`：标记 `recovered` / `object never closed`，保留旧文件并写诊断。
 - `context` 存在但形状错误：保留旧文件，记录 shape warning。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
-- 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的 JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。
-- 回复被输出上限截断（`stopReason: length`）时，先按更大的输出预算重试一次（+4096 token）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算（reserve 增大），由提示词要求压缩；第二次仍截断则 fail closed，错误信息点名输出上限而不是泛化解析失败。
+- 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的
+  JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。该预留有 8192 的上限，而 route
+  实测可能远超它（现场一次请求花掉 20489 token 隐藏思考），所以它只是首次尝试的估计，不是界。
+- 回复被输出上限截断（`stopReason: length`）时，先按更大的输出预算重试一次：至少 +4096 token，且不少于上一次实际花掉的
+  隐藏思考 token（provider 在 usage 里回报）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算
+  （reserve 增大），由提示词要求压缩；第二次仍截断则 fail closed，错误信息点名输出上限与实测的隐藏思考数，而不是泛化解析失败。
 - 其他不可解析回复先做一次有界重试并附加严格格式提醒；第二次仍失败则 fail closed，保留现有文件并把回复头写入 `errors.log`，不会把原始 JSON 当成 memory。
 - 非工具调用的纯 Markdown 回复分两种：`memory` 能解析出四节时按 `fallback-sections` 交给渲染器重新渲染；解析不出四节时按
   `fallback-opaque` 把**回复正文原样**作为 `MEMORY.md`（不经渲染器），只有整篇都是标题的「骨架」判为空、跳过写入并写诊断。
-- 该原样写入在 2026-10-08 收窄：当存储的是可解析的四节文档、回复**完全没有任何 markdown 标题**、且长度不低于
-  `OPAQUE_DOCUMENT_MIN_CHARS`（40，与 `report.ts` 判断「回复是否算变化」同源读取）时，视为无可写内容 —— 跳过写入并写
-  `carried no entries` 诊断，而不是把会话开场白当成整篇记忆（现场案例：v0.4.5 下一个审查沙箱用 119 字节的开场白替换了
-  29.9 KB 的四节记忆）。带标题但无条目的回复仍走原路（回归护栏记录自己的 skip），更短的回复仍报「too short to be a change」。
+- 该原样写入在 2026-10-08 收窄：当存储的是可解析的四节文档、回复正文（**先剥掉规范标题 `# Project Memory`**）既没有自己的
+  标题、也没有 `- ` 条目、也没有围栏，且长度不低于 `OPAQUE_DOCUMENT_MIN_CHARS`（40，与 `report.ts` 判断「回复是否算变化」
+  同源读取）时，视为无可写内容 —— 跳过写入并写 `carried no entries` 诊断。判据必须先剥规范标题：现场那条开场白**带着**
+  `# Project Memory` 头（`# Project Memory\n\nI'll review the frozen revision …`），v0.4.7 只测「整篇没有任何标题」因此放过了
+  它，v0.4.8 起才真正覆盖（回归用例直接用逐字节的现场串）。
+- 两条已登记的边界，与上面的判据同一个条件：存储的记忆本身不是四节文档时拒绝不生效（`storedSections === undefined`，R-F2；
+  代价是 fresh 项目仍能写下第一条散文记忆，这是同一判据换来的一面）；短于 40 字符的回复不走拒绝，而由 `report.ts` 的
+  「是否算变化」长度规则拦住写入（R-F3），所以它不丢内容，只是报「too short to be a change」。
 
 因此 `CONTEXT.md` 的更新时间只在某次 pass 真正返回 context 时移动；它可以作为有效的新鲜度信号。
 

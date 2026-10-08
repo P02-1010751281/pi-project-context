@@ -95,8 +95,9 @@ cap 每次写入都生效：只要 render 仍超限，下一次写入会再裁�
 并在每项目每进程写一次 `errors.log`。这是与 `MEMORY.md` 同级的收敛目标：已有自由结构的 CONTEXT.md 照常读、注入。
 
 cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 1 token/字符最坏估算，
-`maxMemoryChars + 1024` 超过输出上限的上界 `max(maxTokens, maxOutputTokens)` 时 `status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）
-——否则回复很可能在闭合前被截断。模型自身的 `maxTokens` 更小、reasoning 预留或大 context 可能比这个上界更紧，那些情况由 pass 自己的 `clipped` 诊断兜底。
+`maxMemoryChars + 1024` 加上 reasoning 预留（会话模型声明 `reasoning` 时最多 8192）超过输出上限的上界 `max(maxTokens, maxOutputTokens)` 时
+`status` 与 `max-memory` 命令都会告警（默认 32000 对 32768 已贴边）——否则回复很可能在闭合前被截断。模型自身的 `maxTokens`
+更小、实际隐藏思考远超 8192、或大 context 可能比这个上界更紧，那些情况由 pass 自己的 `clipped` 诊断与截断错误兜底。
 
 ## 命令
 
@@ -156,7 +157,9 @@ flags 只影响当前运行；`--no-project-context` 不改项目配置。功能
 ## 路由与输出预算
 
 整理与沉淀默认使用会话模型（handoff 不再调用模型）。配置 `provider` 与 `model` 后使用指定路由；路由解析失败或未授权时退回会话模型，并按进程去重告警。`maxTokens` 可按 artifact token 率自适应抬高，
-但不超过模型上限和 `maxOutputTokens`。reasoning 模型（`reasoning: true`）会额外预留隐藏思考 token，正文预算相应收紧；若回复被输出上限截断，会自动按更高预算重试一次，仍失败则显式报告截断并保留旧 memory。
+但不超过模型上限和 `maxOutputTokens`。reasoning 模型（`reasoning: true`）会额外预留隐藏思考 token，正文预算相应收紧；
+若回复被输出上限截断，会自动按更高预算重试一次（至少 +4096，且不少于上一次实际花掉的隐藏思考 token），仍失败则显式报告
+截断并保留旧 memory。`/memory update` 会在等待前先提示一句，因为一次强制 pass 是 1–2 次辅助调用，重推理路由上可能等好几分钟。
 
 handoff 自 v0.4.1 起不调用任何模型，也不再依赖辅助路由，因此 `maxTokens`/`maxOutputTokens` 与它无关；阈值与预算见 [handoff 预算与恢复](handoff.md)。
 
