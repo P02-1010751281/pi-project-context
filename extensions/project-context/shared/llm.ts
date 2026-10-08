@@ -44,24 +44,45 @@ const warnedRoutes = new Set<string>();
  * The model for an auxiliary call: the configured `provider`/`model` route when it resolves
  * and is authorized, otherwise the session model when it is. Undefined when neither works.
  */
+function auxRouteFor(
+	ctx: ExtensionContext,
+	config: { provider: string; model: string },
+): { model: NonNullable<ExtensionContext["model"]> | undefined; unavailable?: string } {
+	const sessionModel = ctx.model && ctx.modelRegistry.hasConfiguredAuth(ctx.model) ? ctx.model : undefined;
+	if (!config.provider || !config.model) return { model: sessionModel };
+	const configured = ctx.modelRegistry.find(config.provider, config.model);
+	if (configured && ctx.modelRegistry.hasConfiguredAuth(configured)) return { model: configured };
+	return { model: sessionModel, unavailable: `${config.provider}/${config.model}` };
+}
+
+/**
+ * The route an auxiliary call will use, decided without the dead-route warning: the configured
+ * `provider`/`model` when it resolves and is authorized, otherwise the session model when it is.
+ * A reader that only needs a model property (a status read comparing `reasoning`) must use this
+ * instead of `resolveAuxModel`, whose warning a read must not send - the decision stays in one place
+ * so the two readers cannot drift.
+ */
+export function peekAuxModel(
+	ctx: ExtensionContext,
+	config: { provider: string; model: string },
+): NonNullable<ExtensionContext["model"]> | undefined {
+	return auxRouteFor(ctx, config).model;
+}
+
 export function resolveAuxModel(
 	ctx: ExtensionContext,
 	config: { provider: string; model: string },
 ): NonNullable<ExtensionContext["model"]> | undefined {
-	const sessionModel = ctx.model && ctx.modelRegistry.hasConfiguredAuth(ctx.model) ? ctx.model : undefined;
-	if (!config.provider || !config.model) return sessionModel;
-	const configured = ctx.modelRegistry.find(config.provider, config.model);
-	if (configured && ctx.modelRegistry.hasConfiguredAuth(configured)) return configured;
-	const key = `${config.provider}/${config.model}`;
-	if (!warnedRoutes.has(key)) {
-		warnedRoutes.add(key);
+	const { model, unavailable } = auxRouteFor(ctx, config);
+	if (unavailable && !warnedRoutes.has(unavailable)) {
+		warnedRoutes.add(unavailable);
 		notify(
 			ctx,
-			`project-context: auxiliary model ${key} is unavailable; ${sessionModel ? "using the session model" : "no authenticated model available"}`,
+			`project-context: auxiliary model ${unavailable} is unavailable; ${model ? "using the session model" : "no authenticated model available"}`,
 			"warning",
 		);
 	}
-	return sessionModel;
+	return model;
 }
 
 /** What a completion returned beyond its text: how it ended and what it spent. */

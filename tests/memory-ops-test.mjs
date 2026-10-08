@@ -98,6 +98,12 @@ try {
 		check("the same cap fits when the route does not reason", budget.memoryCapUnsatisfiable(28_000, 8_192, 32_768, false) === false);
 		check("the warning omits the reserve on a plain route", !budget.capCeilingWarning({ maxMemoryChars: 28_000, maxTokens: 8_192, maxOutputTokens: 32_768 }).includes("hidden reasoning"));
 		check("the warning names the reserve on a reasoning route", budget.capCeilingWarning({ maxMemoryChars: 28_000, maxTokens: 8_192, maxOutputTokens: 32_768 }, true).includes("hidden reasoning"));
+		// Round 15's N-4: the reserve is a first-attempt estimate (the field case spent 20489 against 8192),
+		// so the user-visible sentence must not present it as a bound.
+		check("the warning calls the reserve an estimate, not a bound", (() => {
+			const sentence = budget.capCeilingWarning({ maxMemoryChars: 28_000, maxTokens: 8_192, maxOutputTokens: 32_768 }, true);
+			return sentence.includes("reserve of about") && !sentence.includes("up to");
+		})());
 	}
 
 	console.log("\n=== M4: status reports the cap and the verb changes it ===");
@@ -134,6 +140,34 @@ try {
 
 		await pi.commands.get("memory").handler("max-memory default", ctx);
 		check("default restores the built-in cap", (await readFile(path.join(tmp, ".agents/memory/project-context.json"), "utf8")).includes("32000"));
+	}
+
+	console.log("\n=== M4b: the cap warning follows the route the auxiliary call will use (round 15, I-A) ===");
+	{
+		// The field case is a reasoning route; a configured aux override decides that, not the session model.
+		// Both call sites must read the resolved route: the umbrella status (index.ts) and the set-time reply.
+		const tmp = await makeProject();
+		const pi = makePi({ cwd: tmp });
+		await (await loadDefault(`${PC}/index.ts`))(pi);
+		const plain = { provider: "test", id: "plain", reasoning: false };
+		const thinker = { provider: "aux", id: "thinker", reasoning: true };
+		const ctx = makeCtx(tmp, { model: plain });
+		ctx.modelRegistry.find = (provider, id) => (provider === "aux" && id === "thinker" ? thinker : undefined);
+		const status = async () => {
+			await pi.commands.get("project-context").handler("status", ctx);
+			return String(ctx.notifications.at(-1)?.[0] ?? "");
+		};
+		await pi.commands.get("project-context").handler("model aux/thinker", ctx);
+		check("status charges a configured reasoning aux route", (await status()).includes("hidden reasoning"));
+		await pi.commands.get("memory").handler("max-memory 28000", ctx);
+		check("the set-time warning charges the same route", String(ctx.notifications.at(-1)?.[0] ?? "").includes("hidden reasoning"));
+		await pi.commands.get("project-context").handler("model off", ctx);
+		// Positive control: the same cap on a plain session model must stay quiet, so the check above is
+		// not merely reading a route-independent warning.
+		check("the same cap is quiet once the aux route is cleared", !(await status()).includes("Memory cap warning"));
+		await pi.commands.get("memory").handler("max-memory 28000", ctx);
+		check("the set-time reply is quiet on a plain route too", !String(ctx.notifications.at(-1)?.[0] ?? "").includes("hidden reasoning"));
+		await rmTemp(tmp);
 	}
 
 	console.log("\n=== M4: the automatic cap toast names the cap (not a scope error) ===");

@@ -11,6 +11,7 @@ import { getConfig, DEFAULT_CONFIG, runIsDisabled, setFeature, takeConfigMigrati
 import { completeValues, completeVerbs } from "../shared/complete.ts";
 import { MAX_LIST_ENTRIES, MAX_LIST_ITEM_CHARS, MAX_MEMORY_CHARS_LIMIT, MIN_MEMORY_CHARS } from "../shared/limits.ts";
 import { capCeilingWarning, memoryCapUnsatisfiable } from "../shared/output-budget.ts";
+import { peekAuxModel } from "../shared/llm.ts";
 import { backupMemoryBeforeWrite, contextFile, errorText, exceedsMemoryCap, flushMemoryRender, getProjectRoot, loadMemory, logError, memoryDir, memoryDocumentChars, memoryFile, migrateProjectState, notify, readOptional, recordMemoryDocument, withMemoryLock, writeAtomic } from "../shared/project-state.ts";
 import { fallbackUpdate, renderContextDocument } from "./context-doc.ts";
 import { contextTruncationDropped } from "./context-schema.ts";
@@ -485,9 +486,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					await updateConfig(projectRoot, { maxMemoryChars: Math.round(chars) });
 				}
 				const config = await getConfig(projectRoot);
-				// The aux route is not resolved here (that call warns on a dead route); an unconfigured route falls
-				// back to the session model, whose `reasoning` flag decides whether hidden thinking shares the cap.
-				const reasoningRoute = ctx.model?.reasoning === true;
+// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
+				// `provider`/`model` override decides that, not the session model (independent review round 15,
+				// I-A). `peekAuxModel` resolves it without the dead-route warning `resolveAuxModel` sends,
+				// which a status read must not do.
+				const reasoningRoute = peekAuxModel(ctx, config)?.reasoning === true;
 				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens, reasoningRoute)) {
 					notify(
 						ctx,

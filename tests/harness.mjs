@@ -250,6 +250,7 @@ export function makeCtx(cwd, options = {}) {
 		model: options.model ?? { provider: "test", id: "fake" },
 		modelRegistry: options.modelRegistry ?? {
 			hasConfiguredAuth: () => true,
+			find: () => undefined,
 			complete: async () => {
 				throw new Error("no fake model configured");
 			},

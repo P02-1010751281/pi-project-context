@@ -4,6 +4,7 @@ import { registerAutolearn } from "./autolearn/pass.ts";
 import { configFile, DEFAULT_CONFIG, FEATURE_FIELDS, FEATURE_NAMES, getConfig, MIN_AUX_MAX_TOKENS, runIsDisabled, setFeature, setRunDisabled, updateConfig } from "./shared/config.ts";
 import { completeValues, completeVerbs } from "./shared/complete.ts";
 import { capCeilingWarning, memoryCapUnsatisfiable } from "./shared/output-budget.ts";
+import { peekAuxModel } from "./shared/llm.ts";
 import { registerConsolidation } from "./memory/report.ts";
 import { contextStatusLine, memoryStatusLine } from "./memory/status.ts";
 import { registerHandoff } from "./handoff/run.ts";
@@ -91,11 +92,11 @@ export default function projectContext(pi: ExtensionAPI): void {
 					`Memory: ${memoryStatusLine(await loadMemory(projectRoot, config.maxMemoryChars), config.maxMemoryChars)}`,
 					`Context file: ${await contextStatusLine(projectRoot)}`,
 				];
-				// A cap the output ceiling cannot hold is unreachable: the reply is cut off before it closes.
-				// An unconfigured aux route falls back to the session model, so its `reasoning` flag is the honest
-				// signal for the hidden thinking that shares the same cap (a configured override is not resolved here
-				// on purpose: that call warns on a dead route, which a status read must not do).
-				const reasoningRoute = ctx.model?.reasoning === true;
+// The `reasoning` flag must come from the route the auxiliary call actually uses: a configured
+				// `provider`/`model` override decides that, not the session model (independent review round 15,
+				// I-A). `peekAuxModel` resolves it without the dead-route warning `resolveAuxModel` sends,
+				// which a status read must not do.
+				const reasoningRoute = peekAuxModel(ctx, config)?.reasoning === true;
 				if (memoryCapUnsatisfiable(config.maxMemoryChars, config.maxTokens, config.maxOutputTokens, reasoningRoute)) {
 					lines.push(`Memory cap warning: ${capCeilingWarning(config, reasoningRoute)}; lower it with /memory max-memory <n> or raise maxTokens/maxOutputTokens.`);
 				}

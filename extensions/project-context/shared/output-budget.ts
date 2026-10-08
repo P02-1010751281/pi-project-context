@@ -54,7 +54,9 @@ export function memoryCapUnsatisfiable(maxMemoryChars: number, maxTokens: number
 export function capCeilingWarning(cap: { maxMemoryChars: number; maxTokens: number; maxOutputTokens: number }, reasoning = false): string {
 	const ceiling = Math.max(cap.maxTokens, cap.maxOutputTokens);
 	const hidden = reasoningReserveTokens(cap.maxMemoryChars, { reasoning });
-	const reserve = hidden > 0 ? ` plus up to ${hidden} tokens of hidden reasoning on a reasoning route` : "";
+	// "reserve ... about" and not "up to": the reserve is a first-attempt estimate, and the field case
+	// spent 20489 hidden tokens against an 8192 reserve, so a sentence promising a bound would be false.
+	const reserve = hidden > 0 ? ` plus a reserve of about ${hidden} tokens for hidden reasoning on a reasoning route` : "";
 	return `${cap.maxMemoryChars} chars needs about ${memoryReplyTokens(cap.maxMemoryChars)} output tokens${reserve} to re-emit dense memory, above the output ceiling of ${ceiling}`;
 }
 
