@@ -122,6 +122,12 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的 JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。
 - 回复被输出上限截断（`stopReason: length`）时，先按更大的输出预算重试一次（+4096 token）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算（reserve 增大），由提示词要求压缩；第二次仍截断则 fail closed，错误信息点名输出上限而不是泛化解析失败。
 - 其他不可解析回复先做一次有界重试并附加严格格式提醒；第二次仍失败则 fail closed，保留现有文件并把回复头写入 `errors.log`，不会把原始 JSON 当成 memory。
+- 非工具调用的纯 Markdown 回复分两种：`memory` 能解析出四节时按 `fallback-sections` 交给渲染器重新渲染；解析不出四节时按
+  `fallback-opaque` 把**回复正文原样**作为 `MEMORY.md`（不经渲染器），只有整篇都是标题的「骨架」判为空、跳过写入并写诊断。
+- 该原样写入在 2026-10-08 收窄：当存储的是可解析的四节文档、回复**完全没有任何 markdown 标题**、且长度不低于
+  `OPAQUE_DOCUMENT_MIN_CHARS`（40，与 `report.ts` 判断「回复是否算变化」同源读取）时，视为无可写内容 —— 跳过写入并写
+  `carried no entries` 诊断，而不是把会话开场白当成整篇记忆（现场案例：v0.4.5 下一个审查沙箱用 119 字节的开场白替换了
+  29.9 KB 的四节记忆）。带标题但无条目的回复仍走原路（回归护栏记录自己的 skip），更短的回复仍报「too short to be a change」。
 
 因此 `CONTEXT.md` 的更新时间只在某次 pass 真正返回 context 时移动；它可以作为有效的新鲜度信号。
 
