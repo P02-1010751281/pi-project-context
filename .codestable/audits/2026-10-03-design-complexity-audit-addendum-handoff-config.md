@@ -49,6 +49,8 @@ tags: [process, design-review, complexity, evidence, handoff, config, strict-mod
 > **2026-10-06 收口（现场事实，退役问题按反方向结束）**：用 `legacyConfigPatch` 真正认的六个改名键
 > （`autoConsolidate` / `autoLearn` / `handoffTargetTokens` / `handoffKeepTokens` / `handoffAdaptive` / `handoffLanguage`）
 > 重扫本机 10 个 `.agents/memory/project-context.json`：**2 个（`形式化证明`、`HWCup-Math-A`）六个键全带**，其余 8 个干净。
+>
+> 2026-10-08 重扫：9 个文件（`~/.agents` 那一个不是项目配置），**3 个六个键全带**（新增 `Watermarking for VQ-TTS Models`）；键数 22（`handoffThinking` 退役后少一）。上面 10 个/2 个/23 键是 2026-10-03 的快照。
 > 也就是说这层兼容**正在真场上干活**——那两个项目的设置只因为迁移存在才没被静默丢掉；而旧键之所以还在，是因为读路径
 > 非破坏（只有写路径才重写文档）。原判据「等一条 0 命中以外的现场事实」因此以**相反方向**满足：退役会真丢配置。
 > 处置：**保留，不定退役窗口**；此前 §9.10 的「等事实」不再是挂账，而是已决。
