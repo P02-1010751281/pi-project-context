@@ -63,7 +63,7 @@ if (tracked.status === 0) {
 			continue;
 		}
 		for (const line of text.split("\n")) {
-			if (/^\s*[-*+] /.test(line) && !/[.!?;:`)"'\]。）、）」』”’…！？；：】]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
+			if (/^\s*[-*+] /.test(line) && !/[.!?;:`)"'\]。）、」』”’…！？；：】]$/.test(line.trim())) bad.push(`${file}: ${line.slice(0, 80)}`);
 		}
 	}
 	if (bad.length > 0) {
