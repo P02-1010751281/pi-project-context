@@ -103,7 +103,8 @@ session.jsonl ──► session.md ──► INDEX.md
 | `/memory update` | 显式强制 consolidation（`forceDedupeMs` 15 秒内去重重复的强制 pass） |
 
 flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不留记忆状态、不取跨进程锁），文件与 fold 的比较键相同时不写，
-要写回或采纳时，判定用的字节与 mtime 必须来自同一版本：自读都走 `readRenderWithMtime`，自带 render key 的调用方，其 mtime 判定取本调用的自读，
+要写回或采纳时，判定用的字节与 mtime 必须来自同一版本：自读都走 `readRenderWithMtime`（它按 mtime+size 判断「文件是否被换过」，所以同尺寸且落在
+文件系统时间戳粒度内的替换看不见 —— 已登记残留），自带 render key 的调用方，其 mtime 判定取本调用的自读，
 并在 append 前校验该 key 仍是文件当前字节（残留窗口只剩最后一次核对到 append 之间）。
 最后一条由 `flushActionFor` 这张纯表表达：`recheck`（读取期间文件被替换 ⇒ journal 与文件都不动，留给下一次 pass）、
 `none`（文件已是 fold）、`keep`（render 比 journal 新 ⇒ 只采纳进 journal、原字节不动）、`publish`（缺失、render 为空/不可比较，或 journal 不旧于它 ⇒ 写回 fold）。
@@ -124,6 +125,7 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
   实测可能远超它（现场一次请求花掉 20489 token 隐藏思考），所以它只是首次尝试的估计，不是界。
 - 回复被输出上限截断（`stopReason: length`）时，先按更大的输出预算重试一次：至少 +4096 token，且不少于上一次实际花掉的
   隐藏思考 token（provider 在 usage 里回报）；若请求上限已被模型/配置封住，则上限不变、重试可能保持或减少正文预算
+  —— 请求上限**低于**「正文 + 实测隐藏思考」时重试不可能成功（现场需约 53.5k 而上限 32768），那种配置要靠抬高上限或换辅助路由
   （reserve 增大），由提示词要求压缩；第二次仍截断则 fail closed，错误信息点名输出上限与实测的隐藏思考数，而不是泛化解析失败。
 - 其他不可解析回复先做一次有界重试并附加严格格式提醒；第二次仍失败则 fail closed，保留现有文件并把回复头写入 `errors.log`，不会把原始 JSON 当成 memory。
 - 非工具调用的纯 Markdown 回复分两种：`memory` 能解析出四节时按 `fallback-sections` 交给渲染器重新渲染；解析不出四节时按
