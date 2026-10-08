@@ -1,0 +1,40 @@
+# Lane A 独立审查 — 冻结修订 `73da214`（`v0.4.9` 候选，第 17 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev17`（本仓 `/tmp` 字节副本，停在待审修订）。
+**判定模型**：本轮由 `deepseek/deepseek-flash`（thinking `high`）给出。
+
+## 硬规则：只读
+
+- 不得写入工作区（`/tmp/pi-context-rev17` 只读）；不得 `git add/commit/checkout/stash/reset/clean`。
+- 要跑变异/写探针，把沙箱复制到 `/tmp` 下你自己的目录再改，绝不动沙箱本体。
+
+## 背景与范围
+
+- 上游是第 16 轮（冻结在 `8674fd2`）：**0 blocking**，唯一 important 属文档精度类，另有 3 nit 与 2 suggestion。
+  本轮范围只有它的修复集：`git diff 8674fd2..HEAD`（8 文件 / +156 −9）。
+- 必读：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md` 的**第 16 轮处置**节与轮次表；
+  同目录 `shutdown-flush-review-round16-independent.txt`；`CHANGELOG.md` 的 v0.4.9 节；`docs/architecture.md`（flush 守卫段、输出预算段）、
+  `docs/configuration.md`（路由与输出预算段）。
+
+## 逐条验证第 16 轮的修复声明
+
+| 第 16 轮条目 | 声称的修复 | 你要验的 |
+| --- | --- | --- |
+| I-1（important，文档反向漂移）：两处 docs 仍写 cap 门读「会话模型」，架构文档的括号还断言「配置的辅助路由不在这些只读路径里解析」 | 均改为「**辅助调用路由**」，括号改为「只读路径经 `peekAuxModel` 解析配置的辅助路由，不发 dead-route 告警」 | 全仓是否**还有别的**文档/注释/用户可见句把这件事写成会话模型（自己 grep，不要只信这两处）？新措辞与 `index.ts` / `memory/report.ts` 的两处调用点逐字一致吗？ |
+| N-1：两处调用点注释首行缺 tab 缩进 | 补 4 个 tab | 逐字节核（`cat -A`），并确认没有引入别的空白异常 |
+| N-2：`docs/architecture.md` 的 R-B 子句把「（reserve 增大）」与先行词隔开 | 括号移回原句末，R-B 另起一句 | 改写后的句子是否**只表达代码真在做的事**（对照 `adaptiveOutputTokens` 的封顶行为），有没有产生新的歧义 |
+| N-3：`docs/configuration.md` 只提 `/memory update` 的等待提示 | 改为两者都提 | 与 `autolearn/pass.ts` 的实际提示点一致吗（提示位置、触发条件）？ |
+| S-1：`peekAuxModel` 两个分支没有直接断言 | `tests/aux-model-test.mjs` 补四分支 | 四条断言是否真的能区分「发告警」与「不发告警」？自己做一次变异（让 peek 走会告警的 `resolveAuxModel`）并给出红了几条、哪条 |
+| S-2：两处提示措辞 | 登记为非目标（两层各自命名本层动作） | 这个登记是否诚实？还是其实已经在两处出现了**同一句**共享措辞被复制（那就该抽常量）？ |
+
+## 对抗性要求
+
+- 假设这批修复里还藏着问题：重点查「文档改对了但代码没跟上」和「改一处漏一处」（同一事实在本仓常有多个住处：`CHANGELOG`、`docs/*.md`、
+  提示语、错误信息、`.agents/skills/` 里的过程规则、`.codestable` 记录）。
+- 自己跑 `node tests/run-all.mjs`，并至少自己做一次变异。
+- 若你认为本修订可以发布，请明确写出 `VERDICT: PASSED`；若仍有必须改的，给出 `file:line` 与最小修法。
+
+## 输出格式
+
+按 `blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；末尾一行 `VERDICT: …`；
+`## Test And QA Focus` 附命令与结果要点。

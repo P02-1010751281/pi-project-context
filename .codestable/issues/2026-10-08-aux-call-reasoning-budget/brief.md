@@ -20,7 +20,7 @@
 | 修复 | 位置 | 行为变化 | 钉它的断言与变异 |
 | --- | --- | --- | --- |
 | 重试带上实测隐藏思考 | `memory/pass.ts` 的截断重试 | 重试 headroom = `max(4096, 上一次 usage 的隐藏思考 token)` | `tests/consolidation-test.mjs` 的 cap-retry 夹具（第一次回复 `usage.reasoning = 20000`，config ceiling 抬到 131072）断言 `budgets[1]-budgets[0] ≥ 20000-4096`；变异（改回固定 4096）恰红 1 条 |
-| 上限告警计入预留 | `shared/output-budget.ts` 的 `memoryCapUnsatisfiable` / `capCeilingWarning`；调用点 `index.ts`、`memory/report.ts` | 会话模型声明 `reasoning` 时，把最多 8192 的隐藏思考算进「是否装得下」，措辞里点名 | `tests/memory-ops-test.mjs`：`(28000,8192,32768,true)=true` / `(…,false)=false` / 措辞含 `hidden reasoning`；两条变异各恰红 1 条 |
+| 上限告警计入预留 | `shared/output-budget.ts` 的 `memoryCapUnsatisfiable` / `capCeilingWarning`；调用点 `index.ts`、`memory/report.ts` | 会话模型声明 `reasoning` 时，把最多 8192 的隐藏思考算进「是否装得下」，措辞里点名。（**v0.4.8 当时取的是会话模型；v0.4.9 改为「辅助调用路由」，见 `round15-fix-note.md`**） | `tests/memory-ops-test.mjs`：`(28000,8192,32768,true)=true` / `(…,false)=false` / 措辞含 `hidden reasoning`；两条变异各恰红 1 条 |
 | 等待前先提示 | `memory/report.ts` 的 `/memory update` 动词 | 先回 `Memory: consolidating… (a reasoning route can take minutes)` 再跑 pass | `consolidation-test.mjs` 断言通知里含该句；删掉那句后恰红 1 条 |
 
 全套件（15 项）与 `git diff --check` 在改动后全绿；四条变异各只让自己那条断言变红（副本里做，未触活树）。

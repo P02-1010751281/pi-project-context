@@ -20,6 +20,7 @@
 | 14 | 2026-10-08 | `0450fc4`（= annotated tag `v0.4.7`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 1 important**，自第 6 轮以来第一个代码层轮次） | `shutdown-flush-review-round14-independent.txt` | ✓：`git status` 与 457 条文件表均与基线一致；被审四文件 md5 前后相同 |
 | 15 | 2026-10-08 | `5f76996`（= annotated tag `v0.4.8`，冻结的**发布**修订） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 important：上限门的 `reasoning` 取自会话模型、`/autolearn` 强制 pass 无前置提示；B1/B2/N1/N2/N3 确认已关，I1 被独立复核为**不成立**） | `shutdown-flush-review-round15-independent.txt` | ✓：`git status` 空、460 条文件表与基线逐行一致、被审六文件 md5 前后相同 |
 | 16 | 2026-10-08 | `8674fd2`（`v0.4.8` 之上的 `v0.4.9` 修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属文档：两处 docs 仍写「会话模型」并在括号里断言只读路径不解析辅助路由；3 nit 格式/措辞；S-1/S-2） | `shutdown-flush-review-round16-independent.txt` | ✓：`git status` 与基线一致、465 条文件表逐行一致、8 个被审文件 md5 前后相同 |
+| 17 | 2026-10-08 | `73da214`（`v0.4.9` 修复集 + 第 16 轮文档修复） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属措辞：第 16 轮新加的「重试只让它更早更清楚地失败」与 `fitMemoryInput` 的裁短路径相反；1 nit 属记录；S-1 复核登记诚实） | `shutdown-flush-review-round17-independent.txt` | ✓：`git status` 与基线一致、文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -278,6 +279,24 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 收链（第 17 轮之后，2026-10-08）
+
+**停止规则已满足**：第 16、17 两轮**零 blocking**，剩余 important 全部属措辞/记录精度类（第 16 轮是两处 docs 的反向漂移，第 17 轮是第 16 轮改写时新引入的一句过强断言）。第 17 轮唯一的 important 由**上一轮的修复本身**引入 —— 正是本仓已记下的「每轮加机制就给下一轮加面；未收敛的增长是停下的信号」。
+
+**这一版的代码层拿到两轮独立复核**：第 16 轮逐条复现了 v0.4.9 的修复（四条变异各恰红 1 条目标断言；`peekAuxModel` 与 `resolveAuxModel` 在四分支等价、告警串逐字未变、peek 不消耗告警名额），第 17 轮复核文档/格式层并给出 **0 代码层发现**。
+
+**如实留下**：末修订（本节之后的提交）**没有审查轮**看过 —— 三处改动全是文字口径（`docs/architecture.md`、`CHANGELOG.md`、issue `brief.md`），不触代码与测试；因此 `VERDICT: PASSED` **未取得**。要正式收口，冻结末修订再跑一轮即可。
+
+| 第 17 轮条目 | 处置 |
+| --- | --- |
+| I-1：「请求上限低于正文+实测隐藏思考时重试只让它更早更清楚地失败」——与 `fitMemoryInput` 的裁短路径相反（被封的只是请求上限，重试可带 `clipped` 成功） | **已改口径**：改为「重试只能在裁短后的正文上再试（可能以 `clipped` 的缩短版成功），补不上这个差额」；`CHANGELOG.md` 的 v0.4.8 同句一并改 |
+| N-1：issue `brief.md` 仍把 cap 门的 reasoning 来源写成「会话模型」 | **已标注**：写明那是 v0.4.8 的行为、v0.4.9 改为辅助调用路由 |
+| S-1（复核第 16 轮的 S-2 登记） | 审查员确认登记诚实：两条提示各自命名本层动作，唯一共享的是子句 `(a reasoning route can take minutes)` |
+| R-2（只读状态路径新增 `ctx.modelRegistry.find` / `hasConfiguredAuth` 依赖） | **承接登记**：真实 pi 的 `ModelRegistry` 提供 `find`，`tests/harness.mjs` 的 mock 已补齐，不构成生产崩溃面，但**是**一条新的读路径依赖 |
+| R-3（`readRenderWithMtime` 的 mtime+size 盲点、写回窗口等既有残留） | 承接，本轮代码未触碰 |
+
+**本轮新增的可用规则**：「封住请求上限」**不等于**「重试必然失败」——`fitMemoryInput` 把正文裁到上限之内再试，可能以 `clipped` 的缩短版成功；任何把封顶与失败划等号的句子都必须对照这条路径。
 
 ## 对审查结论的两处更正
 

@@ -1,0 +1,58 @@
+审查完成。工作目录只读未动（终态 `git status` 仍只多出审查前就存在的 `.agents/memory/HANDOFF.md`、`project-context.json` 两项）；全部变异/探针在 `/tmp` 副本 `/tmp/pi-laneArev17-1742072` 与 `/tmp/pi-laneA17mut-peek` 中进行。
+
+# Lane A 独立审查 — 冻结修订 `73da214`（`v0.4.9` 候选，第 17 轮）
+
+## blocking
+
+无。
+
+## important
+
+**I-1（新，文档与代码相反，且是第 16 轮 N-2 改写**新引入**的那一句）——`docs/architecture.md:129` 声称「请求上限低于『正文 + 实测隐藏思考』时…重试只让它更早更清楚地失败」，但被请求上限封住的重试**可以成功**，只是以缩短的 `clipped` 结果成功。**
+
+- 位置：`docs/architecture.md:129`（第 16 轮把 R-B 另起一句时加入「重试只让它更早更清楚地失败」；`8674fd2` 的同段只有「重试不可能成功」，没有这半句）。
+- 代码事实：`fitMemoryInput`（`extensions/project-context/memory/input.ts:22-70`）在重试时把正文裁到 `maxTokens − reserved` 以内再发；`adaptiveOutputTokens`（`shared/output-budget.ts:99-103`）确实把请求上限封在 `max(Math.min(grown, cap), max(configured, ceiling))`。于是「封住」意味着**不可能重新吐出整篇正文**，并不等于 pass 一定失败：若模型这次花掉的隐藏思考 ≤ `reserved`，裁短后的回复能闭合，pass 以 `report === "clipped"` 写入一个缩短的 `MEMORY.md`，只给 warning。
+- 端到端复现（`/tmp/pi-laneArev17-1742072/tests/laneA-probe2.mjs`，我的副本）：`maxTokens=maxOutputTokens=8192`（封死），第一次回复 `stopReason:"length"` + `usage.reasoning=4000`，第二次给出较短的四节文档。结果：`calls = 2`、`budgets = [8192, 8192]`、通知为 **`[warning] Memory: updated, but existing content was shortened…`**、`errors.log` 出现 `consolidation shortened the existing memory or context to fit the model output budget` —— 重试**成功（clipped）**，未 fail closed。
+- 这也与本段前一句自相矛盾：前句已写「重试可能保持或减少正文预算…由提示词要求压缩」，那正是 clipped 成功路径。
+- 最小修法（二选一）：
+  - `docs/architecture.md:129` 删去「，重试只让它更早更清楚地失败」，保留「那种配置要靠抬高上限或换辅助路由」；或改为「重试只能在裁短后的正文上再试（可能以 `clipped` 的缩短版成功），无法补上这个差额」。
+  - `CHANGELOG.md:29` 同一断言「重试只让它更早、更清楚地失败」源自 v0.4.8 条，也应按同口径改（可保留「重试仍被封在该上限内」这半句，它是对的）。
+- 边界：只需改这两处文字；代码行为（裁短 + clipped 报告）是对的，且 `consolidation-test.mjs` 的 cap-retry 夹具已覆盖「抬 ceiling 后重试成功」、`persistent truncation` 夹具覆盖「两次都截断才 fail closed」。
+
+## nit
+
+**N-1（新，记录层残留）` .codestable/issues/2026-10-08-aux-call-reasoning-budget/brief.md:23` 仍写 v0.4.8 的门读「会话模型声明 `reasoning` 时」。** 逐字 grep 全仓后，这是除两处已修 docs 之外唯一还把「cap 门的 reasoning 来源」写成会话模型的地方。它属于「三处修复（v0.4.8）」表，对当时的实现为真；同目录 `round15-fix-note.md:9` 已写明 v0.4.9 改成辅助路由 ⇒ 不构成反向漂移，**不必改**。建议在该行加一句指针（如「v0.4.9 已改为读 `peekAuxModel(ctx, config)?.reasoning`，见 round15-fix-note.md」），以免后续读者据它把行为改回去。
+
+**N-2（记录层，已确认诚实）**`CHANGELOG.md:11` 写「两个调用点都从**会话模型**取 `reasoning`」是在描述被修的旧行为，非当前声明；v0.4.9 主条已如实改口径。无需改。
+
+## suggestion
+
+**S-1（S-2 的复核结论）**第 16 轮把「两处等待提示措辞」登记为非目标，**登记诚实**：两条句子的动作名各不相同（`Memory: consolidating…` / `Autolearn: distilling this project's sessions…`），唯一共享的是子句 `(a reasoning route can take minutes)`（`memory/report.ts:459` 与 `autolearn/pass.ts:71`）。只共享一个括号子句、又分属两层，抽常量的收益确实小于新一层间接；保持现状可接受。若日后收紧，最小抽取点只是那个括号子句。
+
+## learning
+
+- **「封住上限」≠「重试必然失败」。** 判断这类声明要看 `fitMemoryInput` 的裁剪路径：被封的只是请求上限，pass 仍可缩短正文再试并成功（`clipped`）。本仓既有「clipped 是成功带损失」的语义（`report.ts:292/332/582`、`pass.ts:369-375`），所以任何把封顶与失败划等号的句子都要核对这条路径。这也说明「代码里写对、CHANGELOG 里夸张、架构文档再复制」是同一事实多住处的典型路径。
+- **新读者的 grep 面**：把「cap 门 reasoning 来源」当成一条事实时，`docs/`、`CHANGELOG`、`.codestable/issues/*/brief.md`、`round*-fix-note.md`、`tests/*.mjs` 注释都在面内；本轮只剩 `brief.md:23` 这一处历史性真值。
+
+## praise
+
+- **I-1 两处 docs 修正确实到位**：`docs/architecture.md:88` 与 `docs/configuration.md:98` 均改为「**辅助调用路由**声明 `reasoning` 时」，架构文档括号改为「只读路径经 `peekAuxModel` 解析配置的辅助路由，不发 dead-route 告警」；两处措辞逐字一致，且与 `index.ts:99`、`memory/report.ts:493` 的 `peekAuxModel(ctx, config)?.reasoning === true` 及 `llm.ts:65-70` 的语义一致。全仓除历史记录外无旧括号残留。
+- **N-1 逐字节成立**：`cat -A` 确认 `index.ts:95-98`、`report.ts:489-492` 两处注释首行现为 4 个 tab（与下文一致）；`git diff --check` 退出 0，改动文件无尾随空白新增。
+- **N-3 与代码提示点一致**：`configuration.md:162` 的「`/memory update` 与裸 `/autolearn` 都会在等待前先提示」对应 `report.ts:456-460`（`verb==="update"` 分支）与 `autolearn/pass.ts:69-71`（`if (force)`，位于 `resolveAuxModel` 与所有 `call` 之前）；裸 `/autolearn`（空动词）走 `run(ctx,{force:true})`，自动 settle pass 不提示，措辞限定为「强制 pass」未超承诺。
+- **S-1 的断言确实有区分度**（见下变异）。
+
+## residual-risk
+
+- **R-1（本轮新增登记面）**：`docs/architecture.md:129` / `CHANGELOG.md:29` 的「重试只让它…失败」若不改，会把「封顶即必然 fail closed」写成事实；这是用户可见的规格句，会误导后续维护者低估 clipped 成功路径。已给最小修法。
+- **R-2（承接第 15/16 轮，未变）**：只读状态路径新增了对 `ctx.modelRegistry.find`/`hasConfiguredAuth` 的依赖（`peekAuxModel`）；真实 pi 的 `ModelRegistry` 提供 `find`，`tests/harness.mjs` 已补 mock，不构成生产崩溃面，但属新的读路径依赖。
+- **R-3（承接）**：`readRenderWithMtime` 的 mtime+size 盲点、`loadMemory` 收敛后仍存在的写回窗口等既有登记残留，本轮代码未触碰。
+
+VERDICT: CHANGES-REQUESTED
+
+## Test And QA Focus
+
+- `git diff 8674fd2..HEAD --check` → 退出码 0（无空白异常）。`cat -A` 逐字节核 `index.ts:95-98`、`report.ts:489-492` 首行 = 4×`^I`。
+- `node tests/run-all.mjs`（在 `/tmp/pi-laneArev17-1742072` 字节副本）→ `== repo hygiene … ok` ×2，15 个测试文件全绿，`All 15 tests passed.`
+- 变异（我自己的副本 `/tmp/pi-laneA17mut-peek`，把 `peekAuxModel` 体改成 `return resolveAuxModel(ctx, config)`）→ `node tests/aux-model-test.mjs`：**`FAILURES: 1`**，唯一变红的是 `FAIL peek: an unresolvable route falls back silently`（其余三条 peek 断言与所有 `resolveAuxModel` 断言保持绿）——证明 S-1 的四条断言能区分「发告警 / 不发告警」，且作者「恰红 1 条」属实。
+- 针对性探针（封顶重试）：`maxTokens=maxOutputTokens=8192`、模型 `maxTokens=60000`、首次回复 `stopReason:"length" + usage.reasoning=4000`、二次回复较短四节文档 → `calls=2`、`budgets=[8192,8192]`（确认封顶不增长）、通知含 `Memory: updated, but existing content was shortened…`、`errors.log` 含 `consolidation shortened the existing memory or context to fit the model output budget` ⇒ **重试以 `clipped` 成功**，直接证伪 `docs/architecture.md:129` 的「重试只让它更早更清楚地失败」。
+- grep 覆盖面：`辅助调用路由|辅助路由`、`peekAuxModel`、`会话模型|session model`、`reasoning` 于 `docs/`、`README`、`CHANGELOG`、`extensions/`、`tests/`、`.agents/skills/`、`.codestable/`（除 `session-logs/` 归档）逐条读完；cap 门调用点仅 `index.ts:100`、`report.ts:494` 两处，均已走 `peekAuxModel`，无漏改。
