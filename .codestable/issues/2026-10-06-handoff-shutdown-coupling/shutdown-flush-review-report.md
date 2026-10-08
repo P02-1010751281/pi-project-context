@@ -131,7 +131,7 @@
 | N2 `architecture.md` 对借键路径的措辞与代码有细微出入 | nit | **已修**：改为「其 mtime 判定取本调用的自读，并在 append 前校验该 key 仍是文件当前字节」 |
 | N3 三处漏写「render 为空」这一重发条件 | nit | **已修**：architecture.md / CHANGELOG.md / fix note 统一措辞 |
 | N4 `CONTEXT.md` 摘要写「五轮」而 Open tasks 仍写「四轮」 | nit | **已修** |
-| S1/S2 `loadMemory` 的纯读站点仍把旧字节与新 stat 配对 | suggestion / residual | **登记为 R-L1**，不在本 issue 修 |
+| S1/S2 `loadMemory` 的纯读站点仍把旧字节与新 stat 配对 | suggestion / residual | **R-L1，已于 2026-10-08（`b7e2a31`）修复**：`loadMemory` 收敛到 `readRenderWithMtime`，`changed` 时回落到 journal fold；探针 `read race:` 三断言，变异后恰红 1 条 |
 | S3 `readRenderWithMtime` 的 `changed` 是 mtime+size 启发式 | suggestion | **登记**：同尺寸同 mtime 的替换检测不到，属已记残留 |
 
 **新登记残留 R-L1**：`loadMemory`（注入/提示/状态读路径）把 render 的字节与 `stat` 分开取，理论上可读到「旧字节 + 新 mtime」；
@@ -206,9 +206,11 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 ## 收链说明（2026-10-08）
 
 第 7–13 轮连续七轮都是 CHANGES-REQUESTED，**没有一条代码层发现**：每一轮都独立复核了删 append 前复核的 7 红（race×4 + 借键×3）、
-标点门的非空转性、§10 归属脚本 25/25、以及文档与代码的一致性；第 7 轮修夹具、第 8 轮修策展之后，代码层再未改动（`7285eb2` 起只剩
+标点门的非空转性、§10 归属脚本 25/25、以及文档与代码的一致性；第 7 轮修夹具、第 8 轮修策展之后，到收链为止代码层再未改动（`7285eb2` 起只剩
 测试门禁与记录/记忆）。这些轮次的条目全部落在**记录、门禁与模型每次 settle 重渲染的 `CONTEXT.md`** 上，并且其中多条是我自己改记录时引入的
 （第 12 轮的表行孤立、第 13 轮的字符类重复）。
+
+**上面那句只对收链时刻成立**：2026-10-08 收链之后又落了两处代码修复（见下「收链后的修复」），它们各自带变异检查，但没有独立审查轮覆盖。
 
 按本仓已记的停止规则（「每轮加机制就给下一轮加面；未收敛的增长是停下的信号」），本链在**第 13 轮停止**，方式不是 PASSED，而是：
 第 13 轮的条目已全部修复并自验（表格连续性、字符类唯一性自检、状态位三处一致），此后不再追 `CONTEXT.md` 的措辞 ——
@@ -216,6 +218,17 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **未取得最终 PASS 的事实如实留在上面**：第 6 轮在 `c212fcf` 给过 PASS（针对代码），此后没有再给。若将来需要正式收口，
 可对冻结修订再跑一轮；此前的每一轮结论都留在同目录的 transcript 里。
+
+## 收链后的修复（2026-10-08，收链之后落的代码改动）
+
+| 项 | 现场事实 | 修复 | 钉它的探针与变异结果 |
+| --- | --- | --- | --- |
+| R-L1 `loadMemory` 的纯读站点 | 登记于本报告：render 的字节与 `stat` 分开取，理论上读到「旧字节 + 新 mtime」 | `loadMemory` 改用 `readRenderWithMtime`；读跨越替换（`changed`）时不采纳任何一版，journal fold 继续当家 | `read race:` 三断言，含稳定文件的**正向对照**（较新的外部编辑仍被采纳）；把实现还原成两读配对后恰红 1 条、其余 2 条仍绿 |
+| settle 时的不透明回复替换整篇记忆 | **现场**：装好的 v0.4.5 在审查沙箱里（审查员自己的会话）把会话开场白 `I'll review the frozen revision…` 当作整篇文档写入 `MEMORY.md`（119 字节替换 29.9 KB），只留下 backup 与 `memory regression guard skipped: this pass did not produce sections` | 不透明回复**完全没有任何 markdown 标题**、长度已达到「可能是文档」阈值（`OPAQUE_DOCUMENT_MIN_CHARS`，与 report.ts 单一来源）、而存储的是可解析的四节文档 ⇒ 视为无可写内容，走既有的 skip + `carried no entries` 诊断 | 新用例两条（存储记忆逐字节不变 + 留下 `carried no entries` 诊断）；**正向对照**：带标题的不透明 markdown 回复仍被采纳，测试 11 的「带标题但无条目」行为也保留；变异后恰红 2 条 |
+
+两处修复各跑过一次变异矩阵，且都跑过全套件（15 项）与渲染标点门。收链时未取的 PASS 仍未取 ——
+这两处改动恰好说明「冻结修订」只在收链那一刻成立。
+
 
 ## 对审查结论的两处更正
 
