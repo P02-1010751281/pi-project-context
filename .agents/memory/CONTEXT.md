@@ -15,7 +15,7 @@ Closed the shutdown-coupling review chain: five CHANGES-REQUESTED rounds chased 
 - Doc-only follow-ups after the PASS: architecture.md's borrowed-key wording (N2), the third republish condition (empty render) in three places (N3), the CONTEXT.md round count (N4), and the fix note's trigger sentence.
 - Residuals registered, none on the write path: R-L1 (loadMemory's pure-read sites pair bytes with a separate stat, contained by the write path's nowKey recheck), the FIFO test's failure-path hang, the mtime+size heuristic in readRenderWithMtime, and the settle-path issue (settle can publish a whole conversational reply as memory, another issue).
 - Head approved the disposition earlier this session ('可以继续' = proceed) and the recommendation now is to stop here; the two remaining nits (N1 test robustness, S3 comment) would change the reviewed revision and were left as recorded follow-ups.
-- The 2026-10-07 curation restored the durable rules the model render had dropped, merged the duplicates and brought MEMORY.md to 31654 characters against the 32,000 cap (headroom about 346), so the ~2,000 hand-curation trigger is still met and the next curation must propose retirements rather than only formatting; the curated text went into the local journal in the extension's own op shape.
+- The 2026-10-07 curation restored the durable rules the model render had dropped, merged duplicates and brought MEMORY.md to 31728 characters against the 32,000 cap (headroom 272), so the ~2,000 hand-curation trigger is still met and the next curation must propose retirements rather than only formatting; the curated text went into the local journal in the extension's own op shape.
 
 ## Open tasks
 
