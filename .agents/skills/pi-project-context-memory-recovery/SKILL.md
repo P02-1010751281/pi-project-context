@@ -10,6 +10,7 @@ description: "Diagnose and repair .agents/memory: stale old-code writer, truncat
 `MEMORY.md` looks like a raw model reply (JSON envelope, `memory_markdown` key, fences), ends mid-word/mid-sentence (e.g. `…buildTreePre~`) or silently drops trailing bullets, pi warns like `consolidation reply was not a usable JSON object`, `/memory` reports poison/damage, or a sibling project that installs this extension has suspect memory. Use for repair/verification, not for normal consolidation tuning.
 
 A silent trim of the middle of the document (typically inside Invariants/Pitfalls), or a cap warning / `memory-overflow-*.md` file, is the same family: name the clipping path in section 1b before proposing a fix or a release.
+The same skill covers the reverse direction: a curated render that asserts what a mechanism did in the field (rotation, pruning, a log key) must be checked against that mechanism's artifacts before the entry is kept or committed (section 5).
 
 ## 0. Rule out a live old-code writer first
 
@@ -19,6 +20,7 @@ Editing `extensions/project-context/*` changes nothing for already-running sessi
 2. Timestamp artifacts against the fix/install time: `ls -la --time-style=full-iso .agents/memory/MEMORY.md* .agents/memory/CONTEXT.md`. A write newer than the fix means an old process did it.
 3. Compare installed vs working tree: `git log --oneline -3` in the project, plus the installed pin/tag in `~/.pi` / `pi-config`.
 4. Record the PIDs, restart those sessions, install and re-pin the new version, then confirm a fresh process writes with the new marker/cap before re-testing the fix.
+5. Expect mixed-version noise: the already-running host keeps executing pre-fix modules after the install, so `errors.log` keeps receiving lines from it until a restart. Date each line against the install/restart time and classify it there before calling a fix failed or new.
 
 Never conclude "the fix failed" while an old-code writer is alive: the artifact timestamp is the discriminator, and `node tests/run-all.mjs` proves working-tree behavior only. Keep the damaged render as evidence before repairing.
 
@@ -112,6 +114,7 @@ Then call `loadMemory` from the harness against `/tmp/pc-mem` and check `poisone
 6. Do not fix by hand-editing multiple stores at once: repair the render, then let the next normal write journal and back up.
 7. Before overwriting `MEMORY.md`, confirm `backupMemoryBeforeWrite()` will run: it reads current bytes, names backups `MEMORY.md.memory-backup-<stamp>-<rand>`, fails closed when the target exists but can't be read, keeps 5 by mtime but never prunes backups younger than 1 hour, and hard-caps at 20 total.
 8. Never delete backups or a newer memory render of a sibling project without explicit owner confirmation.
+9. A repair pass that re-adds facts the model render dropped must be mechanical, not an eyeball pass: classify the removed lines against the previous render, restore every durable rule that lost its only home, and let the render's removed-line and punctuation checks (the truncation/punctuation gate) pass before committing.
 
 All `MEMORY.md` writes run under the cross-process lock `MEMORY.md.lock`. Do not bypass it; `stealStaleLock` renames non-regular lock entries aside (`.broken-<8hex>`) and self-heals, and `cleanStaleTemps` only reclaims over-age empty broken directories. For changing lock/claim/backup code itself, use `pi-project-context-write-lock-hardening`.
 
@@ -124,7 +127,7 @@ cd "$(git rev-parse --show-toplevel)"
 node tests/run-all.mjs        # expect the whole suite green
 ```
 
-Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it when a repair touches lock or rotation code. Confirm `git status` is clean except intended edits, and that memory `.tmp`/`.broken-*` artifacts were not committed.
+Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it when a repair touches lock or rotation code. A repair of a read/append race is proved with a probe that carries a positive control (a stable file still gets a newer external edit adopted) and a mutation check (reverting the guard reddens only the checks that pin it). Confirm `git status` is clean except intended edits, and that memory `.tmp`/`.broken-*` artifacts were not committed. A fixture killed by its SIGKILL watchdog can leave its temp project root behind: the leftover is cosmetic (tens of KB), so clean it under `/tmp` rather than treating it as a leak in the memory dir.
 
 ## 5. Code-side rules to respect while fixing
 
@@ -135,4 +138,6 @@ Cross-process lock behavior is probed by `tests/helpers/lock-holder.mjs`; use it
 - Nothing prunes the `memory-log-*.jsonl` archives by count - only a duplicate archive from a crash after the copy is removed -
   so they accumulate with use, each about the size of the journal that crossed the threshold. They are also the second net under
   the rotation window (a deleted `memory.jsonl` rebuilds from them), so trimming them is a retention decision, never routine hygiene.
+- Rotation archives sit at or above the 512KB threshold, not about it: the journal keeps growing between checks, so an archive noticeably larger than the threshold is normal and is not evidence of a second bug.
+- Prove a mechanism fired before keeping a claim that it never did. List that mechanism's own artifacts, e.g. `ls -lt --time-style=full-iso .agents/memory/memory-log-*.jsonl` plus `wc -c` on each: several archives at or above the threshold with mtimes spread over weeks is the evidence rotation ran in the field. Likewise check a log-key claim by grepping its call site (`grep -rn "shutdown:flush" extensions/project-context/`) and a rename-count claim against the constant plus the CHANGELOG list, where a key retired after the rename explains a smaller count. A curated entry asserting a field outcome is suspect until its artifacts are listed, and a false one is corrected in the render (own `docs(memory):` commit), not kept.
 - For changing the cap or budget wording itself, use `pi-project-context-memory-cap-budget-change`.
