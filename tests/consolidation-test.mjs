@@ -1972,9 +1972,9 @@ try {
 			// a Promise.race cannot cancel it, and process.exit() does not end a process whose threadpool is
 			// stuck in that open (measured) - so the timer uses the one signal that cannot be deferred.
 			const watchdog = setTimeout(() => {
-				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 10s");
+				console.error("FAIL race: the FIFO fixture never got a reader, or the flush never returned, within 30s");
 				process.kill(process.pid, "SIGKILL");
-			}, 10_000);
+			}, 30_000);
 			const fifoWriter = await open(raceFile, "w");
 			await fifoWriter.writeFile("# Project Memory\n\n## Project\n- Older bytes handed to the reader.\n");
 			await rm(raceFile);
@@ -1983,6 +1983,10 @@ try {
 			const raced = await flushing;
 			clearTimeout(watchdog);
 			check("race: the exit keeps the render and reports no write", raced?.written === false && raced?.adopted === true);
+			// Self-check that the fixture really staged the replacement under the read: without it a fixture that
+			// stops racing (a non-blocking open, a reader that starts late) would silently keep every assertion green.
+			const raceErrors = await readFile(path.join(raceMem, "errors.log"), "utf8").catch(() => "");
+			check("race: the fixture really replaced the file under the read", raceErrors.includes("a newer external edit arrived before the memory journal could record one"));
 			const raceJournal = await readFile(path.join(raceMem, "memory.jsonl"), "utf8");
 			check("race: the journal holds the replacement, not the older bytes", raceJournal.includes("Replacement that must survive.") && !raceJournal.includes("Older bytes handed to the reader."));
 			check("race: the replacement is still the file's content", (await readFile(raceFile, "utf8")).includes("Replacement that must survive."));
