@@ -1,0 +1,67 @@
+## Lane A 独立审查 — 冻结修订 `99c9e74`（第 26 轮）
+
+审查对象：`git diff a5d17d2..HEAD`（5 文件）。工作区 `/tmp/pi-context-rev26` 只读；全部变异在 `/tmp/pi-rev26-sandbox.UfwVEq` 的副本上跑，工作区 `git status` 与基线逐字一致、零写入。
+
+### blocking
+无。
+
+### important
+无。
+
+### nit
+
+1. **记录标签不精确**：`shutdown-flush-review-report.md:306` 与 `CHANGELOG.md:25` 把红 **17** 的变异写成「终止符只认 `=`」。我独立复现 17 条的补丁是 `endsSectionScope` **只保留 setext**（`/^ {0,3}(?:=+|-+)[ \t]*$/`，即同时保留 `=` 与 `-`，去掉 `#` 与 `<`）；若真「只认 `=`」（`/^ {0,3}=+[ \t]*$/`，其余全去）我实测是 **21** 条，不是 17。最小修法：把该标签改成「终止符只认 setext（`=`/`-`）」，数字 17 不动。
+
+2. **CHANGELOG 把「不承重」说过头**：`CHANGELOG.md:22-23`「（CRLF / 缩进 setext / HTML 块起始 / 围栏样例 / `{0,3}` 边界 —— 这些在端到端路径上不承重，链路上游已归一化）」。其中**缩进 setext** 与 **HTML 块起始**在端到端路径上恰恰承重（回退 B-1/B-2 的变异分别红 5 / 7 条）。只有 CRLF 归一化与围栏跳过（保持 `underKnownHeading`）是我的变异中各 1 条红、且只由 unit 契约钉住。最小修法：与报告第 25 轮节同措辞，改为「CRLF 归一化与围栏跳过在端到端路径上不承重」。
+
+3. **围栏缩进边界：行为与注释不符，且无任何用例钉住**。`extensions/project-context/memory/sections.ts:425-430` 注释写「A fence may be indented by up to three spaces (four make it an indented code block)」，但同一行的 `stripListMarkers`（`:412-418`）是**循环**剥 `^ {1,3}`，会把 4 格乃至 5 格缩进全部剥掉。实测 `hasMemoryDocumentShape("## Project\n\n    ```\n- x\n") === false`（4 格 ` ``` ` 被当成围栏，吞掉 `- x`）；反向对照 `"## Project\n    ```\n## Project\n- x\n"` 也因围栏未闭合被拒。变异「把 `stripListMarkers` 的 `{1,3}` 放宽到 `{1,4}`」与「去掉 `inFence` 判定里的 `replace(/^ {1,3}/,"")`」各红 **0** 条 —— 说明这条边界既没进 unit 契约也没被端到端夹具覆盖。方向安全（多隐内容 ⇒ 多拒），最小修法二选一：把前导空格剥离总量封顶 3 格，或把注释改为「本助手对围栏缩进有意放宽，fail-closed」。
+
+### suggestion
+- 在 `tests/sections-test.mjs:234` 的 `hasMemoryDocumentShape contract` 表里补两行，把上面这条边界钉住：`["a closing fence indented three spaces still closes", "## Project\n   ```\ncode\n   ```\n- x\n", true]` 与 `["a four-space fence opener is not a fence", "## Project\n\n    ```\n- x\n", true]`（若确认现行为有意放宽，则把期望值改为 `false` 并在注释里说明）。这正是本轮「把不承重规则移到 unit 契约」方法该覆盖的同类剩余项。
+
+### learning
+- 本轮把不承重规则移到 `tests/sections-test.mjs` 的 11 条 `hasMemoryDocumentShape` 纯函数契约是有效的：`M「不归一化换行」` 与 `M「围栏开启忘掉标题」` 各有 **1** 条红，且这 1 条都来自 unit 契约（无任何端到端断言变红），与我独立复现一致。
+- 复现变异必须精确到作者的原补丁语义。初看「有标题即算 / 小节名不校验 / 终止符只认 `=` / 存储侧丢掉长度下限」四个标签的数字对不上，逐一试补丁后才对齐：`有标题即算`＝去掉条目要求（`if (underKnownHeading) return true;`，23）；`小节名不校验`＝任意 `##` 标题都算已知（3）；`终止符只认 =`＝只留 setext（17）；`存储侧丢掉长度下限`＝删掉 `storedIsDocument` 的 `|| … >= OPAQUE_DOCUMENT_MIN_CHARS` 整个析取项（1）。数字全中，但报告标签只有「终止符只认 `=`」一条确实名不副实（见 nit 1）。
+
+### praise
+- 两条修复的最小复现全部被拒：缩进 1/2/3 格的 `=====` 与单个 `-`；`<?php`、`<!DOCTYPE`、`<![CDATA[`、`<h2\n>`、`<!-- -->`、`<div>` 全部 `false`。
+- 反向对照全部被接受：4 格缩进 `=====`（缩进代码块）、`## Project` + 围栏样例 + `- x`、CRLF 规范文档（有无 `# Project Memory` 标题皆 `true`）、1/3 格缩进的闭合围栏 + `- x`。
+- 新增的 B-1/B-2 用例真正承重：回退 B-1（setext 去掉 `{0,3}`）红 **5** 条、回退 B-2（HTML 只认同行闭合）红 **7** 条，且各自的正向对照（4 格 setext、围栏样例）保持绿 —— 不是「加了用例但不咬」。
+- 删 `\r$` 死代码无行为变化：`hasMemoryDocumentShape` 入口已 `value.replace(LINE_SEPARATOR_RE, "\n")`，`\r` 不可能留在 `line` 里，删除正确。
+
+### residual-risk
+- **终止符类未再发现 fail-open**：我把 CommonMark 全部「造标题」构造逐一压进 `hasMemoryDocumentShape` 两向扫描 —— ATX（1–3 格缩进、任意级别、`##Notes` 无空格、`## Project ##` 闭合序列、缩进代码）、setext（1/2/3 格、单个 `-`、尾随 tab、无上方段落）、以及 7 类 HTML 块起始（`<?` / `<!` / `<![CDATA[` / `<!--` / `<div>` / 块标签名后换行 / 行内尾随文本）——没有任何一条会让条目误挂到已结束小节之下。这一方向收口。
+- `endsSectionScope` 的 `^\s*#` 与 `^\s*<` 比 CommonMark 宽（把缩进代码里以 `#`/`<` 开头的行也当终止符），方向 fail-closed；顶格要求使缩进的 `## <section>` 与 `## Project ##` 被拒。这些落在已登记的第 22 轮路线 B 接受面代价内，不新增登记。
+- 上面 nit 3 的 4 格围栏过度识别是安全方向的误拒，但**未**在第 22 轮登记，也未进 unit 契约；建议并入本轮的 unit 覆盖（suggestion），不构成 blocking。
+
+### 记录核对（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行）
+报告第 25 轮节（`shutdown-flush-review-report.md:305-307`）与 `CHANGELOG.md:25-28` 的每个数字都与我的独立复现逐一吻合：
+
+| 变异 | 我的 `^FAIL` 数 | 记录数字 |
+| --- | ---: | ---: |
+| 仅 ATX 终止作用域 | 25 | 25 |
+| 有标题即算（去掉条目要求） | 23 | 23 |
+| 终止符只认 setext | 17 | 17 |
+| 围栏从不识别 | 15 | 15 |
+| HTML 只认同行闭合标签 | 7 | 7 |
+| 条目放宽到 `* `/编号/缩进 | 6 | 6 |
+| 缩进 setext 不终止 | 5 | 5 |
+| 小节名不校验（任意 `##` 算已知） | 3 | 3 |
+| 标题缩进 / 围栏内剥标记 / 嵌套只剥一层 | 2 / 2 / 2 | 2 / 2 / 2 |
+| 不归一化换行 / 围栏开启忘掉标题 / 存储侧丢掉长度下限 | 1 / 1 / 1 | 1 / 1 / 1 |
+
+即 `25/23/17/15/7/6/5/3/2/2/2/1/1/1` 全部可复现；两条过程改进变异各 1 红属实。唯一记录瑕疵是「终止符只认 `=`」这个**标签**（数字无误），见 nit 1。
+
+**结论**：第 25 轮 2 条 blocking 确认已关，第 24 轮 F 类终止符问题在 fail-open 方向未再发现；未发现新 blocking/important。剩余为记录精度与一条未钉住的围栏缩进边界，均为「可以更严」类。
+
+VERDICT: PASSED
+
+## Test And QA Focus
+沙箱：`/tmp/pi-rev26-sandbox.UfwVEq`（`cp -a` 自工作区）。每条变异先写源码、跑 `node tests/run-all.mjs`、统计 `/^FAIL /` 行、再从 `/tmp/laneA-sections.orig.ts` / `/tmp/laneA-pass.orig.ts` 还原（`finally`）。
+
+- 基线：`node tests/run-all.mjs` → `All 15 tests passed`；`sections-test.mjs` 新增的 `hasMemoryDocumentShape` 段 11/11 `OK`。
+- 形状两向探针：`node /tmp/laneA-probe3.mjs`（CRLF 有无标题 / 1、3 格闭合围栏 / 4 格围栏）与 23 条 `endsSectionScope` 探针脚本 → 反向对照全绿，indented setext 1/2/3、`<?`/`<!`/`<![CDATA[`/块标签后换行全 `false`。
+- 变异矩阵（14 条记录值 + 2 条覆盖缺口），命令 `node /tmp/laneA-mutate{,2,3,4,5}.mjs <id>`：
+  - `only-atx`=25、`no-entry-req`=23、`terminator-setext-only`=17、`no-fence`=15、`html-same-line`=7、`entries-relaxed`=6、`indented-setext`=5、`any-heading`=3、`heading-indent`=2、`strip-in-fence`=2、`nested-one-level`=2、`no-normalize`=1、`fence-forget-heading`=1、`stored-floor-remove`=1 —— 与记录全一致。
+  - 覆盖缺口：`closer-indent-off`=0、`opener-indent-4`=0（均无任何断言变红）。
+- 还原核对：`diff -q` 确认沙箱两源文件等于原件，复跑 `node tests/run-all.mjs` → `All 15 tests passed`。工作区 `git status --short` 仍只有 `.agents/memory/` 的启动写入，无审查写入。

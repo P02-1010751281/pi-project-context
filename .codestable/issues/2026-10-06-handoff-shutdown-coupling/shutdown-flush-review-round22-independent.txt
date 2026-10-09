@@ -1,0 +1,116 @@
+## Lane A 独立审查（冻结 `04cc9ef`，路线 B，第 22 轮）
+
+我在只读副本 `/tmp/laneA/base.*` 里跑套件，用独立探针 `/tmp/laneA/probe-e2e.mjs`、`probe2.mjs`、`probe-fresh.mjs` 复现行为，变异在 `/tmp/laneA/m1..m6` 的副本里做。工作区零写入（`git status` 与开跑前一致，仅本机会话既有的 `.agents/memory/{HANDOFF.md,project-context.json}` 两个改动）。
+
+路线 B 的方向是对的：判据确实是「顶格 `## <已知小节名>` + 其下顶格 `- ` 条目」，`## Project\n- x`、CRLF、首行规范标题、`##` 多空格、大小写、真条目+围栏样例、缩进 4 格围栏（=缩进代码块，随后顶格标题/条目是真的）都按预期接受；`### Project`、`##Project`、`## Notes`、`## Project:`、setext/HTML/编号/`* `/缩进条目都在首例被拒。**但围栏这一条仍有 fail-open。**
+
+---
+
+### blocking
+
+**B-1 围栏内的列表标记被当成闭合行 ⇒ 围栏伪文档仍能换掉整篇记忆** — `extensions/project-context/memory/sections.ts:406`
+
+预处理 `line.replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, "")` 是**无条件**执行的，`inFence` 状态也走同一条。于是开启器之后，围栏内的 `- ``` ` / `1. ``` `/`* ``` ` 被剥成 ` ``` ` 并通过 `fenceCloses`，被当成真正的闭合行提前结束代码块；CommonMark 里带列表标记的行在块内只是内容（round 21 B-2 剥标记的本意只是「开启器可在列表项里」）。
+
+端到端复现（四节存储 + 散文回复）：
+
+```
+Here are my review notes for the frozen revision.
+
+```
+- ```
+## Project
+- the hidden fake entry that should be inside a code block
+```
+```
+
+`hasMemoryDocumentShape` 返回 `true`；写入路径把回复**逐字节覆盖**记忆，且**没有** `not a writable memory document` 诊断（`probe-e2e.mjs`：`memory byte-identical: false / refusal diagnostic: false`，`1. ``` `/`* ``` ` 同样）。这与 `docs/architecture.md:137` 的「围栏内的内容不算」和第 18 轮 I-2 的修复直接相反，是同类记忆丢失 fail-open。
+
+最小修法（我只在 `!inFence` 时剥标记，已在副本验证：上述三种形状全部转为拒绝，正向控制与整套件仍绿）：
+
+```ts
+const fence = readFenceLine(
+  inFence
+    ? line.replace(/^ {1,3}/, "")
+    : line.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, ""),
+);
+```
+
+（`- ```\n  ```\n## Project\n- x` 这种内层真有闭合围栏、随后顶格真标题+真条目的输入，修完仍接受——按 CommonMark 那确实是一篇真文档，不算 fail-open。）
+
+---
+
+### important
+
+**I-1 已知小节名与条目之间夹一个非 `##` 的 ATX 标题不重置作用域** — `extensions/project-context/memory/sections.ts:416-421`
+
+`HEADING_RE = /^##\s+(.+)$/` 只认 `##`，所以 `# Notes` / `# Project Memory` 既不匹配标题分支、也不匹配条目，`underKnownHeading` 保持 `true`：
+
+- `## Project\n# Notes\n- x` → **ACCEPT**（条目其实在 H1 之下，markdown 已结束 Project 节）
+- `## Project\n# Project Memory\n- x` → **ACCEPT**
+
+这是对「条目在已知 `##` 之下」契约的又一次 fail-open（比 B-1 弱：仍需一个真 `##` 已知标题，现场那条无标题散文仍被拒）。最小修法：标题分支后补 `if (/^\s*#/.test(line)) { underKnownHeading = false; continue; }`（已实测能拒掉该形状且不误伤正向）。
+
+**I-2 记录里没有第 22 轮节，而代码/文档都指向它** — `.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md`
+
+轮次表止于第 21 行（`:27`），逐轮处置节只有到「第 21 轮处置」（`:287`）。报告里唯一的路线 B 文字是第 21 轮节末尾把 A/B 作为**交给 owner 决定**的开放选项（`:300-302`、`:316`），并没有记录「owner 选了 B 并已实现」；而：
+- `docs/architecture.md:144` 写「取舍与代价记在 `.codestable/...` 的报告里」；
+- `CHANGELOG.md:21` 写「取舍见 `.codestable` 报告」；
+- `sections.ts:399` 注释写「see the review report's route decision」。
+
+指向的决策节不存在。并且报告 `:364`（R-A 残留行）仍把「ATX / setext / HTML；bullet 或编号」说成现行接受面，`:301`/`:316` 的「第 18 轮 I-3 要求『必须发布』」也没有被第 22 轮改写——按当前记录读，会以为现行判据仍接受 setext/HTML/编号。最小修法：在轮次表加第 22 行并新增「第 22 轮处置」节，明确写出路线 B 已定形、被拒形状是有意为之、以及 13/7/10/3/7/3 的来源。
+
+**I-3 CHANGELOG 的变异红数与独立复现不一致** — `CHANGELOG.md:22-23`
+
+我按同一判据各自重做（副本里，`node tests/consolidation-test.mjs`，数 `FAIL` 断言行，不含 `FAILURES:` 汇总行）：
+
+| 变异 | CHANGELOG | 我实测 | 红的断言（示例） |
+| --- | --- | --- | --- |
+| 退回旧形态（round-21 扫描器，M6） | 13 | **14** | numbered/setext/html/html-trailing-space/star/indented/unknown-section 各 ×2 |
+| 去掉条目要求（M1） | 7 | **6** | numbered、star-entry、indented-entry 各 ×2 |
+| 不跳围栏（只去掉 `inFence` 的 `continue`，M2a） | 10 | **9** | fence-longer-opener / fence-info-string / fence-tilde-opener / indented-fence 各 ×2，`a fenced pseudo-document is not a document` ×1（若连开启器分支一起去掉则为 11） |
+| 标题允许缩进（M3，`line.trim()`） | 3 | **2** | `indented-heading-flush-entry` ×2 |
+| 条目放宽到 `* `/编号/缩进（M4） | 7 | **6** | numbered、star-entry、indented-entry 各 ×2 |
+| 不校验小节名（M5） | 3 | **2** | `unknown-section` ×2 |
+
+除「退回旧形态」外，其余五个都恰好等于我的断言数 **+1**——正是把 `FAILURES: N` 汇总行也数进去的结果，而报告自己在 `:213` 已经记过这个数法错误（M11「此前写的 8 是数错了一行」）。「13」则两个方向都对不上（我 14，添汇总行 15）。最小修法：按纯断言数重报，并注明「退回旧形态」的口径（M2 是去 `inFence` 跳读，不是连开启器分支一起去）。
+
+---
+
+### nit / suggestion
+
+- **`sections.ts:411-414` 围栏开启会把 `underKnownHeading` 置 false 且不恢复**：`## Project\n```\ncode\n```\n- a real flush entry` → **refuse**（同一标题下的真条目被误拒）。方向安全（本扩展从不写围栏样例），但这是一条真实的 false-negative；建议登记为 residual，或在围栏闭合时保留进入前的标题作用域。
+- **`tests/sections-test.mjs` 对 `hasMemoryDocumentShape` 无直接单测**：判据只由 `consolidation-test.mjs` 的端到端矩阵覆盖。B-1 这类「围栏内闭合」分支目前**没有**用例（现有 `fence-in-list-item` 是「标题后开围栏」，不是「围栏里带列表标记的围栏行」）。建议在拒绝矩阵补一条 `fence-marker-inside-fence`。
+- **route-B 的说明与实现不一致（记录层）**：报告 `:301` 把路线 B 描述为「围栏/引用/缩进不再需要单独规则」，但实现仍手写围栏状态机（正因如此才有 B-1）。措辞应收为「复用 `readFenceLine`/`fenceCloses`，仍保留围栏跟踪」。
+
+### praise
+
+- 正向控制选得准：`structured-opaque-document` 用「真条目 + 其后围栏样例」钉住「围栏跳读不能把真文档也拒了」（`tests/consolidation-test.mjs:1869-1875`），这正是判据最容易误伤的方向。
+- 把 `headingByLower` 提到模块级 `SECTION_KEY_BY_HEADING`（`sections.ts:37`）让 `hasMemoryDocumentShape` 与 `sectionsFromMarkdown` 真正共用同一份小节表，消除了一处会漂移的重复。
+- 被拒形状的三条保证（字节不变、有诊断、fresh 首写不放行）确实成立：我用 numbered/setext/html/unknown-section/star 在**无** `MEMORY.md` 的新项目各跑一遍，全部写下首条记忆（`probe-fresh.mjs`）；在有文档时全部拒写并留诊断。
+
+### residual-risk
+
+- **B-1 未修前**：一段带围栏、围栏内是「列表标记 + 反引号」行的散文回复仍可覆盖记忆；这不是理论边界，`probe-e2e.mjs` 已实测逐字节覆盖。
+- **I-1**：`## <已知>\n# <任意 ATX>\n- …` 仍被当成文档；需要再修一道 scope-reset。
+- 上述 false-negative（围栏后真条目被拒）是方向安全的取舍，但在「模型重发带代码样例的真实文档」时会丢一次写入；登记即可。
+
+---
+
+## Test And QA Focus
+
+命令（全部在 `/tmp/laneA` 的副本里跑，工作区只读）：
+
+```
+node tests/run-all.mjs                         # 基线：All 15 tests passed（exit 0）
+node /tmp/laneA/probe-e2e.mjs                  # B-1：list-marker/numbered/star 三种围栏闭合 → 记忆被覆盖，无诊断
+node /tmp/laneA/probe2.mjs                     # 逐条形状正反例（h1-between → ACCEPT，其余符合预期）
+node /tmp/laneA/probe-fresh.mjs                # 被拒形状在 fresh 项目仍写下首条记忆（5/5 true）
+# 变异（各自副本，跑 consolidation-test.mjs 后数 FAIL 断言）
+M1 去条目要求=6  M2 去全部围栏跳读=11  M2a 只去 inFence 跳读=9
+M3 标题 trim=2   M4 条目放宽=6        M5 不校验小节名=2   M6 退回旧扫描器=14
+```
+
+结果：基线套件 15/15 绿；`hasMemoryDocumentShape` 的**围栏闭合分支无受钉用例**（B-1 未被任何测试捕获）；被拒形状的 (a)(b)(c) 三条保证成立；最小修法（仅在 `!inFence` 时剥列表标记）在副本里使 B-1 三种形状全部转为拒绝且套件仍绿。
+
+VERDICT: CHANGES-REQUESTED

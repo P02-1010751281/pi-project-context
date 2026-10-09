@@ -1,0 +1,28 @@
+# Lane A 独立审查 — 冻结修订 `a5d17d2`（第 24 轮修复集，候选 `v0.4.9`，第 25 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev25`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+被审 diff：`git diff c77f937..HEAD`。第 24 轮给 2 blocking + 1 important + 1 nit，全在上一轮新增的**终止符谓词**上：
+CRLF 未归一化击穿 `$` 锚定、单个 `-` 行也是 setext 下划线、HTML 终止符只认「恰好一行 `<hN>…</hN>`」。
+本轮修法（按第 24 轮的 S-1 建议做结构性收口）：新增 `endsSectionScope(line)` —— 另一标题 / setext 下划线（`=+` 或 `-+`）/ 任何标签开启行，
+并在调用前把 `LINE_SEPARATOR_RE` 归一化成 `\n`；四条反向夹具（CRLF setext、单 `-` setext、HTML 块、HTML 标题带尾随文本）。
+
+## 你要验的
+
+1. **三条修复各自的最小复现**是否真被拒；反向对照（规范 `## Project\n- x`、含围栏样例的完整文档、CRLF 规范文档）是否仍**被接受**；
+   变异各红在目标断言上（自己重做至少三条）。
+2. **终止符这一类是否已收口**：自己再搜一遍「能让条目误挂到已结束小节之下」的形状（setext 变体、HTML 变体、引用、列表、缩进、Unicode 行分隔符）。
+   若找到，给最小复现；若这一轮找不到，请明确说「这一类未再发现」。
+3. **记录**：报告第 24 轮节的数字（15/12/12/6/4/2…/1）与 CHANGELOG 是否与你的独立复现一致（口径 `^FAIL `）；
+   `docs/architecture.md`、报告残留清理表、代码注释是否还有指向旧接受面或已删模块的表述。
+4. **收尾判定**：这是第 25 轮。若剩余意见只是「可以更严 / 可以更早拒绝」，请写成 `residual-risk` 或 `suggestion`，
+   **不要**写成 blocking —— 接受面的代价已在第 22 轮节具名登记（路线 B：只认本扩展自己的形状，其余形状拒绝并保留记忆）。
+   找不到新的 fail-open 就给 `VERDICT: PASSED`。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line` 与最小修法；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。

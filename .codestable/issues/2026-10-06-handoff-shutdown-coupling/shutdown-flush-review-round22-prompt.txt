@@ -1,0 +1,31 @@
+# Lane A 独立审查 — 冻结修订 `04cc9ef`（路线 B 定形，候选 `v0.4.9`，第 22 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev22`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 这一轮的性质
+
+第 18→21 轮连续四轮都在同一个**手写 markdown 子集**里找到新的 fail-open（围栏半规则、裸分隔线、空行与缩进、桥与列表内围栏）。
+据此 owner 与执行方选择**路线 B**：把不透明回复的接受面从「markdown 子集」收缩为**本扩展自己的文档形状**，删掉整个扫描器。
+
+被审 diff：`git diff f73c16b..HEAD`。核心是 `sections.ts` 新增的 `hasMemoryDocumentShape`（顶格 `## <已知小节名>` + 其下顶格 `- ` 条目，围栏内不算）
+与 `pass.ts` 删除扫描器后的接线；`numbered` / `setext` / `html` 等形状从「必须发布」改判为「必须拒绝」（测试与 docs/CHANGELOG 同步改口径）。
+
+## 你要验的
+
+1. **判据是否恰好等于 schema 形状**：自己构造正反例。至少覆盖：`## Project\n- x`（必须**接受**）、CRLF、首行规范标题、`##` 后多空格、
+   小节名大小写、`### Project`（多半应拒，注意 `###` 是三级标题而不是 `##` 加空格）、`##Project`、`- x` 出现在任何标题之前、
+   未知小节名后再出现已知小节名、围栏带信息串 / 更长开启器 / 列表标记后开围栏 / 缩进 0–3 格 / 缩进 4 格、围栏内 `## Project\n- x`、
+   以及「真条目 + 围栏样例」同篇。**哪一条与你的预期不符都要报**。
+2. **被拒形状是否安全**：拒绝时必须 (a) 存储字节不变、(b) 有一条诊断、(c) **首次写入不被挡住** —— 即存储侧不是文档（fresh 项目 / 短手写记忆）
+   时，setext / HTML / 编号形状的回复仍应被写入。这条我已经在测试里钉了「存储侧不是文档仍写下第一条记忆」，但请**自己**用被拒形状再跑一遍。
+   若 (c) 不成立，那是 blocking。
+3. **变异**：自己重做至少三条（去掉条目要求、不跳围栏、标题允许缩进、小节名不校验），给出红数与红的断言名，确认每条规则都有受钉用例。
+4. **记录一致性**：`docs/architecture.md`、`CHANGELOG.md`、报告第 22 轮节里的方向描述、数字（13 / 7 / 10 / 3 / 7 / 3）与代码是否一致；
+   报告里是否还有「必须发布」这类与路线 B 相反的残留表述。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line` 与最小修法；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。
+若你认为该判据已经稳定，请直接给 `VERDICT: PASSED`，不要再凑风格条目。

@@ -1,0 +1,83 @@
+# Lane A 独立审查 — 冻结修订 `c77f937`（第 24 轮）
+
+工作目录只读；所有变异在 `/tmp/reviewer/repo`（`cp -r` 副本）上跑。`git status` 与初始一致（仅 `.agents/memory/` 下扩展自身的启动写入，时间戳早于本会话）。
+
+## 结论摘要
+
+三条声称的修复我都能最小复现为「被拒」，反向对照仍被发布，变异各红在目标断言上，记录数字与 CHANGELOG 一致，`readFenceLine` 共享后 `isHeadingOnlyDocument` 行为等价（20 万输入 0 差异）。**但新增的终止符仍在两个口子上 fail-open**，且都是本轮 diff 引入/未闭合的，端到端复现到「回复替换了整篇记忆」。
+
+---
+
+## blocking
+
+**B-1. `hasMemoryDocumentShape` 不归一化换行符，CRLF 击穿本轮新增的全部 `$` 锚定终止符。**
+`extensions/project-context/memory/sections.ts:410`（循环）/ `:434`（终止符）。本轮把 setext/HTML 终止符写成 `[ \t]*$` / `[ \t]*$` 锚定，但本函数直接 `value.split("\n")`，行尾残留 `\r`；同模块的 `isHeadingOnlyDocument` 恰恰**先**跑 `LINE_SEPARATOR_RE` 归一化，它的 docstring 明说「`$` 锚定的匹配器遇到 `\r` 会被击穿」。于是：
+
+```
+# Project Memory\r\n\r\n## Project\r\nNotes\r\n=====\r\n- an entry\r\n   → REPLACED（端到端实测）
+# Project Memory\r\n\r\n## Project\r\n<h2>Notes</h2>\r\n- an entry\r\n       → REPLACED
+```
+
+`=====\r` / `<h2>…</h2>\r` 不匹配终止符 → `underKnownHeading` 仍为 true → `- entry\r` 命中 `startsWith("- ")`。`isHeadingOnlyDocument` 归一化后认为有正文，两道门都不拦。
+最小修法（一行）：`sections.ts:410` 改为
+```ts
+for (const line of value.replace(LINE_SEPARATOR_RE, "\n").split("\n")) {
+```
+（`LINE_SEPARATOR_RE` 已在本模块定义；规范文档 `## Project\r\n- entry\r\n` 行为不变，我实测仍为 true。）
+
+**B-2. setext 下划线只认 `-{2,}`，单 `-` 是 CommonMark 的 setext 下划线（与 `=+` 不对称）。**
+`extensions/project-context/memory/sections.ts:434`。`## Project\nNotes\n-\n- an entry` 被接受并**替换存储**（端到端实测）；`marked` 把 `Notes\n-` 解析为 `<h2>Notes</h2>`（与 `Notes\n--` / `Notes\n=` 同义）。这正是第 23 轮 B-1「关一种隔断不等于关一类规则」的孪生：`=` 侧用 `=+`，`-` 侧却用 `-{2,}`。
+最小修法：`/^(?:=+|-{2,})[ \t]*$/` → `/^(?:=+|-+)[ \t]*$/`。这是 fail-closed（裸 `-` 行本扩展从不写），反向对照（规范 `## Project\n- x`）不受影响。
+
+## important
+
+**I-1. HTML 终止符只认单行严格形式，尾随文本 / 多行 / HTML 块仍 fail-open。**
+`extensions/project-context/memory/sections.ts:434`。下面三条均端到端 REPLACED：
+```
+## Project\n<h2>Notes</h2> trailing\n- entry      （该行起 HTML 块，吞掉后续 - entry）
+## Project\n<h2>\nNotes\n</h2>\n- entry          （多行 HTML 标题）
+## Project\n<div>\n- entry\n</div>               （HTML 块吞掉条目）
+```
+本轮既然已决定让 HTML 标题终止作用域、且接受面「只认本扩展自己的形状（从不写 HTML）」，终止条件应是「HTML 块/标签开启行」而不是「恰好一行 `<hN>…</hN>`」。
+最小修法：把 `:434` 的 HTML 备选换成 `/^\s*<\/?[A-Za-z][^>]*>/`（或无歧义的 `/^\s*<\/?[A-Za-z]/`）；规范文档的任何行都不会以 `<` 开头，方向 fail-closed。可与 B-2 合并成一次 `:434` 的替换。
+
+## nit
+
+**N-1. `fenceCloses` 的注释仍指向已不存在的 `pass.ts` 围栏读者。**
+`extensions/project-context/memory/sections.ts:232-233`：「Both readers of fences (the heading-only gate here and the opaque reply test in pass.ts) share this」。自路由 B（`e1e23f6`）起 `pass.ts` 已无围栏读者（`git log -S readFenceLine -- pass.ts` 停在 `e1e23f6`）；本轮把 `isHeadingOnlyDocument` 接到 `readFenceLine` 后，两个读者其实都在 `sections.ts`。该句即第 23 轮 N-2 想消除的「说法不成立」的残留面。
+最小修法：把 `the opaque reply test in pass.ts` 改成 `hasMemoryDocumentShape`（它在 pass.ts 被调用，但定义在此模块），或直接写「the two readers in this module」。
+
+## praise
+
+- 三条修复的最小复现全部成立：`setext-between-entry`/`html-between-entry`/`nested-list-fence` 的 `hasMemoryDocumentShape` 均为 false，`quoted-pseudo-document` 亦 false；规范部分文档（`## Project\n- x`）与含围栏样例的完整文档仍为 true，端到端 `structured-opaque-document` 仍接受。
+- 变异我独立重做并全部对上记录：仅 ATX 重置 **4**、三种终止符全不重置 **8**、嵌套只剥一层 **2**、围栏从不识别 **15**、有标题即算 **8**、条目放宽 **6**、标题缩进/小节名/围栏内剥标记/条目顶格要求各 **2**、存储侧丢长度下限 **1**——与报告第 23 轮节及 CHANGELOG 的 15/8/8/6/4/2/2/2/2/2/1 一致（口径 `grep -c "^FAIL "`，`FAILURES:` 汇总行不计入）。
+- `isHeadingOnlyDocument` 改用 `readFenceLine` **行为等价**：把旧内联映射还原到同源副本后对拍 20 万条随机输入，**0 差异**。这段抽取是忠实的。
+- `stripListMarkers` 的重复剥离是类级关闭（N 层标记后围栏），终止性显然（每轮严格缩短或返回），且只在 `!inFence` 时调用，未回退第 22 轮 B-1。
+
+## suggestion
+
+- 把终止符判定抽成一个 `endsSectionScope(line)` 小助手，并在其中先做换行归一化，避免 `isHeadingOnlyDocument` 与 `hasMemoryDocumentShape` 再次各自演化出「归一化 / 锚定」不一致（B-1 这类问题的结构性根因）。
+- 给 B-1/B-2/I-1 各补一条拒绝方向用例（CRLF setext、单 `-` setext、`<div>` 块），这样「终止符」这一类才有反向夹具钉住，而不是只钉 `=====` 一种。
+
+## learning
+
+- `$` 锚定的规则在**同模块内**换一个入口就失效：`isHeadingOnlyDocument` 的 docstring 已经把这个坑写下来了，本轮却在它旁边新加了两条 `$` 锚定匹配器而没有复用那段归一化。规则的一致性要落到「输入预处理」这一层，不是每条规则各自记住。
+- setext 下划线是 `=+` **或** `-+`；写 `-{2,}` 是凭「`-` 像 bullet」的直觉排歧，而不是按文法排歧。`=`/`-` 的不对称本身就是信号。
+
+## residual-risk
+
+- 即便 B-1/B-2/I-1 修掉，`hasMemoryDocumentShape` 仍是行级扫描而非 markdown 块解析：表格、引用块、缩进代码块、`<pre>` 等「非 schema 但会吞行」的块仍未建模。这些属于第 22 轮登记的「接受面 = 本扩展自己的形状」之外的物理边界；若要收口，应在第 22 轮节具名补登记，而不是留成隐性口子。
+- B-1 的输入（CRLF 回复）在真实路由上取决于 provider/模型；`isHeadingOnlyDocument` 明确为它做了归一化，说明作者认为可达。修法是一行归一化，不建议作为长期残留。
+
+`VERDICT: CHANGES-REQUESTED`
+
+## Test And QA Focus
+
+- **基线（副本内）**：`cd /tmp/reviewer/repo && node tests/run-all.mjs` → `All 15 tests passed.`
+- **三条修复的最小复现**（`loadNamespace` 直接调 `hasMemoryDocumentShape`）：
+  - `setext-between-entry` → false，`html-between-entry` → false，`nested-list-fence` → false，`quoted-pseudo-document` → false；
+  - 反向：`## Project\n- x` → true；`# Project Memory\n\n## Project\n- …\n\n\`\`\`\n## Invariants\n- fenced\n\`\`\`` → true。
+- **新 fail-open（端到端，真实 pass）**：`/tmp/reviewer/e2e.mjs`、`e2e2.mjs`——`single-dash-setext` / `html-trailing` / `html-div` / `html-multiline` / `crlf-setext` / `crlf-html` 全部输出 `FAIL-OPEN … => <reply>`（存储记忆被整篇替换）。
+- **变异（`/tmp/reviewer/repo`，每次从 `sections.orig.ts` 复位）**：`node tests/consolidation-test.mjs | grep -c "^FAIL "` → `only-ATX-reset=4`、`no-terminator-reset=8`、`strip-once=2`、`fence-never=15`、`heading-without-entry=8`、`entry-relaxed=6`、`heading-indent=2`、`section-name=2`、`strip-inside-fence=2`、`indented-entry=2`；存储侧退回只认四节（pass.ts）= **1**。全部与报告第 23 轮节/CHANGELOG 一致。
+- **`isHeadingOnlyDocument` 对拍**：`/tmp/reviewer/diff-test.mjs`（`repo` vs 还原内联映射的 `repo-before`）→ `differential over 200000 inputs: 0 diffs`。
+- **记录层**：`docs/architecture.md:136-141`、报告残留清理表 R-A/R-F2 行、`CHANGELOG.md` v0.4.9 节的数字与本轮口径一致（`^FAIL `）；无 `carried no entries` 残句。唯一残留表述为 N-1 的 `pass.ts` 指向。

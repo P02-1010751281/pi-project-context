@@ -1,0 +1,28 @@
+# Lane A 独立审查 — 冻结修订 `99c9e74`（第 25 轮修复集，候选 `v0.4.9`，第 26 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev26`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+被审 diff：`git diff a5d17d2..HEAD`。第 25 轮给 2 blocking（缩进 1–3 格的 setext 未终止；HTML 块起始只实现「同行闭合的标签」）+ 2 nit。
+本轮修法：`endsSectionScope` 改为 CommonMark 的精确条件（`/^\s*#/` 或 `/^ {0,3}(?:=+|-+)[ \t]*$/` 或 `/^\s*</`）；
+删掉归一化之后的 `\r$` 死代码；把 **CRLF 归一化 / 围栏跳过 / `{0,3}` 边界** 这些在端到端路径上不承重的规则移到
+`tests/sections-test.mjs` 的 11 条纯函数契约（`hasMemoryDocumentShape`）；并修掉一处误拒（围栏开启时不再忘掉小节作用域，
+`## Project` + 围栏样例 + `- x` 现被接受）。
+
+## 你要验的
+
+1. **两条修复的最小复现**（缩进 setext 1/2/3 空格、`<?` / `<!` / `<![CDATA[` / 块标签名后换行）是否真被拒；
+   **边界反向对照**：4 空格缩进的 `=====`（缩进代码块）、`## Project` + 围栏样例 + `- x`、CRLF 规范文档，是否仍**被接受**。
+2. **终止符这一类是否终于收口**：再搜一遍「条目误挂到已结束小节之下」与「合法条目被误拒」两个方向。
+   找不到就明确说「这一类未再发现」，并给 `VERDICT: PASSED`。
+3. **不承重规则的处理方式**：把 CRLF / 围栏跳过移到纯函数契约，是否真的让它们可被变异钉住（自己做 M「不归一化换行」与
+   M「围栏开启忘掉标题」两条，给红数）；有没有别的规则同样「端到端不承重但没进 unit 契约」。
+4. **记录**：报告第 25 轮节的数字（25/23/17/15/7/6/5/3/2…/1）与 CHANGELOG 是否与你的独立复现一致（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行）。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line` 与最小修法；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。
+若剩余意见只是「可以更严」，写成 `residual-risk` / `suggestion`，不要写成 blocking（接受面代价已在第 22 轮节登记）。

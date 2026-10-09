@@ -1,0 +1,28 @@
+# Lane A 独立审查 — 冻结修订 `c15a9d4`（第 22 轮修复集，候选 `v0.4.9`，第 23 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev23`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+- 被审 diff：`git diff 04cc9ef..HEAD`（两条代码修复 + 用例 + 记录）。
+- 第 22 轮给 **1 blocking + 3 important**：围栏**内**的 `- ```` ` 被剥标记后当成闭合行（fail-open）、`## Project` 与条目之间夹 `# Notes` 不重置作用域、
+  报告缺第 22 轮节、CHANGELOG 变异数字与独立复现不一致。本轮审这四条。
+- 必读：报告「第 22 轮处置」（路线 B 的定形与代价）与残留边界段、`sections.ts` 的 `hasMemoryDocumentShape`、`pass.ts` 的接线、
+  `docs/architecture.md` 的接受面段、`CHANGELOG.md` 的 v0.4.9 节。
+
+## 你要验的
+
+1. **两条修复**：各自的最小复现是否真的被拒；**反向对照**是否仍被发布；变异是否各红在目标断言上。
+2. **围栏语法的最终一致性**：`hasMemoryDocumentShape` 与 `isHeadingOnlyDocument` 现在共用 `readFenceLine`/`fenceCloses`，
+   但「列表标记」「引用标记」「缩进」的预处理是否仍然一边有一边没有。请列出两处预处理差异，并判断每一处差异是**刻意**还是**缺口**；
+   若判为缺口，给出最小复现（我在意 §引用里的围栏 `> ```` `」与嵌套列表）。
+3. **记录**：报告第 22 轮的变异数字（14/7/7/3/3/3/5/2）与 CHANGELOG 是否与你的独立复现一致（计法：`^FAIL` 断言行）；
+   残留清理表 R-A 行、第 21 轮的 A/B 取舍标注、`docs/architecture.md` 与代码注释的相互指向是否都已一致。
+4. **对抗性收尾**：在路线 B 的判据上再找一次 fail-open（散文/代码块被判成文档）。若找不到，**直接给 `VERDICT: PASSED`**；
+   不要把风格偏好或「可以更严」写成 finding —— 接受面的代价已经在第 22 轮节里具名登记。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line` 与最小修法；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。

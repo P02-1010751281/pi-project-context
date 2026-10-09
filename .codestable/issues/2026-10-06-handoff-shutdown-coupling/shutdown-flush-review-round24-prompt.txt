@@ -1,0 +1,28 @@
+# Lane A 独立审查 — 冻结修订 `c77f937`（第 23 轮修复集，候选 `v0.4.9`，第 24 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev24`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+被审 diff：`git diff c15a9d4..HEAD`。第 23 轮给 1 blocking + 2 nit：
+- blocking：setext 下划线 / HTML 标题不作小节作用域终止符（`## Project` 下挂 `Notes\n=====` 再挂条目仍被接受）；
+- nit：`^FAIL` 计数口径把 `FAILURES:` 行算进去；文档说两处共用 `readFenceLine` 而实际只有一处调用。
+本轮修法：ATX 之外让 setext/HTML 也终止作用域；标记剥离改为**重复**剥离（`stripListMarkers`，闭合嵌套列表围栏）；`isHeadingOnlyDocument` 改用 `readFenceLine`。
+
+必读：报告「第 23 轮处置」与「第 22 轮处置」（路线 B 的定形与代价）、`sections.ts` 的 `hasMemoryDocumentShape` / `stripListMarkers` / `isHeadingOnlyDocument`、`CHANGELOG.md` 的 v0.4.9 节。
+
+## 你要验的
+
+1. **三条修复各自的最小复现**是否真被拒（setext 终止、HTML 终止、嵌套列表围栏），反向对照是否仍被发布；
+   变异是否各红在目标断言上（自己重做至少三条）。
+2. **`isHeadingOnlyDocument` 改用 `readFenceLine` 是否行为等价**：它的边界是「宁可算内容」，请对拍（改成共享助手前后，同一批输入的结果），若有差异要报。
+3. **记录**：报告第 23 轮节与 CHANGELOG 的数字（15/8/8/6/4/2/2/2/2/2/1）与你的独立复现是否一致（口径：`^FAIL ` 断言行）；
+   残留清理表 R-A / R-F2 行、`docs/architecture.md`、代码注释是否都已一致（不再有指向旧接受面的表述）。
+4. **对抗性收尾**：在路线 B 的判据上再找一次 fail-open（散文/代码块被判成文档）。找不到就**直接给 `VERDICT: PASSED`**；
+   接受面的代价已在第 22 轮节具名登记，不要再把「可以更严」写成 finding。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line` 与最小修法；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。

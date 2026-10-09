@@ -1,0 +1,147 @@
+# Lane A 独立审查 — 冻结修订 `c15a9d4`（第 23 轮）
+
+工作区只读；所有变异与端到端探针都在 `/tmp/lane-A-sandbox-JSt6`（`c15a9d4` 的完整副本）里跑，工作区未写、未跑任何 `git add/commit/checkout/stash/reset/clean`。判定模型：`deepseek/deepseek-flash` + `thinking high`。
+
+---
+
+## blocking
+
+### B-1 `hasMemoryDocumentShape` 不把 setext 标题当作用域终止符（I-1 的 setext 孪生，fail-open）
+
+`extensions/project-context/memory/sections.ts:424-430`
+
+第 22 轮 I-1 的修法是：任何非 `## <已知小节名>` 的 ATX 标题都 `underKnownHeading = false`。但 setext 标题（`Notes\n=====` / `Notes\n-----`）同样是标题、同样开启新小节，闸门却不重置。于是条目被挂到 setext 标题下时，闸门仍认为它在 `## Project` 下，接受整篇回复。
+
+最小复现（存储侧为规范四节文档，回复走 `fallback-opaque`）：
+
+```
+# Project Memory
+
+## Project
+
+Notes from the review
+=====================
+- I will review the frozen revision against the code
+```
+
+端到端实测（`tests/consolidation-test.mjs` 的 `project`/`pass` 夹具，逐字节对比）：
+
+```
+##### setext-between-entry  changed=true          ← 整篇记忆被换成上面这段
+```
+
+对照：同一形状换成 ATX（`# Notes`）在 HEAD 上 `changed=false` 并写 `not a writable memory document`（I-1 修复生效）。`marked.lexer` 对上面这段的判定是 `heading(h2) Project` → `heading(h1) "Notes from the review"` → `list`，即条目确实在 h1 下，不在 `## Project` 下——闸门的契约（`report` 与 `docs/architecture.md:137` 都写「其下至少一条 `- ` 条目」）被违反。这与第 22 轮 I-1 是完全相同的机制，只是标题语法换成 setext；`setext` 反向用例（`consolidation-test.mjs:1956`）因为没有 `## Project` 而恰好绕过了这个缺口。
+
+最小修法（放在 `sections.ts:426-429` 的 ATX 重置之后、`startsWith("- ")` 判定之前）：
+
+```ts
+// A setext underline makes the line above it a heading, which ends the section just like an
+// intervening ATX heading does (round 22 I-1 was the ATX half).
+if (/^(?:=+|-{2,})\s*$/.test(line)) {
+	underKnownHeading = false;
+	continue;
+}
+```
+
+`-{2,}` 同时会把裸分隔线当终止符——方向是 fail-closed，安全。同类的 HTML 标题（`<h2>…</h2>` 夹在中间）也被当前实现接受；若一并处理，重置条件再加 `/^<h[1-6][^>]*>.*<\/h[1-6]>\s*$/i`。
+
+建议补两条用例（挨着 `consolidation-test.mjs:1918`）：`setext-between-entry`、`html-between-entry`，断言与 `entry-under-other-heading` 相同（存储逐字节不变 + `not a writable memory document`）。变异（删掉上面的 setext 重置）应恰红这 4 条。
+
+---
+
+## important
+
+（无。B-1 已覆盖唯一发现的 fail-open。）
+
+## nit
+
+### N-1 「计法：`^FAIL` 断言行」的说法与数字各差 1
+
+`CHANGELOG.md:23`、`.codestable/.../shutdown-flush-review-report.md:307`
+
+我按 `node tests/consolidation-test.mjs | grep -c '^FAIL'` 独立复现，测得的 `^FAIL` 行数正是 **14 / 7 / 7 / 3 / 3 / 3 / 5 / 2**，与报告和 CHANGELOG 一致。但 `^FAIL` 同时命中收尾的 `FAILURES: N` 行（不是断言）。只数 `^FAIL ` 断言行为 **13 / 6 / 6 / 2 / 2 / 2 / 4 / 1**。也就是说，若「断言行」按字面理解，报告的 8 个数字各高 1。这不是复现不一致，只是口径措辞：把「`^FAIL` 断言行」改成「`^FAIL` 行（含每个失败文件的 `FAILURES:` 行）」，或把数字换成断言口径即可。
+
+顺带：同一报告的 R-F2 行（`:394`）对「存储侧丢掉长度下限」写「恰红 **1** 条」，用的是断言口径，而第 22 轮节同一变异写 **2**（`^FAIL` 口径）。同一报告里两种口径并存，读者容易误读，建议统一。
+
+### N-2 文档/注释声称两处共用 `readFenceLine`，实际只有一处调用
+
+`docs/architecture.md:138`、`extensions/project-context/memory/sections.ts:398`、`extensions/project-context/memory/pass.ts:337`
+
+报告第 22 轮节（`:291-292`）与 architecture/注释都写 `hasMemoryDocumentShape` 与 `isHeadingOnlyDocument`「共用 `readFenceLine` / `fenceCloses`」。实际上 `isHeadingOnlyDocument`（`sections.ts:311-314`）没有调用 `readFenceLine`，而是把它内联复制了一遍（用同一个 `FENCE_LINE_RE` 拼出同样字段的 token）。行为一致，但「共用 `readFenceLine`」不实——只共用了 `FENCE_LINE_RE` 与 `fenceCloses`。最小修法：`isHeadingOnlyDocument` 改为 `const fences = raw.map((line) => readFenceLine(line));`，声称即成立；否则把文档改成「共用 `FENCE_LINE_RE` / `fenceCloses`」。
+
+## suggestion
+
+### S-1 把「引用里的围栏 / 嵌套列表围栏」登记为具名边界或补一条用例
+
+`extensions/project-context/memory/sections.ts:408-409`
+
+你对 `> ``` ` 与嵌套列表的担心我专门验过：不是缺口（详见 `learning`）。但当前没有任何用例钉住「完全被引用包住的伪文档必须被拒」「两级列表标记后的围栏必须被识别」。这两条是预处理差异里唯一可能被后续重构踩回去的地方。建议各补一条（拒绝方向）用例，不必改语义。
+
+## learning
+
+### L-1 两处围栏预处理差异逐条判定
+
+`isHeadingOnlyDocument`（`sections.ts:303-314`）与 `hasMemoryDocumentShape`（`sections.ts:403-409`）：
+
+| 预处理 | `isHeadingOnlyDocument` | `hasMemoryDocumentShape` | 判定 |
+| --- | --- | --- | --- |
+| 行分隔符 | 先把 `\r\n?`/`\u2028`/`\u2029` 统一成 `\n`（`:303-306`） | 不统一；只对标题行去尾 `\r`（`:419`），围栏靠 `\s*` 兜住 | **刻意**。方向安全：不统一时 `hasMemoryDocumentShape` 更少识别（回退/拒绝） |
+| HTML 注释 | 先删（`:305`） | 不删 | **刻意/无影响**（注释行不构成围栏行、不构成标题/条目） |
+| 缩进 | `trim()` 全去（`:307`） | 只去 1–3 个空格（`:408`） | **刻意**。4 空格是缩进代码块（CommonMark 围栏规则，注释就写在 `:404-405`）；两边方向相反是有意的：接受闸门不能过度识别围栏（会 fail-open），骨架闸门过度识别结构是 fail-closed |
+| 列表标记 | 读围栏前不剥（从 raw 读，`:311`） | 围栏**外**剥恰好 1 个（`:409`） | **刻意**。21 B-2（`- ```` ` 是列表项里的围栏，不剥就会把 `- ```` ` 当条目而 fail-open）+ 22 B-1（围栏内不许剥） |
+| 引用标记 | 不剥 | 不剥 | **一致**（两边都不认引用里的围栏） |
+
+我用 `marked` 做了交叉核对，并 fuzz 了 19 种 opener × 5 种 body（含 `- - ```` `、`> ```` `、`> > ```` `、`- > ```` `、`> - ```` `、4 空格缩进、tab、`1.`/`1)`、`~~~`、info string），**没有任何一例**「闸门 ACCEPT 而 `marked` 把 `## Project` 判进 code」。原因是一致的：闸门不认识的那些 opener 都带容器前缀（`>` 或第二层 `-`），而不带前缀的内容行在 CommonMark 里本来就出了容器、是真正的顶层标题+条目；真正留在容器里的内容（`> ## Project`、四空格 `## Project`）闸门也都拒绝。所以那两处差异本身不是缺口，只是「具名边界」。真正的缺口是 B-1 的 setext 作用域。
+
+### L-2 反向对照仍被发布
+
+`consolidation-test.mjs:1855-1870`（`structured-opaque-document` 正向对照）在 HEAD 上通过：`## Project` + 条目 + 尾随围栏样例仍被接受；`basic-accept` 形状 `## Project\n- x` 也仍被接受。两条修复没有把接受面误伤成空集。
+
+## praise
+
+- B-1 的最小复现（`fence-hiding-list-fence`，`consolidation-test.mjs:1916`）确实被拒；变异「围栏内也剥标记」（`M6`）恰红该用例的 2 条断言。I-1 的 `entry-under-other-heading` / `entry-under-title-again`（`:1917-1918`）同样被拒；变异「去掉 ATX 重置」（`M7`）恰红这两条的 4 条断言。
+- 8 个变异数字我全部独立复现，且都红在目标断言上（不是别处的连带红）：见 `## Test And QA Focus`。
+- 报告第 22 轮节已补、轮次表第 22 行已补、残留清理表 R-A 行（`:393`）已改成「已修（第 15→22 轮）」、第 21 轮的 A/B 取舍已标注「当时留给 owner；第 22 轮已选择并落地路线 B」（`:328`）；`docs/architecture.md:145` 指向 `.codestable/...` 报告，`sections.ts:398` 与 `pass.ts:337` 都指向「the review report's route decision」，三处互指一致。
+
+## residual-risk
+
+- **R-1**（对应 B-1）：在 setext/HTML 重置补上之前，`hasMemoryDocumentShape` 对「`## Project` 空挂 + setext 标题携带条目」的回复返回 true，可整篇替换记忆。这是当前唯一的开面。
+- **R-2**：`> ```` ` / 双列表标记围栏「今天安全」靠的是 CommonMark 容器语义，而代码里没有注释或测试记录这条推理。若日后有人给 `hasMemoryDocumentShape` 加上「剥多个装饰标记」，会重新引入 22 B-1 同类的 fail-open。建议按 S-1 钉住。
+- **R-3**：`storedIsDocument` 的「剥标题后 ≥ 40 字符」仍可能把一段较长的会话式存储文本当文档（R-F2 已登记），本次未发现新变体。
+
+---
+
+## Test And QA Focus
+
+全部在 `/tmp/lane-A-sandbox-JSt6`（`c15a9d4` 的副本）执行，未触碰 `/tmp/pi-context-rev23`。
+
+1. 基线全量套件
+   - `node tests/run-all.mjs` → `All 15 tests passed.`（exit 0，`^FAIL` = 0），含 `consolidation-test.mjs`、`sections-test.mjs`。
+
+2. 变异矩阵（`/tmp/laneA-mutate.py`，每个变异后复位源文件，跑 `node tests/consolidation-test.mjs`，计 `grep -c '^FAIL'`）：
+
+   | 变异 | `^FAIL` 行 | 断言行 | 目标断言 |
+   | --- | --- | --- | --- |
+   | M1 围栏从不识别 | 14 | 13 | `fence-*` 6×2 + `indented-fence` 2 + `fenced pseudo-document` 1 |
+   | M2 去掉条目要求 | 7 | 6 | `numbered`/`star-entry`/`indented-entry` 各 2 |
+   | M3 条目放宽到 `* `/编号/缩进 | 7 | 6 | 同上 |
+   | M4 标题允许缩进 | 3 | 2 | `indented-heading-flush-entry` 2 |
+   | M5 小节名不校验 | 3 | 2 | `unknown-section` 2 |
+   | M6 围栏内剥列表标记 | 3 | 2 | `fence-hiding-list-fence` 2 |
+   | M7 其它 ATX 标题不重置 | 5 | 4 | `entry-under-other-heading` + `entry-under-title-again` 各 2 |
+   | M8 存储侧丢掉长度下限 | 2 | 1 | `a non-canonical stored memory is protected too` |
+
+   → 报告的 14/7/7/3/3/3/5/2 与独立复现一致（口径详见 N-1）。
+
+3. 两条修复的端到端最小复现
+   - `fence-hiding-list-fence`、`entry-under-other-heading`、`entry-under-title-again`：存储逐字节不变 + `not a writable memory document`（`consolidation-test.mjs` 对应用例通过）。
+   - 反向对照 `structured-opaque-document`：仍写入 `the re-emitted document.`（通过）。
+
+4. B-1 的端到端证明（自写探针，复用测试夹具）
+   - 存储四节文档；回复为上面「setext-between-entry」→ `changed=true`，`errors.log` 无拒绝诊断（对照 `atx-between-entry` → `changed=false` + 拒绝诊断）。
+   - `marked.lexer` 交叉核对：`heading h2 Project` → `heading h1 "Notes from the review"` → `list`。
+
+5. 围栏预处理 fuzz（`marked` 21 种 opener × 5 种 body）
+   - 结果：`suspicious=0`（无「闸门接受但标题在 code 内」的例子）。
+
+**VERDICT: CHANGES-REQUESTED**

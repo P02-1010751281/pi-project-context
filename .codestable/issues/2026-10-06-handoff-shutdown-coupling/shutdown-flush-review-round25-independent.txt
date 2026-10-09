@@ -1,0 +1,139 @@
+# Lane A 独立审查 — 冻结修订 `a5d17d2`（第 25 轮）
+
+工作目录 `/tmp/pi-context-rev25` 只读；全部变异与端到端复现都在 `/tmp/laneA-rev25/` 的自有沙箱（`sandbox/` + `/tmp/laneA-rev25/*.mjs`）里跑。冻结树未被写入：`sections.ts` 与沙箱备份 md5 相同（`f65bfcfa945fa8b308176a93509a2b3f`），`git status` 只有审查开始前就存在的 `.agents/memory/{HANDOFF.md,project-context.json}` 运行时写入。
+
+## 结论先行
+
+第 24 轮的三条修复**本身成立**（各在目标断言上红，数字全部复现）；但要求「终止符这一类收口」的检查**没有收口**：`endsSectionScope`（`sections.ts:405`）对 setext 的缩进容忍和 CommonMark 的 HTML 块起始条件都只实现了一半，存在可端到端覆盖记忆的 fail-open。因此本轮不能 PASSED。
+
+---
+
+## blocking
+
+### B-1. 缩进的 setext 下划线（1–3 空格）不被当作终止符 ⇒ fail-open
+
+`file:line`: `extensions/project-context/memory/sections.ts:405`（`endsSectionScope` 第二条分支）
+`/^(?:=+|-+)[ \t]*$/` 没有前导缩进容忍。CommonMark 的 setext 下划线允许 **最多 3 个空格缩进**（`remark-parse` 实测把 `## Project\nNotes\n   =====` 解析成 `heading depth 1` 的第二个标题）。于是「顶格 `## Project` + 一个缩进 setext 标题 + `- ` 条目」在扫描器眼里仍是「`## Project` 下有一条条目」。
+
+最小复现（我用真实 pass 端到端确认 `MEMORY.md` 被覆盖，不是只测纯函数）：
+
+```
+"# Project Memory\n\n## Project\nNotes\n   =====\n- an entry under an indented setext heading\n"
+"# Project Memory\n\n## Project\nNotes\n =\n- an entry under an indented single-dash setext heading\n"
+```
+
+- 冻结树：`hasMemoryDocumentShape` 返回 `true`，一次 `/memory update` 把上面整段写进 `MEMORY.md`（`e2e.mjs` 输出 `OVERWROTE indented-setext-3sp / 1sp / single-dash`）。
+- 与第 23 轮 B-1、第 24 轮 B-2 是**同一个类**：`single-dash-setext-between-entry` 在第 0 列被正确拒绝，同一形状加一个空格就被接受 —— 谓词不一致，方向是放宽侧（接受），按本仓一路的口径属 blocking。
+
+最小修法（CommonMark 精确容忍；`^ {0,3}` 而非 `\s*`，因为 4 空格/制表符是缩进代码块，本就不该重置）:
+
+```ts
+return /^\s*#/.test(line) || /^ {0,3}(?:=+|-+)[ \t]*$/.test(line) || /^…HTML…/;
+```
+
+验证：打上该修法后 `probe2` 中 `indented-setext-3sp/1sp/single-dash/two-dash` 全部 `REFUSE`，`setext-4sp`（缩进代码块）与 `tab-setext` 仍 `ACCEPT`（正确），`consolidation-test.mjs` 与 `sections-test.mjs` 全绿。
+
+### B-2. HTML 块起始条件只实现了「同行闭合的标签」⇒ 多行标签 / 未闭合 PI / 未闭合 CDATA 仍 fail-open
+
+`file:line`: `extensions/project-context/memory/sections.ts:405`（第三条分支）+ 注释 `:403-404`（「any tag-opening line starts an HTML block」与实现不符）
+`/^\s*<\/?[A-Za-z][^>]*>/` 要求 `<` 后紧跟 ASCII 字母且**同一行内**有 `>`。CommonMark 的 HTML 块起始（type 3/4/5/6）还覆盖：`<?`、`<!`、`<![CDATA[`、以及块标签名后直接换行（type 6 允许行尾）。这些行会开启一个吞掉后续内容的 HTML 块，使 `- ` 条目不再是列表项。`remark-parse` 实测：
+
+```
+<?php\n- entry        => [html]        （条目被吞）
+<![CDATA[\n- entry    => [html]
+<h2\n>\n- entry       => [html]
+```
+
+端到端确认冻结树被覆盖（`e2e2.mjs`）：`multiline-html-tag` / `processing-unclosed` / `cdata-unclosed` 全部 `OVERWROTE`。而同一批的 `<!DOCTYPE html>` / `<!-- c -->`（单行即闭合，后续 bullet 确是列表）被覆盖是**正确行为**，不应算入。
+
+最小修法（fail-closed，且与本函数既有注释「this extension never writes a line starting with `<`」一致）：把第三条分支放宽为 `/^\s*</.test(line)`；代价是单行 `<!-- … -->` / `<!DOCTYPE …>` 也会重置作用域（多拒几个本扩展从不写的形状，方向安全）。
+
+验证：打上后 `probe2` 中 `multiline-html-tag / processing / cdata` 全部 `REFUSE`，`consolidation-test.mjs`、`sections-test.mjs` 全绿。
+
+> 两条合起来说明第 24 轮 I-1 的「任何标签开启行」是一句**过度承诺**：实现只覆盖了「带字母名且同行闭合」的标签。
+
+---
+
+## nit
+
+### N-1. `sections.ts:437` 的 `\r$` 剥离已是死代码
+
+`line.replace(/\r$/, "")` 在 `:421` 的 `value.replace(LINE_SEPARATOR_RE, "\n")` 之后不可能再遇到 `\r`（`\r\n?` 已归一）。留着会让人以为还有未归一化的 CR 通道，与第 24 轮 B-1 的意图相悖。删掉即可（行为不变）。
+
+### N-2. 注释精度
+
+`endsSectionScope` 的 `:403-404` 注释写「any tag-opening line starts an HTML block」，实现（同见 B-2）并非如此。修 B-2 时同步改这句（或按修完后的实际谓词描述）。
+
+---
+
+## praise
+
+- 三条第 24 轮修复各自独立复现，**变异恰红在目标断言上**（自己重做）：
+  - 不归一化 → `crlf-setext-between-entry` 2 条（`leaves the stored memory byte-identical` + `is reported as not writable`）；
+  - 只认 `-{2,}` → `single-dash-setext-between-entry` 2 条；
+  - HTML 只认严格单行 → `html-block-between-entry` / `html-heading-trailing-text` 4 条。
+  与报告写的 **2 / 2 / 4** 完全一致。
+- 反向对照仍被接受：规范 `## Project\n- x`、含围栏样例的完整文档、CRLF 规范文档（`probe.mjs` 三者全 `ACCEPT`）。
+- 抽 `endsSectionScope` + 循环前归一化的结构性收口方向正确，四条反向夹具有效。
+
+## 记录核对（口径 `^FAIL `）
+
+报告第 24 轮节与 CHANGELOG 的数字**全部独立复现吻合**（每次先还原 `sections.ts`，跑 `tests/consolidation-test.mjs`，数 `^FAIL ` 行）：
+
+| 变异 | 我的实现 | 报告 | 结果 |
+|---|---|---|---|
+| 围栏从不识别 | 在 `hasMemoryDocumentShape` 内 `const fence = undefined` | 15 | **15** ✓ |
+| 有标题即算 | 去掉 `&& line.startsWith("- ")` 条目要求 | 12 | **12** ✓ |
+| 仅 ATX 终止 | `endsSectionScope` 只留 `/^\s*#/` | 12 | **12** ✓ |
+| 条目放宽到 `* `/编号/缩进 | 条目判定改 `/^\s*(?:[-*+]|\d+[.)])\s+/` | 6 | **6** ✓ |
+| HTML 只认严格单行 | 还原旧 `/^<h[1-6][^>]*>.*<\/h[1-6]>[ \t]*$/i` | 4 | **4** ✓ |
+| 标题缩进 / 小节名 / 围栏内剥标记 / 嵌套只剥一层 / 不归一化 / 只认 `-{2,}` | 各自就地改 | 各 2 | **各 2** ✓ |
+| 存储侧丢掉长度下限 | `storedIsDocument = sectionsFromMarkdown(...) !== undefined` | 1 | **1** ✓ |
+
+（注：把「围栏从不识别」改成全局 `readFenceLine` 返回 `undefined` 会多红 1 条 `isHeadingOnlyDocument` 的用例（16），报告的计法显然是把变异限制在形状门内 —— 这与它自己 15 的写法相符。）
+
+残留指向检查：`sections.ts` 已无 `pass.ts` 围栏读者的引用（第 24 轮 N-1 已改）；`docs/architecture.md:133-140` 与报告残留清理表 R-A 行都写的是路线 B 的收缩后口径，没有指向旧接受面。唯一不实的是 B-2 涉及的注释句子（见 N-2）。
+
+## residual-risk（已知边界，修复 B-1/B-2 后仍保留）
+
+- `hasMemoryDocumentShape` 判据仍是启发式，不是 CommonMark 解析器；路线 B 的接受面以「本扩展自己的形状」为准（第 22 轮节具名登记），其余形状的误拒是刻意代价。
+- `---` / `--` 紧跟标题时被 setext 分支重置作用域（实为 thematic break），会误拒 `## Project\n---\n- entry`；`/^\s*#/` 也会把 4 空格缩进的 `#` 当标题重置。二者都是 fail-closed、且本扩展从不写这些行，属已登记的接受面代价（`probe3.mjs` 实测 `thematic then entry` = REFUSE）。
+- 单行 `<!-- … -->` / `<!DOCTYPE …>` 后面跟 bullet：CommonMark 里 bullet 确实是列表（`remark-parse` 给 `[html,list]`），现实现「接受」是对的；若采用 B-2 的 `/^\s*</` 修法会变成拒绝，属更严的安全方向。
+- Unicode 行分隔符已被 `LINE_SEPARATOR_RE` 归一（`\u2028` / `\u2029` 的 setext 实测 REFUSE）；`\u0085` 不是 CommonMark 行尾，单行内不产生新标题，行为正确。
+- `thematic` / 缩进代码 / 引用 / 列表作为「夹层」不会开新标题，条目仍属 `## Project`，接受是正确的（`probe3` 逐条核对）。
+
+## Test And QA Focus
+
+```bash
+# 基线（冻结树）
+cd /tmp/pi-context-rev25 && node tests/sections-test.mjs            # all checks passed
+node tests/consolidation-test.mjs                                  # ALL OK, ^FAIL=0
+
+# 第 24 轮四条反向夹具 + 正向对照（直接调 hasMemoryDocumentShape）
+node /tmp/laneA-rev25/probe.mjs
+#   REFUSE crlf/single-dash/html-block/html-trailing-text
+#   ACCEPT canonical partial / fenced sample / crlf canonical
+
+# 端到端确认 fail-open（冻结树，真实 /memory update）
+node /tmp/laneA-rev25/e2e.mjs    # OVERWROTE indented-setext-3sp / 1sp / single-dash；control-html REFUSED
+node /tmp/laneA-rev25/e2e2.mjs   # OVERWROTE multiline-html-tag / processing-unclosed / cdata-unclosed
+
+# 变异矩阵（沙箱，每次还原 sections.ts/pass.ts，口径 ^FAIL ）
+cd /tmp/laneA-rev25 && python3 mutate.py
+#   fence-never(local)=15, any-heading=12, atx-only=12, entries=6, html-strict=4,
+#   heading-indent=2, section-name=2, fence-inside=2, nested=2, no-normalize=2,
+#   dash2=2, store-min-removed=1  —— 与报告/CHANGELOG 一致
+
+# 最小修法验证（沙箱打补丁后）
+# endsSectionScope = /^\s*#/ | /^ {0,3}(?:=+|-+)[ \t]*$/ | /^\s*</
+node /tmp/laneA-rev25/probe-sb.mjs   # 4 条第 24 轮夹具仍 REFUSE，3 条正向仍 ACCEPT
+node /tmp/laneA-rev25/probe2-sb.mjs  # 缩进 setext + 三种 HTML 块全部 REFUSE
+node /tmp/laneA-rev25/e2e-sb.mjs     # 三种缩进 setext REFUSED
+node /tmp/laneA-rev25/e2e2-sb.mjs    # multiline/PI/CDATA/doctype/comment 全部 REFUSED
+cd /tmp/laneA-rev25/sandbox && node tests/consolidation-test.mjs   # ALL OK, ^FAIL=0
+node tests/sections-test.mjs                                       # all checks passed
+```
+
+结论：本轮**未收口**，B-1/B-2 是可用最小复现证明的放宽侧 fail-open；第 24 轮的三条修法与全部记录数字经独立复现无误。
+
+VERDICT: CHANGES-REQUESTED
