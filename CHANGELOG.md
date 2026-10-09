@@ -13,11 +13,14 @@
   一个决策点，避免再次漂移），两个调用点改用它；可见句同时改口径：预留是**估算**不是界（现场实测 20489 ≫ 8192），
   `capCeilingWarning` 不再写 `up to`。
 - **不透明回复的接受面收窄**（第 15 轮 R-A，第 17 轮复核）：v0.4.8 的判据是「正文里有任意标题 / `- ` 条目 / 围栏」，于是
-  `# Project Memory\n\nI'll do the following:\n- review` 这种「散文里带一条 bullet」的回复仍能换掉整篇记忆。现在回复必须
-  **至少有一个小节标题、其下带条目**才算文档；存储侧同时从「必须是规范四节」放宽为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」，
-  于是手写的非规范记忆（现场那份六节文档）也受保护。判据按本仓自己的词汇认标题（ATX 任意级别 / setext / HTML）与条目
-  （bullet 或编号列表），并**跟踪围栏**（与 `isHeadingOnlyDocument` 共用 `sections.ts` 的 `readFenceLine`/`fenceCloses`，长度与信息串规则都按 CommonMark）：一段只是「围栏里含 `## Project\n- x`」的回复算散文；标题必须顶格，裸 `---`/`=` 不算标题。散文形状、反向形状（编号列表 /
-  setext / HTML 标题必须被发布而不是被拒）与非规范存储各有用例；把判据退回旧形态红 13 条、退回「只认规范四节」红 1 条。
+  `# Project Memory\n\nI'll do the following:\n- review` 这种「散文里带一条 bullet」的回复仍能换掉整篇记忆。现在回复必须是
+  **本扩展自己的文档形状**：顶格的 `## <已知小节名>` 标题 + 其下顶格的 `- ` 条目，围栏内的内容不算（与 `sectionsFromMarkdown` 共用同一份小节表和
+  `readFenceLine`/`fenceCloses`）。存储侧同时从「必须是规范四节」放宽为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」，
+  于是手写的非规范记忆（现场那份六节文档）也受保护。setext / HTML 标题、编号列表、`* `、缩进条目与未知小节名**刻意被拒**
+  （记忆保留 + 一条诊断）——第 18–21 轮曾在同一处维护更宽的 markdown 子集，四轮各找到一个 fail-open（围栏半规则、裸分隔线、
+  空行与缩进、桥与列表内围栏），因此第 22 轮收缩到 schema 本身，取舍见 `.codestable` 报告。散文形状、被拒形状（含
+  `fence-in-list-item`、`indented-heading-flush-entry`、`unknown-section`）与非规范存储各有用例；退回旧形态红 13 条、
+  去掉条目要求红 7 条、不跳围栏红 10 条、标题允许缩进红 3 条、条目放宽到 `* `/编号/缩进红 7 条、不校验小节名红 3 条。
 - **诊断不再把「形状读不出」说成「没有条目」**（第 18 轮 I-3）：`carried no entries` 对「散文里带一条 bullet」这类回复是假的，
   现在两条路径统一为同一措辞：日志串写全（`the consolidation reply was not a writable memory document…`），toast 用短形式（`the reply was not a writable memory document`）。
 - **只读状态路径不再假定 `modelRegistry.find` 存在**（第 17 轮 R-2）：改为可选调用、缺失时回退会话模型，并有用例钉住这条回退。
