@@ -29,6 +29,7 @@
 | 23 | 2026-10-08 | `c15a9d4`（第 22 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking：setext / HTML 标题不作小节作用域终止符 —— I-1 的孪生；2 nit：计数口径、共享助手说法） | `shutdown-flush-review-round23-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 | 24 | 2026-10-08 | `c77f937`（第 23 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 blocking + 1 important，全在上一轮新增的终止符谓词上：CRLF 击穿 `$` 锚定、单个 `-` 也是 setext、HTML 只认严格单行；1 nit） | `shutdown-flush-review-round24-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 | 25 | 2026-10-08 | `a5d17d2`（第 24 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 blocking，仍是终止符类：缩进 1–3 格的 setext 未终止、HTML 块起始只实现「同行闭合的标签」；2 nit） | `shutdown-flush-review-round25-independent.txt` | ✓：工作区 md5 与沙箱一致、零写入 |
+| 26 | 2026-10-08 | `99c9e74`（第 25 轮修复集） | `deepseek/deepseek-flash` + `high` | **VERDICT: PASSED**（0 blocking / 0 important；3 nit：标签精确性、「不承重」说过头、围栏缩进边界无夹具。终止符类双向扫描未再发现 fail-open） | `shutdown-flush-review-round26-independent.txt` | ✓：`git status` 与基线逐字一致、零写入 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -287,6 +288,21 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 第 26 轮处置（2026-10-08）：**PASSED**
+
+第 26 轮对冻结修订 `99c9e74` 给出 **VERDICT: PASSED**：0 blocking、0 important、3 nit。终止符类与「合法条目被误拒」两个方向
+都没再发现 fail-open，报告第 25 轮节的 10 个变异数字被逐条独立复现（25/23/17/15/7/6/5/3/2/2/2/1/1/1/1 口径一致）。
+
+| 第 26 轮条目 | 处置 |
+| --- | --- |
+| nit 1：红 17 的变异标签写「终止符只认 `=`」，实测补丁语义是「终止符只保留 setext `=` 形式（setext 的 `-` 与 HTML 都不终止）」 | **已改**（报告与 CHANGELOG 同改） |
+| nit 2：CHANGELOG 把「端到端不承重」说过头 —— 缩进 setext 与 HTML 块起始恰恰承重 | **已改**：只把 CRLF 归一化、围栏跳过、`{0,3}` 边界列为不承重（它们已移入 unit 契约） |
+| nit 3：围栏缩进边界（`stripListMarkers` 每轮封顶 3 格但循环重放，4 格缩进的 ```` ``` ```` 仍被当围栏）与注释不符、且无夹具 | **取 reviewer 的第二个选项**：注释改为具名的「有意放宽、fail-closed」，并补两条 unit 用例钉住边界（3 格闭合围栏仍闭合 = 接受；4 格缩进仍按围栏读 = 拒绝）。**行为未改**（见下） |
+
+**PASS 与随后提交的关系（写清楚）**：PASS 给出时的修订是 `99c9e74`。以上三条 nit 的修复在其后一个提交里，**只动一处注释、两条 unit 用例和记录措辞**：
+`git diff 99c9e74 HEAD -- extensions/` 只有注释 hunk，行为承载代码逐字未变，因此 PASS 对**已发布行为**继续有效；
+为一条注释与记录措辞再开一轮换不到新信息，这一点按实情写明，不假装 PASS 覆盖了新提交的全部字节。
 
 ## 第 25 轮处置（2026-10-08）
 

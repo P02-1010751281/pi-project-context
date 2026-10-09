@@ -408,7 +408,14 @@ function endsSectionScope(line: string): boolean {
 	return /^\s*#/.test(line) || /^ {0,3}(?:=+|-+)[ \t]*$/.test(line) || /^\s*</.test(line);
 }
 
-/** The line with every leading list marker removed (`- - ``` ` -> ` ``` `). */
+/**
+ * The line with every leading list marker removed (`- - ``` ` -> ` ``` `).
+ *
+ * The leading-space strip is capped at three spaces *per pass* and the loop re-applies it, so a line indented
+ * four or more spaces can still be read as a fence here. That is deliberately loose and fail-closed - it can
+ * only hide content, never publish a reply that markdown would call prose (round 26's nit 3 records the
+ * choice; tightening it to a single whole-line cap is the alternative).
+ */
 function stripListMarkers(value: string): string {
 	let out = value;
 	for (;;) {

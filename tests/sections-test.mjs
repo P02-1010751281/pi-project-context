@@ -242,6 +242,8 @@ console.log("\n=== hasMemoryDocumentShape contract ===");
 		["a heading with no entry", "## Project\n", false],
 		["an unknown section", "## Notes\n- x\n", false],
 		["a quoted pseudo-document", "> ## Project\n> - x\n", false],
+		["a closing fence indented three spaces still closes", "## Project\n   ```\ncode\n   ```\n- x\n", true],
+		["an over-indented fence is still read as a fence (deliberately fail-closed)", "## Project\n\n    ```\n- x\n", false],
 	]) {
 		check(`shape: ${label}`, sections.hasMemoryDocumentShape(value) === expected);
 	}
