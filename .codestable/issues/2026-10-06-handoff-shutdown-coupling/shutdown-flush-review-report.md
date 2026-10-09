@@ -26,6 +26,7 @@
 | 20 | 2026-10-08 | `27dc26d`（第 19 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**1 blocking + 2 important，全在同一扫描器**：空行未重置 setext 候选、HTML 标题未顶格、缩进围栏未识别） | `shutdown-flush-review-round20-independent.txt` | ✓：`git status` 与基线一致、474 条文件表逐行一致 |
 | 21 | 2026-10-08 | `208d590`（第 20 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 2 important**：setext 候选仍接受 rule/quote/注释/缩进代码四种「桥」、列表项里的围栏未跟踪；HTML 标题丢掉尾随空白容忍；记录数字漏改） | `shutdown-flush-review-round21-independent.txt` | ✓：`git status` 与基线一致、476 条文件表逐行一致 |
 | 22 | 2026-10-08 | `04cc9ef`（路线 B 定形） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking + 3 important：围栏内剥列表标记让围栏被提前闭合、其它 ATX 标题不重置小节作用域、报告缺第 22 轮节、变异数字与独立复现不一致） | `shutdown-flush-review-round22-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
+| 23 | 2026-10-08 | `c15a9d4`（第 22 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking：setext / HTML 标题不作小节作用域终止符 —— I-1 的孪生；2 nit：计数口径、共享助手说法） | `shutdown-flush-review-round23-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -285,6 +286,22 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
 
+## 第 23 轮处置（2026-10-08）
+
+第 22 轮修了 ATX 一侧、漏了 setext/HTML 一侧 —— 与「关一种隔断不等于关一类规则」是同一个错误。本轮三条：
+
+| 第 23 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：setext 下划线（`Notes\n=====`）与 HTML 标题不开新小节 ⇒ 条目被挂到它们下面时仍算在 `## Project` 下，fail-open | **已修**：ATX 之外，setext 下划线（`^(?:=+|-{2,})[ \t]*$`）与 HTML 标题同样终止作用域（两者都是 fail-closed）。用例 `setext-between-entry` / `html-between-entry`；变异「仅 ATX 重置」红 **4** 条、三种终止符全不重置红 **8** 条 |
+| N-1：`^FAIL` 口径把收尾的 `FAILURES:` 行也算进去，与断言数差 1 | **已改**：记录统一为 `^FAIL `（含空格，即断言口径），R-F2 行的旧数字同步 |
+| N-2：文档/注释说两处「共用 `readFenceLine`」，实际 `isHeadingOnlyDocument` 自建 token | **已修**：改为真正调用 `readFenceLine`（行为等价），说法成立 |
+| S-1：引用里的围栏 / 嵌套列表围栏无用例钉住 | **已补**：`quoted-pseudo-document`（拒绝方向）、`nested-list-fence`（拒绝方向）；为此把标记剥离改成**重复**剥离（`stripListMarkers`），类级关闭「N 层标记后的围栏」——变异「只剥一层」红 **2** 条 |
+
+**按最终修订重测的变异（计法：`^FAIL ` 断言行）**：围栏从不识别 **15**、有标题即算 **8**、三种终止符全不重置 **8**、
+条目放宽到 `* `/编号/缩进 **6**、仅 ATX 重置 **4**、条目要求/标题缩进/小节名/围栏内剥标记/嵌套只剥一层各 **2**、
+存储侧丢掉长度下限 **1**。第 18 轮记的 13 / 1 与第 22 轮记的 14/7/7/3/3/3/5/2 是各自修订上的数字（测试文件增长后不可复现），
+本条只承诺「本修订 + 本口径」可复现。
+
 ## 第 22 轮处置（2026-10-08）：路线 B 定形
 
 第 18→22 **连续五轮**都出在同一个「手写 markdown 子集」上（围栏半规则、裸分隔线、空行与缩进、桥与列表内围栏、
@@ -391,7 +408,7 @@ tag 已在双远端删除、pin 与安装树回退到 `v0.4.8`、修复提交留
 | 残留 | 处置 |
 | --- | --- |
 | **R-A**：结构测试接受面偏宽 —— 带一条 `- ` 条目 / 围栏 / 任意 `# 标题` 的散文仍能替换四节文档（第 15 轮实测 5 种形状） | **已修**（第 15→22 轮）：回复侧判据最终为**本扩展自己的文档形状** —— 顶格的 `## <已知小节名>` 标题 + 其下顶格的 `- ` 条目，围栏内不算（第 22 轮的路线 B，见「第 22 轮处置」）。散文形状、围栏伪文档、被拒形状与反向对照各有用例；各规则的变异红数见第 22 轮节 |
-| **R-F2**：存储侧只认规范四节 ⇒ 手写的**非规范**记忆不受保护（现场那份六节文档正是此形，即 R-F2 并非只关乎 fresh 项目） | **已修**：存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」；空/极小存储仍放开（fresh 项目的首条记忆有专门用例）。变异退回「只认规范四节」恰红 **1** 条（第 19 轮 I-1 更正；第 21 轮 I-2 指出本行当时漏改） |
+| **R-F2**：存储侧只认规范四节 ⇒ 手写的**非规范**记忆不受保护（现场那份六节文档正是此形，即 R-F2 并非只关乎 fresh 项目） | **已修**：存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」；空/极小存储仍放开（fresh 项目的首条记忆有专门用例）。变异把存储侧退回「只认规范四节」恰红 **1** 条（`^FAIL ` 口径）（第 19 轮 I-1 更正；第 21 轮 I-2 指出本行当时漏改） |
 | **R-F3**：短于 40 字符的回复由 `report.ts` 的长度规则拦写 | **不是残留**：那条规则给出更诚实的理由（`too short to be a change`）且不丢内容；39/40 两侧都有用例钉住 |
 | **R-2**：只读状态路径新增 `ctx.modelRegistry.find` / `hasConfiguredAuth` 依赖 | **已收窄**：`find` 改为可选调用、缺失时回退会话模型，并加断言；去掉可选调用会使 `aux-model-test` 以 `TypeError` 硬失败（不是 FAIL 行，也记在这里） |
 | **SIGKILL 失败路径留下临时目录**（~40 KB/次，纯外表） | **已修**：两个 FIFO 看门狗在 SIGKILL 之前同步清掉**各自的 FIFO 子目录**（`race` / `adopt`），夹具的记忆 artifacts 留在 `flushMem` 里供诊断（第 19 轮 N-2 更正了「清整棵临时树」的旧描述） |

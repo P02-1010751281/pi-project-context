@@ -308,10 +308,7 @@ export function isHeadingOnlyDocument(value: string): boolean {
 	const lines = raw.map(canonicalLine);
 	// Fences are read from the RAW line: in markdown a decorated line (`> ``` `) does not close a block,
 	// so canonicalizing first would let it flip the parity and let `===` eat a real body line.
-	const fences = raw.map((line) => {
-		const match = FENCE_LINE_RE.exec(line);
-		return match ? { run: match[1], char: match[1][0], info: match[2].trim() } : undefined;
-	});
+	const fences = raw.map((line) => readFenceLine(line));
 	const structural = lines.map(
 		(line, index) => line === "" || fences[index] !== undefined || THEMATIC_LINE_RE.test(line) || isTagOnlyLine(line) || HTML_HEADING_LINE_RE.test(line),
 	);
@@ -397,16 +394,26 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
  * the round 18-21 review detour - four rounds, each finding another fail-open - so the gate is the schema
  * itself (see the review report's route decision).
  */
+/** The line with every leading list marker removed (`- - ``` ` -> ` ``` `). */
+function stripListMarkers(value: string): string {
+	let out = value;
+	for (;;) {
+		const next = out.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, "");
+		if (next === out) return out;
+		out = next;
+	}
+}
+
 export function hasMemoryDocumentShape(value: string): boolean {
 	let inFence: FenceToken | undefined;
 	let underKnownHeading = false;
 	for (const line of value.split("\n")) {
 		// A fence may be indented by up to three spaces (four make it an indented code block), and it may
 		// open behind a list marker - `- ```` ` is a fence in a list item, not an entry (round 21 B-2).
-		// The marker is stripped only *outside* a block: inside one, `- ```` ` is content, and stripping
-		// there would let it close the block early (round 22 B-1).
-		const indented = line.replace(/^ {1,3}/, "");
-		const fence = readFenceLine(inFence ? indented : indented.replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, ""));
+		// Markers are stripped repeatedly, so a nested item (`- - ```` `) is a fence too, and only
+		// *outside* a block: inside one, `- ```` ` is content, and stripping there would let it close the
+		// block early (rounds 22 B-1 / 23 B-1).
+		const fence = readFenceLine(inFence ? line.replace(/^ {1,3}/, "") : stripListMarkers(line));
 		if (inFence) {
 			if (fence && fenceCloses(fence, inFence)) inFence = undefined;
 			continue;
@@ -422,8 +429,9 @@ export function hasMemoryDocumentShape(value: string): boolean {
 			continue;
 		}
 		// Any other ATX heading ends the section: a `- ` entry under `# Notes` is not under `## Project`
-		// (round 22 I-1).
-		if (/^\s*#/.test(line)) {
+		// (round 22 I-1). A setext underline or an HTML heading does the same, because the line above it
+		// becomes a heading of its own (round 23 B-1) - both resets are fail-closed.
+		if (/^\s*#/.test(line) || /^(?:=+|-{2,})[ \t]*$/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>[ \t]*$/i.test(line)) {
 			underKnownHeading = false;
 			continue;
 		}

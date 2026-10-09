@@ -1916,6 +1916,10 @@ try {
 				["fence-hiding-list-fence", "# Project Memory\n\nHere are my review notes for the frozen revision.\n\n```\n- ```\n## Project\n- the hidden fake entry\n```\n"],
 				["entry-under-other-heading", "# Project Memory\n\n## Project\n# Notes\n- an entry that is not under a section\n"],
 				["entry-under-title-again", "# Project Memory\n\n## Project\n# Project Memory\n- an entry under the document title\n"],
+				["setext-between-entry", "# Project Memory\n\n## Project\n\nNotes from the review\n=====================\n- an entry under a setext heading\n"],
+				["html-between-entry", "# Project Memory\n\n## Project\n<h2>Notes</h2>\n- an entry under an HTML heading\n"],
+				["quoted-pseudo-document", "# Project Memory\n\nHere is a sample:\n> ```\n> ## Project\n> - a hidden entry\n> ```\n"],
+				["nested-list-fence", "# Project Memory\n\n## Project\n- - ```\n  - a hidden entry\n  ```\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {
