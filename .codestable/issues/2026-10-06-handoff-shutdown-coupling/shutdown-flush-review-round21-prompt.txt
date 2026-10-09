@@ -1,0 +1,27 @@
+# Lane A 独立审查 — 冻结修订 `208d590`（第 20 轮修复集，候选 `v0.4.9`，第 21 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev21`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑变异先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+- 被审 diff：`git diff 27dc26d..HEAD`（三个局部规则对齐 + 用例 + 记录）。
+- 第 20 轮（冻结 `27dc26d`）给 **1 blocking + 2 important**，全在同一个手写 markdown 子集里：空行未重置 setext 候选、HTML 标题未顶格、缩进 0–3 格的围栏未识别。本轮审这三条。
+- 必读：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md` 的**第 20 轮处置**（含「未收敛的增长是停下的信号」那段方向取舍）、第 19/18 轮处置与残留清理节；`pass.ts` 的扫描器；`sections.ts` 的 `readFenceLine`/`fenceCloses`。
+
+## 你要做的两件事
+
+1. **验证第 20 轮三条修复**（各自的最小复现是否真的被拒、反向对照是否仍被发布、变异是否各红在自己的断言上）。
+2. **再做一次 fail-open / 误拒 的双向搜索**，范围限定在这个扫描器的规则族：ATX / setext / HTML 标题 × 顶格规则 × 围栏（长度、信息串、缩进、未闭合）× 条目（bullet / 编号 / 缩进）× 空行与候选行。
+   - 已知并接受的方向：放宽的一侧（散文被判成文档）要报 blocking；收紧的一侧（合法回复被拒）要报 important 并给出「旧行为是否接受过」的实测。
+   - 若你**无法再找到**新的 fail-open，请明确写 `VERDICT: PASSED`；不要为了凑条目把风格偏好写成 finding。
+
+## 另外
+
+- 报告与 CHANGELOG 里的数字、方向描述是否与代码一致（尤其第 18→20 轮的数字改动）。
+- 在 `residual-risk` 里写下这个接受面的**已知边界清单**（哪些 markdown 构造不在判据内），因为本仓的记录文化要求边界具名。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line`、影响、修复边界；
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`；`## Test And QA Focus` 附命令与结果。

@@ -1,0 +1,106 @@
+I have completed the verification. Below is my review.
+
+---
+
+# Lane A 独立审查 — 冻结修订 `208d590`（第 20 轮修复集，候选 `v0.4.9`，第 21 轮）
+
+范围：`git diff 27dc26d..HEAD`（`pass.ts` +5 行、`consolidation-test.mjs` +5 行、报告 +15 行）。工作区只读；变异与探针全在 `/tmp/laneA-rev21.TtmVEP` 的副本里做。基线 `node tests/run-all.mjs` → `All 15 tests passed.`（`git status --short` 全程只有既有的 `M .agents/memory/HANDOFF.md`、`M .agents/memory/project-context.json`）。
+
+## blocking
+
+**B-1（blocking）：setext 候选行只被空行重置，仍接受任何「非 bullet / 非标题」的行——分隔线、引用、HTML 注释、缩进代码都能充当「上方文本行」⇒ 第 19 轮 B-2 的裸分隔线被一行 `=` 绕过，仍是 fail-open。**
+`pass.ts:385` 把任意落到最后的行写进 `replyTextLine`；`pass.ts:372` 的判据只有「`replyTextLine !== ""`」。第 20 轮只在 `pass.ts:358-363` 补了空行重置，`---` / `> …` / `<!-- … -->` / `    code` 这些**不是段落**的行照样成为候选。实测（真实 `/memory update`、规范四节存储、正文 > 40 字符）：
+
+```
+# Project Memory
+
+---
+=
+- a sentence long enough to pass the forty character floor
+→ REPLACED
+```
+
+同一类还复现了三种：把 `---` 换成 `> I reviewed …`、`<!-- note -->`、`    code line` 均 `REPLACED`。对照：第 19 轮已关的 `bare-rule-dashes`（`---\n- entry`，无 `=`）仍被拒——即 B-2 的结论「裸分隔线不是标题」被多插一行 `=` 破坏。CommonMark 里这些行都不是 setext 下划线能承接的段落，故回复无标题。旧行为（`27dc26d`）同样发布（本类不是本轮新引入，但本轮的 B-1 修复明确以「候选必须是文本行」为目标，只关了空行一种隔断）。
+
+**最小修法边界**：把「候选行」定义成真正的段落文本（排除 thematic break `^(?:[-*_]\s*){3,}$`、`>`/列表装饰、HTML 注释/标签行、4+ 空格缩进），或在遇到这些行时清 `replyTextLine`；只对 `=` 补一种隔断（本轮做的）会继续漏。
+
+**B-2（blocking）：带列表装饰的围栏开启器不被跟踪 ⇒ 标题 + 一个「开围栏的 bullet」被判成有条目。**
+`pass.ts:346` 只归一化 1–3 个**空格**；`- ```` ` / `1. ```` ` / `* ```` ` 这类行先被 `pass.ts:378` 的条目正则吃掉，而它开的围栏及其中的行无人跟踪。实测：
+
+```
+# Project Memory
+
+## Project
+- ```
+  - entry
+  ```
+→ REPLACED
+```
+
+按 CommonMark，`- ```` 在列表项里开启围栏，`  - entry` 是围栏内的代码，回复只有标题、没有条目，应拒。这是「围栏 × 条目」族的 fail-open；`isHeadingOnlyDocument` 的围栏探测同样只看 raw 行（`sections.ts`），两处都漏，不是半规则。最小修法边界：识别 `<marker>*\s+` 之后紧跟围栏开启器，或统一「先按 CommonMark 的 leaf block 起点读一行」。
+
+## important
+
+**I-1（important）：I-1 的修法把 HTML 标题从 `line.trim()` 改成 raw `line` 时，一并丢掉了行尾容忍 ⇒ 带行尾空白或 CRLF 的合法 HTML 标题文档被误拒。**
+`pass.ts:365` 现在是 `/^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line)`。`^` 强制顶格是对的，但 `$` 让 `</h2> ` 后的空格 / `\r` 失效。实测（同一夹具，仅换 `pass.ts`）：
+
+| 回复 | `27dc26d`（旧） | `HEAD`（新） |
+| --- | --- | --- |
+| `<h2>Project</h2> \n- entry…` | REPLACED | **REFUSED（误拒）** |
+| `<h2>Project</h2>\r\n- entry…`（CRLF 整篇） | REPLACED | **REFUSED（误拒）** |
+
+这正是第 18 轮 I-3 要求「HTML 标题下有条目必须被发布」的形状，只因一个尾随空格就回退。CRLF 尤其反讽：同一回复若用 ATX 标题（`## Project\r\n- entry`）仍被发布，`sections.ts:300` 的 `isHeadingOnlyDocument` 也专门归一化 `\r\u2028\u2029`，只有这个扫描器没有。最小修法：`line.trimEnd()`（`^` 不受影响，仍要求顶格）或 `/^<h[1-6][^>]*>.*<\/h[1-6]>[ \t\r]*$/i`。
+
+**I-2（important，记录）：报告 R-F2 行的变异数字仍是 13，与 CHANGELOG 及第 19 轮处置自己写的 1 矛盾，且第 19 轮「残留清理表同步」的声明未执行。**
+`shutdown-flush-review-report.md:347` 写「变异退回「只认规范四节」恰红 **13** 条」；`CHANGELOG.md:20` 写 1；`report:313` 写「已改：旧形态 13、只认四节 1（残留清理表同步）」。我在副本实测 `storedIsDocument = sectionsFromMarkdown(existing.text) !== undefined`：**1 条断言红**（`a non-canonical stored memory is protected too`），`FAILURES: 1`。所以 `:313` 的「残留清理表同步」没有发生，`:347` 是错的。第 20 轮审查的 I-3 未出现在本轮「第 20 轮处置」表里。最小修法：`:347` 的 `13` 改 `1`（或标明两个数字各指哪个变异）。
+
+## nit
+
+- **N-1**：`pass.ts:341` 注释「a plain text line, not a bullet or marker」名不副实——它同样接收 thematic break / 引用 / HTML 注释 / 缩进代码，正是 B-1 的源头；顺便把「不是 bullet 或 marker」改成「是可被 setext 承接的段落文本（并列出排除项）」。
+- **N-2**：`pass.ts:364` 注释「Headings must start at column 0」没提 HTML 分支同时禁止了行尾空白（I-1）；要么修代码后注释自然成立，要么把「列 0 且无尾随空白」写清。
+- **N-3**：报告第 20 轮处置说三条「方向一律 fail-open」，但 I-1 的修法本身引入了一个收紧方向的误拒（I-1 条），该节未登记这一副作用。
+
+## suggestion
+
+- **S-1**：把 B-1/B-2 的反向控制补进 `tests/consolidation-test.mjs`：`---\n=\n- x`、`> quote\n=\n- x`、`<!-- c -->\n=\n- x` 与 `## Project\n- ```\n  - entry\n  ``` ` 各一条「必须被拒」。当前新增的三条用例只覆盖点名的三种形状，B-1/B-2 与 I-1 的尾随边界都没有断言——第 18/20 轮审查员预言过的「单向用例」第四次成立。
+- **S-2**：给 I-1 的修法补一条正向对照（`<h2>Project</h2> \n- x` 必须**发布**），否则这类收紧回归会再次静默通过。
+
+## learning
+
+- **关一种隔断不等于关一类规则**：B-1 修的是「空行不重置候选」，但规则本身是「`=` 只承接紧邻的段落文本行」。只补空行这个特例，`---`/引用/注释/缩进代码就依次成为下一个特例（本轮实测四种）。
+- **raw 与 trim 是按规则选的，不是按分支选的**：同一条 `if` 里 ATX 用 raw（容忍尾随空白，因正则无 `$`），HTML 用 raw（不容忍，因有 `$`）——两条分支的「raw」含义不同，肉眼一致、行为不一致（I-1）。
+- **谓词共享 ≠ 输入共享的老问题换了个面**：第 19 轮记下「同一个助手喂不同输入」。本轮 I-2 修了缩进，但围栏前缀（列表/引用标记）仍各读各的（B-2）。
+
+## praise
+
+- 三条修复本身正确、最小复现确实被拒、反向对照仍被发布：`blank-then-bare-equals` / `indented-html-heading` / `indented-fence` 三条各含「byte-identical」与「not writable」两断言；`rev-atx` / `rev-setext` / `rev-html` / `rev-ordered` 均 `REPLACED`。
+- 三条变异各自**红在自己的断言上**（见下），没有串红，也没有误伤反向用例。
+- 围栏归一化 `^ {1,3}` 的边界正确：3 空格开启器 + 4 空格「闭合行」→ 仍拒（4 空格不是闭合围栏）；`~~~` 混合族仍拒。
+- 基线 15/15；副本 `pass.ts` md5 与工作区 HEAD 一致（`a606746…`）。
+
+## residual-risk
+
+**本次接受面的具名边界清单**（手写 markdown 子集，均不在判据内）：
+
+- **fail-open（本次实测，未登记）**：setext 候选接受非段落行（`---`/`> …`/`<!-- … -->`/4+ 空格缩进）→ B-1；列表标记后的围栏开启器 `- ```` ` 不被跟踪 → B-2。
+- **fail-open（已有登记）**：任意顶格 ATX（如 `# Notes`）+ 之后任意一条 bullet 即算文档（设计如此）；`isHeadingOnlyDocument` 对只含 `<hN>…</hN>` 或内联 `<T>` 的单行仍算骨架。
+- **误拒（收紧侧）**：setext `-` 下划线整个不认（`Project\n---\n- x` 被拒，第 19 轮登记）；ATX / HTML 标题缩进 1–3 格被拒（CommonMark 允许，本仓刻意顶格）；setext 下划线缩进 1–3 格被拒；引用里的标题 `> ## Project` 被拒；HTML 标题要求开闭标签同行；CRLF / `\u2028` / `\u2029` 在该扫描器不归一（ATX 侥幸通过，setext/HTML 被拒——I-1 是其一种）；HTML 标题行尾空白被拒（I-1 新引入）。
+- **fail-closed**：反引号围栏的信息串里含反引号（CommonMark 视为行内代码）被当成开启器，只会多拒。
+- **刻意 fail-open**：`hasConfiguredAuth?.(…) ?? true`（`shared/llm.ts:55,59`），仅「registry 形状的部分上下文」，方向「视为可用」；本轮未触碰。
+- **修不了的既有残留**：`readRenderWithMtime` 的 mtime+size 盲点、POSIX 写回窗口，本轮未触碰，维持登记。
+
+## Test And QA Focus
+
+沙箱：`/tmp/laneA-rev21.TtmVEP`（工作区副本；`git status --short` 只多出副本里的临时用例，已移出后再跑）。
+
+- **基线**：`cd /tmp/laneA-rev21.TtmVEP && node tests/run-all.mjs` → `All 15 tests passed.`
+- **三条修复的变异（副本里做，改后 md5 复位）**：
+  - M-B1（`pass.ts:358-363` 退回 `if (line.trim() === "") continue;`）：红 **2** 断言——`blank-then-bare-equals leaves the stored memory byte-identical`、`blank-then-bare-equals is reported as not writable`；`FAILURES: 2`（含汇总 3 行，与记录「红 3」口径一致）。
+  - M-I1（`pass.ts:365` 的 HTML 退回 `line.trim()`）：红 **2**——`indented-html-heading` 两条；`FAILURES: 2`。
+  - M-I2（`pass.ts:346` 退回 `readFenceLine(line)`）：红 **2**——`indented-fence` 两条；`FAILURES: 2`。
+- **记录数字的变异**：M-stored（`storedIsDocument = sectionsFromMarkdown(existing.text) !== undefined`）：红 **1**——`a non-canonical stored memory is protected too`；`FAILURES: 1`。据此 `report:347` 的 13 应为 1。
+- **fail-open 端到端复现**（真实 `/memory update`、规范四节存储、正文 > 40 字符）：`---\n=\n- …`、`> …\n=\n- …`、`<!-- … -->\n=\n- …`、`    code\n=\n- …`、`## Project\n- ```\n  - entry\n  ``` ` 均 `REPLACED`（应拒）。
+- **误拒端到端复现 + 旧行为对照**（把副本 `pass.ts` 换回 `git show 27dc26d:…` 再跑）：`<h2>Project</h2> ` 与整篇 CRLF 的 `<h2>Project</h2>`→ 旧 `REPLACED`、新 `REFUSED`；`Project\n  =======`、`  ## Project`、`Project\n---\n- x` 两版皆 `REFUSED`（后三条非本轮引入）。
+- **只读**：工作区 `/tmp/pi-context-rev21` 的 `git status --short` 与基线一致。
+
+VERDICT: CHANGES-REQUESTED

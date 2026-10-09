@@ -41,6 +41,16 @@ export type RemovedEntries = { count: number; samples: string[] };
  */
 export const OPAQUE_DOCUMENT_MIN_CHARS = 40;
 
+/** A line a setext underline may attach to: paragraph text, not a rule, quote, tag or indented code. */
+function isSetextCandidate(line: string): boolean {
+	if (/^ {4,}/.test(line)) return false;
+	const trimmed = line.trim();
+	if (trimmed === "") return false;
+	if (/^>/.test(trimmed) || /^</.test(trimmed)) return false;
+	if (/^(?:[-*_][ \t]*){3,}$/.test(trimmed)) return false;
+	return true;
+}
+
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
 export type ConsolidateOutcome = {
 	result: ConsolidatedResult;
@@ -342,8 +352,10 @@ export async function consolidateProjectState(
 		let replyTextLine = "";
 		for (const line of replyBody.split("\n")) {
 			// CommonMark allows a fence to be indented by up to three spaces; four make it an indented code
-			// block, so it is not a fence at all (round 20 I-2).
-			const fence = readFenceLine(line.replace(/^ {1,3}/, ""));
+			// block, so it is not a fence at all (round 20 I-2). A fence can also open inside a list item,
+			// after the marker (round 21 B-2), which is why the marker is stripped before the test.
+			const fenceSource = line.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, "");
+			const fence = readFenceLine(fenceSource);
 			if (replyInFence) {
 				// Everything inside a block is content unless the line really closes it, by the same rule the
 				// heading-only gate uses (same character, at least as long, no info string) - round 19's B-1.
@@ -362,7 +374,8 @@ export async function consolidateProjectState(
 				continue;
 			}
 			// Headings must start at column 0: `    ## Project` is an indented code block, not a heading.
-			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line)) {
+			// Trailing whitespace and a CR stay legal (round 21 I-1: the ATX branch never forbade them).
+			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>[ \t]*\r?$/i.test(line.replace(/\r$/, ""))) {
 				replySawHeading = true;
 				replyTextLine = "";
 				continue;
@@ -382,7 +395,10 @@ export async function consolidateProjectState(
 				replyTextLine = "";
 				continue;
 			}
-			replyTextLine = line.trim();
+			// Only a paragraph line can carry a setext underline. A thematic break, a blockquote, an HTML
+			// comment or tag, and an indented code line are none of those, so they clear the candidate
+			// instead of becoming one (round 21 B-1: each of them used to be a bridge to a bare `=`).
+			replyTextLine = isSetextCandidate(line) ? line.trim() : "";
 		}
 		const conversationalOpaque =
 			storedIsDocument &&

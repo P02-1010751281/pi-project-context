@@ -1903,6 +1903,13 @@ try {
 				["blank-then-bare-equals", "# Project Memory\n\nI reviewed the frozen revision and here is what I found.\n\n=\n- a sentence long enough to pass the forty character floor\n"],
 				["indented-html-heading", "# Project Memory\n\n    <h2>Project</h2>\n- a sentence long enough to pass the forty character floor\n"],
 				["indented-fence", "# Project Memory\n\nHere is a sample:\n ```\n## Project\n- a sample entry here\n ```\n"],
+				// Round 21: the bridge to a bare `=` must not be a rule, quote, comment or code line, and a
+				// fence can open inside a list item.
+				["rule-before-equals", "# Project Memory\n\n---\n=\n- a sentence long enough to pass the floor\n"],
+				["quote-before-equals", "# Project Memory\n\n> I reviewed the frozen revision.\n=\n- a sentence long enough to pass the floor\n"],
+				["comment-before-equals", "# Project Memory\n\n<!-- note -->\n=\n- a sentence long enough to pass the floor\n"],
+				["code-before-equals", "# Project Memory\n\n    code line\n=\n- a sentence long enough to pass the floor\n"],
+				["fence-in-list-item", "# Project Memory\n\n## Project\n- ```\n  - a sample entry here\n  ```\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {
@@ -1938,6 +1945,7 @@ try {
 				["numbered", "# Project Memory\n\n## Project\n1. numbered entry that must be published\n"],
 				["setext", "# Project Memory\n\nProject\n=======\n- setext entry that must be published\n"],
 				["html", "# Project Memory\n\n<h2>Project</h2>\n- html entry that must be published\n"],
+				["html-trailing-space", "# Project Memory\n\n<h2>Project</h2> \n- html entry that must be published\n"],
 			]) {
 				const handle = await project(`structured-prose-reverse-${name}`);
 				try {

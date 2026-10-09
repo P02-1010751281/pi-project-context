@@ -24,6 +24,7 @@
 | 18 | 2026-10-08 | `63a825f`（残留清理集：R-A/R-F2 收窄 + R-2 + 看门狗） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；5 important：判据围栏/形状/诊断 + `hasConfiguredAuth` 硬依赖 + 撤回记录悬空引用；4 nit） | `shutdown-flush-review-round18-independent.txt` | ✓：`git status` 与基线一致、470 条文件表逐行一致 |
 | 19 | 2026-10-08 | `bef795e`（第 18 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking，均在第 18 轮新加的判据里**：围栏闭合只比字符、裸分隔线当标题；1 important 属数字口径；5 nit） | `shutdown-flush-review-round19-independent.txt` | ✓：`git status` 与基线一致、472 条文件表逐行一致 |
 | 20 | 2026-10-08 | `27dc26d`（第 19 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**1 blocking + 2 important，全在同一扫描器**：空行未重置 setext 候选、HTML 标题未顶格、缩进围栏未识别） | `shutdown-flush-review-round20-independent.txt` | ✓：`git status` 与基线一致、474 条文件表逐行一致 |
+| 21 | 2026-10-08 | `208d590`（第 20 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 2 important**：setext 候选仍接受 rule/quote/注释/缩进代码四种「桥」、列表项里的围栏未跟踪；HTML 标题丢掉尾随空白容忍；记录数字漏改） | `shutdown-flush-review-round21-independent.txt` | ✓：`git status` 与基线一致、476 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -283,6 +284,23 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
 
+## 第 21 轮处置（2026-10-08）
+
+第 18→21 **连续四轮**都在同一个手写 markdown 子集里找边界，每轮都能找到新的 fail-open。本轮三条已按最小修法处理：
+
+| 第 21 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：setext 候选行只被空行重置 ⇒ `---` / `> …` / `<!-- … -->` / 缩进代码都能当「上方文本行」，一行 `=` 就绕回裸分隔类 | **已修**：新增 `isSetextCandidate` —— 只有段落文本能承接 setext 下划线（排除 ≥4 格缩进、引用、标签/注释、thematic break）。四条桥各有用例；变异（不再排除）红 **12** 条 |
+| **B-2**（blocking）：列表标记后的围栏开启器不被跟踪（`- ``` `）⇒ 「标题 + 一个开围栏的 bullet」被判成有条目 | **已修**：围栏判定前剥掉列表标记；用例 `fence-in-list-item`；变异红 **3** 条 |
+| I-1：上一轮把 HTML 标题改测 raw 行时丢掉了尾随空白容忍 ⇒ `<h2>Project</h2> ` 与 CRLF 被误拒 | **已修**：结尾允许 `[ \t]*\r?`；新增正向对照（带尾随空白的 HTML 标题必须**发布**）；变异红 **1** 条 |
+| I-2：报告里 R-F2 行的变异数字仍是 13，与 CHANGELOG 的 1 矛盾 | **已改**（本行同时标注这是第 19 轮漏改） |
+| N-1 / N-2 / N-3（注释与处置节未登记副作用） | 随本轮代码注释与本节一并改 |
+
+**方向取舍（交给 owner 决定，不再单方面堆轮次）**：
+- **路线 A（继续补规则）**：接受面继续作为「markdown 子集」维护。四轮的实测说明：每补一条规则，相邻规则又暴一个口子（引用里的围栏、嵌套列表、setext 与列表混排……）。这条路线能收敛，但需要按轮次继续。
+- **路线 B（收缩到本仓自己的文档形状）**：只认本扩展产出的形状 —— `##` 小节标题（顶格、已知小节名）+ `- ` 条目（顶格）—— 直接复用 `sectionsFromMarkdown` 的词汇，围栏/引用/缩进/HTML/setext 全部不再需要单独规则。代价：第 18 轮 I-3 要求「必须发布」的 setext / HTML / 编号形状会被拒（记忆保留 + 诊断，方向安全），那是**行为变更**，需要与文档/CHANGELOG 同批声明。
+- `v0.4.9` 仍**未发版**（tag 已撤回、pin 与安装树在 `v0.4.8`）—— 符合「残留/未清事项收完再发」。
+
 ## 第 20 轮处置（2026-10-08）
 
 三条都是**同一类**：规则在一个分支里成立、在相邻分支里没跟上。方向一律 fail-open。
@@ -344,7 +362,7 @@ tag 已在双远端删除、pin 与安装树回退到 `v0.4.8`、修复提交留
 | 残留 | 处置 |
 | --- | --- |
 | **R-A**：结构测试接受面偏宽 —— 带一条 `- ` 条目 / 围栏 / 任意 `# 标题` 的散文仍能替换四节文档（第 15 轮实测 5 种形状） | **已修**：回复侧判据改为「标题 + 其下条目」，按本仓词汇认标题与条目并跟踪围栏（ATX / setext / HTML；bullet 或编号）。散文形状（含围栏伪文档、裸分隔线、缩进标题）+ 反向形状 + 非规范存储各有用例；退回旧形态红 **13** 条、去掉围栏跟踪红 1 条、去掉编号条目红 1 条、去掉 setext/HTML 红 2 条 |
-| **R-F2**：存储侧只认规范四节 ⇒ 手写的**非规范**记忆不受保护（现场那份六节文档正是此形，即 R-F2 并非只关乎 fresh 项目） | **已修**：存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」；空/极小存储仍放开（fresh 项目的首条记忆有专门用例）。变异退回「只认规范四节」恰红 **13** 条 |
+| **R-F2**：存储侧只认规范四节 ⇒ 手写的**非规范**记忆不受保护（现场那份六节文档正是此形，即 R-F2 并非只关乎 fresh 项目） | **已修**：存储侧改为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」；空/极小存储仍放开（fresh 项目的首条记忆有专门用例）。变异退回「只认规范四节」恰红 **1** 条（第 19 轮 I-1 更正；第 21 轮 I-2 指出本行当时漏改） |
 | **R-F3**：短于 40 字符的回复由 `report.ts` 的长度规则拦写 | **不是残留**：那条规则给出更诚实的理由（`too short to be a change`）且不丢内容；39/40 两侧都有用例钉住 |
 | **R-2**：只读状态路径新增 `ctx.modelRegistry.find` / `hasConfiguredAuth` 依赖 | **已收窄**：`find` 改为可选调用、缺失时回退会话模型，并加断言；去掉可选调用会使 `aux-model-test` 以 `TypeError` 硬失败（不是 FAIL 行，也记在这里） |
 | **SIGKILL 失败路径留下临时目录**（~40 KB/次，纯外表） | **已修**：两个 FIFO 看门狗在 SIGKILL 之前同步清掉**各自的 FIFO 子目录**（`race` / `adopt`），夹具的记忆 artifacts 留在 `flushMem` 里供诊断（第 19 轮 N-2 更正了「清整棵临时树」的旧描述） |
