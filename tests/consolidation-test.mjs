@@ -1913,6 +1913,9 @@ try {
 				["comment-before-equals", "# Project Memory\n\n<!-- note -->\n=\n- a sentence long enough to pass the floor\n"],
 				["code-before-equals", "# Project Memory\n\n    code line\n=\n- a sentence long enough to pass the floor\n"],
 				["fence-in-list-item", "# Project Memory\n\n## Project\n- ```\n  - a sample entry here\n  ```\n"],
+				["fence-hiding-list-fence", "# Project Memory\n\nHere are my review notes for the frozen revision.\n\n```\n- ```\n## Project\n- the hidden fake entry\n```\n"],
+				["entry-under-other-heading", "# Project Memory\n\n## Project\n# Notes\n- an entry that is not under a section\n"],
+				["entry-under-title-again", "# Project Memory\n\n## Project\n# Project Memory\n- an entry under the document title\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {

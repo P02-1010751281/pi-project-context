@@ -403,7 +403,10 @@ export function hasMemoryDocumentShape(value: string): boolean {
 	for (const line of value.split("\n")) {
 		// A fence may be indented by up to three spaces (four make it an indented code block), and it may
 		// open behind a list marker - `- ```` ` is a fence in a list item, not an entry (round 21 B-2).
-		const fence = readFenceLine(line.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, ""));
+		// The marker is stripped only *outside* a block: inside one, `- ```` ` is content, and stripping
+		// there would let it close the block early (round 22 B-1).
+		const indented = line.replace(/^ {1,3}/, "");
+		const fence = readFenceLine(inFence ? indented : indented.replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, ""));
 		if (inFence) {
 			if (fence && fenceCloses(fence, inFence)) inFence = undefined;
 			continue;
@@ -416,6 +419,12 @@ export function hasMemoryDocumentShape(value: string): boolean {
 		const heading = HEADING_RE.exec(line.replace(/\r$/, ""));
 		if (heading) {
 			underKnownHeading = SECTION_KEY_BY_HEADING.has(heading[1].trim().toLowerCase());
+			continue;
+		}
+		// Any other ATX heading ends the section: a `- ` entry under `# Notes` is not under `## Project`
+		// (round 22 I-1).
+		if (/^\s*#/.test(line)) {
+			underKnownHeading = false;
 			continue;
 		}
 		if (underKnownHeading && line.startsWith("- ")) return true;

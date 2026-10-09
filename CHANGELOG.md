@@ -19,8 +19,10 @@
   于是手写的非规范记忆（现场那份六节文档）也受保护。setext / HTML 标题、编号列表、`* `、缩进条目与未知小节名**刻意被拒**
   （记忆保留 + 一条诊断）——第 18–21 轮曾在同一处维护更宽的 markdown 子集，四轮各找到一个 fail-open（围栏半规则、裸分隔线、
   空行与缩进、桥与列表内围栏），因此第 22 轮收缩到 schema 本身，取舍见 `.codestable` 报告。散文形状、被拒形状（含
-  `fence-in-list-item`、`indented-heading-flush-entry`、`unknown-section`）与非规范存储各有用例；退回旧形态红 13 条、
-  去掉条目要求红 7 条、不跳围栏红 10 条、标题允许缩进红 3 条、条目放宽到 `* `/编号/缩进红 7 条、不校验小节名红 3 条。
+  `fence-in-list-item`、`fence-hiding-list-fence`、`entry-under-other-heading`、`indented-heading-flush-entry`、`unknown-section`）
+  与非规范存储各有用例。按最终修订重测的变异（计法：各修订上的 `^FAIL` 断言行）：围栏从不识别红 14 条、去掉条目要求红 7 条、
+  条目放宽到 `* `/编号/缩进红 7 条、标题允许缩进红 3 条、小节名不校验红 3 条、围栏内剥列表标记红 3 条、
+  其它 ATX 标题不重置红 5 条、存储侧丢掉长度下限红 2 条；第 18 轮记的 13 / 1 是那一修订上的历史数字。
 - **诊断不再把「形状读不出」说成「没有条目」**（第 18 轮 I-3）：`carried no entries` 对「散文里带一条 bullet」这类回复是假的，
   现在两条路径统一为同一措辞：日志串写全（`the consolidation reply was not a writable memory document…`），toast 用短形式（`the reply was not a writable memory document`）。
 - **只读状态路径不再假定 `modelRegistry.find` 存在**（第 17 轮 R-2）：改为可选调用、缺失时回退会话模型，并有用例钉住这条回退。
