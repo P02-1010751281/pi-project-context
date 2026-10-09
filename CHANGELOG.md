@@ -21,9 +21,9 @@
   空行与缩进、桥与列表内围栏），因此第 22 轮收缩到 schema 本身，取舍见 `.codestable` 报告。散文形状、被拒形状（含
   `fence-in-list-item`、`fence-hiding-list-fence`、`entry-under-other-heading`、`indented-heading-flush-entry`、`unknown-section`）
   与非规范存储各有用例。按**最终修订**重测的变异（计法：`^FAIL ` 断言行，即断言条数）：围栏从不识别红 15 条、
-  有标题即算红 8 条、三种小节终止符全不重置红 8 条、条目放宽到 `* `/编号/缩进红 6 条、仅 ATX 重置红 4 条、
-  条目要求 / 标题缩进 / 小节名校验 / 围栏内剥标记 / 嵌套只剥一层各红 2 条、存储侧丢掉长度下限红 1 条。
-  第 18 与 22 轮记的旧数字是各自修订上的历史值（测试文件后来增长，已不可复现）。
+  有标题即算红 12 条、仅 ATX 终止作用域红 12 条、条目放宽到 `* `/编号/缩进红 6 条、HTML 只认严格单行红 4 条、
+  其余各规则（标题缩进 / 小节名校验 / 围栏内剥列表标记 / 嵌套只剥一层 / 不归一化换行 / 只认 `-{2,}`）各红 2 条、
+  存储侧丢掉长度下限红 1 条。早期轮次记的旧数字是各自修订上的历史值（测试文件后来增长，已不可复现）。
 - **诊断不再把「形状读不出」说成「没有条目」**（第 18 轮 I-3）：`carried no entries` 对「散文里带一条 bullet」这类回复是假的，
   现在两条路径统一为同一措辞：日志串写全（`the consolidation reply was not a writable memory document…`），toast 用短形式（`the reply was not a writable memory document`）。
 - **只读状态路径不再假定 `modelRegistry.find` 存在**（第 17 轮 R-2）：改为可选调用、缺失时回退会话模型，并有用例钉住这条回退。

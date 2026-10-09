@@ -230,8 +230,8 @@ export function readFenceLine(value: string): FenceToken | undefined {
 /**
  * Whether `token` closes a block opened by `open`: the same character, at least as long, and nothing but
  * whitespace after the run - an info string makes a line an opener, not a closer. Both readers of fences
- * (the heading-only gate here and the opaque reply test in pass.ts) share this, so neither can mirror only
- * half the rule (independent review round 19, B-1).
+ * (the heading-only gate and the document-shape gate) share this, so neither can mirror only half the
+ * rule (independent review round 19, B-1; round 24 N-1 renamed the second reader).
  */
 export function fenceCloses(token: FenceToken, open: FenceToken): boolean {
 	return token.char === open.char && token.run.length >= open.run.length && token.info === "";
@@ -394,6 +394,17 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
  * the round 18-21 review detour - four rounds, each finding another fail-open - so the gate is the schema
  * itself (see the review report's route decision).
  */
+/**
+ * Whether `line` ends the scope a `## <section>` heading opened: another heading, a setext underline, or the
+ * start of an HTML block. All three are fail-closed - the reply merely loses its claim to be a document.
+ * Callers must normalize line endings first, so the `$` anchors can be trusted (round 24 B-1).
+ */
+function endsSectionScope(line: string): boolean {
+	// A single `-` is a setext underline in CommonMark, like `=` and `--` (round 24 B-2); any tag-opening
+	// line starts an HTML block, which swallows what follows (round 24 I-1).
+	return /^\s*#/.test(line) || /^(?:=+|-+)[ \t]*$/.test(line) || /^\s*<\/?[A-Za-z][^>]*>/.test(line);
+}
+
 /** The line with every leading list marker removed (`- - ``` ` -> ` ``` `). */
 function stripListMarkers(value: string): string {
 	let out = value;
@@ -407,7 +418,7 @@ function stripListMarkers(value: string): string {
 export function hasMemoryDocumentShape(value: string): boolean {
 	let inFence: FenceToken | undefined;
 	let underKnownHeading = false;
-	for (const line of value.split("\n")) {
+	for (const line of value.replace(LINE_SEPARATOR_RE, "\n").split("\n")) {
 		// A fence may be indented by up to three spaces (four make it an indented code block), and it may
 		// open behind a list marker - `- ```` ` is a fence in a list item, not an entry (round 21 B-2).
 		// Markers are stripped repeatedly, so a nested item (`- - ```` `) is a fence too, and only
@@ -431,7 +442,7 @@ export function hasMemoryDocumentShape(value: string): boolean {
 		// Any other ATX heading ends the section: a `- ` entry under `# Notes` is not under `## Project`
 		// (round 22 I-1). A setext underline or an HTML heading does the same, because the line above it
 		// becomes a heading of its own (round 23 B-1) - both resets are fail-closed.
-		if (/^\s*#/.test(line) || /^(?:=+|-{2,})[ \t]*$/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>[ \t]*$/i.test(line)) {
+		if (endsSectionScope(line)) {
 			underKnownHeading = false;
 			continue;
 		}

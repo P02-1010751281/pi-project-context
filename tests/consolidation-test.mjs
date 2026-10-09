@@ -1920,6 +1920,10 @@ try {
 				["html-between-entry", "# Project Memory\n\n## Project\n<h2>Notes</h2>\n- an entry under an HTML heading\n"],
 				["quoted-pseudo-document", "# Project Memory\n\nHere is a sample:\n> ```\n> ## Project\n> - a hidden entry\n> ```\n"],
 				["nested-list-fence", "# Project Memory\n\n## Project\n- - ```\n  - a hidden entry\n  ```\n"],
+				["crlf-setext-between-entry", "# Project Memory\r\n\r\n## Project\r\nNotes\r\n=====\r\n- an entry under a CRLF setext heading\r\n"],
+				["single-dash-setext-between-entry", "# Project Memory\n\n## Project\nNotes\n-\n- an entry under a single-dash setext heading\n"],
+				["html-block-between-entry", "# Project Memory\n\n## Project\n<div>\n- an entry inside an HTML block\n</div>\n"],
+				["html-heading-trailing-text", "# Project Memory\n\n## Project\n<h2>Notes</h2> trailing text\n- an entry after a trailing-text HTML heading\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {

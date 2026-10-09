@@ -27,6 +27,7 @@
 | 21 | 2026-10-08 | `208d590`（第 20 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking + 2 important**：setext 候选仍接受 rule/quote/注释/缩进代码四种「桥」、列表项里的围栏未跟踪；HTML 标题丢掉尾随空白容忍；记录数字漏改） | `shutdown-flush-review-round21-independent.txt` | ✓：`git status` 与基线一致、476 条文件表逐行一致 |
 | 22 | 2026-10-08 | `04cc9ef`（路线 B 定形） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking + 3 important：围栏内剥列表标记让围栏被提前闭合、其它 ATX 标题不重置小节作用域、报告缺第 22 轮节、变异数字与独立复现不一致） | `shutdown-flush-review-round22-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 | 23 | 2026-10-08 | `c15a9d4`（第 22 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking：setext / HTML 标题不作小节作用域终止符 —— I-1 的孪生；2 nit：计数口径、共享助手说法） | `shutdown-flush-review-round23-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
+| 24 | 2026-10-08 | `c77f937`（第 23 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 blocking + 1 important，全在上一轮新增的终止符谓词上：CRLF 击穿 `$` 锚定、单个 `-` 也是 setext、HTML 只认严格单行；1 nit） | `shutdown-flush-review-round24-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -285,6 +286,23 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 第 24 轮处置（2026-10-08）
+
+第 23 轮把「终止作用域」写成了三条内联正则，第 24 轮的三条 finding 全落在它们身上（CRLF、单个 `-`、HTML 块）。
+按审查建议把这一类收成一个**带归一化前提的助手** `endsSectionScope`：
+
+| 第 24 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：`hasMemoryDocumentShape` 不归一化换行 ⇒ CRLF 回复里 `=====\r` 不匹配 `$` 锚定，setext / HTML 终止失效 | **已修**：循环前 `value.replace(LINE_SEPARATOR_RE, "\n")`（与 `isHeadingOnlyDocument` 同一归一化）；用例 `crlf-setext-between-entry`；变异「不归一化」红 **2** 条 |
+| **B-2**（blocking）：单个 `-` 行是 CommonMark 的 setext 下划线（与 `=` / `--` 同义），终止符只认 `-{2,}` | **已修**：`-+`；用例 `single-dash-setext-between-entry`；变异「只认 `-{2,}`」红 **2** 条 |
+| I-1：HTML 终止符只认「恰好一行 `<hN>…</hN>`」⇒ 尾随文本、多行、`<div>` 块都 fail-open | **已修**：任何标签开启行（`/^\s*<\/?[A-Za-z][^>]*>/`，fail-closed，本扩展从不写以 `<` 开头的行）；用例 `html-block-between-entry` / `html-heading-trailing-text`；变异「只认严格单行」红 **4** 条 |
+| N-1：`fenceCloses` 注释仍指向路线 B 删掉的 `pass.ts` 围栏读者 | **已改**为「两个门共享此助手」 |
+| S-1：终止符类需要反向夹具、并抽助手 | **已做**：助手 + 四条用例（CRLF / 单 `-` / HTML 块 / 尾随文本） |
+
+**按最终修订重测的变异（计法：`^FAIL ` 断言行 = 断言条数）**：围栏从不识别 **15**、有标题即算 **12**、仅 ATX 终止 **12**、
+条目放宽到 `* `/编号/缩进 **6**、HTML 只认严格单行 **4**、条目要求之外的各条（标题缩进 / 小节名 / 围栏内剥标记 / 嵌套只剥一层 /
+不归一化 / 只认 `-{2,}`）各 **2**、存储侧丢掉长度下限 **1**。此前各轮记的旧数字是各自修订上的历史值。
 
 ## 第 23 轮处置（2026-10-08）
 
