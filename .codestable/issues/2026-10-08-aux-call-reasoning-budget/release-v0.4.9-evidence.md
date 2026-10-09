@@ -1,56 +1,51 @@
-> **已撤回（2026-10-08）**：本文件描述的这次 `v0.4.9` 发布在 tag 打出后**按 owner 指令撤回** —— 当时带着具名残留
-> （R-A / R-2 / R-3）发版，违反本仓「残留清完才发版」的约定。处置：双远端 tag 删除、pin 与安装树回退 `v0.4.8`（`~/.pi` 提交
-> `b5083dd`）、修复提交留在 `master`（未发布、未被任何进程加载）。残留逐条清完后重新发版（发布时在本文件与审查报告的「残留清理」节补充这一节）。原如下：本文件与审查报告的
-> 「残留清理」节。以下内容保留为**第一次发布尝试**的记录。
+# v0.4.9 发版证据（2026-10-08）
 
-# v0.4.9 发布证据（2026-10-08）
+**本文件取代 2026-10-08 早先那份 v0.4.9 证据**：那一版发布在残留台账收完之前就被撤回（tag 双远端删除、
+`~/.pi` pin 回退到 `v0.4.8`、提交 `b5083dd`），本次是重发。撤回与重发的差别不是 tag 名，而是**这一轮把残留收完了**：
+回复侧接受面按第 22 轮的路线 B 定形、存储侧按实质判断、只读注册表访问可选，并把这一族的边界交给独立审查跑到 PASS。
 
-## 版本与 tag
+## 发布内容（相对于 v0.4.8）
+
+- `hasMemoryDocumentShape`：不透明回复的接受面 = **本扩展自己的文档形状**（顶格的 `## <已知小节名>` 标题 + 其下顶格的 `- ` 条目，围栏内不算），
+  与 `isHeadingOnlyDocument` 共用 `sections.ts` 的 `readFenceLine` / `fenceCloses`；
+  手写的宽 markdown 子集（ATX 任意级别 / setext / HTML / 编号 / 缩进 / 候选段落行）整体删除（回顾见报告第 22 轮节）。
+- `endsSectionScope`：另一 ATX 标题、setext 下划线（`=+` / `-+`，允许 0–3 格缩进）、任何以 `<` 开头的行都结束小节作用域；
+  换行先按 `LINE_SEPARATOR_RE` 归一化；列表标记剥离只在围栏外、且支持嵌套。
+- 存储侧从「必须是规范四节」放宽为「能解析成四节 **或** 剥离标题后 ≥ 40 字符」⇒ 手写的非规范记忆（现场那份六节文档）同样受保护；
+  只读路径不再假定 `modelRegistry.find` 存在；SIGKILL 失败路径只留诊断 artifacts。
+- 形状判定另有 `tests/sections-test.mjs` 的 13 条纯函数契约（CRLF 归一化、围栏跳过与 `{0,3}` 边界在端到端路径上不承重，
+  故钉在 unit 契约上）。
+
+## 发版核对
 
 | 项 | 值 |
 | --- | --- |
-| 变更集 | ① 上限门改读**辅助调用路由**的 `reasoning`（第 15 轮 important I-A），并新增无告警的 `peekAuxModel`；② 裸 `/autolearn` 的强制 pass 在等待前提示（第 15 轮 important I-B）；③ `capCeilingWarning` 不再把预留说成界（N-4）；其余为本轮记录/文档口径修正 |
-| 代码修订 | `6220775`（`shared/llm.ts` + `index.ts` + `memory/report.ts` + `output-budget.ts` + 夹具）、`5783610`（`autolearn/pass.ts` + 夹具）、`ef23e54`（`peekAuxModel` 四分支断言 + 两处注释缩进） |
-| tag | `v0.4.9` → tag 对象 `f009fef0a90f8402050e4ee7fdea29891f1f3e0d`，peeled `40e418ec2d4017da83b7cbcf709d1f46783f0d12`（`40e418e`） |
-| 双远端 | forgejo 与 github 的 `refs/tags/v0.4.9` 均为 `f009fef…`、`v0.4.9^{}` 均为 `40e418e…`、`master` 均为 `40e418e…`（`git ls-remote` 实测） |
-| pin | `~/.pi` 仓库 `3bba4ee`：`agent/settings.json` + `README.md` 的 `pi-project-context@v0.4.9`（备份 `/tmp/settings.json.before-v0.4.9-1791466385`） |
-| 安装副本 | `~/.pi/agent/git/git.lentech.site/C02-1010751281/pi-project-context`：`describe=v0.4.9`、`HEAD=40e418e`（= peeled tag）、工作区干净 |
-| `pi update --extensions` | `* tag v0.4.9 -> FETCH_HEAD` → `HEAD 现在位于 40e418e` → `Updated packages` |
+| 被审修订（PASS 给出时） | `99c9e74`，独立审查第 26 轮 **VERDICT: PASSED**（0 blocking / 0 important / 3 nit） |
+| PASS 之后的提交 | `33f27a4`（一处注释 + 两条 unit 用例 + 记录措辞）、`9591216`（CHANGELOG 措辞）；`git diff 99c9e74 9591216 -- extensions/` **只有注释 hunk**（行为承载代码逐字未变） |
+| 发布提交 / 分支 | `9591216`，`master` 已推 `origin`（bcc3c8e..9591216） |
+| 注释标签 | `v0.4.9` = **tag 对象 `c6b3a12249b0e23e28ce8ad0959ee603f6b9f964`**，peeled **`9591216`** |
+| 双远端 | forgejo 与 github 镜像的 `refs/tags/v0.4.9` 都回报同一个 tag 对象 `c6b3a12…` |
+| `~/.pi` pin | 提交 `866cce1`（`agent/settings.json` + `README.md` 各 1 处 → `v0.4.9`），已推 `pi-config`；`agent/settings.json` 备份 `/tmp/settings.json.before-v0.4.9-*` |
+| 安装树 | `HEAD = 9591216`（peeled 一致）、`describe --tags` = **`v0.4.9`**、工作树干净 |
+| 安装树标记 | `hasMemoryDocumentShape` 1 处、`endsSectionScope` 2 处、`stripListMarkers` 2 处 |
+| 真实设置探针 | `/tmp/probe-v049-1791516829`：扩展加载、写出 `.agents/memory/session-logs/`（`INDEX.md` + `.gitignore` + 会话目录）、**无 errors.log**；**无** `MEMORY.md` 与 journal —— 与预期一致（自动合并要 ≥6 轮且 ≥5 分钟，`pi -p` 是一次性） |
 
-## 装内验证（看树不看标签）
+## 发版时发现并处理的一件事（值得记）
 
-| 检查 | 结果 |
-| --- | --- |
-| 本版标记串 | `shared/llm.ts` 命中 `peekAuxModel`；`autolearn/pass.ts` 命中 `distilling this project's sessions`；`shared/output-budget.ts` 命中 `reserve of about` |
-| `aux-model-test.mjs` | `ALL OK`（含 `peekAuxModel` 四分支：可解析 / 空路由 / 不可解析且静默 / 无 auth） |
-| `memory-ops-test.mjs` | `ALL OK`（含 M4b 两个调用点 + 正向对照 + N-4 措辞） |
-| `autolearn-test.mjs` | `ALL OK`（含 G2「提示在 `complete` 被调用的那一刻已在通知里」） |
-| `consolidation-test.mjs` | `ALL OK` |
-| 装内 `run-all.mjs` | `All 15 tests passed.`；`git diff --check` 干净 |
+安装树里**残留着上一会话那个已撤回的 `v0.4.9` 本地标签**（tag 对象 `f009fef`，比 HEAD 早 19 个提交）：
+远端删除 tag 不会清掉克隆里的本地 tag，`fetch --tags` 也不会覆盖同名的既有 tag，于是 `describe --tags` 报 `v0.4.9-19-g9591216`，
+看起来像「安装的比 tag 新」。处理：在克隆里 `git tag -d v0.4.9` 再 `fetch --tags`，`describe --tags` 才回到 `v0.4.9`。
+**教训**：撤回一次发版后，消费端（安装树）也要显式清本地 tag，否则 describe 会撒谎。
 
-## 真机 settings 探针（默认设置，临时项目）
+## 这次探针没有覆盖什么
 
-`/tmp/probe-v049-1791466446`（`git init`），未传 `-ne`/`-e`：`pi -p` exit 0，写下 `.agents/memory/.gitignore`、`session-logs/`（INDEX + 一条归档），**无 `errors.log`**。
-探针不覆盖本版三条修复（自动 consolidation 需 ≥6 轮且 ≥5 分钟，一次性 `-p` 不满足）——它们由上面两个装内套件覆盖。
+- 探针只证明「默认设置下扩展会加载、会写归档产物、不写 errors.log」，**没有**覆盖自动合并（6 轮 / 5 分钟门槛）、
+  不透明回复的接受面（需要真实辅助模型回复）与 handoff 阈值：这些靠 `tests/run-all.mjs`（15 个测试全绿）与
+  独立审查第 26 轮（PASSED）覆盖。
+- **本机仍在运行 v0.4.9 之前的模块**：运行中的宿主不会热替换，`errors.log` 里的混合版本噪声要等重启才消失。
 
-## 与审查链的关系（第 15–17 轮）
+## 仍然具名的接受面代价（不是缺陷）
 
-| 轮 | 冻结修订 | 结论 | 处置 |
-| --- | --- | --- | --- |
-| 15 | `5f76996`（v0.4.8） | CHANGES-REQUESTED：2 important（上限门 reasoning 取值、`/autolearn` 无提示）+ B1/B2/N1-N3 确认已关、**I1 被独立复核为不成立** | 两条 important 已在 v0.4.9 修掉（各带变异，恰红 1 条目标断言） |
-| 16 | `8674fd2`（v0.4.9 修复集） | CHANGES-REQUESTED：**0 blocking**、0 代码层；1 important 属文档（两处 docs 仍写「会话模型」）、3 nit | 全部已修；四条变异被审查员独立复现为各恰红 1 条 |
-| 17 | `73da214` | CHANGES-REQUESTED：**0 blocking**、0 代码层；1 important 属措辞（第 16 轮新引入的「重试只让它更早更清楚地失败」与 `fitMemoryInput` 的裁短路径相反） | 已改口径；**停止规则在此满足**（两轮零 blocking、剩余全属措辞/记录精度类，且该条由上一轮修复自身引入） |
-
-**如实留下**：末修订（`f06f7e1`、`40e418e` 两笔文字改动）**没有审查轮**看过 —— 它们不触代码与测试，因此本版**未取得 `VERDICT: PASSED`**。
-v0.4.9 的**代码层**由第 16、17 两轮独立复核（等价性、告警语义逐字未变、变异各恰红 1 条、0 代码层发现）。要正式收口，冻结末修订再跑一轮即可。
-
-**需要重启才生效**：运行中的 pi 进程仍持旧模块（tag、pin、安装树均已 v0.4.9），重启前 `errors.log` 里可能继续出现混版噪声。
-
-## 现场（消费方仓库）处置
-
-`Quantum_Matrix` 那次 13 分钟静默的根因是「重推理 route + cap 装不下」，现场已在该仓做两件事（只读证据，其记忆内容未由本仓改写）：
-
-- `maxOutputTokens` 32768 → **131072**（route 允许 384K），并在该仓复算 `memoryCapUnsatisfiable(32000, 8192, 131072, reasoning=true) = false`；
-- 用扩展自己的 `recordMemoryDocument` 把那份手写记忆采纳进 journal：`MEMORY.md` md5 前后一致（30695 字节未变）、journal 末条文本 == 磁盘文件、`loadMemory` 现在返回 journal 的 fold。
-
-本版的「重试带上实测隐藏思考」要**重启那个会话**才生效；即使不重启，抬高上限后该配置已能满足。触发那个会话的 `/autolearn` 与 `/memory update` 现在都会在等待前先提示。
+setext / HTML / 编号列表 / `* ` / 缩进条目 / 未知小节名的回复**不被写入**（记忆保留 + 一条 `not a writable memory document` 诊断）——
+这是第 22 轮路线 B 的刻意取舍；围栏缩进边界也刻意放宽（多隐内容 ⇒ 多拒，注释已具名）。
+首次写入不受影响：存储侧不是文档时，任何形状的回复都照常发布。
