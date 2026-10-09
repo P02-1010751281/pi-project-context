@@ -1,0 +1,114 @@
+All probes done, workspace untouched. Here is my review.
+
+---
+
+# Lane A 独立审查 — 冻结修订 `27dc26d`（第 19 轮修复集，候选 `v0.4.9`，第 20 轮）
+
+范围：`git diff bef795e..HEAD`（`9349a29` 代码 + `27dc26d` 记录）。沙箱：`/tmp/laneA-rev20.mlz5ls`（工作区只读，`git status` 未变）。基线 `node tests/run-all.mjs` → `All 15 tests passed.`。
+
+## blocking
+
+**B-1（blocking）：空行不清 setext 候选行 ⇒「散文 + 空行 + 裸 `=` + bullet」仍被当作文档发布（B-2 修复未闭合）。**
+`pass.ts:356` 的 `if (line.trim() === "") continue;` 不重置 `replyTextLine`，而 `pass.ts:365-366` 用「`replyTextLine !== ""`」判 setext。于是隔一个空行的孤立 `=` 仍能吃到**上面任意一条散文行**。实测（真实 `/memory update`、规范四节存储、正文 > 40 字符）：
+
+```
+# Project Memory
+
+I reviewed the frozen revision and here is what I found.
+
+=
+- a sentence long enough to pass the forty character floor
+→ REPLACED（fail-open）
+```
+
+这正是 B-2 要关的裸分隔类，而 `pass.ts:363-364` 的注释「only underlines the text line above it」与实际不符。最小修法：`pass.ts:356` 改为
+`if (line.trim() === "") { replyTextLine = ""; continue; }`（CommonMark 的 setext 下划线不允许空行隔开；同段多行文本仍保留）。
+
+## important
+
+**I-1：「标题必须顶格」只对 ATX 生效，缩进 HTML 标题仍被接受（残留缩进代码块没全关）。**
+`pass.ts:358` 的 ATX 分支测 **raw `line`**（顶格），HTML 分支却测 `line.trim()`。于是第 19 轮声称「`    ## Project` 是 indented code，已关」只对 ATX 成立：
+
+```
+# Project Memory
+
+    <h2>Project</h2>
+- a sentence long enough to pass the forty character floor
+→ REPLACED（fail-open）
+```
+
+最小修法：HTML 分支也测 raw `line`（`/^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line)`），或显式要求 `line === line.trimStart()`。二者取其一，别一边顶格一边 trim。
+
+**I-2：围栏「共用」只共用了谓词，没共用输入归一化 ⇒ 合法缩进围栏开启器不被识别。**
+`pass.ts:344` 对 **raw line** 调 `readFenceLine`，而 `sections.ts:308` 的 `isHeadingOnlyDocument` 用 **trim 过的 `raw`** 建 token。CommonMark 允许开启围栏缩进 0–3 格，于是：
+
+```
+# Project Memory
+
+Here is a sample:
+ ```
+## Project
+- a sentence long enough to pass the forty character floor
+ ```
+→ REPLACED（fail-open）
+```
+
+`CHANGELOG.md:17` / 第 19 轮处置说「与 `isHeadingOnlyDocument` 共用 `readFenceLine`/`fenceCloses`」——实际上 `readFenceLine` 只被 `pass.ts` 调用（`sections.ts:308` 仍直接 `FENCE_LINE_RE.exec(line)`）。最小修法：`pass.ts:344` 改 `readFenceLine(line.trimStart())`（或把 trim 放进 `readFenceLine`；只影响拒绝方向，方向 fail-closed）。
+
+**I-3（记录）：残留清理表 R-F2 行的数字仍是 13，与 CHANGELOG / 第 18 轮处置 / 第 19 轮处置自己矛盾。**
+`shutdown-flush-review-report.md:332` 写「变异退回「只认规范四节」恰红 **13** 条」；但 `CHANGELOG.md:20` 写 1、`report:319` 写「实测 M2 …**只红 1 条**」、`report:298` 写「只认四节 1（**残留清理表同步**）」。我按 `storedIsDocument = sectionsFromMarkdown(existing.text) !== undefined` 重做：**1** 条断言红（`a non-canonical stored memory is protected too`）。即「残留清理表同步」这条声明**未执行**。最小修法：`:332` 的 `13` 改成 `1`。
+
+## nit
+
+- **N-1**：`shutdown-flush-review-report.md:313` 仍写「（日志串与 toast 同步）」；第 19 轮 N-5 的改动只落到 `CHANGELOG.md:22`。建议把报告同句也改为「同一措辞（日志串写全 / toast 短形式）」。
+- **N-2**：`release-v0.4.9-evidence.md:3` 的括号已闭合（N-1 属实），但插入的「原如下：本文件与审查报告的「残留清理」节。」是残留碎片，整句读作「…补充这一节）。原如下：本文件与审查报告的「残留清理」节。以下内容保留为…」。删掉该碎片即可。
+- **N-3**：`report:314` / `:322` 仍写「去掉 `?? true` 恰红 1 条」/「去掉 `hasConfiguredAuth` 的 `?? true` 红 1」，而 `:296` 已解释两种变异。我实测：保留 `?.` 只去 `?? true` → 1 条断言红（`peek: a registry without find or hasConfiguredAuth still resolves the session model`）；连 `?.` 一起去 → `TypeError`、0 条 FAIL 行。二者不矛盾，但旧行最好指向 `:296`。
+- **N-4**：`CHANGELOG.md:17` 说共用 `readFenceLine`/`fenceCloses`，但 `isHeadingOnlyDocument` 并不调 `readFenceLine`。改为「共用 `fenceCloses`（围栏 token 的构造两处各自等价）」更准。
+- **N-5**：计数单位未说明。我复跑：半规则 = 6 条断言红（含 `FAILURES` 汇总共 7 行，与记录「7」一致）；去掉「上方文本行」要求 = 2 条断言红（3 行，与「3」一致）；ATX 退回 trim = 2 条断言红（3 行，与「3」一致）。数字本身没错，只是「红 N 条」混用了「断言数」与「FAIL 行数含汇总」。
+
+## suggestion
+
+- 为本次找到的三条形状补反向用例（空行后 `=`、缩进 `<hN>`、缩进围栏开启器），否则这套用例在洞上一直全绿（第 18 轮审查员的「单向用例」预言又中一次）。
+- setext 改按 CommonMark 直接看「紧邻的上一行是否为非空文本行」，而不是维护一个跨空行的 `replyTextLine` 变量——规则就写在实现里，不必再靠注释补。
+- 「改用 `sectionsFromMarkdown` 作唯一判据」不采纳的理由**成立**（见 residual-risk）；但可在注释/文档里明确写死「接受面 = 手写 markdown 子集」，并把下面的缺口列成台账。
+
+## learning
+
+- **抽出谓词 ≠ 两处同源**：第 19 轮把 `fenceCloses` 抽出来是对的，但 `readFenceLine` 的输入一处 trim、一处 raw——同一个助手喂不同输入，等于没共用。共享助手要连「怎么读一行」一起共享。
+- **规则要落到每一种形态**：「标题必须顶格」只加给 ATX，HTML 分支漏了；「setext 上方要有文本行」只用一个跨空行不清的变量近似。收窄规则时，先把该规则涉及的所有形态列出来，再逐形态钉。
+- 上一轮预测的失败模式（只测点名形状）本轮再次复现：新加的 3 条围栏/3 条裸分隔用例都只覆盖点名的方向，空行变体与缩进变体无人测。
+
+## praise
+
+- **B-1 的围栏规则确实生效**：4/5 反引号开启器配 3 反引号、`~~~` 配 ` ``` `、闭合行带信息串、未闭合到文末、`> ``` ` 全部被拒；`isHeadingOnlyDocument` 只把内联谓词换成 `fenceCloses`，语义**逐字未变**（可证，非近似）。
+- **B-2 的 `-` 形式移除正确**：裸 `---` / `--` / `=` 均被拒；`Project\n=======\n- x` 仍被发布（setext 正向没伤）。
+- **缩进 bullet 未误伤**：条目判定仍走 `line.trim()`，`  - x` 照算条目。
+- 基线全绿；存储侧变异实测恰 1 条红，`CHANGELOG.md:20` 的「1」正确；工作区 `git status` 前后一致。
+
+## residual-risk
+
+- **接受面是手写 markdown 子集**（本轮仍未采纳 `sectionsFromMarkdown` 单一判据；理由成立：`sections.ts:381` 要求 `seen.size === SECTION_KEYS.length`，会把合法部分文档 `## Project\n- x` 误拒）。已知缺口清单：
+  - 空行后的 setext `=`（blocking B-1，fail-open）；
+  - 缩进 HTML 标题（important I-1，fail-open）；
+  - 缩进 1–3 格的围栏开启器 vs `isHeadingOnlyDocument` 的 trim（important I-2，fail-open）；
+  - setext `-` 下划线整个不认 ⇒ `Project\n---\n- x`（CommonMark 合法 H2 + 列表）被**误拒**。这是有意的歧义取舍，但「setext 标题下有条目必须被发布」这条接受面实际只覆盖 `=`；
+  - 引用里的标题（`> ## Project`）不认 ⇒ 误拒（少见形状）；
+  - 任意顶格 ATX（如 `# Notes`）+ 之后任意一条 bullet 即算文档（设计如此），所以「散文戴一个 H1 加一条 bullet」仍能通过；
+  - HTML 标题要求闭标签与开标签同行。
+- `hasConfiguredAuth?.(…) ?? true` 的刻意 fail-open 仍登记在案（`shared/llm.ts:55,59`）：仅「registry 形状的部分上下文」命中，方向是「视为可用」。
+- 修不了的两条（`readRenderWithMtime` 的 mtime+size 盲点、POSIX 写回窗口）本轮未触碰，维持登记。
+
+## Test And QA Focus
+
+- **基线**：`cd /tmp/laneA-rev20.mlz5ls && node tests/run-all.mjs` → `All 15 tests passed.`
+- **变异**（沙箱副本，改 `pass.ts`/`sections.ts`/`shared/llm.ts` 后用 md5 复位）：
+  - 退回半规则（`fenceCloses(...)` → `fence.char === replyInFence.char`）：**6 条断言红**——`fence-longer-opener leaves the stored memory byte-identical`、`fence-longer-opener is reported as not writable`、`fence-info-string leaves …`、`fence-info-string is reported …`、`fence-tilde-opener leaves …`、`fence-tilde-opener is reported …`；`FAILURES: 6`（含汇总 7 行）。
+  - 去掉「上方文本行」要求（`if (replyTextLine !== "") replySawHeading = true;` → `replySawHeading = true;`）：**2 条断言红**——`bare-rule-equals leaves the stored memory byte-identical`、`bare-rule-equals is reported as not writable`；`FAILURES: 2`（含汇总 3 行）。
+  - 存储侧退回「只认规范四节」：**1 条红**——`a non-canonical stored memory is protected too`。
+  - ATX 退回 trim：**2 条红**——`indented-heading leaves …`、`indented-heading is reported …`。
+  - `hasConfiguredAuth` 保留 `?.` 只去 `?? true`：**1 条红**——`peek: a registry without find or hasConfiguredAuth still resolves the session model`；连 `?.` 一起去 → `TypeError`、0 条 FAIL 行。
+- **fail-open 端到端复现**（新临时项目、真实 `/memory update`、规范四节存储、正文 > 40 字符）：`blank-line-before-equals` / `indented-html-heading` / `indented-fence-opener-only` 均 `REPLACED`。
+- **反向检查**：`Project\n=======\n- x` 发布；`Project\n---\n- x` 被拒（误拒，登记）；缩进 bullet `  - x` 仍算条目。
+- **只读**：工作区 `git status --short` 全程只有既有的 `M .agents/memory/HANDOFF.md`、`M .agents/memory/project-context.json`。
+
+VERDICT: CHANGES-REQUESTED

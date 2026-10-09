@@ -1,0 +1,36 @@
+# Lane A 独立审查 — 冻结修订 `27dc26d`（第 19 轮修复集，候选 `v0.4.9`，第 20 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev20`（只读）。**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+
+## 硬规则
+
+不得写入工作区；不得 `git add/commit/checkout/stash/reset/clean`。跑变异请先复制沙箱到 `/tmp` 自己的目录。
+
+## 范围
+
+- 被审 diff：`git diff bef795e..HEAD`（本轮，很小：`sections.ts` 抽出的围栏助手 + `pass.ts` 扫描器 + 用例 + 记录）。
+- 上一轮（第 19 轮，冻结 `bef795e`）有 **2 blocking**，都在第 18 轮新加的扫描器里（围栏闭合只比字符；裸 `---`/`--`/`=` 当 setext 标题），
+  另有 1 important（CHANGELOG 把两个变异数写成同一个）与 5 nit。本轮审这批修复。
+- 必读：`.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md` 的**第 19 轮处置**、第 18 轮处置、残留清理节与轮次表；
+  `docs/architecture.md` 的判据段；`CHANGELOG.md` 的 v0.4.9 节；`extensions/project-context/memory/sections.ts`（`readFenceLine`/`fenceCloses`/`isHeadingOnlyDocument`）。
+
+## 逐条验证
+
+| 第 19 轮条目 | 声称的修复 | 你要验的 |
+| --- | --- | --- |
+| **B-1**（blocking）：围栏闭合只比字符（长度/信息串未查） ⇒ 四反引号开启器被提前闭合、围栏内伪文档被发布 | 抽出 `sections.ts` 的 `readFenceLine` / `fenceCloses`（同字符 + 长度不短于开启器 + 闭合行无信息串），`isHeadingOnlyDocument` 与扫描器共用 | 自己构造：4/5 反引号开启器配 3 反引号、`~~~` 与 ` ``` ` 混用、闭合行带信息串、未闭合围栏到文末、围栏内再开围栏、`> ``` `（引用里的围栏）、行尾空格、`~~~` 关闭 4 反引号……还有 fail-open 吗？两处共用后 `isHeadingOnlyDocument` 的行为是否**逐字未变**（它的边界是「宁可算内容」）？ |
+| **B-2**（blocking）：裸 `---`/`--`/`=` 被当标题 ⇒ 分隔线 + bullet 成「文档」（相对第 18 轮是回归） | setext 只认「上方是文本行」的 `=` 下划线；`-` 形式整个去掉 | 还能构造出「非文档被判成文档」的裸分隔线形状吗（例如 bullet 上方、标题上方、缩进后的 `=`、`= =`、`===` 与文本同行）？反过来：合法的 setext 文档（`Project\\n=======\\n- x`）是否仍被发布？ |
+| N-1..N-5（记录层） | 数字分开记（13 / 1）、证据横幅括号闭合、看门狗描述与注释、`hasConfiguredAuth` 两种变异、诊断「同一措辞」的准确表述 | 逐条核；报告与 CHANGELOG 里是否还有互相矛盾的数字或「同步」这类不精确说法？ |
+| 残留风险：缩进代码块 `    ## Project\\n    - x` 仍被接受 | 声称已顺手关掉（标题必须顶格） | 是否真的关掉？有没有把**合法**的缩进内容误伤（例如缩进的 bullet 条目 `  - x` 仍应算条目）？ |
+| 上轮建议「改用 `sectionsFromMarkdown` 作唯一判据」 | 未采纳（理由：它要求四节齐全，会误拒合法部分文档） | 这个理由成立吗？如果成立，请在 residual-risk 里明确写下「接受面是手写 markdown 子集」的边界与它的已知缺口清单（这是本仓记录文化要的） |
+
+## 对抗性要求
+
+- 只做两件事：(1) 尽力再找一次 fail-open（散文/代码块被当文档）；(2) 检查这次收窄有没有**误拒**合法回复。
+- 自己跑 `node tests/run-all.mjs`，自己重做至少两条变异（退回半规则、去掉「上方文本行」要求）并给出红数与红的断言名。
+- 若你认为该判据已经稳定，请给 `VERDICT: PASSED`；若还有必须改的，给 `file:line` 与最小修法。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；末尾一行 `VERDICT: …`；
+`## Test And QA Focus` 附命令与结果。

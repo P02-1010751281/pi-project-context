@@ -23,6 +23,7 @@
 | 17 | 2026-10-08 | `73da214`（`v0.4.9` 修复集 + 第 16 轮文档修复） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；1 important 属措辞：第 16 轮新加的「重试只让它更早更清楚地失败」与 `fitMemoryInput` 的裁短路径相反；1 nit 属记录；S-1 复核登记诚实） | `shutdown-flush-review-round17-independent.txt` | ✓：`git status` 与基线一致、文件表逐行一致 |
 | 18 | 2026-10-08 | `63a825f`（残留清理集：R-A/R-F2 收窄 + R-2 + 看门狗） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**0 blocking**；5 important：判据围栏/形状/诊断 + `hasConfiguredAuth` 硬依赖 + 撤回记录悬空引用；4 nit） | `shutdown-flush-review-round18-independent.txt` | ✓：`git status` 与基线一致、470 条文件表逐行一致 |
 | 19 | 2026-10-08 | `bef795e`（第 18 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**2 blocking，均在第 18 轮新加的判据里**：围栏闭合只比字符、裸分隔线当标题；1 important 属数字口径；5 nit） | `shutdown-flush-review-round19-independent.txt` | ✓：`git status` 与基线一致、472 条文件表逐行一致 |
+| 20 | 2026-10-08 | `27dc26d`（第 19 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（**1 blocking + 2 important，全在同一扫描器**：空行未重置 setext 候选、HTML 标题未顶格、缩进围栏未识别） | `shutdown-flush-review-round20-independent.txt` | ✓：`git status` 与基线一致、474 条文件表逐行一致 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -281,6 +282,20 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 第 20 轮处置（2026-10-08）
+
+三条都是**同一类**：规则在一个分支里成立、在相邻分支里没跟上。方向一律 fail-open。
+
+| 第 20 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：空行不重置 setext 候选 ⇒「散文 + 空行 + 裸 `=` + bullet」仍被发布（B-2 未闭合） | **已修**：空行清掉候选行（CommonMark 的 setext 下划线不能与文本行隔空行）；用例 `blank-then-bare-equals`；变异红 3 |
+| I-1：范围「标题必须顶格」只对 ATX 生效，缩进 HTML 标题仍被接受 | **已修**：HTML 分支同样测 raw 行；用例 `indented-html-heading`；变异红 3 |
+| I-2：围栏谓词与输入归一化不一致 —— 缩进 0–3 格的围栏开启器不被识别（CommonMark 允许） | **已修**：围栏按 `^ {1,3}` 归一后判定（≥4 格是缩进代码块，本就不是围栏）；用例 `indented-fence`；变异红 3 |
+| 记录层（上轮的 N-1..N-5） | 已按其结论核过；本轮没有新增记录层条目 |
+
+**过程判断（重要）**：第 18→20 轮连续三轮都在同一个手写 markdown 子集里找边界（每轮都有 fail-open）。这不是「越改越差」，但符合本仓记下的信号 —— **未收敛的增长是停下的信号**。
+下一步的取舍已写明在该 issue 的「接受面」讨论里：要么继续按轮次补齐子集（本轮的修法），要么把接受面收缩回本仓自己的文档形状（`##` 小节 + `- ` 条目，直接复用 `sectionsFromMarkdown` 的词汇），代价是第 18 轮 I-3 要求「必须发布」的 setext / HTML / 编号形状会被拒 —— 那是一个方向选择，不属于代码细节。
 
 ## 第 19 轮处置（2026-10-08）
 

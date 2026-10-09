@@ -1898,6 +1898,11 @@ try {
 				["bare-rule-two-dashes", "# Project Memory\n\n--\n- a sentence long enough to pass the floor\n"],
 				// Round 19's residual note: an indented `## Project` is an indented code block, not a heading.
 				["indented-heading", "# Project Memory\n\n    ## Project\n    - a sample entry here\n"],
+				// Round 20: a blank line ends the setext candidate, an HTML heading must also start at column 0,
+				// and a fence indented by up to three spaces is still a fence.
+				["blank-then-bare-equals", "# Project Memory\n\nI reviewed the frozen revision and here is what I found.\n\n=\n- a sentence long enough to pass the forty character floor\n"],
+				["indented-html-heading", "# Project Memory\n\n    <h2>Project</h2>\n- a sentence long enough to pass the forty character floor\n"],
+				["indented-fence", "# Project Memory\n\nHere is a sample:\n ```\n## Project\n- a sample entry here\n ```\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {

@@ -341,7 +341,9 @@ export async function consolidateProjectState(
 		// The last line that could be underlined by a setext rule: a plain text line, not a bullet or marker.
 		let replyTextLine = "";
 		for (const line of replyBody.split("\n")) {
-			const fence = readFenceLine(line);
+			// CommonMark allows a fence to be indented by up to three spaces; four make it an indented code
+			// block, so it is not a fence at all (round 20 I-2).
+			const fence = readFenceLine(line.replace(/^ {1,3}/, ""));
 			if (replyInFence) {
 				// Everything inside a block is content unless the line really closes it, by the same rule the
 				// heading-only gate uses (same character, at least as long, no info string) - round 19's B-1.
@@ -353,9 +355,14 @@ export async function consolidateProjectState(
 				replyTextLine = "";
 				continue;
 			}
-			if (line.trim() === "") continue;
+			if (line.trim() === "") {
+				// A setext underline may not be separated from its text line by a blank line, so a blank
+				// line ends the candidate (round 20 B-1).
+				replyTextLine = "";
+				continue;
+			}
 			// Headings must start at column 0: `    ## Project` is an indented code block, not a heading.
-			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line.trim())) {
+			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>$/i.test(line)) {
 				replySawHeading = true;
 				replyTextLine = "";
 				continue;
