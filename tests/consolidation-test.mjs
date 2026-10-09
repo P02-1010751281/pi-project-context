@@ -1924,6 +1924,11 @@ try {
 				["single-dash-setext-between-entry", "# Project Memory\n\n## Project\nNotes\n-\n- an entry under a single-dash setext heading\n"],
 				["html-block-between-entry", "# Project Memory\n\n## Project\n<div>\n- an entry inside an HTML block\n</div>\n"],
 				["html-heading-trailing-text", "# Project Memory\n\n## Project\n<h2>Notes</h2> trailing text\n- an entry after a trailing-text HTML heading\n"],
+				["indented-setext-three-spaces", "# Project Memory\n\n## Project\nNotes\n   =====\n- an entry under an indented setext heading\n"],
+				["indented-single-dash-setext", "# Project Memory\n\n## Project\nNotes\n -\n- an entry under an indented single-dash setext\n"],
+				["html-processing-instruction", "# Project Memory\n\n## Project\n<?php\n- an entry inside an unclosed processing instruction\n"],
+				["html-cdata", "# Project Memory\n\n## Project\n<![CDATA[\n- an entry inside an unclosed CDATA block\n"],
+				["html-unclosed-block-tag", "# Project Memory\n\n## Project\n<h2\n>\n- an entry inside an unclosed HTML tag\n"],
 			]) {
 				const handle = await project(`structured-prose-${name}`);
 				try {
@@ -1978,6 +1983,20 @@ try {
 				} finally {
 					await rmTemp(handle.root);
 				}
+			}
+		}
+		{
+			// The bound of the setext rule: four spaces of indent make an indented code block, not a heading,
+			// so a `- ` entry after it is still under `## Project` and the reply must be published
+			// (round 25 B-1's positive control for `endsSectionScope`).
+			const handle = await project("structured-four-space-setext");
+			try {
+				await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n");
+				const reply = "# Project Memory\n\n## Project\nNotes\n    =====\n- an entry after an indented code line, still in the section\n";
+				await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: reply, context: CONTEXT }) }], stopReason: "stop" }));
+				check("a four-space indented setext line does not end the section", (await readFile(memoryFile(handle.root), "utf8")).includes("still in the section"));
+			} finally {
+				await rmTemp(handle.root);
 			}
 		}
 		{

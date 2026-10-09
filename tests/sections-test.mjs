@@ -223,6 +223,30 @@ console.log("\n=== renderMemoryDocument ===");
 	check("the dropped samples stay bounded", overflow.droppedSamples.every((sample) => sample.length <= 72));
 }
 
+console.log("\n=== hasMemoryDocumentShape contract ===");
+{
+	// The gate the opaque path reads before a reply may replace a stored memory (the route-B decision): the
+	// shape is this extension's own - a `## <known section>` heading at column 0 with a `- ` entry at
+	// column 0 under it, fences skipped. These live here as unit cases because the pass harness normalizes
+	// line endings upstream, so the CRLF row below cannot be pinned end to end (round 25's mutation showed
+	// the normalization is not load-bearing through the pass path).
+	for (const [label, value, expected] of [
+		["a section with an entry", "## Project\n- x", true],
+		["a partial document behind the canonical title", "# Project Memory\n\n## Invariants\n- y\n", true],
+		["CRLF", "## Project\r\n- x\r\n", true],
+		["CRLF with a setext line under the section", "## Project\r\nNotes\r\n=====\r\n- x\r\n", false],
+		["an indented setext line", "## Project\nNotes\n   =====\n- x\n", false],
+		["four spaces of indent are an indented code block", "## Project\nNotes\n    =====\n- x\n", true],
+		["an HTML block start", "## Project\n<?php\n- x\n", false],
+		["a fenced sample between the section and its entry", "## Project\n```\nsample\n```\n- x\n", true],
+		["a heading with no entry", "## Project\n", false],
+		["an unknown section", "## Notes\n- x\n", false],
+		["a quoted pseudo-document", "> ## Project\n> - x\n", false],
+	]) {
+		check(`shape: ${label}`, sections.hasMemoryDocumentShape(value) === expected);
+	}
+}
+
 console.log("\n=== sectionsFromMarkdown contract ===");
 {
 	const good = "## Project\n- a\n\n## Invariants\n- b\n\n## Pitfalls\n- c\n\n## Index\n- d";

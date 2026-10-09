@@ -28,6 +28,7 @@
 | 22 | 2026-10-08 | `04cc9ef`（路线 B 定形） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking + 3 important：围栏内剥列表标记让围栏被提前闭合、其它 ATX 标题不重置小节作用域、报告缺第 22 轮节、变异数字与独立复现不一致） | `shutdown-flush-review-round22-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 | 23 | 2026-10-08 | `c15a9d4`（第 22 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（1 blocking：setext / HTML 标题不作小节作用域终止符 —— I-1 的孪生；2 nit：计数口径、共享助手说法） | `shutdown-flush-review-round23-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
 | 24 | 2026-10-08 | `c77f937`（第 23 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 blocking + 1 important，全在上一轮新增的终止符谓词上：CRLF 击穿 `$` 锚定、单个 `-` 也是 setext、HTML 只认严格单行；1 nit） | `shutdown-flush-review-round24-independent.txt` | ✓：`git status` 与基线一致、478 条文件表逐行一致 |
+| 25 | 2026-10-08 | `a5d17d2`（第 24 轮修复集） | `deepseek/deepseek-flash` + `high` | CHANGES-REQUESTED（2 blocking，仍是终止符类：缩进 1–3 格的 setext 未终止、HTML 块起始只实现「同行闭合的标签」；2 nit） | `shutdown-flush-review-round25-independent.txt` | ✓：工作区 md5 与沙箱一致、零写入 |
 
 | 3 | 2026-10-06 | `284039e`（`f43193a..284039e`） | `deepseek/deepseek-flash` + thinking `high` | CHANGES-REQUESTED | 原 transcript 丢失（只存在于已被清理的 `/tmp`，会话日志里只有截断版；转述见 `shutdown-flush-review-round3-recovered-excerpt.txt`）；同一冻结修订的**重跑**完整文本见 `shutdown-flush-review-round3-rerun-independent.txt` | ✓：文件表与基线逐行一致；status 只多出 `.agents/memory/` 下扩展自身的启动写入（豁免项）；live tree 被审两文件 md5 前后一致 |
 第 9–12 轮无代码层发现：删 append 前复核实测 7 红（race×4 + 借键×3）在第 12 轮被独立复现，门禁与归属脚本经反例验证非空转；这些轮次的条目全部落在记录、门禁与模型渲染的 `CONTEXT.md` 上（后者每次 settle 由模型重渲染，手改只保证当次一致）。
@@ -286,6 +287,25 @@ blocking 出自**同一轮里的记忆策展**，与代码无关：
 | R-A / R-B / R-C | 审查员确认：非目标登记诚实、R-B 措辞与 `adaptiveOutputTokens` 的封顶行为一致、无需要新登记的变体 |
 
 **停止条件**：第 15 轮有 2 条代码层 important（已修，各带变异证据），第 16 轮 **0 blocking** 且唯一的 important 属文档精度类 —— 符合本仓停止规则（最后两轮零 blocking、剩余 important 属规格/措辞/夹具类即停）。因此再跑一轮仅验证本轮这四条文档/格式修复，通过即收口并打 `v0.4.9`。
+
+## 第 25 轮处置（2026-10-08）
+
+第 24 轮的修法把终止符写成三条近似正则，第 25 轮指出其中两条与 CommonMark 的实际条件不符（仍是放宽侧）。本轮按规范条件收口，
+并把这一类**移到纯函数 unit 契约**上（这是本轮方法上的改进）：
+
+| 第 25 轮条目 | 处置 |
+| --- | --- |
+| **B-1**（blocking）：setext 下划线允许 1–3 空格缩进，`^(?:=+|-+)` 没有缩进容忍 | **已修**：`^ {0,3}(?:=+|-+)[ \t]*$`（4 空格是缩进代码块，**不**终止）；用例 `indented-setext-three-spaces` / `indented-single-dash-setext` + 正向对照 `four-space-indented-setext`；变异红 **5** 条 |
+| **B-2**（blocking）：HTML 块起始不止「同行闭合的标签」 —— `<?`、`<!`、`<![CDATA[`、块标签名后换行都会开启吞内容的 HTML 块 | **已修**：任何以 `<` 开头的行（`/^\s*</`，本扩展从不写这种行，fail-closed）；用例 `html-processing-instruction` / `html-cdata` / `html-unclosed-block-tag`；变异红 **7** 条 |
+| N-1：`HEADING_RE.exec(line.replace(/\r$/, ""))` 在归一化之后是死代码 | **已删**（行为不变） |
+| N-2：注释精度 | 已按实现改写 |
+| 过程改进（本轮新增）：**CRLF 归一化与围栏跳过在端到端路径上不承重**（链路上游已归一化 / 端到端夹具覆盖不到） | **已改到 `tests/sections-test.mjs` 的纯函数契约下**：11 条 `hasMemoryDocumentShape` 用例（含 CRLF、缩进 setext、HTML 块起始、围栏样例、`{0,3}` 边界）；从此这两条规则的变异各有 1 条红 |
+| 顺带修掉的一处误拒：围栏开启时把 `underKnownHeading` 清掉 ⇒ `## Project` + 围栏样例 + `- x` 被误拒 | **已修**（围栏状态本就隔离块内行）；unit 用例 `a fenced sample between the section and its entry` 钉住，变异红 **1** 条 |
+
+**按最终修订重测的变异（计法：`node tests/run-all.mjs` 输出里的 `^FAIL ` 行，含 unit 契约）**：
+仅 ATX 终止 **25**、有标题即算 **23**、终止符只认 `=` **17**、围栏从不识别 **15**、HTML 只认同行闭合标签 **7**、
+条目放宽到 `* `/编号/缩进 **6**、缩进 setext 不终止 **5**、小节名不校验 **3**，其余（标题缩进 / 围栏内剥标记 / 嵌套只剥一层各 **2**，
+不归一化换行 / 围栏开启忘掉标题 / 存储侧丢掉长度下限各 **1**）。
 
 ## 第 24 轮处置（2026-10-08）
 

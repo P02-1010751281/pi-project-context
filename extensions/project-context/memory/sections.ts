@@ -400,9 +400,12 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
  * Callers must normalize line endings first, so the `$` anchors can be trusted (round 24 B-1).
  */
 function endsSectionScope(line: string): boolean {
-	// A single `-` is a setext underline in CommonMark, like `=` and `--` (round 24 B-2); any tag-opening
-	// line starts an HTML block, which swallows what follows (round 24 I-1).
-	return /^\s*#/.test(line) || /^(?:=+|-+)[ \t]*$/.test(line) || /^\s*<\/?[A-Za-z][^>]*>/.test(line);
+	// A single `-` is a setext underline in CommonMark, like `=` and `--` (round 24 B-2), and up to three
+	// leading spaces are still a setext line - four make it an indented code block (round 25 B-1).
+	// Anything starting with `<` opens an HTML block, which swallows what follows: the spec's starts include
+	// `<?`, `<!`, `<![CDATA[` and a block tag name ending the line, so matching only same-line closed tags
+	// left those open (rounds 24 I-1 / 25 B-2). This extension never writes a line starting with `<`.
+	return /^\s*#/.test(line) || /^ {0,3}(?:=+|-+)[ \t]*$/.test(line) || /^\s*</.test(line);
 }
 
 /** The line with every leading list marker removed (`- - ``` ` -> ` ``` `). */
@@ -430,11 +433,13 @@ export function hasMemoryDocumentShape(value: string): boolean {
 			continue;
 		}
 		if (fence) {
+			// The heading is *not* forgotten here: a fenced sample between a section and its entries must not
+			// cost the section (`## Project` + a fenced block + `- x` is still a document). The fence state
+			// already keeps the block's own lines out of the scan.
 			inFence = fence;
-			underKnownHeading = false;
 			continue;
 		}
-		const heading = HEADING_RE.exec(line.replace(/\r$/, ""));
+		const heading = HEADING_RE.exec(line);
 		if (heading) {
 			underKnownHeading = SECTION_KEY_BY_HEADING.has(heading[1].trim().toLowerCase());
 			continue;
