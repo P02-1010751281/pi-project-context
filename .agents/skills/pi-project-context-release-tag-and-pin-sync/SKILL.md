@@ -23,6 +23,9 @@ After a change set is complete (full `node tests/run-all.mjs` green, `git diff -
 ## Re-pointing an existing tag
 `git tag -f -a vX.Y.Z -m "..."` creates a new tag object, so every remote needs a force push (`git push --force <remote> vX.Y.Z`). Only on explicit owner instruction; docs-only deltas are safe, but if code moved treat it as a new release.
 
+## Withdrawing a tag
+Deleting the tag on every remote does **not** touch a clone that already fetched it: `fetch --tags` never overwrites an existing local tag, so the installed clone keeps the withdrawn object and `describe --tags` then reports `vX.Y.Z-<N>-g<sha>`, which reads as "the checkout is ahead of the tag". Before trusting `describe` after a withdrawal, drop the local tag in the project clone *and* in the installed clone, then re-fetch (`git tag -d vX.Y.Z && git fetch --tags`); a leftover local tag also makes the next `git tag -a` of that name fail.
+
 ## Gotchas
 - A version label in `pi list` proves nothing: check the installed `HEAD` and a code marker, since the pin and the checkout can drift after a re-tag.
 - Already-running pi processes keep the old code (e.g. an old process re-truncating `MEMORY.md` with the previous cap); say explicitly in the report that a restart is required to load the release.
