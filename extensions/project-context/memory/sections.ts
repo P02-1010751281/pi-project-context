@@ -34,6 +34,10 @@ function sectionKey(heading: string): SectionKey {
 
 const SECTION_KEYS: SectionKey[] = MEMORY_SECTIONS.map((section) => sectionKey(section.heading));
 
+const SECTION_KEY_BY_HEADING = new Map<string, SectionKey>(
+	MEMORY_SECTIONS.map((section) => [section.heading.toLowerCase(), sectionKey(section.heading)]),
+);
+
 /** A character that makes an entry worth keeping; symbols and formatting alone do not. */
 const CONTENT_RE = /[\p{L}\p{N}]/u;
 
@@ -350,9 +354,6 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
 		if (isMemoryTruncationLine(lines[index])) lines[index] = "";
 		break;
 	}
-	const headingByLower = new Map<string, SectionKey>(
-		MEMORY_SECTIONS.map((section) => [section.heading.toLowerCase(), sectionKey(section.heading)]),
-	);
 	const sections: MemorySections = { project: [], invariants: [], pitfalls: [], index: [] };
 	const seen = new Set<SectionKey>();
 	let current: SectionKey | undefined;
@@ -367,7 +368,7 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
 		}
 		const heading = HEADING_RE.exec(line);
 		if (heading) {
-			const key = headingByLower.get(heading[1].trim().toLowerCase());
+			const key = SECTION_KEY_BY_HEADING.get(heading[1].trim().toLowerCase());
 			// An unknown section (`## Notes`) means this document is not the fixed schema.
 			if (!key) return undefined;
 			current = key;
@@ -382,6 +383,44 @@ export function sectionsFromMarkdown(value: string): MemorySections | undefined 
 	if (seen.size !== SECTION_KEYS.length) return undefined;
 	for (const key of SECTION_KEYS) sections[key] = toEntries(sections[key]);
 	return sections;
+}
+
+/**
+ * Whether `value` carries this extension's own document shape: at least one known `## <section>` heading at
+ * column 0 with at least one `- ` entry at column 0 under it, outside fenced blocks.
+ *
+ * This is the gate the opaque path reads before it lets a reply replace a stored memory. It is deliberately
+ * this module's vocabulary and nothing wider: a subset of the four sections is a legitimate partial document
+ * (`## Project\n- x`), while another heading level, a setext or HTML heading, `*`, numbered or indented
+ * entries, prose and a heading with no entry are not the shape this extension writes, so they never enter
+ * the store (the memory is kept and a diagnostic is logged). Hand-rolling a wider markdown subset here was
+ * the round 18-21 review detour - four rounds, each finding another fail-open - so the gate is the schema
+ * itself (see the review report's route decision).
+ */
+export function hasMemoryDocumentShape(value: string): boolean {
+	let inFence: FenceToken | undefined;
+	let underKnownHeading = false;
+	for (const line of value.split("\n")) {
+		// A fence may be indented by up to three spaces (four make it an indented code block), and it may
+		// open behind a list marker - `- ```` ` is a fence in a list item, not an entry (round 21 B-2).
+		const fence = readFenceLine(line.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, ""));
+		if (inFence) {
+			if (fence && fenceCloses(fence, inFence)) inFence = undefined;
+			continue;
+		}
+		if (fence) {
+			inFence = fence;
+			underKnownHeading = false;
+			continue;
+		}
+		const heading = HEADING_RE.exec(line.replace(/\r$/, ""));
+		if (heading) {
+			underKnownHeading = SECTION_KEY_BY_HEADING.has(heading[1].trim().toLowerCase());
+			continue;
+		}
+		if (underKnownHeading && line.startsWith("- ")) return true;
+	}
+	return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

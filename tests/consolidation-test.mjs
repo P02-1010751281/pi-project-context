@@ -1865,7 +1865,9 @@ try {
 			try {
 				const before = "# Project Memory\n\n## Project\n- keep me.\n";
 				await writeFile(memoryFile(handle.root), before);
-				const document = JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- the re-emitted document.\n", context: CONTEXT });
+				// The fence skip must not close the door on a reply that carries a real section *and* a fenced
+				// sample (round 22's positive control for `hasMemoryDocumentShape`).
+				const document = JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- the re-emitted document.\n\n```\n## Invariants\n- a fenced sample, not an entry\n```\n", context: CONTEXT });
 				await pass(handle, () => ({ content: [{ type: "text", text: document }], stopReason: "stop" }));
 				check("an opaque reply that is a document is still accepted", (await readFile(memoryFile(handle.root), "utf8")).includes("the re-emitted document."))
 				// The accepting path is where the guard's skip line belongs: it only runs when the pass
@@ -1898,6 +1900,7 @@ try {
 				["bare-rule-two-dashes", "# Project Memory\n\n--\n- a sentence long enough to pass the floor\n"],
 				// Round 19's residual note: an indented `## Project` is an indented code block, not a heading.
 				["indented-heading", "# Project Memory\n\n    ## Project\n    - a sample entry here\n"],
+				["indented-heading-flush-entry", "# Project Memory\n\n    ## Project\n- an entry whose heading is an indented code block\n"],
 				// Round 20: a blank line ends the setext candidate, an HTML heading must also start at column 0,
 				// and a fence indented by up to three spaces is still a fence.
 				["blank-then-bare-equals", "# Project Memory\n\nI reviewed the frozen revision and here is what I found.\n\n=\n- a sentence long enough to pass the forty character floor\n"],
@@ -1938,20 +1941,29 @@ try {
 			}
 		}
 		{
-			// Round 18's I-3, the reverse direction: a reply whose entries sit under a numbered list, a setext
-			// heading or an HTML heading is a document, so it must be *published*, not refused. The narrowing
-			// must not close the door on shapes the previous acceptance took.
+			// Round 22's route decision (owner-visible in the review report): the acceptance face is this
+			// extension's own shape and nothing wider, so a reply that reaches its entries through a numbered
+			// list, a setext heading or an HTML heading is *not* a writable document. Round 18's I-3 asked for
+			// these to be published while the gate was a hand-rolled markdown subset; the four rounds since
+			// each found another fail-open in that subset, so the refusal is now deliberate: the memory is
+			// kept, the reply never overwrites it, and the diagnostic names the shape. Safe direction, and
+			// the shapes below are ones this extension never writes.
 			for (const [name, reply] of [
-				["numbered", "# Project Memory\n\n## Project\n1. numbered entry that must be published\n"],
-				["setext", "# Project Memory\n\nProject\n=======\n- setext entry that must be published\n"],
-				["html", "# Project Memory\n\n<h2>Project</h2>\n- html entry that must be published\n"],
-				["html-trailing-space", "# Project Memory\n\n<h2>Project</h2> \n- html entry that must be published\n"],
+				["numbered", "# Project Memory\n\n## Project\n1. numbered entry that must be refused\n"],
+				["setext", "# Project Memory\n\nProject\n=======\n- setext entry that must be refused\n"],
+				["html", "# Project Memory\n\n<h2>Project</h2>\n- html entry that must be refused\n"],
+				["html-trailing-space", "# Project Memory\n\n<h2>Project</h2> \n- html entry that must be refused\n"],
+				["star-entry", "# Project Memory\n\n## Project\n* star entry that must be refused\n"],
+				["indented-entry", "# Project Memory\n\n## Project\n  - indented entry that must be refused\n"],
+				["unknown-section", "# Project Memory\n\n## Notes\n- entry under an unknown section\n"],
 			]) {
 				const handle = await project(`structured-prose-reverse-${name}`);
 				try {
-					await writeFile(memoryFile(handle.root), "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n");
+					const before = "# Project Memory\n\n## Project\n- keep me.\n\n## Invariants\n- and me.\n\n## Pitfalls\n- and this.\n\n## Index\n- and that.\n";
+					await writeFile(memoryFile(handle.root), before);
 					await pass(handle, () => ({ content: [{ type: "text", text: JSON.stringify({ memory_markdown: reply, context: CONTEXT }) }], stopReason: "stop" }));
-					check(`${name} entries are published, not refused`, (await readFile(memoryFile(handle.root), "utf8")).includes("must be published"));
+					check(`${name} is refused, not published`, (await readFile(memoryFile(handle.root), "utf8")) === before);
+					check(`${name} says why it was refused`, (await errorLogText(handle.root)).includes("not a writable memory document"));
 				} finally {
 					await rmTemp(handle.root);
 				}

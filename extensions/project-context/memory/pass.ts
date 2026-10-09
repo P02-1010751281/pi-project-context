@@ -19,9 +19,7 @@ import {
 	RECORD_MEMORY_TOOL,
 	normalizeMemoryEntry,
 	renderMemoryDocument,
-	fenceCloses,
-	readFenceLine,
-	type FenceToken,
+	hasMemoryDocumentShape,
 	sectionsFromMarkdown,
 	sectionsFromToolCall,
 	sectionsSemanticallyEmpty,
@@ -41,15 +39,6 @@ export type RemovedEntries = { count: number; samples: string[] };
  */
 export const OPAQUE_DOCUMENT_MIN_CHARS = 40;
 
-/** A line a setext underline may attach to: paragraph text, not a rule, quote, tag or indented code. */
-function isSetextCandidate(line: string): boolean {
-	if (/^ {4,}/.test(line)) return false;
-	const trimmed = line.trim();
-	if (trimmed === "") return false;
-	if (/^>/.test(trimmed) || /^</.test(trimmed)) return false;
-	if (/^(?:[-*_][ \t]*){3,}$/.test(trimmed)) return false;
-	return true;
-}
 
 /** A consolidation result plus a monotonic version so the caller writes a given pass at most once. */
 export type ConsolidateOutcome = {
@@ -334,72 +323,18 @@ export async function consolidateProjectState(
 		// The *stored* side is judged by that same parse OR by substance, because a hand-written
 		// non-canonical memory (the field's six-section file) is exactly as much to lose as a canonical
 		// one, and a store below the floor (a fresh project) has nothing to protect.
-		const replyBody = resolved.result.memory.replace(/^\s*#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "");
+		const replyIsDocument = hasMemoryDocumentShape(resolved.result.memory);
 		const storedIsDocument =
 			sectionsFromMarkdown(existing.text) !== undefined ||
 			existing.text.replace(/^\s*#\s*Project Memory[ \t]*(?:\r?\n|$)/i, "").trim().length >= OPAQUE_DOCUMENT_MIN_CHARS;
-		// Below that floor the length rule in report.ts skips the write and reports "too short to be a
-		// change" - the honest reason - so a short reply keeps that report (registered residual R-F3)
+		// Below that floor the length rule in report.ts skips the write and reports "too short to be
+		// a change" - the honest reason - so a short reply keeps that report (registered residual R-F3)
 		// instead of this refusal.
-		// Fences are tracked, so a code block that merely *contains* `## Project\n- x` is prose, not a
-		// document (round 18's I-2), and the heading/entry vocabulary is the module's own: ATX at any level,
-		// a setext underline, an HTML heading, and entries as bullets or ordered markers (round 18's I-3 -
-		// a reply that carries entries under such a heading is a document and must be published, not refused).
-		let replyInFence: FenceToken | undefined;
-		let replySawHeading = false;
-		let replyIsDocument = false;
-		// The last line that could be underlined by a setext rule: a plain text line, not a bullet or marker.
-		let replyTextLine = "";
-		for (const line of replyBody.split("\n")) {
-			// CommonMark allows a fence to be indented by up to three spaces; four make it an indented code
-			// block, so it is not a fence at all (round 20 I-2). A fence can also open inside a list item,
-			// after the marker (round 21 B-2), which is why the marker is stripped before the test.
-			const fenceSource = line.replace(/^ {1,3}/, "").replace(/^([-*+][ \t]+|\d+[.)][ \t]+)/, "");
-			const fence = readFenceLine(fenceSource);
-			if (replyInFence) {
-				// Everything inside a block is content unless the line really closes it, by the same rule the
-				// heading-only gate uses (same character, at least as long, no info string) - round 19's B-1.
-				if (fence && fenceCloses(fence, replyInFence)) replyInFence = undefined;
-				continue;
-			}
-			if (fence) {
-				replyInFence = fence;
-				replyTextLine = "";
-				continue;
-			}
-			if (line.trim() === "") {
-				// A setext underline may not be separated from its text line by a blank line, so a blank
-				// line ends the candidate (round 20 B-1).
-				replyTextLine = "";
-				continue;
-			}
-			// Headings must start at column 0: `    ## Project` is an indented code block, not a heading.
-			// Trailing whitespace and a CR stay legal (round 21 I-1: the ATX branch never forbade them).
-			if (/^#{1,6}[ \t]/.test(line) || /^<h[1-6][^>]*>.*<\/h[1-6]>[ \t]*\r?$/i.test(line.replace(/\r$/, ""))) {
-				replySawHeading = true;
-				replyTextLine = "";
-				continue;
-			}
-			// A setext underline only underlines the text line above it; a bare `---`/`=` separator is not a
-			// heading (round 19's B-2), which is why a text line has to precede it.
-			if (/^=+[ \t]*$/.test(line)) {
-				if (replyTextLine !== "") replySawHeading = true;
-				replyTextLine = "";
-				continue;
-			}
-			if (/^[-*+][ \t]|^\d+[.)][ \t]/.test(line.trim())) {
-				if (replySawHeading) {
-					replyIsDocument = true;
-					break;
-				}
-				replyTextLine = "";
-				continue;
-			}
-			// Only a paragraph line can carry a setext underline. A thematic break, a blockquote, an HTML
-			// comment or tag, and an indented code line are none of those, so they clear the candidate
-			// instead of becoming one (round 21 B-1: each of them used to be a bridge to a bare `=`).
-			replyTextLine = isSetextCandidate(line) ? line.trim() : "";
-		}
+		// The reply counts as a document only when it carries this extension's own shape: a known
+		// `## <section>` heading at column 0 with a `- ` entry at column 0 under it, outside fenced blocks.
+		// A wider hand-rolled markdown subset lived here for four review rounds (18-21), each finding another
+		// fail-open, and its only gain was accepting reply shapes this extension never writes - so the gate is
+		// the schema itself (see the review report's route decision).
 		const conversationalOpaque =
 			storedIsDocument &&
 			!replyIsDocument &&
