@@ -1,0 +1,16 @@
+
+### /home/user/.pi/agent/sessions/--tmp-pi-baseline-probe-8cNv--/2026-10-13T02-34-46-566Z_01a1331c-c79e-719e-8607-eaeac5454f95.jsonl   样本 1   rate 4.0000   首样本 prompt 17766  首样本 plainBefore 9887（其中非 message 6）
+  ① 线上(含system)    min 7879  中位 7879  max 7879  漂移 0
+  ② 排除system       min 17760  中位 17760  max 17760  漂移 0
+  ③ A+C(锚点/8)      恒为 17763   （锚点估算 3）
+
+### /home/user/.pi/agent/sessions/--tmp-pi-baseline-probe-ctl-sct2--/2026-10-13T02-35-28-962Z_01a1331d-6d3f-7040-b995-94afee91fb13.jsonl   样本 1   rate 4.0000   首样本 prompt 11021  首样本 plainBefore 9888（其中非 message 6）
+  ① 线上(含system)    min 1133  中位 1133  max 1133  漂移 0
+  ② 排除system       min 11015  中位 11015  max 11015  漂移 0
+  ③ A+C(锚点/8)      恒为 11018   （锚点估算 3）
+
+### /home/user/.pi/agent/sessions/--run-media-user-6b058d20-a617-484d-b7c6-cd7146baf77c-Projects-pi-project-context--/2026-10-13T04-29-08-292Z_01a13385-7b44-703c-a4d0-3e9052469fac.jsonl   样本 35   rate 3.2224   首样本 prompt 131434  首样本 plainBefore 1（其中非 message 1）
+  ① 线上(含system)    min -3916  中位 -257  max 133438  漂移 137354
+  ② 排除system       min 28139  中位 31798  max 133438  漂移 105299
+  ③ A+C(锚点/8)      恒为 131433   （锚点估算 1）
+  A+B(不排除system) 会读出 131433（锚点含 system ⇒ 低读）
