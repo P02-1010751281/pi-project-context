@@ -1446,6 +1446,27 @@ try {
 			mixed25.baseline >= 11_021 &&
 			mixed20.baseline >= 17_766,
 	);
+	// 1c-ter. An image block is not text. pi charges each image a fixed 4,800 chars (`ESTIMATED_IMAGE_CHARS`),
+	//     so an image-only user message entered `chars` as 4,800 while a small image really costs ~100 tokens:
+	//     the reviewer's round-3 I-1 fixture billed 17,866 (17,766 baseline + 100 tokens of image) and read
+	//     17,264, i.e. ~500 low, and every smaller image read ~500 lower still. With text-only `chars` the same
+	//     branch reads its prompt, 17,866: high by the image's own tokens, and the floor (`estimated` 0 +
+	//     baseline) is exactly the truth. Mutation: counting image chars again reddens the equality (17,264).
+	const imageOnly = chain([
+		contentEntry("i1", "user", [{ type: "image", data: "aGk=", mimeType: "image/png" }], stamp(0)),
+		billed("i2", "ok", { input: 17_866 }, stamp(1)),
+	]);
+	const imageRead = readOf(measureCtx(imageOnly, "sample-image", 60_000));
+	//     The control is the same record without the image: its whole-branch estimate is the "ok" reply's 1
+	//     token, and the image adds nothing to it (counting the 4,800-char budget would add 1,200).
+	const imageControl = readOf(measureCtx(chain([billed("i3", "ok", { input: 17_866 }, stamp(0))]), "sample-image-ctl", 60_000));
+	check(
+		"an image block is not charged to the density floor",
+		imageRead.samples === 1 &&
+			imageRead.baseline === 17_866 &&
+			imageRead.baseline >= 17_766 &&
+			imageRead.estimated === imageControl.estimated,
+	);
 
 	// 1d. A compaction summary is prompt content, and the bound counts it: the 8,000-char summary plus the
 	//     4,000-char question are 12,000 chars, so 20,766 - 12,000/8 = 19,266. The summary's own estimate is
@@ -1490,7 +1511,7 @@ try {
 	const quietRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000, 2), "sample-quiet", 60_000));
 	const loudRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000, 100_000), "sample-loud", 60_000));
 	check("a reply's own text does not move the baseline", quietRead.baseline === loudRead.baseline);
-	// 2b. With one record there is no sample to choose from, so the reading is exactly `input - estimate`: neither
+	// 2b. With one record there is no sample to choose from, so the reading is exactly `input - chars/8`: neither
 	//     the record's own reply text nor its billed output may enter the prompt sum. Mutation: switching the
 	//     minuend to `totalTokens` (input + output) adds the whole reply and reddens by ~40k.
 	const single = chain([
@@ -1592,6 +1613,24 @@ try {
 		omittedRead.samples === 1 && omittedRead.sampleIndex === 0 && omittedRead.baseline === 9_499 && omittedRead.baseline >= 0,
 	);
 
+	// 4c. A record measures an interval only when that interval is consistent with a constant baseline: with
+	//     `B_p = B_r`, `prompt_r - prompt_p = T_r - T_p >= chars_r/8 - chars_p`. Here b3 (50,000 ASCII chars)
+	//     is a predecessor replay that landed *after* b4 was billed, so b4's prompt never grew: its own text
+	//     outgrew its prompt and the record is dropped instead of winning the minimum. Un-guarded, b4 read
+	//     17,866 - 50,000/8 - 500 = 12,016, which is the reviewer's round-3 I-2 number exactly. Mutation:
+	//     dropping the consistency rule reddens the `>= 17,766` conjunct.
+	const stalePrompt = chain([
+		messageEntry("b1", "user", "y".repeat(4_000), stamp(0)),
+		billed("b2", "ok", { input: 18_766 }, stamp(1)),
+		messageEntry("b3", "user", "x".repeat(50_000), stamp(2)),
+		billed("b4", "ok", { input: 18_766 }, stamp(3)),
+	]);
+	const staleRead = readOf(measureCtx(stalePrompt, "sample-stale", 60_000));
+	check(
+		"a record whose text outgrew its prompt is not a measurement",
+		staleRead.samples === 1 && staleRead.sampleIndex === 0 && staleRead.baseline >= 17_766,
+	);
+
 	// 5. A delta that is not a content delta cannot calibrate: prompts that barely move while the text does
 	//    imply ~40 chars/token, so the band rejects every pair. Mutation: dropping the band reddens.
 	const absurd = [];
@@ -1600,9 +1639,12 @@ try {
 		absurd.push(billed(`x${i}a`, "ok", { input: 40_000 + i * 100 }, stamp(i * 2 + 1)));
 	}
 	const absurdRead = readOf(measureCtx(chain(absurd), "sample-absurd", 50_000));
+	//     The consistency rule drops three of these four records as well - their text grows 4,000 chars per
+	//     100-token prompt step (40 chars/token, past the band), so they never measured this branch; the first
+	//     record is still a bound. Mutation: dropping that rule keeps all four and reddens `samples`.
 	check(
 		"an implausible delta is not a calibration",
-		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 4,
+		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 1,
 	);
 
 	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for

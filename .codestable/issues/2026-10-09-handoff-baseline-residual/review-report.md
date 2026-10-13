@@ -169,3 +169,33 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 - **N-3**：CHANGELOG 的契约数（末节实为 **26** 条 `check(`；diff 新增 7 条 ✓）与「每条断言都有单点变异」的措辞需订正（审查员 9 个自造变异覆盖 24/26；
   未覆盖的是「fallback tracks usage.tokens exactly」与伞形断言「no scenario above reached a model」）。
 - **N-4**：陈旧注释 `threshold.ts:114`（"tightest sampled residual"）、`:244`、`tests/handoff-test.mjs:1493`。
+
+## R4（本轮修复：I-1 + I-2 + 4 条 nit —— 待独立审查）
+
+**改动**：`handoff/threshold.ts`（`withoutImages`/`textEstimate` 单一文本基准、区间一致性规则、`ContextSample`/`ContextMeasure`
+注释与 doc block、`below-quality-knee` 拒绝句）、`tests/handoff-test.mjs`（图像契约、区间契约、`absurd` 夹具样本数、陈旧注释）、
+`CHANGELOG.md`、`docs/handoff.md`、design §10。
+
+**逐条处置**：
+
+- **I-1 修**：图像不计入 `chars`/`estimated`（图 token 落进 baseline，fail-closed）。契约
+  `an image block is not charged to the density floor` 钉 `baseline === 17,866`（审查员夹具读 17,264）+ 与无图控制组的 `estimated` 相等。
+- **I-2 部分修 + 登记**：区间一致性规则修掉了重放/编辑形状（审查员夹具现读首样本的 **18,266**，不再是 **12,016**；新契约
+  `a record whose text outgrew its prompt is not a measurement`）。4b 夹具的算术**保持**（该文件内部自洽：`prompt_4 = 60,000` 相对其前缀
+  只支持 `B ≤ 9,499`，只有跨记录对照才能证伪），其注释改写为诚实表述；「陈旧锚点」登记为残余⑤，真实交接形状（前任记录在前、
+  本地记录在后）由新规则捕获。`absurd` 夹具的 `samples` 由 4 改为 **1**（区间规则丢弃三条 40 chars/token 的记录，首条仍是上界）。
+- **N-1 修**：`CHANGELOG`/`docs/handoff.md`/`threshold.ts` 三处「永不低读」收窄为「相对设定它的那条记录时刻」，并点名残余②。
+- **N-2 修**：残余③表述改为「直到出现更小 bound 的记录（活树实测 record 0–3）」；`below-quality-knee` 拒绝句改为「keep 是杆、
+  baseline 是测量值」。
+- **N-3 修**：CHANGELOG 的契约数（末节 **28** 条 `check(`）与变异覆盖措辞按本轮实测改写。
+- **N-4 修**：`threshold.ts` 两处注释 + `tests/handoff-test.mjs:1493` 的 `chars/8`。
+
+**验收**（本仓口径）：`node tests/run-all.mjs` ⇒ All 15 tests passed。
+
+变异矩阵（`^FAIL ` 行数，每个变异只改一处，跑后 MD5 恢复校验）：system 重新计入 **2**、上界退回 rate 缩放 **7**、`min`→`max` **8**、
+去掉自身密度下界判定 **1**、compaction `systemMessage` 计入 **1**、后缀不写回执口径 **1**、**图像字符重新计入 1（新）**、
+**去掉区间一致性规则 2（新）**。
+
+现场复验（同一只读探针，三个真实会话）：probe 沙箱 **17,763**（真值 17,753）、ctl 沙箱 **11,018**（真值 11,008）、
+活树 `01a13385` **52,151**（35 样本、rate 3.22；前缀 `131,433 ×4 → 52,151` 非增）。三条会话「system 消息清零后读数不变（差 0）」
+⇒ C 仍生效；R4 未移动任何现场读数（这三条会话无图像块）。

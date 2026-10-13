@@ -140,3 +140,24 @@ baseline 循环改成 `prompt − ceil(chars / RATE_MAX)` 的 min；`prompt <= c
 无功能影响；但对「首个大块」极重的会话会把 floor 推到拐点之上 ⇒ 拒绝）；② 读数是「设定它的那条记录时刻」的 baseline，
 注入块在会话内刷新时低读其增量（本仓实测漂移 13.8k 已消失，这一项以注入块自身增量为界）；③ 首回合只有 predecessor 重放记录时
 读虚高（R2 已登记，A 未改变它）。
+
+## 10 R4：图像块与区间一致性（第 3 轮独立审查的两条 important）
+
+第 3 轮（冻结 `3abd207`）判 CHANGES-REQUESTED / 0 blocking / 2 important / 4 nit，两条 important 都是 fail-open（低读侧）：
+
+1. **I-1 图像块**：pi 的 `estimateTokens` 对每张图固定计 `ESTIMATED_IMAGE_CHARS = 4800`
+   （`dist/core/compaction/compaction.js:182/193-195`），而取值带要求每张图 ≥600 token 才不低读；小图（截图缩略图、
+   low-detail 约 100 token）远低于此 ⇒ 上界落到真值之下并赢 `min`。修法：`chars` 与 `estimated` 都只计**文本**
+   （`textEstimate` = 去掉 image block 后的 `estimateTokens`），图的真实 token 落进 baseline。代价：baseline 高读 `T_img`；
+   floor（`estimated + baseline`）= 文本 token + 整个 baseline，**不变**，没有双重计数（若只把 `chars` 去图而 `estimated` 仍含图，
+   floor 会多计约 1,100/图）。
+2. **I-2 区间一致性**：`prompt <= chars/8` 只判记录**自身**合格；一条记录计费后分支里被插入它没被计费的字符
+   （前任重放插在它之前、分支被编辑）时，它的 `chars` 偏大 ⇒ 上界落真值之下并赢 `min`。修法：相邻样本（无 split 且 prompt 未缩小）
+   要求 `chars_r − chars_p ≤ (prompt_r − prompt_p) × RATE_MAX`（由 `B_p ≤ B_r`、`T_r ≥ chars_r/8`、`T_p ≤ chars_p` 推出必要条
+   件），违反即**丢弃**该记录（丢弃不可能低读）。prompt 缩小的区间不检查：交接继承的前任记录是大 prompt 对小 prompt，
+   那正是 `min` 本就会跳过的情形（把它也丢掉会把 baseline 抬到前任的 131k 量级 ⇒ 自动交接被关掉，方向错）。
+
+**本轮登记残余**：④ **偏稀疏锚点** —— >8 chars/token 的内容（长空白/重复串）出现在**首条**样本里仍会低读
+（区间形式已被第 2 条捕获，锚点没有参照物）；⑤ **陈旧锚点** —— 一条记录自身的 prompt 相对它存储的前缀已陈旧时无法从文件判定
+（4b 夹具即此形状：`prompt_4 = 60,000` 对前缀 101,001 token 的估计，其文件内部只支持 `B ≤ 9,499`），
+只有在它前面还有一条可参照样本时才被第 2 条捕获 —— 真实交接里前任记录就在前面。既有残余 ①②③ 不变。

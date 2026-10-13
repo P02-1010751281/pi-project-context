@@ -10,10 +10,22 @@
 - **物理下限的 baseline 改成「每条 usage 记录一个密度上界，取最小」**（issue `2026-10-09-handoff-baseline-residual`）：
   `baselineTokens` 一直把「当前这一点的 usage 残差」当非会话基线，而残差 = 真值 + `Σchars × (1/4 − 1/r)`（本仓实测
   `r = 2.2–3.8`），于是 floor 随对话变长自己长高，越过质量拐点后自动交接被**无声**关掉（现场：prompt 317k、floor 179k > knee 157k）。
-  现在用取值带给出每条记录上成立的不等式 `chars/8 ≤ T_r ≤ chars`，取 `prompt_r − chars_r/8`（对真值的**上界**，
-  永不低读），再在这些上界里取最小；后出现的记录上界只会更大（`r < 8`），所以取值由**最空的那条记录**定下、
+  现在用取值带给出每条记录上成立的不等式 `chars/8 ≤ T_r ≤ chars`，取 `prompt_r − chars_r/8`（对**设定它的那条记录时刻**真值的上界，
+  所以在那之前永不低读；注入块在会话内后来长大时它读低那个增量，登记为残余②），再在这些上界里取最小；后出现的记录上界只会更大（`r < 8`），所以取值由**最空的那条记录**定下、
   不再随分支增长。代价是最空记录自身字符数带来的高读（`chars × (1/r − 1/8)`，以该记录为界），方向是 fail-closed ——
   floor 是拒绝门，读低才会过早交接。
+- **图像块不进密度基准**（第 3 轮独立审查的 important I-1，fail-open）：pi 的 `estimateTokens` 对每张图固定计 4,800 字符
+  （`ESTIMATED_IMAGE_CHARS`），而取值带要求「每张图 ≥600 token」才不低读；小图（截图缩略图、low-detail 约 100 token）远低于此 ⇒
+  上界落到真值之下并赢 `min`（审查员夹具：真值 17,766 + 图 100 token，读 **17,264**，低 502）。现在 `chars` 与 `estimated` 都只计**文本**
+  （去掉 image block 后再调 `estimateTokens`），图的真实 token 落进 baseline：方向 fail-closed，baseline 高读该图自己的 token 数，
+  而 floor（文本 token + 整个 baseline）不变 —— 没有双重计数。
+- **区间一致性：文本长得比 prompt 快的记录不算测量**（同一轮的 important I-2，fail-open）：`prompt <= chars/8` 只判记录**自身**合格，
+  而一条记录计费后分支里被插入了它没被计费的字符（前任重放插在它之前、分支被编辑）时，它的 `chars` 偏大 ⇒ 上界落到真值之下并赢 `min`
+  （审查员夹具：本地记录 prompt 18,766、重放 50,000 字符 ⇒ 读 **12,016**，低 5,750）。现在相邻样本（无 split 边界、且 prompt 未缩小）
+  必须满足 `chars_r − chars_p ≤ (prompt_r − prompt_p) × 8`（由 `B_p ≤ B_r`、`T_r ≥ chars_r/8`、`T_p ≤ chars_p` 推出），违反即**丢弃**该记录；
+  prompt 缩小的区间不检查 —— 交接继承的前任记录就是大 prompt 对小 prompt，那正是 `min` 本就会跳过的情形。本轮登记的两条残余
+  （④ 偏稀疏锚点：>8 chars/token 的长空白/重复串出现在**首条**样本里仍会低读；⑤ 陈旧锚点：一条记录自身的 prompt 相对其存储前缀已陈旧时
+  文件无法自证，只有在它前面还有可参照样本时才被上一条规则捕获）与既有 ①②③ 见 `.codestable/issues/2026-10-09-handoff-baseline-residual/design.md` §9/§10。
 - **system 消息不再进入被减的估计量**：pi 的 `estimateTokens` 对 system 消息已经算了 `content + sections + toolsAdded`，
   把它计入被减量等于把工具 schema 与系统提示从 baseline 里减掉：隔离探针实测低读 **9,881**（真值 17,753），活树会话低读 **25,823**。
   这也排除了「直接用 pi 的 system 估算当 baseline」这条路：两个沙箱的 system 估算几乎相同（9,881 / 9,882）而真值差 6,745 ——
@@ -32,9 +44,11 @@
 - **另修一条与本改动无关的测试竞态**：`consolidation-test.mjs` 读 `CONTEXT.md` 时不等待写入，负载高时 6 次里红 1–3 次（已在 HEAD 上
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
-变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条断言都有只改一处的补丁把它变红）：system 重新计入估计（message 分支）红 2、
-上界退回 rate 缩放（即 I-1 的形态）红 7、`min` 改 `max` 红 8、去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、
-compaction 条目的 `systemMessage` 计入估计红 1、后缀不写回执口径红 3。末节现有 19 条 `check(`，本轮新增或改写 7 条（`git diff … | grep -c '^+.*check('`）。
+变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；**本版新增或改写**的断言每条都有只改一处的补丁把它变红，
+其余断言的覆盖情况见 review-report）：system 重新计入估计（message 分支）红 2、上界退回 rate 缩放红 7、`min` 改 `max` 红 8、
+去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、compaction 条目的 `systemMessage` 计入估计红 1、后缀不写回执口径红 1、
+图像字符重新计入估计红 1、去掉区间一致性规则红 2。末节现有 28 条 `check(`；C+A 一轮相对其父提交新增或改写 7 条，
+本轮（图像 + 区间一致性）再加 2 条（`git diff 3abd207 -- tests/handoff-test.mjs | grep -c '^+.*check('` = 2）。
 
 ## v0.4.9 — 2026-10-08
 

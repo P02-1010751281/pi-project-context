@@ -90,11 +90,37 @@ interface MessageUsage {
 	cacheWrite?: number;
 }
 
+type PiMessage = Parameters<typeof estimateTokens>[0];
+
+/** A copy of `message` without its image blocks, or the message itself when it carries none. */
+function withoutImages(message: PiMessage): PiMessage {
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return message;
+	const blocks = content as { type?: unknown }[];
+	if (!blocks.some((block) => block?.type === "image")) return message;
+	return { ...message, content: blocks.filter((block) => block?.type !== "image") } as PiMessage;
+}
+
+/**
+ * pi's estimate for a message with its image blocks removed: the **text-only** basis every number here is built
+ * on. pi charges each image a fixed `ESTIMATED_IMAGE_CHARS` (4,800), and that budget is a token estimate, not
+ * text: on a small image - a screenshot thumbnail, a low-detail view at ~100 tokens - it exceeds the provider's
+ * real charge several times over, so carrying it into `chars` pushed the bound below the truth and won the
+ * minimum (independent review round 3, I-1). With images out of both `chars` and `estimated`, a branch's image
+ * tokens are read as baseline overhead instead: the floor is then exactly `text tokens + baseline`, and the
+ * baseline over-reads by those tokens - the fail-closed side of the trade.
+ */
+function textEstimate(message: PiMessage): number {
+	return estimateTokens(withoutImages(message));
+}
+
 /** One assistant usage record on the branch, paired with the message content that precedes it. */
 interface ContextSample {
 	/** Provider-billed prompt tokens: `input + cacheRead + cacheWrite`. The reply's output is not context. */
 	prompt: number;
-	/** Message characters before this record (`4 * plain`): the unit the allowed band is expressed in. */
+	/** **Text** characters before this record (`4 * plain`): the unit the allowed band is expressed in. Image
+	 * payloads are excluded - see `textEstimate` - so `chars` is never charged a budget the provider did not
+	 * bill. */
 	chars: number;
 	/** The same estimate at pi's `chars/4`, kept so deltas between two records calibrate the rate. */
 	plain: number;
@@ -111,7 +137,8 @@ interface ContextSample {
  * reading can be checked against `estimated + baseline` without re-deriving it from the session file.
  */
 export interface ContextMeasure {
-	/** The tightest sampled `prompt - estimated messages`: the measured non-conversation baseline. */
+	/** The tightest sampled density bound, `prompt - chars/8` over the branch's usage records: the measured
+	 * non-conversation baseline. It is an upper bound on the baseline **as of the record that set it**. */
 	baseline: number;
 	/** Chars per token from this session's own usage deltas; pi's assumed 4 when no delta was usable. */
 	rate: number;
@@ -121,7 +148,8 @@ export interface ContextMeasure {
 	sampleIndex: number;
 	/** True when `rate` came from a real delta pair rather than pi's default. */
 	calibrated: boolean;
-	/** Estimated tokens of the branch's messages at `rate`. The system message is not part of it: see `measureContext`. */
+	/** Estimated tokens of the branch's messages at `rate`, text only. Neither the system message nor an image
+	 * block is part of it: see `measureContext`. */
 	estimated: number;
 }
 
@@ -137,11 +165,15 @@ export interface ContextMeasure {
  *   `chars_r / RATE_MAX <= T_r <= chars_r`  =>  `prompt_r - chars_r / RATE_MAX >= B >= prompt_r - chars_r`
  *
  * so the densest reading is an **upper** bound on `B` while the sparsest is a lower one. The baseline is the
- * smallest of those upper bounds over the records. It cannot read below the truth, and because each later
- * record's bound grows (`T_r` grows while the correction per added character is `r / RATE_MAX < 1`) the value is
- * set by the emptiest record and does not grow as the branch fills (issue 2026-10-09-handoff-baseline-residual).
+ * smallest of those upper bounds over the records. It cannot read below `B` **as of the record that set it**,
+ * and because each later record's bound grows (`T_r` grows while the correction per added character is
+ * `r / RATE_MAX < 1`) the value is set by the emptiest record and does not grow as the branch fills (issue
+ * 2026-10-09-handoff-baseline-residual). It is not a blanket "never low": the injected block growing inside a
+ * session is invisible to it, because the minimum is taken over records whose prompts were billed earlier -
+ * that is residual ② in the issue's design §9, and it is why the status line names the record count instead of
+ * promising a floor that holds at the current prompt.
  *
- * Two properties of that formulation are load-bearing:
+ * Four properties of that formulation are load-bearing:
  * - The **system message is not part of `T`**. pi's own `estimateTokens` covers a system message's content, its
  *   sections and `toolsAdded`, so counting it here subtracted the tool schemas and the system prompt from the
  *   baseline: the reading came out short by that amount (measured 9,881 on the probe sandbox `01a1331c` and
@@ -153,6 +185,19 @@ export interface ContextMeasure {
  *   describe its branch at all, so it is not a measurement and never enters the minimum. The opposite case - a
  *   handoff successor's replayed predecessor record, a whole predecessor prompt against a nearly empty branch -
  *   simply never wins the minimum, which is why those need no explicit exclusion.
+ * - `chars` and `estimated` count **text only**. pi's per-image budget is a token estimate for a
+ *   provider-specific cost, so on a small image it exceeds the real charge several times over; images therefore
+ *   stay out of both and their own tokens land in the baseline (round 3's I-1, which read 502 low on a
+ *   100-token image). The floor stays exact where it matters: `estimated + baseline` is text tokens + the whole
+ *   baseline, so nothing is counted twice.
+ * - A record measures an interval only when that interval is consistent with a constant baseline: given
+ *   `B_p <= B_r`, `prompt_r - prompt_p = (B_r - B_p) + (T_r - T_p) >= chars_r / RATE_MAX - chars_p`. A record
+ *   whose text grew faster than a **non-shrinking** prompt cannot have had that text billed - a predecessor
+ *   replay inserted before it, an edited branch, or a non-text block heavier than the band allows - and is
+ *   dropped rather than clamped (round 3's I-2, whose fixture read 12,016 where the truth is 17,766). A
+ *   shrinking prompt is deliberately left alone: a handoff successor's predecessor record carries the whole
+ *   predecessor prompt and the next local record a much smaller one, and that pair is the case the minimum
+ *   already skips on its own (`samples` keeps both, and the local record wins).
  *
  * The cost is the emptiest record's own slack: the reading can sit up to `chars * (1/r - 1/RATE_MAX)` above the
  * truth, bounded by that record's content and no longer growing with the branch. That is the fail-closed side of
@@ -162,10 +207,16 @@ export interface ContextMeasure {
  * 17,766). The rate is still reported, because the handoff receipt and its split-turn budget describe slices in
  * the session's own chars-per-token; a session with no usable record keeps the historical formula (there the
  * conversion is the identity, so it is `usage.tokens` minus the chars/4 message estimate).
+ *
+ * Text sparser than the band (>8 chars/token: long whitespace or repetition runs) breaks the premise the other
+ * way, and an **anchor** record made of it still reads low (residual ④ in design §9): an interval of it is caught
+ * by the consistency rule above, but nothing in the file can catch it in the first sampled record.
  */
 export function measureContext(ctx: ExtensionContext, usage: ContextUsage): ContextMeasure {
 	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 	const samples: ContextSample[] = [];
+	/** pi's own estimate of the messages seen so far, text only: the unit `estimated`, `chars` and the rate
+	 * deltas are all built on (see `textEstimate`). */
 	let plain = 0;
 	let split = false;
 	for (const entry of entries) {
@@ -175,7 +226,7 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 			// can also carry pi's `systemMessage`, which is a prompt component, not content (see the doc block).
 			for (const message of sessionEntryToContextMessages(entry)) {
 				if (message.role === "system") continue;
-				plain += estimateTokens(message);
+				plain += textEstimate(message);
 			}
 			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
 			split = true;
@@ -184,14 +235,12 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		// A record's prompt holds everything *before* that record's own message, so its estimate must too:
 		// counting the record's own reply would subtract tokens the provider never billed for it.
 		const plainBefore = plain;
-		let entryTokens = 0;
 		let record: MessageUsage | undefined;
 		for (const message of sessionEntryToContextMessages(entry)) {
 			record = (message as { usage?: MessageUsage }).usage ?? record;
 			if (message.role === "system") continue;
-			entryTokens += estimateTokens(message);
+			plain += textEstimate(message);
 		}
-		plain += entryTokens;
 		if (!record) continue;
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
 		if (prompt <= 0) continue;
@@ -199,11 +248,17 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		// A record that does not hold even the densest reading of its own preceding content is not a
 		// measurement of this branch (see the doc block); it must not be clamped into a low reading.
 		if (prompt <= Math.ceil(chars / RATE_MAX)) continue;
+		// The interval since the last measurement must be consistent with a constant baseline, or this
+		// record's characters include content its prompt never held (see the doc block).
+		const previous = samples.at(-1);
+		if (previous && !split && prompt >= previous.prompt) {
+			if (chars - previous.chars > (prompt - previous.prompt) * RATE_MAX) continue;
+		}
 		samples.push({
 			prompt,
 			chars,
 			plain: plainBefore,
-			added: plainBefore - (samples.at(-1)?.plain ?? 0),
+			added: plainBefore - (previous?.plain ?? 0),
 			split,
 		});
 		split = false;
@@ -241,7 +296,8 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	for (let i = 0; i < samples.length; i += 1) {
 		const sample = samples[i];
 		// The densest content the band allows is a lower bound on that record's message tokens, so this bound
-		// can read high but never low; later records only produce larger ones (the comment on the doc block).
+		// sits above the baseline whose prompt produced it; later accepted records only produce larger ones
+		// (the doc block, including what it does not cover: the injected block growing inside the session).
 		const bound = sample.prompt - Math.ceil(sample.chars / RATE_MAX);
 		if (i === 0 || bound < baseline) {
 			baseline = bound;
@@ -462,7 +518,7 @@ export function thresholdRefusalText(reason: ThresholdRefusal, ctx: ExtensionCon
 		case "below-first-tier":
 			return "auto (crossing the first pricing tier would not leave room for a worthwhile handoff, so the handoff is skipped rather than billed)";
 		case "below-quality-knee":
-			return `auto (the model's quality knee of ${fmtTokens(kneeTokens(window))} is below the ${fmtTokens(floor)} floor a worthwhile handoff needs at this window, so the handoff is skipped rather than run past the knee; a smaller baseline or keep is the lever)`;
+			return `auto (the model's quality knee of ${fmtTokens(kneeTokens(window))} is below the ${fmtTokens(floor)} floor a worthwhile handoff needs at this window, so the handoff is skipped rather than run past the knee; a smaller keep is the lever, not the baseline - that is a measurement, not a setting)`;
 		case "below-usable-window":
 		default:
 			return `auto (the last ${TIER_EDGE_MARGIN} tokens of the ${usable}-token usable window leave ${fmtTokens(usable - TIER_EDGE_MARGIN)}, below the ${fmtTokens(floor)} floor a worthwhile handoff needs; a larger window is the lever, not a larger target)`;
