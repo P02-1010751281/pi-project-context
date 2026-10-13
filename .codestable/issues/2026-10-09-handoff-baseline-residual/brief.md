@@ -1,7 +1,14 @@
 # handoff 物理下限里的 baseline 是残差，不是测量：估计器偏差把 auto 交接整条关掉
 
-**状态（2026-10-09）**：已开查，**未改代码**。现场事实 + 量化证据在 `baseline-estimator-evidence.md`，
-可复现探针 `probe-chars-per-token.py`。是否修、怎么修要单独设计与审查（见「候选方向」）。
+**状态（2026-10-09）**：归因**已完成**，**未改代码**，修复未开工。
+现场事实 + 初步量化在 `baseline-estimator-evidence.md`（增量比率法），
+完整实验与归因在 `baseline-attribution-experiment.md`（漂移判据、真实比率、真实水位、owner 那条线的闭环）。
+可复现探针：`probe-chars-per-token.py`、`probe-baseline-attribution.py`。是否修、怎么修要单独设计与审查（见「候选方向」）。
+
+**归因结论（摘要）**：`chars/4` 的估计器在本仓会话上低估 20–45%（窗口级 r 中位 3.0–3.5，低端 2.2）；
+因此报告的 baseline 在稳定段内会漂移（实测 +8.9k…+69.7k，而该段真实 B 必然恒定），
+真实水位实测 ≈ **30–39k**（六段收敛，另有独立组成估算 ≈37–38k 佐证）；owner 那条线的 151k 反解出 r≈2.35，
+落在实测低端 ⇒ `floor_true ≈ 63k < knee 157k` ⇒ 本该触发。
 
 ## 现场事实（owner 的 `/handoff status`，1M 窗口）
 
@@ -43,8 +50,9 @@ context 317k/1000k (32%)
 
 把这些比率套到 owner 那条线上（prompt 317k、baseline_reported 151k ⇒ 分支估计 166k token ⇒ 分支字符≈664k）：
 `baseline_true` 落在 **约 17k–96k**，`floor` 就在 **约 45k–124k ≤ knee 157k** ⇒ **本该触发**。当前构建不触发。
-其中一个会话的换算给出**负的** baseline（物理上不可能），这本身说明该方法的误差棒与 baseline_true 同量级 ——
-见证据文件的「误差棒」，不要把它当成精确值。
+其中一个会话的换算给出**负的** baseline（物理上不可能）——**同日已修正**：负值来自「用增量中位比率套整支分支」
+（增量比整段平均更密，扣多了），改用段级回归后同一会话给出 `B_true = 29,570`、`r = 2.89`，不再是负值；
+水位以 `baseline-attribution-experiment.md` 为准，本文件的增量比率只用于定「偏差存在且量级足够」。
 
 ## 为什么这不是「配错旋钮」
 
