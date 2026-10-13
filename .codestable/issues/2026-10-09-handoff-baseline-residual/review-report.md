@@ -90,3 +90,21 @@ S-4 `run.ts` 每条 status 行重复走 4–5 次全量 walk（非本轮回归�
 
 **R2 新登记的残余（RR）**：RR-1 I-1 本身（若选 B）；RR-2 状态行无法区分"赢家走了 chars/4 回退"；RR-3 全样本都被过度修正时退回 chars/4 的 min
 （60k 夹具 17,766 vs 旧公式 42,897 ⇒ 不会复现原始缺陷，但属 fail-closed 侧，需点名）；RR-4 S-1..S-3 的覆盖缺口。
+
+## R2 之后的结构性发现（operator 侧只读探针，非审查轮）
+
+`probe-system-estimate-in-baseline.md`：线上 `baseline` 把 **pi 自己已算好的 system 估算**（`estimateTokens` 的 system 分支：
+`content + Σsections + JSON(toolsAdded)`）减掉了 —— `plain` 里含 system 消息（`getBranch()` 无过滤，`sessionEntryToContextMessages`
+对 message 条目返回该消息），所以 `baseline = prompt − atRate(plain)` 是「估算残差」而非「非对话开销 B_true」。
+
+用生产 `measureContext` + 真实会话条目实测，对照（system 消息清零）之差**精确等于** `atRate(system 估算)`：
+
+| 会话 | ① 线上 | ② 排除 system | ②−① | atRate(system) |
+| --- | ---: | ---: | ---: | ---: |
+| probe（01a1331c） | 7,879 | 17,760 | 9,881 | 9,881 |
+| ctl（01a1331d） | 1,133 | 11,015 | 9,882 | 9,882 |
+| 活树（01a13385） | 6,515 | 36,227 | 29,712 | 29,713 |
+
+影响：`floor` 系统性偏低同量 ⇒ 每个会话都可能过早起跳（fail-open，比 I-1 更普遍）；测试夹具 0 个 system 条目 ⇒
+两轮审查与全部契约都在生产里不存在的分支形状上验证。**该发现排在 I-1 之前**；候选修法 C（把 system 从 `plain` 排除）与
+D（直接用 pi 的 system 估算）见该文件，A/B 的选择待此决定后一并给结论。

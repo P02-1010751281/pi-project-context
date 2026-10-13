@@ -1,0 +1,21 @@
+
+### 2026-10-13T04-29-08-292Z_01a13385-7b44-7
+  system估算 25823   rate 3.4764   atRate(system) 29713
+  ① 线上        : baseline 6515  samples 34  idx 23  estimated 158154
+  ② system=0 对照: baseline 36227  samples 34  idx 23  estimated 128442
+  ② − ① = 29712   （应 = atRate(system) = 29713）  samples 相同? true
+  probe 口径 prompt−Σest(消息) = 54167
+
+### 2026-10-13T02-34-46-566Z_01a1331c-c79e-7
+  system估算 9881   rate 4.0000   atRate(system) 9881
+  ① 线上        : baseline 7879  samples 1  idx 0  estimated 9897
+  ② system=0 对照: baseline 17760  samples 1  idx 0  estimated 16
+  ② − ① = 9881   （应 = atRate(system) = 9881）  samples 相同? true
+  probe 口径 prompt−Σest(消息) = 17760
+
+### 2026-10-13T02-35-28-962Z_01a1331d-6d3f-7
+  system估算 9882   rate 4.0000   atRate(system) 9882
+  ① 线上        : baseline 1133  samples 1  idx 0  estimated 9896
+  ② system=0 对照: baseline 11015  samples 1  idx 0  estimated 14
+  ② − ① = 9882   （应 = atRate(system) = 9882）  samples 相同? true
+  probe 口径 prompt−Σest(消息) = 11015
