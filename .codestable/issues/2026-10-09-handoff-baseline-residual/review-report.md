@@ -109,4 +109,6 @@ S-4 `run.ts` 每条 status 行重复走 4–5 次全量 walk（非本轮回归�
 两轮审查与全部契约都在生产里不存在的分支形状上验证。**该发现排在 I-1 之前**；`baseline-includes-system-estimate.md` 的后续实测进一步定死：**C 是 A/B 两种选择都要的前置**（沙箱真值 17,753/11,008，
 线上读 7,879/1,133；活树 6,515 vs 排除 system 后 36,227）；**D 不可行**（两沙箱 system 估算 9,881/9,882 而真值差 6,745 ⇒
 pi 的估算看不到扩展注入的记忆块）；**A 必须配 C 且需要记录合格性规则**（A 单独含 system 时 probe 读 12,822，低 4,931；
-活树首样本是 predecessor 重放，prompt 131,434 而本地分支 1 token）。A/B 的最终选择仍待 operator 定。
+活树首样本是 predecessor 重放，prompt 131,434 而本地分支 1 token）。A/B 的最终选择仍待 operator 定。**补充实测**（`probe-rate-spread`）：C 之后剩余的是**漂移**而非常数 —— 同一活树会话里
+区间 rate 跨 0.17–19.90、C 后逐样本读数漂移 13.8k（真值应近常数），成因是 predecessor 重放、`context_edit`/compaction、
+以及注入块被刷新；所以 A/B 的实质是「漂移要不要修」，且任何选项都要先有记录合格性规则。
