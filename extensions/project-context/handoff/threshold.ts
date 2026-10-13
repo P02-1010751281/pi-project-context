@@ -73,14 +73,170 @@ export interface ThresholdOverride {
 	by: "quality" | "window" | "tier";
 }
 
+/** Chars-per-token values a delta may calibrate to. The lower bound accepts tokenizers that split CJK near one
+ * token per character (a pure-CJK message can sit below 1.5); above the upper bound the delta is not a content
+ * delta (`cache` accounting, an unrelated request), so it is not a sample. */
+const RATE_MIN = 1.0;
+const RATE_MAX = 8.0;
+/** Calibration deltas the rate's median is taken over, so one odd request cannot move it. */
+const RATE_PAIRS = 5;
+
+/** Prompt components of a persisted assistant usage: what the provider billed for the context it was sent. */
+interface MessageUsage {
+	input?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+}
+
+/** One assistant usage record on the branch, paired with what pi's estimator thought at that point. */
+interface ContextSample {
+	/** Provider-billed prompt tokens: `input + cacheRead + cacheWrite`. The reply's output is not context. */
+	prompt: number;
+	/** Estimated tokens of the branch messages as of this record, at the session rate. */
+	estimated: number;
+	/** The same estimate at pi's `chars/4`, kept so deltas between two records calibrate the rate. */
+	plain: number;
+	/** Estimated tokens added since the previous record. */
+	added: number;
+	/** A context boundary (compaction / context_edit / model change) sits between the two records. */
+	split: boolean;
+}
+
+/**
+ * What {@link measureContext} read off the session's own usage records.
+ *
+ * `baseline` is the measurement the physical floor uses and `estimated` is what it was subtracted from, so a
+ * reading can be checked against `estimated + baseline` without re-deriving it from the session file.
+ */
+export interface ContextMeasure {
+	/** The tightest sampled `prompt - estimated messages`: the measured non-conversation baseline. */
+	baseline: number;
+	/** Chars per token from this session's own usage deltas; pi's assumed 4 when no delta was usable. */
+	rate: number;
+	/** Usage records usable as samples; 0 means the fallback formula decided the baseline. */
+	samples: number;
+	/** Which sample produced the baseline (0 = the oldest sampled record); -1 without samples. */
+	sampleIndex: number;
+	/** True when `rate` came from a real delta pair rather than pi's default. */
+	calibrated: boolean;
+	/** Estimated message tokens of the whole branch at `rate`. */
+	estimated: number;
+}
+
+/**
+ * Measure the non-conversation baseline from the session's own usage records instead of the last one.
+ *
+ * `usage.tokens` covers the whole prompt (pi's `calculateContextTokens` adds the last reply's output), while
+ * the branch estimate runs at pi's `chars/4`; the residual therefore carries the estimate error, which grows
+ * with the message characters (`1 - r/4`, measured `r = 2.2-3.8` in this repo). Reading each record's *prompt*
+ * and keeping the **smallest** residual moves the sample to the emptiest point of the branch, where that error
+ * is smallest, so the floor stops growing as the session fills (issue 2026-10-09-handoff-baseline-residual).
+ * The rate those records imply is reported for the handoff receipt, which needs the same chars->tokens
+ * conversion for the slices it describes.
+ */
+export function measureContext(ctx: ExtensionContext, usage: ContextUsage): ContextMeasure {
+	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
+	const samples: ContextSample[] = [];
+	let plain = 0;
+	let split = false;
+	for (const entry of entries) {
+		if (entry.type !== "message") {
+			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
+			split = true;
+			continue;
+		}
+		// A record's prompt holds everything *before* that record's own message, so its estimate must too:
+		// counting the record's own reply would subtract tokens the provider never billed for it.
+		const plainBefore = plain;
+		let entryTokens = 0;
+		let record: MessageUsage | undefined;
+		for (const message of sessionEntryToContextMessages(entry)) {
+			entryTokens += estimateTokens(message);
+			record = (message as { usage?: MessageUsage }).usage ?? record;
+		}
+		plain += entryTokens;
+		if (!record) continue;
+		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
+		if (prompt <= 0) continue;
+		samples.push({
+			prompt,
+			plain: plainBefore,
+			added: plainBefore - (samples.at(-1)?.plain ?? 0),
+			split,
+			estimated: 0,
+		});
+		split = false;
+	}
+	// chars = 4 * plain tokens, so a delta implies rate = 4 * dPlain / dPrompt. The latest deltas describe the
+	// content that is in the branch now; older ones described prefixes that compaction may have dropped.
+	const rates: number[] = [];
+	for (let i = 1; i < samples.length; i += 1) {
+		const newer = samples[i];
+		if (newer.split) continue;
+		const deltaPrompt = newer.prompt - samples[i - 1].prompt;
+		if (deltaPrompt <= 0) continue;
+		const rate = (4 * newer.added) / deltaPrompt;
+		if (rate < RATE_MIN || rate > RATE_MAX) continue;
+		rates.push(rate);
+	}
+	const recent = rates.slice(-RATE_PAIRS).sort((a, b) => a - b);
+	const rate = recent.length > 0 ? recent[Math.floor(recent.length / 2)] : 4;
+	const atRate = (tokens: number): number => Math.ceil((tokens * 4) / rate);
+	const estimated = atRate(plain);
+	for (const sample of samples) sample.estimated = atRate(sample.plain);
+	if (samples.length === 0) {
+		// No usable record (first turn, or every record dropped by a compaction): keep the historical formula
+		// byte-for-byte, so a session without samples behaves exactly as it did before the sampler existed.
+		return {
+			baseline: Math.max(0, (usage.tokens ?? estimated) - estimated),
+			rate,
+			samples: 0,
+			sampleIndex: -1,
+			calibrated: false,
+			estimated,
+		};
+	}
+	let baseline = 0;
+	let sampleIndex = 0;
+	for (let i = 0; i < samples.length; i += 1) {
+		const residual = Math.max(0, samples[i].prompt - samples[i].estimated);
+		if (i === 0 || residual < baseline) {
+			baseline = residual;
+			sampleIndex = i;
+		}
+	}
+	return { baseline, rate, samples: samples.length, sampleIndex, calibrated: rates.length > 0, estimated };
+}
+
 /** The measured non-conversation baseline (system prompt, tool schemas, injected memory/context).
  * Exported so tests can pin the physical-floor boundary exactly. */
 export function baselineTokens(ctx: ExtensionContext, usage: ContextUsage): number {
-	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
-	const contextTokens = entries
-		.flatMap(sessionEntryToContextMessages)
-		.reduce((sum, message) => sum + estimateTokens(message), 0);
-	return Math.max(0, (usage.tokens ?? contextTokens) - contextTokens);
+	return measureContext(ctx, usage).baseline;
+}
+
+/**
+ * Rate-aware replacement for `Σ estimateTokens(...)`: the handoff receipt and its split-turn budget must speak
+ * the session's own chars-per-token, or they describe a drop that is not the drop (issue
+ * 2026-10-09-handoff-baseline-residual, second consumer).
+ */
+export function contextTokensAtRate(
+	messages: Iterable<Parameters<typeof estimateTokens>[0]>,
+	rate: number,
+): number {
+	let tokens = 0;
+	for (const message of messages) tokens += Math.ceil((estimateTokens(message) * 4) / rate);
+	return tokens;
+}
+
+/**
+ * Status suffix that makes a baseline reading self-explaining: the number, how it was measured, and how many
+ * samples it rests on. Without a sample the number is pi's `chars/4` estimate, which reads high on this repo's
+ * content - the status line says so instead of sending the user to "a smaller baseline" as if it were a lever.
+ */
+export function baselineSuffix(measure: ContextMeasure): string {
+	if (measure.samples === 0) return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usage sample)`;
+	const rate = measure.calibrated ? measure.rate.toFixed(1) : "4.0";
+	return ` · baseline ${fmtTokens(measure.baseline)} (${rate} c/t, best of ${measure.samples})`;
 }
 
 /** First request-wide pricing tier edge, e.g. a long-context surcharge. Model metadata. */

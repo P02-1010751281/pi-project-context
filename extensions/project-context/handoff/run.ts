@@ -5,7 +5,7 @@
 
 import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
-import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, estimateTokens, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, buildContextEntries, findCutPoint, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { MAX_KEEP_RECENT_TOKENS, MAX_THRESHOLD_RATIO, MIN_DROP_TOKENS, MIN_THRESHOLD_RATIO, setFeature } from "../shared/config.ts";
 import { completeSubValues, completeValues, completeVerbs } from "../shared/complete.ts";
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
@@ -19,7 +19,7 @@ import { findPendingQuestion } from "./question.ts";
 import { config, getConfigRoot, handoffEnabled, parseRatio, parseTokenCount, saveConfig, setConfigRoot, setFlagEnabled, syncConfig, usageText } from "./settings.ts";
 import { FAILURE_BACKOFF_MS, RETRIGGER_COOLDOWN_MS, armHandoffCooldown, armHandoffFailureBackoff, handoffCooldownUntil, handoffFailureBackoffUntil, handoffInFlight, setHandoffInFlight } from "./state.ts";
 import { replayEntries, replayMessagesFor } from "./text.ts";
-import { type Threshold, capSuffix, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
+import { type Threshold, baselineSuffix, capSuffix, contextTokensAtRate, measureContext, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function handoffStatusLine(ctx: ExtensionContext): string {
@@ -52,7 +52,10 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 	const language = config.handoffLang === "auto"
 		? `auto (${resolveLanguage(buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId()).flatMap(sessionEntryToContextMessages), config.handoffLang)})`
 		: config.handoffLang;
-	return `Handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
+	// The baseline is a measurement, so print what it was measured from: a number without its sample count
+	// and rate cannot be argued with, and the refusal above blames it for the floor.
+	const measure = usage && usage.tokens !== null ? measureContext(ctx, usage) : undefined;
+	return `Handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target}${measure ? baselineSuffix(measure) : ""} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
 }
 
 /**
@@ -75,6 +78,10 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 		// window, knee) for the scheduled path, the user answers it for `/handoff now`. The usage is read
 		// here for the receipt text only.
 		const usage = ctx.getContextUsage();
+		// The receipt below and the split-turn budget speak the session's own chars-per-token, so a reported
+		// drop is the drop. The cut point itself stays pi's (`findCutPoint`, at chars/4): re-cutting it here
+		// would duplicate pi's turn alignment (see docs/architecture.md).
+		const rate = usage && usage.tokens !== null ? measureContext(ctx, usage).rate : 4;
 
 		const allEntries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 		if (allEntries.length === 0) {
@@ -103,10 +110,10 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 		// and the older side still holds something to drop; snapping unconditionally is what used to
 		// leave nothing older to drop and block a handoff whose session was a single turn.
 		if (splitTurnStart >= 0) {
-			const prefixTokens = allEntries
-				.slice(splitTurnStart, firstKeptIndex)
-				.flatMap(sessionEntryToContextMessages)
-				.reduce((sum, message) => sum + estimateTokens(message), 0);
+			const prefixTokens = contextTokensAtRate(
+				allEntries.slice(splitTurnStart, firstKeptIndex).flatMap(sessionEntryToContextMessages),
+				rate,
+			);
 			const olderHasContent = allEntries
 				.slice(0, splitTurnStart)
 				.flatMap(sessionEntryToContextMessages)
@@ -143,14 +150,12 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			return;
 		}
 
-		const olderTokens = olderPrefixMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		const keptTokens = keptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const olderTokens = contextTokensAtRate(olderPrefixMessages, rate);
+		const keptTokens = contextTokensAtRate(keptMessages, rate);
 		// The anchor is carried verbatim, so it is not part of what a handoff drops: the receipt measures
 		// the middle alone, or one huge anchored turn start would make a handoff that drops almost nothing
 		// look worthwhile.
-		const anchorTokens = anchorEntry
-			? sessionEntryToContextMessages(anchorEntry).reduce((sum, message) => sum + estimateTokens(message), 0)
-			: 0;
+		const anchorTokens = anchorEntry ? contextTokensAtRate(sessionEntryToContextMessages(anchorEntry), rate) : 0;
 
 		// Pending-question guard: only automatic handoffs consult it, so an explicit
 		// /handoff keeps the configured mode. "skip" leaves the session as-is

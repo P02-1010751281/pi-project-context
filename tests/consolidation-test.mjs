@@ -2420,12 +2420,18 @@ try {
 					}),
 				},
 			});
-			// `agent_settled` fires and forgets, so wait for the write instead of assuming it landed.
+			// `agent_settled` fires and forgets, so wait for the write instead of assuming it landed. MEMORY.md and
+			// CONTEXT.md come out of one pass but not as one atomic step, so the second read waits too: reading it
+			// straight after the first made this gate flake on a loaded machine (measured 1-3 failures in 6 runs
+			// on HEAD, 2026-10-13).
 			await runHandlers(settlePi, "agent_settled", settleCtx);
 			const settleWritten = await waitUntil(async () => (await readFile(path.join(settleMem, "MEMORY.md"), "utf8").catch(() => "")).includes("The settle pass wrote this"), 3_000);
 			check("a settle pass with the throttle satisfied still writes the memory", settleWritten);
-			const settleContext = await readFile(path.join(settleMem, "CONTEXT.md"), "utf8").catch(() => "");
-			check("the settle pass still writes CONTEXT.md", settleContext.includes("Settle wrote."));
+			const settleContext = await waitUntil(
+				async () => (await readFile(path.join(settleMem, "CONTEXT.md"), "utf8").catch(() => "")).includes("Settle wrote."),
+				3_000,
+			);
+			check("the settle pass still writes CONTEXT.md", settleContext);
 		} finally {
 			await rmTemp(settleTmp);
 		}

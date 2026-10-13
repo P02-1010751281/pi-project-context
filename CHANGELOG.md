@@ -3,6 +3,29 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.10 — 2026-10-13
+
+### 修复
+
+- **物理下限的 baseline 改成「会话内取样 + 本会话自己的 chars/token」**（issue `2026-10-09-handoff-baseline-residual`）：
+  `baselineTokens` 一直把「当前这一点的 usage 残差」当非会话基线，而残差 = 真值 + `Σchars × (1/4 − 1/r)`（本仓实测
+  `r = 2.2–3.8`），于是 floor 随对话变长自己长高，越过质量拐点后自动交接被**无声**关掉（现场：prompt 317k、floor 179k > knee 157k）。
+  现在读分支上每条 usage 记录的 **prompt**（`input+cacheRead+cacheWrite`，不含回复 output）与**该记录之前**的消息估计，取其中
+  **最小残差**；同一条会话内 delta 的中位数（`4·Δ估计/Δprompt`，取值带 `[1.0, 8.0]`，纯 CJK 约 1 token/字）把 chars 换算成 token。
+  隔离探针实测：真值 17,766 token（注入块 6,745 + 基础 system/工具/技能 11,021），且消息字符≈0 时报告值 = 真值 ⇒ 误差随字符增长，
+  不是常量偏移。无 usage 记录的会话（首回合）走原公式，逐字节不变。
+- **交接回执与 mid-turn 切分预算改说本会话的 chars/token**（同一根因的第二个消费者）：`dropping ~X / carrying ~Y` 原先用 pi 的
+  `chars/4`，CJK 重的会话会把真实切下的量少报约 `1 − r/4`；现在两处共用上面那个 rate。**切点本身仍是 pi 的 `findCutPoint`**
+  （chars/4），本轮不动（重写切点会重复 pi 的 turn 对齐）。
+- **状态行自证 + 诚实降级**：`/handoff status` 增加 `· baseline <值> (<rate> c/t, best of <n>)`；无可用样本时写
+  `(chars/4, no usage sample)`，不再让「baseline 是杆」看起来像唯一杠杆。
+- **另修一条与本改动无关的测试竞态**：`consolidation-test.mjs` 读 `CONTEXT.md` 时不等待写入，负载高时 6 次里红 1–3 次（已在 HEAD 上
+  复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
+
+变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条新断言都有只改一处的补丁把它变红）：取样改成最后一条红 1、
+被减数改成 `totalTokens` 红 1、rate 固定为 4 红 6、去掉取值带红 2、退掉 fallback 的减法红 7（含既有端到端用例）、回执忽略 rate 红 1、
+把记录自己的消息算进自己的估计红 2、去掉状态行后缀红 1。
+
 ## v0.4.9 — 2026-10-08
 
 ### 修复

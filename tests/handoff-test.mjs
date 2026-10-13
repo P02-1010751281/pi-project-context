@@ -1291,6 +1291,211 @@ try {
 		!((await receiptPi.commands.get("handoff").getArgumentCompletions("")) ?? []).some((item) => item.value === "thinking") &&
 			!((await receiptPi.commands.get("handoff").getArgumentCompletions("thinking ")) ?? []).some((item) => item.value === "off"),
 	);
+	console.log("\n=== the sampled baseline: measured at the emptiest point, not at the last residual ===");
+	// The physical floor subtracts a chars/4 estimate of the branch from the provider's own count, so that
+	// residual carries the estimate error and grows with the conversation (`1 - r/4`, measured r = 2.2-3.8 in
+	// this repo): a session can lose its auto handoff purely by filling up (issue
+	// 2026-10-09-handoff-baseline-residual). The sampler reads every usage record's *prompt* and keeps the
+	// smallest residual, and the receipt speaks the session's own chars-per-token. These checks pin both.
+	const measured = await loadNamespace(`${PC}/handoff/threshold.ts`);
+	const stamp = (i, extra = 0) => new Date(Date.UTC(2026, 8, 16, 2, 0, i, extra)).toISOString();
+	/** An assistant entry carrying the provider's own usage, the way pi persists a record. */
+	const billed = (id, text, usage, when) => {
+		const entry = messageEntry(id, "assistant", text, when);
+		const full = { input: 0, cacheRead: 0, cacheWrite: 0, output: Math.ceil(text.length / 2), ...usage };
+		full.totalTokens = full.input + full.output + full.cacheRead + full.cacheWrite;
+		entry.message.usage = full;
+		return entry;
+	};
+	/**
+	 * A session whose provider prompts are consistent with `rate` chars/token: every record bills
+	 * `base + chars so far / rate`, which is what the provider would have been sent at that record.
+	 */
+	const sampled = (turns, charsPerTurn, rate, base, lastReplyChars = 2) => {
+		const entries = [];
+		let chars = 0;
+		for (let i = 0; i < turns; i += 1) {
+			chars += charsPerTurn;
+			entries.push(messageEntry(`s${i}u`, "user", "测".repeat(charsPerTurn), stamp(i * 2)));
+			entries.push(
+				billed(
+					`s${i}a`,
+					i === turns - 1 ? "回".repeat(lastReplyChars) : "ok",
+					{ input: Math.round(base + chars / rate) },
+					stamp(i * 2 + 1),
+				),
+			);
+		}
+		return chain(entries);
+	};
+	/** pi's context builder follows parent links, so a fixture that is only a flat list exposes its leaf. */
+	const chain = (entries) => {
+		let previous = null;
+		for (const entry of entries) {
+			entry.parentId = previous;
+			previous = entry.id;
+		}
+		return entries;
+	};
+	const measureCtx = (entries, id, tokens, contextWindow = 1_000_000) =>
+		makeCtx(tmp, {
+			sessionManager: makeSessionManager(entries, id),
+			getContextUsage: () => ({ tokens, percent: 5, contextWindow }),
+		});
+	const readOf = (ctx) => measured.measureContext(ctx, ctx.getContextUsage());
+
+	// 1. The same non-conversation baseline under 25x the message volume. Mutation: keeping the last sample
+	//    instead of the smallest makes the second reading follow the branch and reddens the equality.
+	const smallRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000), "sample-small", 60_000));
+	const bigRead = readOf(measureCtx(sampled(4, 100_000, 2.5, 40_000), "sample-big", 200_000));
+	check(
+		"a session's own deltas calibrate its chars-per-token",
+		smallRead.calibrated && Math.abs(smallRead.rate - 2.5) <= 0.35 && smallRead.samples === 4,
+	);
+	check(
+		"the baseline does not grow with the branch",
+		Math.abs(smallRead.baseline - 40_000) <= 5_000 && Math.abs(bigRead.baseline - smallRead.baseline) <= 5_000,
+	);
+	// 1b. Content denser than any plausible band (0.8 chars/token, e.g. base64 in a message) cannot calibrate, so
+	//     the reading falls back to chars/4 - and then only the smallest residual is readable: the drift is
+	//     `chars * (1/0.8 - 1/4)` = one token per character, so the last record reads 12k above the first.
+	//     Mutation: taking the last sample instead of the smallest reddens this and only this.
+	const denseRead = readOf(measureCtx(sampled(4, 4_000, 0.8, 40_000), "sample-dense", 60_000));
+	check(
+		"an uncalibrated session still reads the smallest residual",
+		!denseRead.calibrated && denseRead.sampleIndex === 0 && Math.abs(denseRead.baseline - 44_000) <= 500,
+	);
+	check(
+		"the status suffix names the rate and the sample count",
+		/· baseline \d+(\.\d)?k \(2\.\d c\/t, best of 4\)/.test(measured.baselineSuffix(smallRead)),
+	);
+
+	// 2. A record's own reply is not context: the same session with a 100k-character last reply reads the same
+	//    baseline. Mutations: counting the record's own message, or using `usage.tokens` (which adds the reply's
+	//    output), reddens the exact equality.
+	const quietRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000, 2), "sample-quiet", 60_000));
+	const loudRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000, 100_000), "sample-loud", 60_000));
+	check("a reply's own text does not move the baseline", quietRead.baseline === loudRead.baseline);
+	// 2b. With one record there is no sample to choose from, so the reading is exactly `input - estimate`: neither
+	//     the record's own reply text nor its billed output may enter the prompt sum. Mutation: switching the
+	//     minuend to `totalTokens` (input + output) adds the whole reply and reddens by ~40k.
+	const single = chain([
+		messageEntry("o1", "user", "测".repeat(4_000), stamp(0)),
+		billed("o2", "回".repeat(100_000), { input: 43_000 }, stamp(1)),
+	]);
+	const singleRead = readOf(measureCtx(single, "sample-single", 100_000));
+	check(
+		"a single record reads its prompt, not its reply's output",
+		singleRead.samples === 1 && Math.abs(singleRead.baseline - 42_000) <= 500,
+	);
+
+	// 3. Without a usage record the historical formula decides, byte for byte: the answer moves exactly with
+	//    `usage.tokens`, and the reading reports that it had no sample. Mutation: any other fallback reddens.
+	const unrecorded = chain([
+		messageEntry("n1", "user", "测".repeat(4_000), stamp(0)),
+		messageEntry("n2", "assistant", "ok", stamp(1)),
+	]);
+	const fallbackLow = measured.baselineTokens(measureCtx(unrecorded, "sample-none", 60_000), {
+		tokens: 60_000,
+		percent: 5,
+		contextWindow: 1_000_000,
+	});
+	const fallbackHigh = measured.baselineTokens(measureCtx(unrecorded, "sample-none", 65_000), {
+		tokens: 65_000,
+		percent: 5,
+		contextWindow: 1_000_000,
+	});
+	const noSample = readOf(measureCtx(unrecorded, "sample-none", 60_000));
+	check(
+		"without a usage record the fallback tracks usage.tokens exactly",
+		fallbackHigh - fallbackLow === 5_000 && noSample.samples === 0 && !noSample.calibrated,
+	);
+	const unrecordedMessages = unrecorded.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	check(
+		"without a usage record the fallback is usage.tokens minus the chars/4 branch estimate",
+		fallbackLow === 60_000 - measured.contextTokensAtRate(unrecordedMessages, 4),
+	);
+	check(
+		"the suffix admits the uncalibrated reading",
+		measured.baselineSuffix(noSample).includes("chars/4, no usage sample"),
+	);
+
+	// 4. A replayed predecessor record (its prompt covers the whole predecessor branch, its own text is tiny)
+	//    must never win the minimum. Mutation: taking the earliest (or the largest) sample reddens `sampleIndex`.
+	//    The winning residual is the second record's own prompt minus the little that precedes it, so the read is
+	//    ~20k rather than 150k; no rate is calibrated here (the delta is negative) and none is needed.
+	const replaySample = chain([
+		billed("r1", "ok", { input: 150_000 }, stamp(0)),
+		messageEntry("r2", "user", "测".repeat(100), stamp(1)),
+		billed("r3", "ok", { input: 20_000 }, stamp(2)),
+	]);
+	const replayRead = readOf(measureCtx(replaySample, "sample-replayed", 40_000));
+	check(
+		"a replayed predecessor record does not become the baseline",
+		replayRead.samples === 2 && replayRead.sampleIndex === 1 && Math.abs(replayRead.baseline - 20_000) <= 200,
+	);
+
+	// 5. A delta that is not a content delta cannot calibrate: prompts that barely move while the text does
+	//    imply ~40 chars/token, so the band rejects every pair. Mutation: dropping the band reddens.
+	const absurd = [];
+	for (let i = 0; i < 4; i += 1) {
+		absurd.push(messageEntry(`x${i}u`, "user", "测".repeat(4_000), stamp(i * 2)));
+		absurd.push(billed(`x${i}a`, "ok", { input: 40_000 + i * 100 }, stamp(i * 2 + 1)));
+	}
+	const absurdRead = readOf(measureCtx(chain(absurd), "sample-absurd", 50_000));
+	check(
+		"an implausible delta is not a calibration",
+		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 4,
+	);
+
+	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for
+	//    the split-turn budget). Mutation: ignoring the rate argument reddens the ratio.
+	const converted = sampled(2, 4_000, 2.0, 10_000);
+	const convertedMessages = converted.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	check(
+		"the receipt's conversion follows the rate",
+		Math.abs(measured.contextTokensAtRate(convertedMessages, 2) / measured.contextTokensAtRate(convertedMessages, 4) - 2) <= 0.05,
+	);
+
+	// 7. The floor uses the sampled baseline: this session's last residual is ~160k (base 100k + the drift), above
+	//    the 129k a 157k knee leaves, while its sampled baseline is 100k - so the handoff must still exist here.
+	//    Mutation: the current-point residual refuses the threshold and the auto handoff silently disappears.
+	const heavySampled = measureCtx(sampled(4, 100_000, 2.5, 100_000), "sample-heavy", 400_000);
+	const heavyRead = readOf(heavySampled);
+	const heavyThreshold = handoff.resolveThreshold(heavySampled, heavySampled.getContextUsage());
+	check(
+		"a heavy branch keeps its auto handoff once the baseline is sampled correctly",
+		heavyRead.baseline <= 110_000 && heavyThreshold?.tokens === 157_000,
+	);
+
+	// 8. The two consumers of the rate: the status receipt names the sample it measured, and the handoff receipt
+	//    converts the slices it reports at the session's rate. Mutation: dropping the suffix, or reverting run.ts
+	//    to `estimateTokens`, reddens one of these.
+	const statusLine = handoff.handoffStatusLine(measureCtx(sampled(4, 4_000, 2.5, 40_000), "sample-status", 60_000));
+	check(
+		"the status receipt names the baseline measurement",
+		/· baseline \d+(\.\d)?k \(2\.\d c\/t, best of 4\)/.test(statusLine),
+	);
+	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 20_000 }));
+	const carryPi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`))(carryPi);
+	const carriedTokens = async (entries, id) => {
+		const ctx = makeCtx(tmp, {
+			sessionManager: makeSessionManager(entries, id),
+			getContextUsage: () => ({ tokens: 400_000, percent: 40, contextWindow: 1_000_000 }),
+		});
+		await runHandlers(carryPi, "session_start", ctx);
+		await carryPi.commands.get("handoff").handler("force", ctx);
+		const line = String(ctx.notifications.map(([message]) => message).find((message) => String(message).includes("carrying ~")) ?? "");
+		return Number((line.match(/carrying ~([\d.]+)k recent/) ?? [])[1]);
+	};
+	const carriedAtTwo = await carriedTokens(sampled(12, 8_000, 2.5, 60_000), "receipt-rate");
+	const carriedAtFour = await carriedTokens(sampled(12, 8_000, 4.0, 60_000), "receipt-four");
+	check(
+		"the handoff receipt converts the carried slice at the session's rate",
+		carriedAtFour > 0 && Math.abs(carriedAtTwo / carriedAtFour - 1.6) <= 0.15,
+	);
+
 	// Every scenario above shares the same counting stub, so this is the one place the "no model call"
 	// property is asserted over all of them at once: a regression that swallowed an error and fell back
 	// to a model would have to have called `complete`, which throws and would have failed its own check too.

@@ -86,9 +86,29 @@
 规模：`handoff/threshold.ts` 采样器 + `handoff/run.ts` 状态行，代码约 40 行、测试约 80–120 行；
 按本仓历史（设计估计偏低约 1.7 倍）按 **1.5–2 倍**预算。
 
-**需要 operator 定的**：
+**operator 的决定（2026-10-13）：全部都修。**于是 A（会话内速率）从非目标转入范围 —— 修 `run.ts` 的第二个消费者
+必须对任意片段做 chars→tokens 换算，那不能没有速率；采样语义取全局 `min`（理由见下），D/C/§5.4 都做。
 
-1. 采样语义取全局 `min` 还是"最早一条"（§5.1）。
-2. 是否同轮修 `run.ts` 切入估计（§5.4）—— 我倾向另开一轮，保持本轮最小。
-3. `D`/`C` 是否都做（会让状态行变长；本仓对状态行长度另有约定）。
-4. 是否同意非目标清单（尤其：**放弃**会话内校准因子与脚本分权）。
+## 8 实现（2026-10-13，已落地）
+
+`handoff/threshold.ts` 新增（不新开模块，该文件本来就是 `baselineTokens` 的家）：
+
+- `measureContext(ctx, usage)`：一个 pass 走完分支，对每条 assistant 记录取 `prompt = input+cacheRead+cacheWrite`
+  （**不含**回复的 output）与**该记录之前**的消息估计（记录自己的消息不算进自己的 prompt，实测这一处会低读 baseline），
+  取最小残差；rate = 最后 5 个同段 delta 的中位数（`4·Δ估计/Δprompt`），取值带 `[1.0, 8.0]`（下界按纯 CJK 约 1 token/字定），
+  无可用 delta 时 rate = 4 且 `calibrated=false`；无 usage 记录时逐字节走旧公式。
+- `contextTokensAtRate(messages, rate)`：回执与 mid-turn 快照预算共用这一份换算。
+- `baselineSuffix(measure)`：状态行后缀（D+C 合在一处：有样本写 `(<rate> c/t, best of <n>)`，无样本写 `(chars/4, no usage sample)`）。
+
+`handoff/run.ts`：`dropping ~X / carrying ~Y`、mid-turn `prefixTokens`、`keptTokens`、`anchorTokens` 四处改用 rate 换算；
+状态行加 baseline 后缀。**切点本身仍是 pi 的 `findCutPoint`**（chars/4）：重写它会重复 pi 的 turn 对齐，本轮不动，
+因此“真实载入量与 keep 预算的差距”仍在，已在报告里登记为边界。
+
+验收：15 项测试全绿（连跑 3 次）；新用例 12 条（`tests/handoff-test.mjs` 末节），变异矩阵每条各红：
+取样改最后一条红 1、被减数改 `totalTokens` 红 1、rate 固定 4 红 6、去掉取值带红 2、退掉 fallback 的减法红 7（含既有端到端用例）、
+回执忽略 rate 红 1、把记录自己的消息算进自己的估计红 2、去掉状态行后缀红 1。
+真机 smoke：同一沙箱配置下新代码首条请求 prompt = 17,769（旧代码 17,766，差值来自期间新增的一个技能描述）⇒ 加载与运行正常；
+**能区分新旧的是纯函数契约，不是这次 smoke**（一次性会话只有一条记录，取不到 delta）。
+原报告的残余①不可能用文件考古闭合，但状态行现在自证。
+
+（早期的 §7 决策点保留在上面作记录：A 的取舍、切点不动的理由、D/C 都做。）
