@@ -1718,8 +1718,8 @@ try {
 		"an excluded bash execution is not part of the prompt",
 		excludedRead.samples === 1 && excludedRead.baseline === 18_266 && excludedRead.estimated === 1_001,
 	);
-	// A hand-edited truthy value excludes it too (pi tests truthiness): `=== true` counted it and read 13,266,
-	// which is also the mutation this check pins.
+	// A hand-edited truthy value excludes it too (pi tests truthiness): `=== true` counted it and read 13,265
+	// (`ceil(44,004 / 8) = 5,501`, so 18,766 - 5,501), which is also the mutation this check pins.
 	const truthyExcluded = readOf(
 		measureCtx(
 			chain([

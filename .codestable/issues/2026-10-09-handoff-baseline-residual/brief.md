@@ -1,6 +1,10 @@
 # handoff 物理下限里的 baseline 是残差，不是测量：估计器偏差把 auto 交接整条关掉
 
-**状态（2026-10-09）**：归因**已完成**，**未改代码**，修复未开工。
+**状态（2026-10-13）**：**已修复并经 8 轮独立审查通过**（第 8 轮冻结 `b9addeb`：VERDICT PASSED，0 blocking / 0 important / 3 nit；
+3 条 nit 是证据文字，已作为 post-PASS 跟进落地，未改任何可执行行与断言）。实现分 6 轮：C+A（`3abd207`）、图像块 + 区间一致性（`acbf228`）、
+按 pi 投影算 `chars`（`270b1b4`）、last-wins 编辑（`12c0f72`）、镜像 `convertToLlm` 的 `!!` 排除（`c31e40c`）、`!!` 首条仍需 marker（`b9addeb`）。
+残余 ①②③④⑤⑥ 与两条已登记口径差异见 `design.md` §9–§13 与 `review-report.md` 的 R8 收尾。
+2026-10-09 的原始归因结论（未改代码阶段）如下。
 现场事实 + 初步量化在 `baseline-estimator-evidence.md`（增量比率法），
 完整实验与归因在 `baseline-attribution-experiment.md`（漂移判据、真实比率、真实水位、owner 那条线的闭环）。
 可复现探针：`probe-chars-per-token.py`、`probe-baseline-attribution.py`。是否修、怎么修要单独设计与审查（见「候选方向」）。

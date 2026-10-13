@@ -295,8 +295,41 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 - **N-3 登记**：`contextTokensAtRate` 与密度基准的口径差（仍按 pi 原值计图像与 system）写成已知差异，方向是保守过报，不修
   （统一为文本会让 mid-turn 切分预算少算图像 token）。
 
-**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 **35** 条 `check(`）。变异矩阵 13 条（每个只改一处、跑后 MD5 恢复校验）：
+**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 **33** 条 `check(`；另 2 条 `!!` 契约在 replay 小节）。变异矩阵 13 条（每个只改一处、跑后 MD5 恢复校验）：
 system 重新计入 **3**、上界退回 rate 缩放 **11**、`min`→`max` **9**、自身密度下界 **1**、后缀 measured-rate **1**、图像 **1**、
 区间一致性 **1**、忽略 `context_edit` **1**、rate 带下半 **3**、编辑链式 **1**、计入被排除 bash **2**、
 `!!` slice 头退回 role 判定 **2（本轮）**、排除判定退回严格 `=== true` **2（本轮）**。
 现场读数不变：probe **17,763**、ctl **11,018**、活树 **52,151**（35 样本、前缀非增、system 清零差 0）。
+
+## R8 独立审查结果（冻结 `b9addeb`，lane A，route `deepseek/deepseek-flash`）—— **VERDICT: PASSED**
+
+判定：**PASSED — 0 blocking / 0 important / 3 nit（全部为证据文字）**。抄本 `baseline-residual-review-round8-independent.txt`，
+prompt `baseline-residual-review-round8-prompt.txt`；零写证明两份快照 diff 均为空（冻结树五个被审文件 md5 与 HEAD blob 一致）。
+
+**审查员独立验证的要点**：
+
+- **修复正确性（端到端）**：用真实 `findCutPoint` 与真实 `convertToLlm` 走 `runHandoff` mock —— 切点精确落在 `!!` 条目时，
+  successor replay = `[user(marker), bashExecution, assistant]` ⇒ provider 首条 = `[turn prefix dropped during handoff]`；
+  同一夹具在 `c31e40c` 树上 provider 首条 = `assistant`（bug 复现）。`!` 对照组两版一致（不插 marker，首条仍是 user）。
+- **真值判定**：replay 侧 `true/1/"yes"/{}/[1]` 全插 marker、`false/0/""/null/undefined` 不插；采样器侧 `1` 与 `true` 都读 18,266、
+  falsy 读 13,265，与 `convertToLlm` 的 `if (m.excludeFromContext)` 逐值一致；45 组 role×truthiness「provider 首条为空或 user」0 违例。
+- **单点导出面**：`handoff/` 下其余 role 判定（`run.ts` 的内容门、`question.ts`、`language.ts`、`file-ops.ts`、`editedMessages`）逐一核对，
+  没有漏掉的 provider 可见性调用面；`editedMessages` 与 pi `projectContextEntry` 的 role 集一致。
+- **edit×role 矩阵**：user/assistant/custom/branch_summary/bash/`!`toolResult × shrink/null 的采样器估计与 `buildSessionProjection`
+  文本估计 **0 失配**；compaction 镜像（单条 / 保留旧 compaction index0>0 记 0）3/3 吻合。
+- **全形状偏差表**（gap = 读数 − B）：纯文本 +834（残余①）、图像首条 +100、`!! true`/`!! 1` +834（本轮修复后无低读）、
+  `!! 0`（falsy：与 pi 一致地计入）+9,173（fail-closed 高读）、`!` bash +923、`custom` +1,084 —— 每一行都归入已登记残余或已知口径差异，**没有未登记面**。
+- **契约与变异**：13/13 变异复现（3/11/9/1/1/1/1/1/3/1/2/2/2）；`node tests/run-all.mjs` 干净全绿；末节 `check(` = **33**。
+- **现场复验**：probe 17,763（真值 17,753）、ctl 11,018（真值 11,008）、活树 `01a13385` 52,151/35 样本/前缀非增，与 R4–R7 逐位一致。
+
+**3 条 nit（post-PASS 跟进，未改任何可执行行或断言）**：
+
+- **N-1**：两处契约数写 35，实为 **33**（本轮新增的 3 条里只有 1 条在采样器小节，另 2 条 `!!` 契约在 replay 小节）⇒ 已订正。
+- **N-2**：注释里「严格 `=== true` 读 13,266」算错 ceil 方向，实测 **13,265**（`ceil(44,004/8) = 5,501`）⇒ 已订正。
+- **N-3**：`docs/handoff.md` 的区间公式写成 `prompt_r − prompt_p ≥ chars_r/8 − chars_p`，比代码更宽松（`acbf228` 引入）；
+  正确形式 `(chars_r − chars_p)/8` ⇒ 已订正。
+
+**收尾**：issue 的验收条件（floor 不再随分支增长、不低读、无样本路径不变、现场读数与真值差 ≤ +10 高读）在本修订上全部成立；
+链条按仓内规则在此关闭。**PASS 只覆盖 `b9addeb`**：其后的 post-PASS 跟进只改 CHANGELOG / 本报告 / 一条测试注释 / `docs/handoff.md`
+（可执行行与断言零变化）。未闭合项作为后续工作：残余 ①②③④⑤⑥、两条已登记口径差异（`contextTokensAtRate` 仍按 pi 原值计图像与 system；
+`branchSummary`/`!` 包装的几个 token 高读）、以及发布动作（v0.4.10 tag + `~/.pi` pin 同步）。

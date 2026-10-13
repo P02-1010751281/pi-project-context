@@ -1,0 +1,67 @@
+**VERDICT: PASSED — 0 blocking / 0 important / 3 nit**
+
+审查对象 `b9addeb5d629afcc5c265e403a1826c4077b1fb2`（`/tmp/pi-context-rev14` 只读；全部实验在 `/tmp/laneA-rev14` 与 `/tmp/laneA-ctx`（c31e40c 瘦副本，`git archive` 导出）中完成；冻结树 HEAD 与五个被审文件 md5 与开工时一致，未写入）。
+
+## Findings（全部为 nit）
+
+**N-1 `CHANGELOG.md:75`、`.codestable/.../review-report.md:298` — 契约数 35 不实，实为 33**
+- 现象：两处写「末节现有 **35** 条 `check(`」。按本轮之前全部沿用的口径（末节 = `=== the sampled baseline … ===` 起的 `check(` 调用点），b9addeb 实测 **33**（c31e40c 为 32）；本提交新增的 3 条契约里只有 1 条（truthy exclude）落在末节，另 2 条（`!!` 头契约）在更早的 `=== replay block shape (mid-turn cut) ===` 节。`32+1=33`，「35」是 `32+3` 的记账错误。
+- 最小复现：`awk 'NR>=F' tests/handoff-test.mjs | grep -cE '^\s*check\('`（F=1308）⇒ 33；R4–R7 的历史声明（28/30/31/32）与各自提交实测逐一吻合，只有本轮不吻合。
+- 方向：证据面高报 2，不影响代码/测试通过。
+- 建议：**修**——把 35 改为 33（或明确换一种口径并同步历史各轮）。
+
+**N-2 `tests/handoff-test.mjs:1710`、`:1721` — 「`=== true` 读 13,266」数值差 1**
+- 现象：注释写严格 `=== true` 变异会读 13,266；实测该夹具（h1=4,000 chars、h2 输出 40,000、input=18,766）读 **13,265**（`44,004/8 = 5,500.5 → ceil 5,501`，`18,766−5,501`）。
+- 最小复现：我的 `verify/truthy-value.mjs`，`excludeFromContext=0`（等价于严格判定丢 `1`）⇒ baseline 13,265；断言值 18,266 本身正确。
+- 方向：注释算术 ceil 方向写反，属证据文字。
+- 建议：**修**——13,265。
+
+**N-3 `docs/handoff.md:87` — 区间一致性公式与代码/design/CHANGELOG 不一致**
+- 现象：docs 写 `prompt_r − prompt_p ≥ chars_r/8 − chars_p`；代码是 `chars_r − chars_p ≤ (prompt_r − prompt_p)×8` ⇔ `≥ (chars_r − chars_p)/8`（design §10、CHANGELOG:22 均正确）。docs 版多算了 `7·chars_p/8`，方向是**比代码更宽松**（把该丢的样本说成能留）。
+- 最小复现：对照 `threshold.ts` 的 `chars - previous.chars > (prompt - previous.prompt) * RATE_MAX` 与 design §10 原文即得。
+- 出处：acbf228（R4 修复）引入，非本提交；但它在冻结修订的发布面里，且任务要求核 docs 措辞。
+- 建议：**修**——改为 `(chars_r − chars_p)/8`（或 `chars_r/8 − chars_p/8`）。
+
+## 已验证（要点）
+
+**1) 修复正确性（独立夹具 + 真实 `findCutPoint`/`convertToLlm`）**
+- E2E（`verify/e2e-excluded-head.mjs`，通过 runHandoff mock）：`findCutPoint` 精确切在 `!!` 条目（`firstKeptEntryIndex=2, isSplitTurn=false`）；successor replay = `[user(marker), bashExecution, assistant]`，`convertToLlm` ⇒ provider 首条 = `[turn prefix dropped during handoff]`（user）。同一夹具在 c31e40c 树 ⇒ provider 首条 = `assistant "ok"`（bug 复现）。
+- `!` 对照两版一致：不插 marker，provider 首条 = user（`Ran \`true\`…` 包装）。
+- 真值判定：replay 侧 truthy `true/1/"yes"/{}/[1]` 全插 marker，falsy `false/0/""/null/undefined` 不插；采样器侧 `1` 与 `true` 都读 18,266，falsy 读 13,265（= 计数版），与 `convertToLlm` 的 `if (m.excludeFromContext)` 逐值一致。45 个 role×truthiness 组合的「provider 首条为空或 user」检查 0 违例。
+- 单点导出面：`handoff/` 下其余 role 判定（`run.ts:120/145` 的 user/assistant 内容门、`question.ts`、`language.ts`、`file-ops.ts`、`editedMessages`）逐一核对，**没有漏掉的 provider 可见性调用面**；`editedMessages` 与 pi `projectContextEntry` 的 role 集一致（已对 pi 源码核对）。edit×role 矩阵（user/assistant/custom/branch_summary/bash/!toolResult × shrink/null）采样器估计与 `buildSessionProjection` 文本估计 0 失配；compaction 镜像（单条 / 保留旧 compaction index>0 记 0）3/3 吻合。
+
+**2) 全形状偏差表**（真值模型：provider 视图在 `usage.prompt = B + 可见内容真值`；gap = 读数 − B）
+
+| 形状 | baseline | gap | 归类 |
+|---|---:|---:|---|
+| A 纯 user/assistant r=3 | 18,587 | +834 | 残余①（最空记录高读） |
+| B 图像首条（真 100 tok） | 17,853 | +100 | 已知差异：图像落进 baseline |
+| C `!! true` / C2 `!! 1` | 18,587 | +834 | R7/R8 修复，无低读 |
+| C3 `!! 0`（falsy） | 26,926 | +9,173 | fail-closed 高读（计数与 pi 一致） |
+| D `!` bash | 18,676 | +923 | 已知差异：wrapper + ① |
+| E custom | 18,837 | +1,084 | ① |
+| F branch_summary | 18,787 | +1,034 | 已知差异：前后缀 + ① |
+| G compaction+systemMessage | 33,624 | +15,871 | 已知差异：C（system 吸收进 baseline） |
+| H/H2/H3 edit shrink/null/链式 | 17,754 / 17,753 / 18,587 | +1 / 0 / +834 | R4/R6 修复 |
+| I 稀疏锚点 r=100 | **6,266** | **−11,500** | **残余④（已登记）** |
+| J 陈旧本地记录（前任大 prompt） | **12,015** | **−5,751** | **残余⑤（与 R4 夹具 12,015 同值）** |
+| J2 无前任的同类记录 | 18,266 | +500 | 区间规则正确丢弃 |
+| K 重放记录在前 | 17,775 | +22 | 残余③（重放不赢 min） |
+| L toolResult | 18,587 | +834 | ① |
+| M `firstKeptEntryId` 保留 pre-compaction 记录（膨胀摘要） | **17,434** | **−332** | **残余⑥**；`summary > 2·dropped + kept_before` 导出正确（r=4 边界） |
+
+- 对 c31e40c 跑同一矩阵：**只有 C2 不同**（旧读 13,586，低 4,167），其余 17 行逐位相同 ⇒ 本提交在采样器上的行为变化精确限定为「非 `true` 的真值排除」。
+- 全部低读只落在已登记的 ④⑤⑥（② 是会话内注入块增长的时间维残差，静态夹具无法证伪，已在 design §9 登记）；未发现新问题。
+- 本机真实 compaction 扫描：735 文件 / 26 条 compaction，`summary/(2·dropped+kept_before)` 最大 **0.014**，无一条接近 2×（声明 734/25，增量来自活机；实质claim成立）。
+
+**3) 契约与变异**：`node tests/run-all.mjs` ⇒ All 15 tests passed；我自建 13 个单点变异全部复现声明的 `^FAIL ` 数：system 3、上界退回 rate 11、`min`→`max` 9、自身密度下界 1、后缀 measured-rate 1、图像 1、区间一致性 1、忽略 context_edit 1、rate 带下半 3、编辑链式 1、计入被排除 bash 2、`!!` 头退回 role 2、严格 `=== true` 2。末节 `check(` 实为 **33**（见 N-1）。
+
+**4) 现场复验（只读）**：probe **17,763**（真值 17,753，+10，samples=1）；ctl **11,018**（真值 11,008，+10）；活树 `01a13385` **52,151 / 35 样本 / rate 3.2224**，前缀 `131,433 ×4 → 52,151` 恒平（非增），system 清零差 0（C 生效）。
+
+**5) 发布面**：CHANGELOG / design §9–§13 的残余清单（①②③④⑤⑥ + 图像、system、`branchSummary`/`compactionSummary` 前后缀、`!` bash 包装、`contextTokensAtRate` 计图像/system 的已知差异）与代码/实测一致；仅 N-1/N-3 两处数字/公式不实，N-2 一处注释算术。
+
+## 仍无法验证的点
+- **残余②（会话内注入块刷新）**：时间维性质，静态夹具只能验证「以设定记录时刻为真值」的上界语义；其增量界依赖 design §9 的现场测量，我未重跑刷新实验。
+- **活树真 baseline（≈40k）**：只验证了实际读数 52,151 与系统清零不变性，真值仍只有 probe/ctl 两个隔离沙箱的可信对照。
+- **R7 轮原始审查抄本**：仓库只归档 R1–R3 抄本，R7 的 important/nit 原文不在树上；我的闭合依据是任务描述 + R8 报告的逐条处置 + 代码/测试。
+- **预存在的边界（非本提交引入，未计入 finding）**：`run.ts:120/145` 的「可丢内容」门只认 user/assistant（`custom`/摘要虽为 provider 可见 user 内容却不计入）；`replayMessagesFor` 不重放 `branchSummary`/`compactionSummary`（successor 不继承摘要，由 handoff 文档替代）——两者均为既有设计边界且与 `excludeFromContext` 无关，本轮不动是正确取舍。
