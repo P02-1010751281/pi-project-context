@@ -1632,12 +1632,12 @@ try {
 		staleRead.samples === 1 && staleRead.sampleIndex === 0 && staleRead.baseline >= 17_766,
 	);
 
-	// 4d. The same shape with a *larger* predecessor prompt, which is the fail-open side review round 4 found:
-	//     the consistency rule is skipped when the prompt shrank, so a stale local record behind a predecessor
-	//     record still wins the minimum (12,015 against the 17,766 baseline) while the honest local record above
-	//     is caught. That is registered as residual ⑤ in the design, and this check pins the boundary rather
-	//     than the number: the honest sibling fixture 4c is caught, this one is not, and a fix that reconstructs
-	//     each record's billed prefix flips this assertion.
+	// 4d. The same numbers with a *larger* predecessor prompt: the consistency rule is skipped whenever the prompt
+	//     shrank, so this record still wins the minimum (12,015 against the 17,766 baseline) while the honest
+	//     sibling above is caught. This is a **file-level** shape, not a live ordering - pi's writer only appends
+	//     to the leaf, so a path ancestor cannot be billed after it exists (review round 5, nit 4); it models an
+	//     externally written or hand-edited session file. Registered as residual ⑤ in the design, and pinned as a
+	//     shape rather than a value: a fix that reconstructs each record's billed prefix flips this assertion.
 	const staleBehindPredecessor = chain([
 		messageEntry("s1", "user", "y".repeat(4_000), stamp(0)),
 		billed("s2", "ok", { input: 131_433 }, stamp(1)),
@@ -1665,6 +1665,26 @@ try {
 	check(
 		"a context edit shrinks the prefix the record was billed for",
 		editedRead.samples === 1 && editedRead.baseline === 17_767 && editedRead.baseline >= 17_766,
+	);
+
+	// 4f. Two edits to one target: pi keeps only the *last* one and applies it to the target's **raw** messages,
+	//     so a `null` deletion followed by a replacement restores the content (pi core appends exactly that pair
+	//     on every overflow recovery, `agent-session.js`, and an extension may re-edit afterwards). Applying each
+	//     edit to the previous result left the target deleted: `chars` lost a 4,000-char message and the baseline
+	//     over-read it without bound (review round 5, I-1 - its 30,000/28,875 fixture, fail-closed into the
+	//     silent refusal this issue is about). Here the target is deleted then restored to 4,000 chars, so the
+	//     record's own chars are 4,000 and `20,000 - 500 = 19,500`; `estimated` counts the restored text.
+	//     Mutation: chaining the edits reads baseline 20,000 and estimated 1.
+	const restored = chain([
+		messageEntry("f1", "user", "w".repeat(4_000), stamp(0)),
+		contextEditEntry("f2", "f1", null, stamp(1)),
+		contextEditEntry("f3", "f1", { content: [{ type: "text", text: "v".repeat(4_000) }] }, stamp(2)),
+		billed("f4", "ok", { input: 20_000 }, stamp(3)),
+	]);
+	const restoredRead = readOf(measureCtx(restored, "sample-restored", 60_000));
+	check(
+		"the last edit of a target wins, applied to the raw messages",
+		restoredRead.samples === 1 && restoredRead.baseline === 19_500 && restoredRead.estimated === 1_001,
 	);
 
 	// 5. A delta that is not a content delta cannot calibrate: the prompt grows 1,000 tokens per record while the

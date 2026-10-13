@@ -172,9 +172,12 @@ baseline 循环改成 `prompt − ceil(chars / RATE_MAX)` 的 min；`prompt <= c
    100,000 字符消息仍进 `chars` ⇒ 后续记录读数低约 12,500（审查员夹具 5,267，本仓 5,268，真值 17,766）。
    修法：在**编辑条目出现的位置**（`for (const [index, entry] of entries.entries())`）就地改写目标条目的贡献 ——
    编辑之前的记录仍按原文计算（它们被计费时原文还在），编辑之后的记录按新文本；同时镜像投影的 compaction 语义
-   （`index > 0` 的 compaction 贡献 0；线性分支实测只会返回最新那条，见 review-report R5 的探针）。
+   （`index > 0` 的 compaction 贡献 0：旧 compaction 可以因为新 compaction 的 `firstKeptEntryId` 落在它之后而被保留在
+index>0，第 5 轮审查员用 `[c_new, m1, c_old, m2, a1]` 的夹具证明了它可达、且我们的镜像正确）。
 2. **R4-I-1（区间规则在 prompt 缩小时豁免）**：见 §10 订正 —— 豁免保留（否则交接继承的前任大 prompt 会把 baseline 钉在 131k），
-   但边界写清、形状钉住（4d 契约），残余⑤ 即为该形状。
+   但边界写清、形状钉住（4d 契约），残余⑤ 即为该形状。第 5 轮审查员进一步指出：该形状在 pi 自己的写者下**不可复现**
+   （append 只接 leaf ⇒ 路径祖先必然早于记录），它是**文件级**容错（外部写者 / 手改 JSONL）；真实会话里能造成低读的只有
+   本扩展 `SPLIT_TURN_MARKER` 注入这类「同一分支内 token 数被重算」的情形，量级远小于夹具的 50k。4d 注释与 §10 措辞按此口径。
 
 **顺带（第 4 轮 nit）**：`rate > RATE_MAX` 不可达（接受样本已过区间规则 ⇒ `4·added ≤ Δprompt·RATE_MAX`）⇒ 删除，只留 `rate < RATE_MIN`；
 `absurd` 夹具改钉 band 下半（prompt 涨 1,000、文本涨 150 ⇒ 0.6 c/t 被拒、4 条样本全在），使 `!calibrated` 不再是同义反复。

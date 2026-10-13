@@ -255,8 +255,10 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	 * deltas are all built on (see `textEstimate`). */
 	let plain = 0;
 	let split = false;
-	/** Each entry's messages and their contribution to `plain`, so a `context_edit` can rewrite it in place. */
-	const seen = new Map<string, { messages: PiMessage[]; tokens: number }>();
+	/** Each entry's raw messages, their projected ones and their contribution to `plain`, so a `context_edit`
+	 * can rewrite them in place. `raw` is kept because pi applies the *last* edit of a target to its original
+	 * messages: a `null` deletion followed by a replacement restores the target rather than editing nothing. */
+	const seen = new Map<string, { raw: PiMessage[]; messages: PiMessage[]; tokens: number }>();
 	for (const [index, entry] of entries.entries()) {
 		if (entry.type === "context_edit") {
 			// The provider saw the target's *edited* messages, so a message a user shortened or deleted must stop
@@ -264,10 +266,10 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 			// The edit is applied where it appears in the branch, so records billed before it keep the old text.
 			const target = seen.get(entry.targetId);
 			if (target) {
-				const messages = editedMessages(target.messages, entry.replacement);
+				const messages = editedMessages(target.raw, entry.replacement);
 				const tokens = messageTokens(messages);
 				plain += tokens - target.tokens;
-				seen.set(entry.targetId, { messages, tokens });
+				seen.set(entry.targetId, { raw: target.raw, messages, tokens });
 			}
 			// The prompt content changed under records that were billed before this edit, so a chars->tokens
 			// delta across it is not a content delta.
@@ -283,7 +285,7 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 			// and skipping it here would push its tokens into the baseline and raise the floor. A compaction entry
 			// can also carry pi's `systemMessage`, which is a prompt component, not content (see the doc block).
 			plain += tokens;
-			seen.set(entry.id, { messages, tokens });
+			seen.set(entry.id, { raw: messages, messages, tokens });
 			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
 			split = true;
 			continue;
@@ -294,7 +296,7 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		let record: MessageUsage | undefined;
 		for (const message of messages) record = (message as { usage?: MessageUsage }).usage ?? record;
 		plain += tokens;
-		seen.set(entry.id, { messages, tokens });
+		seen.set(entry.id, { raw: messages, messages, tokens });
 		if (!record) continue;
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
 		if (prompt <= 0) continue;

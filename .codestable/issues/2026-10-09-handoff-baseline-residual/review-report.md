@@ -221,8 +221,35 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 
 **验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 30 条 `check(`）。
 变异矩阵（9 条，每个只改一处、跑后 MD5 恢复校验）：system 重新计入 **3**、上界退回 rate 缩放 **8**、`min`→`max` **9**、
-去掉自身密度下界判定 **1**、后缀不写回执口径 **1**、图像字符重新计入 **1**、去掉区间一致性规则 **1**、忽略 `context_edit` **1**、
-去掉 rate 带下半 **3**。
+去掉自身密度下界判定 **1**、后缀**把未校准的 4.0 印成测得 rate** **1**、图像字符重新计入 **1**、去掉区间一致性规则 **1**、
+忽略 `context_edit` **1**、去掉 rate 带下半 **3**（后缀那条的精确补丁很重要：按「永远印 fallback」红 2、按「删掉整段 `receipt at`」红 3）。
 现场三条会话读数不变：probe **17,763**（真值 17,753）、ctl **11,018**（真值 11,008）、活树 `01a13385` **52,151**
-（35 样本、rate 3.22、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）——活树那 8 条 `context_edit` 都是对空 content 的
-`replacement: null`，对字符数无影响，所以投影修复不动现场读数。
+（35 样本、rate 3.22、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）。活树那 8 条 `context_edit` 的**目标 content 全为空**
+（`replacement: null` 的 omit），所以对 `chars` 零影响；它们的 `split` 效应在 R4→R5 之间没有变化，两版现场读数才逐位相同 ——
+把这 8 条从文件里删掉会少 8 个 `split` 豁免点，活树读数会变成 **161,788 / 2 样本**（第 5 轮审查员实测），所以「无影响」只对 `chars` 成立。
+
+## R6（本轮修复：R5 的 1 important + 5 nit —— 待独立审查）
+
+**改动**：`handoff/threshold.ts`（`seen` 保存 `raw`，每条 edit 从原始消息重算；注释）、`tests/handoff-test.mjs`（新契约 4f、4d 注释改口径）、
+`CHANGELOG.md`、`docs/architecture.md`（无）、design §10/§11、本报告。
+
+**逐条处置**：
+
+- **R5-I-1 修**：同一目标多次编辑按 pi 的 last-wins 语义重算（`editedMessages(target.raw, …)`）⇒ 审查员的「null 删除 → 恢复」夹具
+  现与 `buildSessionProjection` 一致（其忠实值 28,875/2,251 那一类）；新契约 `the last edit of a target wins, applied to the raw messages`
+  钉 `baseline === 19,500`、`estimated === 1,001`（链式变异读 20,000 / 1）✓，变异 M10 红 1。
+- **NIT 2 修**：design §11 的 compaction 可达性说法改写 —— 旧 compaction 可因新 compaction 的 `firstKeptEntryId` 落在它之后而保留在
+  index>0（审查员夹具 `[c_new, m1, c_old, m2, a1]` ⇒ c_old 在 index 2，我们的镜像正确）；原「线性分支只会返回最新那条」删除。
+- **NIT 3 修**：`CHANGELOG` 里被推翻的「那正是 `min` 本就会跳过的情形 / 只有在它前面还有可参照样本时才被捕获」措辞删除，
+  改为**有意**的 fail-open 取舍 + 指向残余⑤。
+- **NIT 4 修**：4d 注释与 design §10/§11 改为「**文件级**形状」（pi 的写者只向 leaf 追加 ⇒ 路径祖先不可能晚于记录计费，
+  该时序现场不可复现；真实可达的低读只有 `SPLIT_TURN_MARKER` 注入这类量级更小的情形）。
+- **NIT 5 修**：R5 的「8 条 `context_edit` 无影响」补成「对 `chars` 无影响；`split` 效应 R4→R5 未变，故两版读数逐位相同」，
+  并记下删掉它们会让活树读 **161,788 / 2 样本**。
+- **NIT 6 修**：变异矩阵恢复精确补丁定义（后缀：measured-rate 1 / always-fallback 2 / 删整段 3）。
+
+**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 **31** 条 `check(`）。
+变异矩阵（10 条，每个只改一处、跑后 MD5 恢复校验）：system 重新计入 **3**、上界退回 rate 缩放 **9**、`min`→`max` **9**、
+去掉自身密度下界判定 **1**、后缀把未校准的 4.0 印成测得 rate **1**、图像字符重新计入 **1**、去掉区间一致性 **1**、
+忽略 `context_edit` **1**、去掉 rate 带下半 **3**、编辑链式应用 **1**。
+现场三条会话读数不变：probe **17,763**、ctl **11,018**、活树 `01a13385` **52,151**（35 样本、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）。
