@@ -1342,6 +1342,15 @@ try {
 			sessionManager: makeSessionManager(entries, id),
 			getContextUsage: () => ({ tokens, percent: 5, contextWindow }),
 		});
+	/** A compaction entry: prompt content pi turns into a summary message, but not a `message` entry. */
+	const summaryEntry = (id, summary, when) => {
+		const entry = { ...messageEntry(id, "user", summary, when) };
+		delete entry.message;
+		entry.type = "compaction";
+		entry.summary = summary;
+		entry.tokensBefore = 1_000;
+		return entry;
+	};
 	const readOf = (ctx) => measured.measureContext(ctx, ctx.getContextUsage());
 
 	// 1. The same non-conversation baseline under 25x the message volume. Mutation: keeping the last sample
@@ -1368,6 +1377,59 @@ try {
 	check(
 		"the status suffix names the rate and the sample count",
 		/· baseline \d+(\.\d)?k \(2\.\d c\/t, best of 4\)/.test(measured.baselineSuffix(smallRead)),
+	);
+	// 1e. A calibrated flag of false means the rate is pi's 4, so the suffix must not present that 4.0 as a
+	//     measured rate (the operator reads this line to decide whether the baseline is a lever).
+	//     Mutation: printing `4.0 c/t` for that branch reddens this alone.
+	check(
+		"an uncalibrated suffix does not claim a measured rate",
+		/· baseline \d+(\.\d)?k \(chars\/4, no usable delta, best of 4\)/.test(measured.baselineSuffix(denseRead)),
+	);
+
+	// 1c. One rate cannot describe a branch that changes script. An ASCII opening block (r = 4) followed by CJK
+	//     turns (r ~= 1.05) calibrates at ~1.05, which over-corrects the opening sample: its converted estimate
+	//     exceeds its own prompt, so a clamped residual would read 0 and win the minimum. That sample falls back
+	//     to the chars/4 residual, which is exact here - the fixture's true baseline is 17,766.
+	//     Mutation: keeping the clamped residual reddens this alone (baseline 0).
+	const mixed = chain([
+		messageEntry("m1", "user", "x".repeat(60_000), stamp(0)),
+		billed("m2", "ok", { input: 32_766 }, stamp(1)),
+		messageEntry("m3", "user", "测".repeat(4_200), stamp(2)),
+		billed("m4", "ok", { input: 36_767 }, stamp(3)),
+		messageEntry("m5", "user", "测".repeat(4_200), stamp(4)),
+		billed("m6", "ok", { input: 40_768 }, stamp(5)),
+	]);
+	const mixedRead = readOf(measureCtx(mixed, "sample-mixed", 60_000));
+	check(
+		"a sample the session rate over-corrects falls back to the chars/4 residual",
+		mixedRead.calibrated &&
+			Math.abs(mixedRead.rate - 1.05) <= 0.15 &&
+			mixedRead.sampleIndex === 0 &&
+			Math.abs(mixedRead.baseline - 17_766) <= 2,
+	);
+
+	// 1d. A compaction summary is prompt content. `summaryOnly` measures the summary's own estimate through the
+	//     module, so the expectation does not hardcode pi's rendering of it; the `>= 1_500` conjunct proves the
+	//     fixture really registered the entry (a malformed one would make the mutated code pass silently).
+	//     Mutation: dropping non-message entries from the estimate reddens this alone (baseline reads the
+	//     summary as if it were baseline).
+	const summaryText = "x".repeat(8_000);
+	const summaryOnly = readOf(measureCtx(chain([summaryEntry("c1", summaryText, stamp(0))]), "sample-summary", 60_000));
+	const withSummary = readOf(
+		measureCtx(
+			chain([
+				summaryEntry("c1", summaryText, stamp(0)),
+				messageEntry("q1", "user", "y".repeat(4_000), stamp(1)),
+				billed("q2", "ok", { input: 20_766 }, stamp(2)),
+			]),
+			"sample-summary-branch",
+			60_000,
+		),
+	);
+	check(
+		"a compaction summary is context, not baseline",
+		summaryOnly.estimated >= 1_500 &&
+			Math.abs(withSummary.baseline - (20_766 - summaryOnly.estimated - 1_000)) <= 2,
 	);
 
 	// 2. A record's own reply is not context: the same session with a 100k-character last reply reads the same

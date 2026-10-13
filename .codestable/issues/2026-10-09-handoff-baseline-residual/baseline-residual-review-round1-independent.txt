@@ -1,0 +1,113 @@
+# Lane A 独立审查报告 — 冻结修订 `466ebcd`
+
+现场已读：`.codestable/attention.md`、issue 目录全部文件（`brief.md`/两份证据/`probe-true-baseline.md`/`design.md` §7/§8）、`git status`、`git diff 3bafa26..HEAD`、`git show --stat 466ebcd`。全部实验在 `/tmp/rev1`（冻结副本的另一份拷贝）里跑，`/tmp/pc-baseline-review1` 除既有 `.agents/memory/*` 外零改动（`git diff HEAD -- extensions docs tests CHANGELOG.md` 为空）。
+
+方法说明：我按作者口径用 `node tests/handoff-test.mjs` 的 `^FAIL ` 行计变异（`run-all.mjs` 只把失败子进程的 stdout 转出来，两者等价）。
+
+---
+
+## important
+
+**1. 全局 rate 应用到异质样本上时，`min` 会把 baseline 压到 0（新引入的 fail-open）**
+`extensions/project-context/handoff/threshold.ts:183`（`rate` 取全会话中位）+ `:202`（`Math.max(0, prompt - estimated)`）+ `:203`（取 min）。
+
+`rate` 是**整条会话一个标量**，却被套到每个样本的 `plainBefore` 上。当较早样本的脚本构成比校准窗口（最后 5 个 delta）更「省 token」时，`estimated = plain*4/rate` 会超过该样本真实 prompt，残差被 `Math.max(0,…)` 夹成 0；而 0 是 min 的天然赢家（`:203` 的 `residual < baseline`），于是 baseline = 0。这直接违反设计 §3 写下的不变量「每个样本都 ≥ 真值…仍是上界」。
+
+最小复现（自洽夹具：provider prompt = `BASE + 已发消息真实 token`；首条 60k ASCII 字符≈15k token，其后 3 轮纯 CJK 4k 字符≈4k token，故 delta 校准出 rate≈1.0）：
+
+```
+CASE A self-consistent (BASE=17766):
+  {"baseline":0,"rate":1.001,"samples":4,"sampleIndex":0,"calibrated":true,"estimated":71945}
+  reported floor = 28000   true floor = 45766
+  window 64000: resolveThreshold = 43616 (dropTokens=23616)   ← 真 floor 45766/68000 时本应拒绝
+```
+
+把 `BASE` 提到 40k（本机多扩展的真实水位）后在 64k 窗口上：`resolveThreshold` 仍解析出 `43616`、`dropTokens=23616`，而真 floor 68000 > 可用窗口 ⇒ 该拒绝却放行；回执 `dropping ~X` 把真实 drop 少报的量级放大到 15k+（`157000-17766-20000=119234` vs 报告 `137000`）。这是本改动**新引入**的面：旧公式对 ASCII 段 `chars/4` 是准的，不会把 baseline 打到 0。
+
+最小修法（不新增机制，只给现有 min 循环加一道守卫）：把「`estimated >= prompt`、即被全局 rate 过度修正」的样本排除出 min（`continue`）；若没有一个样本可用，退回按 `plain` 的残差取 min。它服务 `probe-true-baseline.md` 的现场事实——`B_true=17,766`（活树 30–39k），物理上不可能为 0，负/零残差是测量失效的信号而非「baseline=0」。设计 §5.1 只讨论了「r>4 时残差被压到真值之下」，没有覆盖「校准 rate 与样本自身脚本不一致」这一路径。
+
+**2. 「无 usage 记录 ⇒ 逐字节走旧公式」不成立：`plain` 跳过了非 `message` 条目**
+`extensions/project-context/handoff/threshold.ts:143-147`（非 message 条目只 `split=true; continue`，不计入 `plain`）。
+
+旧 `baselineTokens` 是对 `buildContextEntries(...)` 的**全部**条目做 `flatMap(sessionEntryToContextMessages)`；`sessionEntryToContextMessages` 对 `compaction` / `branch_summary` / `custom_message` 都返回消息（compaction summary、systemMessage 等）。新代码把它们全排除在 `plain` 之外。实测（一条 compaction、无 usage）：
+
+```
+branch types: compaction,message,message,message
+old estimate (all entries): 3002
+new estimate: 1002   new baseline: 58998
+old baseline: 56998
+⇒ 差 2000 = compaction summary 的估计 token
+```
+
+影响：① `CHANGELOG.md:16`「逐字节不变」、`design.md:45/78/99` 三处同款承诺与代码不符；② `ContextMeasure` 文档承诺「`estimated + baseline` 可以复核这个读数」，在有 summary 的会话里对不上；③ 有 usage 记录时 summary token 会被算进 baseline，floor 被系统性抬高。变异验证：把非 message 条目的估计加回 `plain`（保留 `split=true`）在 `tests/handoff-test.mjs` 上 **0 FAIL** ⇒ 这条路径完全没有测试覆盖。
+
+最小修法：在 `:143` 的非 message 分支里，对 `sessionEntryToContextMessages(entry)` 累加 `estimateTokens` 到 `plain` 后再 `continue`（`split=true` 不变，delta 仍被丢弃）。这与旧公式逐字等价，且不改变任何现有绿测。
+
+---
+
+## nit
+
+**3. 状态行后缀把「有样本但未校准」说成已校准的 4.0**
+`extensions/project-context/handoff/threshold.ts:238`：`measure.calibrated ? rate.toFixed(1) : "4.0"`。有样本但无可用 delta（如 `<RATE_MIN` 的密内容、负 delta）时输出 `(4.0 c/t, best of n)`，与一次真实的 4.0 校准不可区分。这正是本 issue 要抓的「用户可见句子承诺代码没做的事」的一半：`(chars/4, no usage sample)` 只在 `samples===0` 说真话，`samples>0 && !calibrated` 这一支没说。变异：把该支文案改成加 `, uncalibrated`，`handoff-test.mjs` **0 FAIL** ⇒ 分支与文案都无覆盖。最小修法：`samples>0 && !calibrated` 时写 `(chars/4, no usable delta)`（或等价）。
+
+**4. 记录数字不一致：design/commit 说「12 条用例」，实际新增 15 条 `check(`**
+`.codestable/issues/2026-10-09-handoff-baseline-residual/design.md:107`（「新用例 12 条」）与 `466ebcd` 提交信息（「12 unit checks」）。`git diff 3bafa26..HEAD -- tests/handoff-test.mjs | grep -c '^+.*check('` = **15**。其余记录数字（8 条变异红数、4 处调用点、`[1.0,8.0]`、`17,766`/`17,769`）我逐条复现，均对。最小修法：改成 15，或指明 12 的口径。
+
+---
+
+## suggestion
+
+**5. 状态行的 `~X recent carried`（`run.ts:26`，取 config 预算）与回执的 `carrying ~Y`（`run.ts:154` 起，按 rate 换算）在 CJK 会话里必然不等**（例如同一状态行里 `~20.0k recent carried` 对回执 `carrying ~32k recent`）。两者一个说预算、一个说估算，但都长成测量句。若以「同一份 chars→tokens 口径」为目标，把状态行那句也标注为预算（如 `budget ~20.0k recent`）即可，无需新机制；它服务 brief「用户可见句子承诺代码没做的事」这条。
+
+**6. 回执的 `dropping ~X` 是「按本会话 rate 估算被切集合的 token」，不是「真实切下的量」**（切点仍是 pi `findCutPoint` 的 chars/4，见 `run.ts:113` 的注释与 design §8）。句子带 `~` 且描述的是被丢集合，尚算诚实；但没有一处向用户说明「切分边界由 chars/4 决定、20k keep 在 CJK 下会超配」。这属 `residual-risk` 级别，不必新机制。
+
+---
+
+## residual-risk
+
+**R1. 超带退化为 4 时，本 issue 的偏差只是被 `min` 界定、未被消除。** 若会话首样本本身很大且内容比 1 token/字更密（base64/压缩文本，实测 `r≈0.8`），所有 delta 被 `[1.0,8.0]` 拒掉 ⇒ `rate=4, calibrated=false` ⇒ `baseline = min(prompt - plain)` 仍随首样本字符数增长，floor 可再次越过 knee。兜底的只有「取最空样本」这一点；状态行也不披露校准失败（见 nit 3）。建议在文档里把「min 是上界」改成「min 是最紧的可用样本，密内容样本仍偏高」。
+
+**R2. 重放记录不是「永远不会赢得 min」。** `design.md` §5.2 的说法只在存在更新的小残差样本时成立；新会话首回合、只带一条重放的 predecessor usage 时，`min` 就是它（我本地夹具 `baseline=150000`），会造成那一回合 floor 虚高（fail-closed）。`baseline-attribution-experiment.md` 已把重放记录列为伪影并要求「丢掉 handoff 提示前的 usage 记录」，实现未落这条排除规则。影响面小（自动触发在 `agent_settled`，此时已产生新记录），但状态行首查会读到假值。
+
+**R3. `context_edit` 的 `plain` 用的是被编辑前的原消息**（`buildContextEntries` 不套用 replacement），而 provider prompt 是编辑后的。夹具实测：40k CJK 字符被 edit 成 `"hi"`、真 baseline 17,766 时读到 `baseline=7767`（少 10k）。这是既有口径（旧公式同样如此），非本 diff 引入，但新的 `min` 会主动挑中这种低残差样本并放大。issue 证据里「含 context_edit 的窗口必须剔除」目前只落实在 delta 上，没落实到样本的 `plain`。
+
+**R4. 多 provider / 模型切换**：`model_change` 只置 `split`，不同路由的样本仍一起进 `min`；某路由 prompt 不含注入块时会成为最小残差。语义上属 `min` 的已知取舍，登记即可。
+
+---
+
+## learning
+
+- 本仓对「用户可见句子」的验收口径可以复用成机械检查：凡是状态行/回执里出现数字，就找那个数字的**唯一来源**；这次 `run.ts:26` 与 `run.ts:154` 同说「carried」却各有来源，是最好的反例。
+- 变异矩阵只覆盖被改的表达式，不覆盖新增状态的**可达边界**（负残差、非 message 条目、未校准后缀这三处全绿），说明「每条新断言配一个变异」不等于「每个新分支有变异」。
+
+## praise
+
+- 夹具对 parent chain 是诚实的：`chain()` 显式写 `parentId`，`sampled()` 调用它，且夹具注释点明「pi 的 context builder 走父链，平铺列表只暴露叶子」——与我核对的 `buildSessionPath`（`core/session-manager.js:124`）一致。
+- `prompt` 排除 `output`、记录自己的消息不进自己的估计、`min` 对整条（compaction-aware）分支取，实现与测试都对；`buildContextEntries` 会按 leaf 重建、天然排除 compaction 之前的条目。
+- 作者 8 条变异红数我逐条复现：最后一条=1、`totalTokens`=1、rate 固定 4=6、去取值带=2、退 fallback 减法=7、回执忽略 rate=1、自己消息计入自己=2、去掉后缀=1，全部吻合。
+- `consolidation-test.mjs:2426` 的 `waitUntil` 改造语义正确：超时后返回 `predicate()` 的最终值（`harness.mjs:180`），不写就是 `false`，不会把「真的没写」变成「等到超时也算过」；未削弱任何既有断言。
+- `contextTokensAtRate(messages, rate)` 的乘除方向正确（`plain*4/rate`），`rate>=1` 无除零，`*4` 离 `MAX_SAFE` 尚远。
+
+---
+
+## Test And QA Focus
+
+| 命令 | 结果 |
+| --- | --- |
+| `node tests/run-all.mjs`（一次性，`/tmp/rev1`） | **All 15 tests passed**，`^FAIL ` = 0，exit 0，42s |
+| `node tests/handoff-test.mjs` | all checks passed，`^FAIL ` = 0 |
+| 变异 A 作者 8 条 | 1/1/6/2/7/1/2/1，与 CHANGELOG/design 全符（「回执忽略 rate 红 1」须用 run.ts 传字面 4 的写法才是 1；若改 `contextTokensAtRate` 本体则为 2） |
+| 变异 B 我自造 · `min`→最早 | 1 FAIL（`a replayed predecessor record does not become the baseline`） |
+| 变异 C 我自造 · rate 固定上界 8 | 6 FAIL |
+| 变异 D 我自造 · rate 固定下界 1 | 5 FAIL |
+| 变异 E 我自造 · 乘除写反（`*rate/4`） | 2 FAIL（回执两条） |
+| 变异 F 我自造 · 非 message 条目计入 `plain`（修复性变异） | **0 FAIL → finding（无覆盖）** |
+| 变异 G 我自造 · 去掉残差 `Math.max(0,…)` 钳制 | **0 FAIL → finding（负残差路径无覆盖）** |
+| 变异 H 我自造 · 未校准后缀加 `, uncalibrated` | **0 FAIL → finding（无覆盖）** |
+| 自洽夹具跑 `measureContext`（ASCII 首块 + CJK delta） | baseline 0 / rate 1.001 / sampleIndex 0；见 important 1 |
+| compaction 无 usage 下 old vs new baseline | 58998 vs 56998（差 2000）；见 important 2 |
+| `context_edit` 夹具 | baseline 7767 vs 真值 17766；见 R3 |
+
+未做：在父提交上重现 `consolidation-test.mjs` 的 flake（需跑多轮高负载，预算不允许）；该修复本身经 `waitUntil` 语义检查无削弱。
+
+VERDICT: CHANGES-REQUESTED

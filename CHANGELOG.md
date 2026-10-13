@@ -17,14 +17,24 @@
 - **交接回执与 mid-turn 切分预算改说本会话的 chars/token**（同一根因的第二个消费者）：`dropping ~X / carrying ~Y` 原先用 pi 的
   `chars/4`，CJK 重的会话会把真实切下的量少报约 `1 − r/4`；现在两处共用上面那个 rate。**切点本身仍是 pi 的 `findCutPoint`**
   （chars/4），本轮不动（重写切点会重复 pi 的 turn 对齐）。
-- **状态行自证 + 诚实降级**：`/handoff status` 增加 `· baseline <值> (<rate> c/t, best of <n>)`；无可用样本时写
-  `(chars/4, no usage sample)`，不再让「baseline 是杆」看起来像唯一杠杆。
+- **状态行自证 + 诚实降级**：`/handoff status` 增加 `· baseline <值> (<rate> c/t, best of <n>)`；无样本时写
+  `(chars/4, no usage sample)`，有样本但无可用 delta 时写 `(chars/4, no usable delta, best of <n>)`，
+  不再让「baseline 是杆」看起来像唯一杠杆，也不把兑底的 4.0 印成测得的 rate。
+- **第 1 轮独立审查（冻结 `466ebcd`，CHANGES-REQUESTED，0 blocking / 2 important）后的修复**：
+  ① 会话级单一 rate 套到**异质分支**上时，较“省 token”的早期样本会被过度修正，残差被 `Math.max(0,…)` 夹到 0，
+  而 0 必赢 `min` ⇒ baseline=0、floor 过低、自动交接过早（本改动新引入的 fail-open；现场实测 `B_true = 17,766`，物理下限不可能是 0）。
+  现在换算估计 **≥ 自身 prompt** 的样本改用历史 chars/4 残差（会高读、不会低读），`min` 只由 rate 读得可信的样本来推动。
+  ② 「无 usage 记录 ⇒ 逐字节走旧公式」原本不成立：`plain` 只累加 `type === "message"` 条目，而旧公式对**全部**条目求和
+  （compaction / branch_summary / custom_message 都是 prompt 内容）⇒ 有 summary 的会话里 floor 被系统性抬高。
+  现在非 message 条目也计入 `plain`；`samples === 0` 时 rate 必为 pi 的 4、换算退化为恒等，旧公式真的逐字节回来了。
+  两条都是审查员用现场事实可追溯的缺陷（非新机制），报告与残余登记见 `.codestable/issues/2026-10-09-handoff-baseline-residual/review-report.md`。
 - **另修一条与本改动无关的测试竞态**：`consolidation-test.mjs` 读 `CONTEXT.md` 时不等待写入，负载高时 6 次里红 1–3 次（已在 HEAD 上
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
-变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条新断言都有只改一处的补丁把它变红）：取样改成最后一条红 1、
-被减数改成 `totalTokens` 红 1、rate 固定为 4 红 6、去掉取值带红 2、退掉 fallback 的减法红 7（含既有端到端用例）、回执忽略 rate 红 1、
-把记录自己的消息算进自己的估计红 2、去掉状态行后缀红 1。
+变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条断言都有只改一处的补丁把它变红）：取样改成最后一条红 2、
+被减数改成 `totalTokens` 红 1、rate 固定为 4 红 7、去掉取值带红 3、退掉 fallback 的减法红 9（含既有端到端用例）、回执忽略 rate 红 1、
+把记录自己的消息算进自己的估计红 2、去掉状态行后缀红 1、去掉过度修正守卫红 1、非 message 条目不进估计红 1、未校准分支谎报 `4.0 c/t` 红 1。
+新增契约数按实测口径：原始实现的末节 15 条 `check(`（`git diff … \| grep -c '^+.*check('`），本轮后 17 条。
 
 ## v0.4.9 — 2026-10-08
 

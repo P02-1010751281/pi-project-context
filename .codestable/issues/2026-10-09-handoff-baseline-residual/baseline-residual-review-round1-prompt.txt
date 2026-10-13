@@ -1,0 +1,70 @@
+# Lane A 独立审查 — 冻结修订 `466ebcd`（issue `2026-10-09-handoff-baseline-residual` 的实现，候选 v0.4.10）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pc-baseline-review1`（= 冻结修订 `466ebcd` 的逐字节副本，**只读**）。
+**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先把沙箱复制到你自己的
+`/tmp/<你的目录>` 里，在那儿跑（本仓测试会在 cwd 下写 `.agents/memory`，只有那个目录被零写入证明豁免，其它任何落盘都算你改了工作区）。
+
+## 范围
+
+被审 diff：`git diff 3bafa26..HEAD`（父提交 `3bafa26`）。7 文件，+442/−26。实质文件：
+`extensions/project-context/handoff/threshold.ts`、`extensions/project-context/handoff/run.ts`、
+`tests/handoff-test.mjs`、`tests/consolidation-test.mjs`，以及 `CHANGELOG.md`（`## v0.4.10` 节）、
+`docs/architecture.md`（模块表一行）、`.codestable/issues/2026-10-09-handoff-baseline-residual/design.md`（§8）。
+
+先读现场：
+- `.codestable/attention.md`
+- `.codestable/issues/2026-10-09-handoff-baseline-residual/` 全部文件（`brief.md` 给现场事实、`baseline-estimator-evidence.md`
+  与 `baseline-attribution-experiment.md` 给隔离探针的实测、`probe-true-baseline.md`、`design.md` §7/§8）
+- `git status --short`、`git diff 3bafa26..HEAD`、`git show --stat 466ebcd`
+
+## 本轮改了什么（**这是待验证的主张，不是结论**）
+
+`baselineTokens`（物理下限 `floor = baseline + keep + MIN_DROP_TOKENS` 里那个 baseline）原先取「当前这一点的 usage 残差」，
+而残差 = 真值 + `Σchars × (1/4 − 1/r)`（本仓探针实测 `r = 2.2–3.8`），于是 floor 随会话变长自己长高，越过质量拐点后自动交接
+被**无声**关掉（现场：prompt 317k、floor 179k > knee 157k）。本次改动：
+
+1. `measureContext(ctx, usage)`：走完分支上每条 assistant 记录，取 `prompt = input + cacheRead + cacheWrite`（**不含**该记录的 `output`）
+   与**该记录之前**的消息估计（记录自己的消息不算进自己的 prompt），取**最小残差**作为 baseline；
+   rate = 最后 5 个「同段」delta 的中位数（`4·Δ估计/Δprompt`），取值带 `[1.0, 8.0]`，无可用 delta 时 rate = 4 且 `calibrated=false`；
+   **无 usage 记录时逐字节走旧公式**。
+2. `contextTokensAtRate()`：回执 `dropping ~X / carrying ~Y`、mid-turn 快照预算、`keptTokens`、`anchorTokens` 四处改用它
+   （共 4 个调用点）。**切点本身仍是 pi 的 `findCutPoint`（chars/4）**，本轮不动。
+3. `baselineSuffix()`：`/handoff status` 加 `· baseline <值> (<rate> c/t, best of <n>)`；无样本时写 `(chars/4, no usage sample)`。
+4. 另修一条与本改动无关的测试竞态：`consolidation-test.mjs` 读 `CONTEXT.md` 不等写入（作者称已在父提交上复现）。
+
+## 你要独立验的
+
+1. **取样是否真的在测它声称的东西**：prompt 排除 `output`、记录自己的消息不进自己的估计、`min` 的确是对**整条分支**取而不是
+   「最后一条」或「第一条」。注意 pi 的 context builder 走 **parentId 父链**，平铺列表只暴露叶子 —— 请自己确认夹具与实现都对此诚实。
+2. **`[1.0, 8.0]` 取值带**：下界 1.0 的依据是什么（探针只实测到 2.2–3.8，`1.0` 是按"纯 CJK ≈1 token/字"推的）？这个数字合理，
+   还是把未实测的区域写成了事实？超带时退化为 4 是否会重新引入本 issue 要修的偏差，此时谁在兜底？
+3. **反向（fail-open）方向，请专门做对抗性 pass**：新算法在什么输入下会把 baseline 读成**过小**，从而使 floor 过低、
+   自动交接**过早**触发（这是本改动新引入的风险面）？例如：rate 被高估、某 provider 只报 `input` 而把缓存另计、
+   `cacheRead` 语义不同的路由、分支前缀处的小残差、`best of 1`、空消息、零字节回复、超长单条消息。
+   找不到就说找不到，并说明你搜过的方向；找到了给最小复现（夹具或命令）。
+4. **"逐字节不变"是否成立**：无 usage 记录（首回合）时新代码路径与旧公式是否真的等价（含 `samples`/`calibrated` 等新字段对既有调用方的可见影响，
+   以及固定比例模式是否被牵连）。
+5. **回执那句用户可见的话是否与代码一致**：既然切点仍是 pi 的 chars/4，`dropping ~X / carrying ~Y` 现在用 rate 换算，
+   它说的是「真实切下的量」还是「按本会话 rate 估算的量」？如果二者在 CJK 会话下必然不一致，请指出这句话现在是否**过度承诺**
+   （本仓的特征性缺陷就是"用户可见的句子承诺了代码没做的事"）。
+6. **状态行后缀是否在所有分支都说真话**：无样本 / 有样本但未校准 / 有样本已校准 / 固定比例模式 四种情况下后缀内容对不对？
+7. **变异矩阵独立复现**：作者声称 8 条单点变异各自变红（取最末条红1、被减数改 `totalTokens` 红1、rate 固定4 红6、去掉取值带红2、
+   退掉 fallback 减法红7、回执忽略 rate 红1、记录自己的消息算进自己估计红2、去掉状态行后缀红1；计法 = `node tests/run-all.mjs` 的 `^FAIL ` 行）。
+   请至少自己造 **2 条作者没列出的**变异（例如把 `min` 换成"最早一条"、把 rate 换成上界/下界、把 `plainBefore` 换成 `plain` 的其它形态、
+   把 `buffer` 与 rate 的乘除方向写反），报你自己的红数。**作者没列出的变异如果有全绿的，那是 finding。**
+8. **12 条新用例是否只是"复述实现"**：期望值是不是从夹具独立推出的（而不是把代码的输出抄成期望值）？有没有断言恒真？
+9. **竞态修复**：`consolidation-test.mjs` 改 `waitUntil` 是否削弱了任何既有断言，或把"真的没写"变成了"等到超时也算过"？
+10. **`run.ts` 的 4 个调用点**：rate 的取得是否一致、是否有一处漏改；mid-turn 快照预算改动是否会影响 keep 的钳制或 `MAX_SAFE` 类边界。
+11. **记录准确性**：`CHANGELOG.md` v0.4.10 节与 `design.md` §8 的每个数字/措辞（含 `17,766`/`17,769`、`[1.0, 8.0]`、
+    "逐字节不变"、4 处调用点、8 条变异红数、12 条用例）与代码、与你自己的复现是否一致；不一致按 finding 报。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line`、影响与**最小修法**
+（不要提出新机制；要提就得先指出它服务本 issue `brief.md` 里的哪条现场事实，否则只能进 `residual-risk`）。
+`## Test And QA Focus` 附你跑过的命令与结果（全套 `node tests/run-all.mjs` 只跑一次；变异用 `node tests/handoff-test.mjs`，
+约每条 1 分钟，注意总预算）。
+末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`。
+**独立判断，不要继承任何前轮结论**；若你找不到 fail-open 或新误触发的具体构造，就明确说"这一类未再发现"并给 PASSED。
+"可以更严"属于 `residual-risk`/`suggestion`，不要写成 blocking。

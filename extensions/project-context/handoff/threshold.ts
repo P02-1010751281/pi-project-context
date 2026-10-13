@@ -129,8 +129,12 @@ export interface ContextMeasure {
  * `usage.tokens` covers the whole prompt (pi's `calculateContextTokens` adds the last reply's output), while
  * the branch estimate runs at pi's `chars/4`; the residual therefore carries the estimate error, which grows
  * with the message characters (`1 - r/4`, measured `r = 2.2-3.8` in this repo). Reading each record's *prompt*
- * and keeping the **smallest** residual moves the sample to the emptiest point of the branch, where that error
- * is smallest, so the floor stops growing as the session fills (issue 2026-10-09-handoff-baseline-residual).
+ * and keeping the **smallest credible** residual moves the sample to the emptiest point of the branch, where
+ * that error is smallest, so the floor stops growing as the session fills (issue 2026-10-09-handoff-baseline-residual).
+ * "Credible" because one rate cannot describe a branch that changes script: a sample the rate over-corrects
+ * (its converted estimate exceeds its own prompt, so the residual would read 0) falls back to the chars/4
+ * residual for that sample, which over-reads but never under-reads. A session with no usable record keeps
+ * the historical formula byte-for-byte (the rate is pi's 4 there, so the conversion is the identity).
  * The rate those records imply is reported for the handoff receipt, which needs the same chars->tokens
  * conversion for the slices it describes.
  */
@@ -141,6 +145,9 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	let split = false;
 	for (const entry of entries) {
 		if (entry.type !== "message") {
+			// A compaction / branch summary / custom message is prompt content: the historical formula counted it,
+			// and skipping it here would push its tokens into the baseline and raise the floor.
+			for (const message of sessionEntryToContextMessages(entry)) plain += estimateTokens(message);
 			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
 			split = true;
 			continue;
@@ -199,7 +206,14 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	let baseline = 0;
 	let sampleIndex = 0;
 	for (let i = 0; i < samples.length; i += 1) {
-		const residual = Math.max(0, samples[i].prompt - samples[i].estimated);
+		const sample = samples[i];
+		const scaled = sample.prompt - sample.estimated;
+		// One rate cannot describe a branch that changes script, so a sample written in a denser script than
+		// the calibration window is over-corrected and its scaled residual reaches (or passes) zero. That is a
+		// measurement failure, not a reading (this baseline is never 0 in practice), so such a sample falls
+		// back to the historical chars/4 residual: it over-reads, but the minimum can then only be moved by a
+		// sample the rate reads honestly.
+		const residual = scaled > 0 ? scaled : Math.max(0, sample.prompt - sample.plain);
 		if (i === 0 || residual < baseline) {
 			baseline = residual;
 			sampleIndex = i;
@@ -235,8 +249,10 @@ export function contextTokensAtRate(
  */
 export function baselineSuffix(measure: ContextMeasure): string {
 	if (measure.samples === 0) return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usage sample)`;
-	const rate = measure.calibrated ? measure.rate.toFixed(1) : "4.0";
-	return ` · baseline ${fmtTokens(measure.baseline)} (${rate} c/t, best of ${measure.samples})`;
+	if (!measure.calibrated) {
+		return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usable delta, best of ${measure.samples})`;
+	}
+	return ` · baseline ${fmtTokens(measure.baseline)} (${measure.rate.toFixed(1)} c/t, best of ${measure.samples})`;
 }
 
 /** First request-wide pricing tier edge, e.g. a long-context surcharge. Model metadata. */
