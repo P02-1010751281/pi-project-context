@@ -7,6 +7,7 @@ import { type ContextUsage, type ExtensionContext, buildContextEntries, estimate
 import { MAX_THRESHOLD_RATIO, MIN_DROP_TOKENS } from "../shared/config.ts";
 import { fmtPct, fmtTokens } from "./format.ts";
 import { config } from "./settings.ts";
+import { excludedFromContext } from "./text.ts";
 
 /** pi's default compaction reserve; window headroom used by the threshold math. */
 const WINDOW_RESERVE_TOKENS = 16_384;
@@ -116,25 +117,12 @@ function textEstimate(message: PiMessage): number {
 	return estimateTokens(withoutImages(message));
 }
 
-/**
- * True for a message pi's `convertToLlm` drops before the request: interactive `!!cmd` output is persisted as a
- * `bashExecution` message carrying `excludeFromContext`, so the provider never sees it. Counting it charged
- * `chars` and `estimated` for text that was never in the prompt, which read the baseline low (independent review
- * round 6, I-1: 13,264 against 17,766, and a large enough output dropped the record altogether).
- */
-function isExcluded(message: PiMessage): boolean {
-	return (
-		(message as { role?: string }).role === "bashExecution" &&
-		(message as { excludeFromContext?: boolean }).excludeFromContext === true
-	);
-}
-
 /** The text-only token estimate of a message list; system messages are pi's own components, not content. */
 function messageTokens(messages: readonly PiMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
 		if ((message as { role?: string }).role === "system") continue;
-		if (isExcluded(message)) continue;
+		if (excludedFromContext(message as { role: string; excludeFromContext?: unknown })) continue;
 		tokens += textEstimate(message);
 	}
 	return tokens;
@@ -399,7 +387,7 @@ export function contextTokensAtRate(
 	for (const message of messages) {
 		// The same exclusion the sampler makes: content the provider is never sent (a `!!cmd`'s output) costs
 		// nothing in the slice this describes, so reporting it would over-state the drop and the carry-over.
-		if (isExcluded(message as PiMessage)) continue;
+		if (excludedFromContext(message as { role: string; excludeFromContext?: unknown })) continue;
 		tokens += Math.ceil((estimateTokens(message) * 4) / rate);
 	}
 	return tokens;

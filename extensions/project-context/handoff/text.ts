@@ -26,6 +26,22 @@ export const SPLIT_TURN_MARKER = "[turn prefix dropped during handoff]";
  */
 const USER_FACING_ROLES = new Set(["user", "custom", "bashExecution"]);
 
+/**
+ * True for a message pi's `convertToLlm` drops before the request: interactive `!!cmd` output is persisted as a
+ * `bashExecution` message carrying a truthy `excludeFromContext` (pi tests it for truthiness, so a hand-edited
+ * `1` counts too), and the provider never sees it. Such a message is not user-facing either: a replay slice
+ * opening with one still needs {@link SPLIT_TURN_MARKER}, or the successor's first sent message is an assistant
+ * one and user-first routes (Anthropic / Gemini) reject the continuation request - the reason the marker exists.
+ */
+export function excludedFromContext(message: { role: string; excludeFromContext?: unknown }): boolean {
+	return message.role === "bashExecution" && Boolean(message.excludeFromContext);
+}
+
+/** Whether a provider renders this message as a user message. */
+function isUserFacing(message: AgentMessage): boolean {
+	return !excludedFromContext(message) && USER_FACING_ROLES.has(message.role);
+}
+
 /** Tool-call ids an assistant message issued. */
 function toolCallIds(message: AgentMessage): string[] {
 	if (!Array.isArray(message.content)) return [];
@@ -72,7 +88,7 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
 	}
 	// A mid-turn cut leaves the slice opening on an assistant message, so the dropped prefix is
 	// marked with a user-facing stand-in.
-	if (replayable[0] && !USER_FACING_ROLES.has(replayable[0].role)) {
+	if (replayable[0] && !isUserFacing(replayable[0])) {
 		replayable.unshift({ role: "user", content: [{ type: "text", text: SPLIT_TURN_MARKER }], timestamp: replayable[0].timestamp } as AgentMessage);
 	}
 	return replayable;

@@ -180,7 +180,8 @@ index>0，第 5 轮审查员用 `[c_new, m1, c_old, m2, a1]` 的夹具证明了�
    **①** 被 `convertToLlm` 丢弃的 `!!cmd` 输出（`bashExecution` + `excludeFromContext`）被计入 `chars`（R7 已修）；
    **②** 最新 compaction 之前计费、却被 `firstKeptEntryId` 保留的 usage 记录（残余⑥：其 prompt 属压缩前分支，正常写入下只造成高读，
    要低读需摘要膨胀到 `summary > 8·S + 7·K`，模型摘要不可能）；**③** 本扩展 `SPLIT_TURN_MARKER` 注入这类「同一分支内 token 数被重算」
-   的情形，量级远小于夹具的 50k。另有 `branchSummary`/`compactionSummary` 经 `convertToLlm` 会加 ~95/111 字符前后缀（几个 token 的 fail-closed 高读，不修）。
+   的情形，量级远小于夹具的 50k。另有两类 `convertToLlm` 包装带来的几个 token 的 fail-closed 高读（不修）：`branchSummary`/`compactionSummary` 的 ~95/111 字符前后缀，
+  以及未排除的 `!` bash 的 ``Ran `cmd` `` 包装（实测 est −4 / bound +2）。
    4d 注释与 §10 措辞按此口径。
 
 **顺带（第 4 轮 nit）**：`rate > RATE_MAX` 不可达（接受样本已过区间规则 ⇒ `4·added ≤ Δprompt·RATE_MAX`）⇒ 删除，只留 `rate < RATE_MIN`；
@@ -196,4 +197,16 @@ provider 拿到的是 `convertToLlm(buildSessionProjection().messages)`（`dist/
 
 **残余⑥ 登记**：`firstKeptEntryId` 保留的 pre-compaction usage 记录仍被采样（其 prompt 是压缩前分支、`chars` 是压缩后投影）——
 pi core 用 `assistantIsFromBeforeCompaction` 把这类记录视为失效，本采样器不失效。正常写入下只把读数顶高（fail-closed，与残余③同向）；
-低读需要摘要膨胀到 `summary > 8·S + 7·K`（模型摘要不可能），审查员的 1,543 局 fuzz 里 1,270 条分歧全属此类、compaction 之后 0 条。
+低读的门限不是「膨胀 8 倍」，而是 `summary > 2 · dropped + kept_before`（审稿人夹具 2.5× 时低 500；本机 734 个会话文件里 25 条真实
+compaction **无一条**超过 2×，pi 的正常摘要远短于被压缩前缀）。审查员的 1,543 局 fuzz 里 1,270 条分歧全属此类、compaction 之后 0 条。
+
+## 13 R8：被排除的 `!!` 在 replay 首条时仍需 marker（第 7 轮的 1 important）
+
+`USER_FACING_ROLES` 无条件含 `bashExecution`，但 `excludeFromContext` 的 bash 经 `convertToLlm` 整条消失 ⇒ 当 `findCutPoint`
+把 `!!` 条目本身当切点、kept slice 以它开头时，代码认为首条是 user 可见的、不插 `SPLIT_TURN_MARKER`，successor 发给 provider
+的首条变成 assistant ⇒ Anthropic/Gemini 这类要求 user-first 的路由直接拒（marker 存在的理由）。修法：把「user 可见」判据统一为
+provider 可见性（`excludedFromContext` 从 `text.ts` 单点导出，threshold 采样器与 replay 共用），并补 `!!`/`!` 对照契约。
+
+同轮：`excludedFromContext` 改为**真值**判定（镜像 `convertToLlm` 的 `if (m.excludeFromContext)`；手改 `1` 同样排除）；
+`contextTokensAtRate`（回执 / mid-turn 切分预算）仍按 pi 原值计图像块与 system 消息（口径与密度基准不同），
+登记为**已知差异**：方向是保守过报（图像按 4,800 字符计，预算只会更保守），不修 —— 统一为文本会让预算少算图像 token。

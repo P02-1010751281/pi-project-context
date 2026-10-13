@@ -815,6 +815,20 @@ try {
 		message: { role: "bashExecution", command: "ls", output: "", timestamp: Date.parse("2026-09-16T00:44:04.000Z") },
 	};
 	check("a bash turn start needs no split marker", handoff.replayMessagesFor([bashEntry])[0]?.role === "bashExecution");
+	// An *excluded* `!!` bash execution is not sent at all (`convertToLlm` drops it), so it is not a user-facing
+	// slice head: without the marker the successor's first provider message is an assistant one, which user-first
+	// routes reject - the reason the marker exists (review round 7, I-1). Mutation: treating `bashExecution` as
+	// user-facing unconditionally reddens the excluded case.
+	const omittedBash = { ...bashEntry, message: { ...bashEntry.message, excludeFromContext: true } };
+	const omittedHead = handoff.replayMessagesFor([omittedBash]);
+	check(
+		"an excluded bash slice head still gets the split-turn marker",
+		omittedHead.length === 2 && omittedHead[0]?.role === "user" && omittedHead[0]?.content?.[0]?.text === handoff.SPLIT_TURN_MARKER,
+	);
+	// The exclusion is tested for truthiness, mirroring `convertToLlm`'s own `if (m.excludeFromContext)`: a
+	// hand-edited `1` excludes the message too, so the marker must appear (review round 7, N-1).
+	const truthyBash = { ...bashEntry, message: { ...bashEntry.message, excludeFromContext: 1 } };
+	check("an excluded bash slice head is excluded by truthiness, not by `true`", handoff.replayMessagesFor([truthyBash])[0]?.role === "user");
 
 	console.log("\n=== runHandoff call sites ===");
 	// Pins what the pure-function tests cannot: which slice is replayed, which language directive the
@@ -1704,6 +1718,20 @@ try {
 		"an excluded bash execution is not part of the prompt",
 		excludedRead.samples === 1 && excludedRead.baseline === 18_266 && excludedRead.estimated === 1_001,
 	);
+	// A hand-edited truthy value excludes it too (pi tests truthiness): `=== true` counted it and read 13,266,
+	// which is also the mutation this check pins.
+	const truthyExcluded = readOf(
+		measureCtx(
+			chain([
+				messageEntry("h1", "user", "x".repeat(4_000), stamp(0)),
+				bashExecutionEntry("h2", "z".repeat(40_000), 1, stamp(1)),
+				billed("h3", "ok", { input: 18_766 }, stamp(2)),
+			]),
+			"sample-truthy",
+			60_000,
+		),
+	);
+	check("a truthy excludeFromContext excludes the message from the estimate", truthyExcluded.baseline === 18_266);
 
 	// 5. A delta that is not a content delta cannot calibrate: the prompt grows 1,000 tokens per record while the
 	//    text grows 150 (a refreshed injected block, not content), so the implied ~0.6 chars/token sits below the

@@ -277,3 +277,26 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 去掉自身密度下界判定 **1**、后缀把未校准的 4.0 印成测得 rate **1**、图像字符重新计入 **1**、去掉区间一致性 **1**、
 忽略 `context_edit` **1**、去掉 rate 带下半 **3**、编辑链式应用 **1**、**计入被排除的 bash 输出 1（本轮新增）**。
 现场三条会话读数不变：probe **17,763**、ctl **11,018**、活树 `01a13385` **52,151**（35 样本、前缀非增、system 清零差 0）。
+
+## R8（本轮修复：R7 的 1 important + 3 nit —— 待独立审查）
+
+**改动**：`handoff/text.ts`（`excludedFromContext` 导出 + `isUserFacing`；未排除的 bash 仍是合法 slice 头）、
+`handoff/threshold.ts`（删本地 `isExcluded`，改用共享判据）、`tests/handoff-test.mjs`（`!!`/`!` marker 对照 + 真值判定两契约）、
+`CHANGELOG.md`、design §11/§12/§13、本报告。
+
+**逐条处置**：
+
+- **R7-I-1 修**：`!!`（`excludeFromContext`）作为 kept slice 首条时 now 插 `SPLIT_TURN_MARKER` ⇒ provider 首条仍是 user；
+  新增契约 `an excluded bash slice head still gets the split-turn marker`（对照 `a bash turn start needs no split marker` 不变）。
+- **N-1 修**：`excludedFromContext` 用真值（`Boolean(...)`）判定，镜像 `convertToLlm`；手改 `1` 的输入在采样器与 replay 两侧都排除
+  （两条真值契约）。
+- **N-2 修**：残余⑥ 的低读门限从「膨胀 8 倍、不可能」改为实测口径 `summary > 2·dropped + kept_before`（审稿人 2.5× 夹具低 500；
+  本机 734 个会话/25 条真实 compaction 无一条超过 2×），并补了 `!` bash 包装、`branchSummary` 前后缀两类几个 token 的已知高读。
+- **N-3 登记**：`contextTokensAtRate` 与密度基准的口径差（仍按 pi 原值计图像与 system）写成已知差异，方向是保守过报，不修
+  （统一为文本会让 mid-turn 切分预算少算图像 token）。
+
+**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 **35** 条 `check(`）。变异矩阵 13 条（每个只改一处、跑后 MD5 恢复校验）：
+system 重新计入 **3**、上界退回 rate 缩放 **11**、`min`→`max` **9**、自身密度下界 **1**、后缀 measured-rate **1**、图像 **1**、
+区间一致性 **1**、忽略 `context_edit` **1**、rate 带下半 **3**、编辑链式 **1**、计入被排除 bash **2**、
+`!!` slice 头退回 role 判定 **2（本轮）**、排除判定退回严格 `=== true` **2（本轮）**。
+现场读数不变：probe **17,763**、ctl **11,018**、活树 **52,151**（35 样本、前缀非增、system 清零差 0）。
