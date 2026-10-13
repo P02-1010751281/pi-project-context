@@ -132,3 +132,40 @@ pi 的估算看不到扩展注入的记忆块）；**A 必须配 C 且需要记�
 
 **登记残余**：§9 的三条 + 本报告原有的 RR-1..RR-4 中仍未闭合者（RR-2 状态行无法区分「赢家走了回退」已随守卫删除而消失；
 RR-3「全样本被过度修正时退回 chars/4」同样消失；RR-1 即 I-1，本轮由构造消掉）。**下一轮 = 冻结本修订的独立审查。**
+
+### R3 独立审查结果（冻结 `3abd207`，lane A，route `deepseek/deepseek-flash`）
+
+判定：**CHANGES-REQUESTED — 0 blocking / 2 important / 4 nit**。抄本 `baseline-residual-review-round3-independent.txt`，
+prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status` 与文件 mtime/size 两份快照 diff 均为空
+（全部实验在审查员自己的 `cp -a` 副本里跑，生产树 md5 = HEAD blob）。
+
+**审查员独立复现并闭合的点**：
+
+1. C 的前提成立：pi 1.2.0 的 `estimateTokens` system 分支 = `content + sections + toolsAdded`
+   （`dist/core/compaction/compaction.js:201/206/207-211/213-214`）；自造夹具旧代码含 system 读 7,766、清零后 17,766，差 10,000 = atRate(system 估算)；
+   两沙箱 system 估算 9,881 / 9,882 而真值差 6,745 ⇒「pi 的 system 估算看不到本扩展注入块」成立；旧公式低读 7,879 / 1,133 与
+   `probe-variant-comparison.txt` 逐位吻合。
+2. A 的可证方向成立：R2 两个 I-1 夹具读 20,266 / 20,916（≥ 真值 17,766 与物理下限 11,021）；同质 CJK 读 41,100 = 40,000 + 4,000×(1/2.5 − 1/8) 取整；
+   同一会话两个 leaf 读同值（非增）；`prompt <= chars/8` 的记录不进 min 且读数不为负。
+3. 取整方向不翻转上界（`ceil(Σceil(len/4)/2) ≤ Σceil(len/8) ≤ T` ⇒ 保守高读），只在**取值带被打破**时翻转 —— 即 I-1。
+4. 六个已发布变异逐位复现：2 / 7 / 8 / 1 / 1 / 3 条 `^FAIL`；另有 9 个自造变异（见 N-3）。
+5. dense 锚点量级复现：纯 CJK 10 万字符 ⇒ baseline 105,266（1M 窗口 knee 仍先绑定，`drop 31,734`）；15 万字符 ⇒ floor 177,016 > 157k ⇒ 拒绝。
+6. 前缀序列自证：probe / ctl 17,763 / 11,018 精确复现；活树 record 0–3 读 131,433、record 4 起恒 52,151（非增，13.8k 漂移消失）。
+
+**待修（R4）**：
+
+- **I-1（important，fail-open）图像块打破 `chars/8 ≤ T`**：pi 对每张图固定计 `ESTIMATED_IMAGE_CHARS = 4800`
+  （`compaction.js:182/193-195`），而带要求每张图 ≥600 token 才不低读；小图（截图缩略图 / low-detail 85 token 级）远低于此 ⇒ 上界落到真值之下并赢 min。
+  审查员夹具：B = 17,766 + 图 100 token ⇒ 读 **17,264**（低 502），每张更小的图再多低约 500。修法：把 image block 从 `chars` 的密度下界里单列
+  （图内真实 token 落进 baseline，方向 fail-closed），并把「>8 chars/token 的长空白/重复串」写进同一残余。
+- **I-2（important，fail-open，低读侧未登记）`prompt <= chars/8` 不是记录合格性**：实现只走当前 leaf 的分支，把**当前**前缀字符数记给每条历史记录；
+  某条记录计费后分支前插了 replay（或 `context_edit` 改长）时，其 `chars` 含它没被计费的字符 ⇒ 上界落真值之下并赢 min。
+  审查员夹具（B = 17,766、本地记录 prompt = 18,766）：replay 50k ⇒ **12,016**、100k ⇒ **5,766**、140k ⇒ **766**。
+  这正是 design `§5.3` 早已写明的要求（「截至 r」要用 r 自己当 leafId 重建，不能用当前叶子截断）而两轮实现都没做 ⇒ R4 按 §5.3 修（并留意 S-4 的性能面）。
+- **N-1**：`CHANGELOG.md` / `docs/handoff.md` / `threshold.ts` 注释的「永不低读」与自登记残余②（注入块会话内增长）矛盾 ——
+  审查员夹具读 18,866 vs **当前**真值 24,511（低 5,645）⇒ 收窄文案（或把残余②写进 CHANGELOG 的残余清单）。
+- **N-2**：残余③的「首回合」表述不准（实测活树到 record 3 才出现更小 bound）；`below-quality-knee` 的拒绝句仍输出 "a smaller baseline … is the lever"，
+  而同文件注释刚说不该把 baseline 当杆 ⇒ 未登记的文案面。
+- **N-3**：CHANGELOG 的契约数（末节实为 **26** 条 `check(`；diff 新增 7 条 ✓）与「每条断言都有单点变异」的措辞需订正（审查员 9 个自造变异覆盖 24/26；
+  未覆盖的是「fallback tracks usage.tokens exactly」与伞形断言「no scenario above reached a model」）。
+- **N-4**：陈旧注释 `threshold.ts:114`（"tightest sampled residual"）、`:244`、`tests/handoff-test.mjs:1493`。

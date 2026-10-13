@@ -1,0 +1,63 @@
+VERDICT: CHANGES-REQUESTED — blocking 0 / important 2 / nit 4
+
+验证环境：冻结树 `/tmp/pi-context-rev9` 只读未动（`threshold.ts` md5 `804bda09…` = HEAD blob，`git status` 与开始时一致）；全部实验在 `cp -a` 副本 `/tmp/lane-a-rev9-1074919` 内跑，`node tests/run-all.mjs` 15 项全绿（clean log：0 条 `^FAIL`）。
+
+## 一、独立验证（已闭合的点）
+
+1. **C 的前提成立**。pi 1.2.0 的 `estimateTokens` 对 system 分支算 `content + sections + toolsAdded`：`dist/core/compaction/compaction.js:201`（函数）、`:206`（content）、`:207-211`（sections）、`:213-214`（toolsAdded）。自造夹具（system 40k 字符→估 10,000；消息估 1,000；B=17,766）：旧代码含 system 读 **7,766**，把 system 清零读 **17,766**，差 **10,000 = atRate(system 估算)**；新代码读 18,266、`estimated=1,001`。真实会话：probe `sysEst=9,881` / ctl `sysEst=9,882`（差 1），而两条首请求真值 17,766 / 11,021（差 **6,745**）⇒「pi 看不到本扩展注入的记忆块」成立；旧公式低读 17,766−9,887=7,879、11,021−9,888=1,133，与 `probe-variant-comparison.txt` 逐位吻合。
+2. **A 的可证方向（在 1..8 chars/token 带内、B 恒定时）成立**。R2 两个 I-1 夹具自造复跑：20k ASCII 读 **20,266**、25.2k 读 **20,916**，均 ≥ 真值 17,766 与物理下限 11,021；高读 = opening/8（2,500 / 3,150）。同质 CJK 夹具读 41,100 = 40,000 + 4,000×(1/2.5−1/8)+取整。同一会话两个 leaf（生产式父链 mock）读同值（20,266 / 20,266；41,100 / 41,100，非增）。`prompt <= chars/8` 的记录不进 min、读数不为负（4b 夹具 samples=1、baseline 9,499 ≥ 0）；无样本路径 `Math.max(0,…)`。
+3. **取整方向不翻转上界**。`chars/8 = ceil(Σceil(lenᵢ/4)/2) ≤ Σceil(lenᵢ/8) ≤ T`（逐消息 8 c/t 下界），故 ceil 的方向是**保守高读**。500 条 9 字符消息、每条真值 2 token（带边界）夹具读 18,016 ≥ 17,766；若真实 tokenizer 达到 9 chars/token（越带），同样形状会读 17,516（低 250）——翻转只在**带被打破**时发生（见 I-1）。
+4. **变异矩阵复现**。六个已发布变异在副本里逐位复现 `^FAIL` 行数：system 重新计入 **2**、上界退回 rate 缩放 **7**、min→max **8**、去掉合格性守卫 **1**、compaction `systemMessage` 计入 **1**、后缀退回旧措辞 **3**。另有 9 个自造变异用于覆盖矩阵，见 N-3。
+5. **dense 锚点量级与报告一致（并已登记）**。纯 CJK（真值 r≈1）自造：10 万字符→baseline 105,266（高读 87,500），1M 窗口 knee=157k 仍先绑定（`drop 31,734`），200K 窗口阈值 179,616（`drop 54,350`）；15 万字符→floor 177,016 > 157k ⇒ 1M 上 `below-quality-knee` 拒绝（200K 上以 `drop 10,600` 勉强解析）；20 万字符两个窗口都拒绝。与 design §9 残余①「首个大块极重 ⇒ 拒绝」一致（活树 +12k 的例子偏温和，但作为上界说明没错）。
+6. **真机前缀序列自证**。probe/ctl 读 17,763 / 11,018（发布值精确复现）；活树 `01a13385` 在 record 0–3 读 **131,433**、record 4 起恒 **52,151**（非增，13.8k 漂移消失）；`floor=159,433 > knee 157k` ⇒ replay-only 前缀 `below-quality-knee` 拒绝。这部分与 R3 报告数字一致。
+
+## 二、Findings
+
+### I-1（important，fail-open，未登记）图像块打破 `chars/8 ≤ T` 前提
+- 位置：`extensions/project-context/handoff/threshold.ts:137-139`（band 假设）、`:245`（bound = `prompt − ceil(chars/8)`）；pi 每张图固定计 4,800 字符：`…/pi-coding-agent/dist/core/compaction/compaction.js:182`（`ESTIMATED_IMAGE_CHARS = 4800`）与 `:193-195`。
+- 现象：band 要求每张图 ≥600 token 才不低读；pi 自己的注释说该估法是 "conservative (overestimates tokens)"，小图（截图缩略图、low-detail 85 token 级）远低于 600。图像在 `plain` 中按 4,800 chars 计入 ⇒ 上界被推到真值之下，且会赢 min。设计/审查报告的三条残余都没有图像，测试夹具 0 个 image。
+- 最小复现（我的副本）：`node review/image.mjs`——一个含 image block 的 user 消息 + 一条 `input = 17,766 + 100`（真值：B=17,766、图 100 token）的记录，`measureContext` 返回 `baseline 17,264`，**低 502**；每张更小的图多低约 500，多图叠加。
+- 方向：fail-open（floor 低 ⇒ 过早起跳；`dropTokens` 高报）。
+- 建议：修（把 image block 从 `chars` 下界中单列，按已知保守 per-image token 下界处理）或至少在 design/review-report 登记为残余并加一条会变红的契约；顺带把「>8 chars/token 的长空白/重复串」一并写进同一残余（本机无真实 tokenizer，见下）。
+
+### I-2（important，fail-open，低读侧未登记）`prompt <= chars/8` 不是记录合格性；后插入分支内容会让旧记录赢 min 并低读
+- 位置：`threshold.ts:196-198`（唯一守卫）、`:241-249`（全局 min）、`tests/handoff-test.mjs:1570-1592`（4b 夹具）；与 design `§5.3`（`design.md:68-70`「'截至 r' 的重建必须用 r 自己当 leafId，不能用当前叶子截断，否则样本点算错」）相抵触。
+- 现象：实现只走一遍当前 leaf 的分支，把当前前缀字符数记给每条历史记录。若一条记录计费后分支前插了 replay（或 `context_edit` 把消息改长），该记录的 `chars` 包含它没被计费的字符，bound = `prompt − chars/8` 可落到真值之下并赢 min。4b 夹具正是此形状（注释自称「first local request built before the replay landed」），测试把读数 **9,499** 钉为期望、只断言 `>= 0`；报告只登记了反向（虚高）的残余③。
+- 最小复现：`node review/replay-low.mjs`。B=17,766，先落 R 字符 predecessor replay、再是「计费早于 replay」的本地记录（prompt=18,766）：R=50k→baseline **12,016**、R=100k→**5,766**、R=140k→**766**（分别低 5,750 / 12,000 / 17,000）；R=160k 守卫跳过该记录、fallback 读 17,998；R 很大且 `usage.tokens` 小于分支估计时 fallback 读 0（旧公式同样会读 0，非本 diff 新引入，但与守卫叠加后更容易进入 `samples===0`）。
+- 方向：fail-open（低读 ⇒ floor 低、早交接）。
+- 建议：修或登记。修法之一：记录不合格性判据用「`prompt` 是否覆盖该记录自己的 pi chars/4 估计」（`prompt <= plainBefore` 即剔除——4b 与 replay 形状会被滤掉，正常同质/CJK 记录不受影响），或按 §5.3 用记录 id 重建「截至 r」的分支。
+
+### N-1（nit，用户可见文档与自登记残余矛盾）「永不低读」
+- 位置：`CHANGELOG.md:13-14`、`docs/handoff.md:84`、`threshold.ts:140`、`:244`；自登记残余见 `design.md:139-141`（残余②「注入块在会话内刷新时低读其增量」）。
+- 现象：读数取的是**会话史中各记录 overhead 的最小值**，注入块在会话内增长后，min 停留在旧 overhead。自造夹具：record 0 B=17,766、record 1 B=+6,745，读 **18,866**，低于**当前**真值 24,511 约 5,645（= 增量 − 冠军记录的 slack）。这是残余②，但发布面（CHANGELOG/docs/代码注释）把它写成无条件「对真值的上界，永不低读」。
+- 方向：fail-open（沿残余②）。
+- 建议：修文案一行（加「以测量时刻的非会话开销为 B；会话内注入刷新会低读其增量，见残余②」），或把残余②写进 CHANGELOG 的残余清单。
+
+### N-2（nit，残余③表述与拒绝话术）replay-only 虚高窗口不止「首回合」，且拒绝文案仍把 baseline 当杆
+- 位置：`design.md:141`（「首回合只有 predecessor 重放记录时」）、`threshold.ts:465`（`below-quality-knee` 仍输出 "a smaller baseline or keep is the lever"，而同文件 `:277` 的注释刚说不该把 baseline 当杆）。
+- 现象：活树会话前缀扫描显示 131,433 持续到 record 3（4 条记录后 record 4 才出现更小 bound），期间 `floor=159,433 > knee 157k`、`resolveThreshold` 返回 undefined（`below-quality-knee`）。方向 fail-closed，但确实把自动交接关掉，与 issue 的原始症状同形；窗口长度取决于「何时出现更小 bound 的记录」，不是「首回合」。
+- 建议：把残余③的量化改为「直到出现更小 bound 的记录；实测活树 4 条记录」，并把拒绝句改成 keep/窗口是杆（baseline 是测量值）——后者是未登记的文案面。
+
+### N-3（nit，记录数字与变异覆盖）「末节 19 条 / 6 added / 每条断言都有单点变异」
+- 位置：`CHANGELOG.md:34-37`、commit message。
+- 实测：末节真实 `check(` = **26**（父提交 19；`git diff` 中 `^+.*check(` = 7；console.log 的 `check(s) failed` 会多算 1，去掉后 26）。发布的六个变异只覆盖 26 条中的 **16** 条；我又跑了 9 个单点变异覆盖到 24 条（L1 last-sample 7、L2 totalTokens 2、L3 rate=4 5、L4 fallback 不减法 9、L5 run.ts rate=4 1、L6 自己消息计入自己 2、L7 fallback 后缀改字 1、L8 去 rate 带 3、L9 转换忽略 rate 2）。仍未被任何自然单点变异打红的只有两条：「without a usage record the fallback tracks usage.tokens exactly」（L4 的减法在差值里对消，仍绿）与伞形断言「no scenario above reached a model」。
+- 建议：登记修正数字即可（19→26、6→7），并把「每条断言」限定为「本轮新增/改写的 7 条」。
+
+### N-4（nit，陈旧注释）
+- `threshold.ts:114`：`ContextMeasure.baseline` 仍写 "The tightest sampled `prompt - estimated messages`"；新语义是 `prompt − chars/8`。
+- `threshold.ts:244`：注释 "can read high but never low"（同上 I-1/N-1）。
+- `tests/handoff-test.mjs:1493`："the reading is exactly `input - estimate`" 应为 `input − chars/8`。
+- 建议：随 I-1/N-1 一并改。
+
+## 三、我无法独立验证的点
+
+- **真实 provider 的 chars/token 上界**：本机没有离线 tokenizer（pi 安装里无 tiktoken/JS tokenizer），「文本不会超过 8 chars/token」「长空白/重复串会不会越带」只能靠文档与 BPE 常识，不能实测；I-1 的图像结论引用了 pi 自己的 "overestimates tokens" 注释与常见视觉定价，也未在本机调 provider。
+- **I-2 的现场发生窗口**：我复现的是分支形状（记录计费后前插 replay / `context_edit` 改长），没有复现产生该顺序的真实并发/时序（test 4b 的注释声称 handoff 会出现，我无法独立证实）。
+- **活树会话的 B_true**：只有回归区间 30–39k 与报告的「+12k 高读」推算；没有 provider 直报，因此 52,151 距当前真值的符号/量级只能信报告。
+- **多 provider / cache 记账细节**：`prompt = input+cacheRead+cacheWrite` 在不同 provider 的归一化（例如 input 是否已含 cacheRead）我没有真机验证。
+
+## 四、残余清单核对（相对问题 5）
+
+- 其它消费者：`contextTokensAtRate` 未改、固定模式拒绝门经 `baselineTokens` 同步拿到 C 后基线（无新 bug）；`run.ts` 状态行后缀与新语义一致。
+- 未登记/欠登记的行为面：I-1（图像）、I-2（低读侧合格性）、N-1（永不低读文案）、N-2（`below-quality-knee` 的「smaller baseline」杆杆 + 残余③窗口）、N-4（陈旧注释）。
+- 已登记且我复核无误：切点仍 `findCutPoint`（chars/4）、回执 `carrying/dropping` 与真实切量的口径差、dense 锚点拒绝、注入增量低读（残�余②，但文案未收窄）。

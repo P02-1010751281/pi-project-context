@@ -1,0 +1,45 @@
+# Lane A 独立审查 — 冻结修订 `3abd207`（issue `2026-10-09-handoff-baseline-residual`，第 3 轮：C+A）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev9`（= `3abd207` 的逐字节副本，**只读**）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先把目录复制到你自己的 `/tmp/<你的目录>` 再跑。
+工作区无未提交改动（除 `.agents/memory` 的自动渲染）。
+
+## 范围与背景
+
+第 2 轮（冻结 `d2e3e82`）判 CHANGES-REQUESTED / 0 blocking / 1 important（I-1）：单一 session rate 套到**异质前缀**上会低读
+（`ASCII 20,000 + CJK 尾` 读 3,736、`25,200` 读 106，真值均为 17,766，后者低于物理下限 11,021）。
+
+本轮改动（提交 `3abd207`，用 `git show --stat 3abd207` 看全貌）：
+- **C**：`threshold.ts` 的 `plain` 不再计入 system 消息（message 条目与 compaction 条目的 `systemMessage` 两处）
+- **A**：baseline 改为对每条 usage 记录取 `prompt − chars/8` 上界（`chars` = 该记录之前的**消息**字符数），再取这些上界的最小值；
+  删掉过度修正守卫；`prompt <= chars/8` 的记录不算测量；首回合公式同步只减消息估计；状态行后缀改为
+  `chars/8 bound over N records; receipt at …`
+- 同步：`CHANGELOG.md`（v0.4.10 未发布段）、`docs/architecture.md`、`docs/handoff.md`、`tests/handoff-test.mjs`
+
+证据与设计：`.codestable/issues/2026-10-09-handoff-baseline-residual/`（`design.md` §8/§9、`baseline-includes-system-estimate.md`、
+`probe-variant-comparison.txt`、`probe-rate-spread.txt`、`probe-true-baseline.md`、`review-report.md` 的 R1/R2/R3）。
+
+## 你要独立验的
+
+1. **C 的前提**：读 pi 安装版 dist 的实现，确认 `estimateTokens` 对 system 消息确实算了 `content + sections + toolsAdded`（给 file:line）；
+   自己造夹具独立复现「把 system 计入被减量 ⇒ 低读 atRate(system 估算)」；并用 `probe-variant-comparison.txt` 的两个沙箱数字
+   （system 估算 9,881 / 9,882 而真值差 6,745）核对「pi 的 system 估算看不到本扩展注入的记忆块」这一推论。
+2. **A 的可证方向**：自己造带已知真值的夹具（必须含 R2 的两个 I-1 夹具），独立验证 `baseline >= B_true`；
+   再验 `baseline <= B_true + chars_of_emptiest_record × (1/r − 1/8)`；验证「同一会话读两个不同 leaf 得同一值」；
+   验证「prompt <= chars/8 的记录不进 min、读数不为负」。
+3. **对抗性 pass（假设 bug 就在这次修复里）**：
+   - 有没有**仍然 fail-open** 的情形？特别看：某条记录 `prompt` 只是略大于 `chars/8`、却远小于该记录真值时会怎样（会不会赢 `min` 并低读）？
+     注入块在一次会话内增长时，读数是否会低于**当前**真值（登记为残余的那条到底多大）？
+   - `chars = 4 × plain`、而 `plain = Σ ceil(len/4)`：这个取整方向会不会把上界翻到真值之下（造一个极端的短消息夹具试）？
+   - 首回合只有 predecessor 重放记录时读数 131k：是 fail-closed 还是把自动交接关掉了？报告把它登记为残余是否诚实、够不够？
+   - **dense 锚点**（纯 CJK、首个大块 100k+ 字符）的高读量级与「floor vs knee」的实际影响是否如报告所述？自己算两个窗口（1M 与 200K）的例子。
+   - 状态行后缀的新措辞有没有承诺代码做不到的事（本仓反复出现的那类 finding）？
+4. **契约与变异**：末节 19 条 `check(` 是否每条都有单点变异能变红？自己造至少 3 个变异（例如 system 重新计入、`min` 改 `max`、
+   上界退回 rate 缩放），在你的副本里跑 `node tests/run-all.mjs`，报告 `^FAIL ` 行数。
+5. **残余清单**：有没有**未登记**的行为面（其它消费者、回执文案、`contextTokensAtRate`、固定模式拒绝门、`run.ts` 状态行）？
+
+## 输出格式
+
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED`，并给出 blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现（命令或夹具代码）、方向（fail-open / fail-closed）、建议（修 / 登记残余）。
+- 明确写出你**无法**独立验证的点（例如无法构造的并发窗口、需要真实 provider 才能得到的真值）。
