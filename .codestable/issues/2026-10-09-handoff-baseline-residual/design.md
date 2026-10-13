@@ -176,8 +176,24 @@ baseline 循环改成 `prompt − ceil(chars / RATE_MAX)` 的 min；`prompt <= c
 index>0，第 5 轮审查员用 `[c_new, m1, c_old, m2, a1]` 的夹具证明了它可达、且我们的镜像正确）。
 2. **R4-I-1（区间规则在 prompt 缩小时豁免）**：见 §10 订正 —— 豁免保留（否则交接继承的前任大 prompt 会把 baseline 钉在 131k），
    但边界写清、形状钉住（4d 契约），残余⑤ 即为该形状。第 5 轮审查员进一步指出：该形状在 pi 自己的写者下**不可复现**
-   （append 只接 leaf ⇒ 路径祖先必然早于记录），它是**文件级**容错（外部写者 / 手改 JSONL）；真实会话里能造成低读的只有
-   本扩展 `SPLIT_TURN_MARKER` 注入这类「同一分支内 token 数被重算」的情形，量级远小于夹具的 50k。4d 注释与 §10 措辞按此口径。
+   （append 只接 leaf ⇒ 路径祖先必然早于记录），它是**文件级**容错（外部写者 / 手改 JSONL）。真实可达的低读形状由第 6 轮审查员枚举为：
+   **①** 被 `convertToLlm` 丢弃的 `!!cmd` 输出（`bashExecution` + `excludeFromContext`）被计入 `chars`（R7 已修）；
+   **②** 最新 compaction 之前计费、却被 `firstKeptEntryId` 保留的 usage 记录（残余⑥：其 prompt 属压缩前分支，正常写入下只造成高读，
+   要低读需摘要膨胀到 `summary > 8·S + 7·K`，模型摘要不可能）；**③** 本扩展 `SPLIT_TURN_MARKER` 注入这类「同一分支内 token 数被重算」
+   的情形，量级远小于夹具的 50k。另有 `branchSummary`/`compactionSummary` 经 `convertToLlm` 会加 ~95/111 字符前后缀（几个 token 的 fail-closed 高读，不修）。
+   4d 注释与 §10 措辞按此口径。
 
 **顺带（第 4 轮 nit）**：`rate > RATE_MAX` 不可达（接受样本已过区间规则 ⇒ `4·added ≤ Δprompt·RATE_MAX`）⇒ 删除，只留 `rate < RATE_MIN`；
 `absurd` 夹具改钉 band 下半（prompt 涨 1,000、文本涨 150 ⇒ 0.6 c/t 被拒、4 条样本全在），使 `!calibrated` 不再是同义反复。
+
+## 12 R7：`chars` 再镜像 `convertToLlm`（第 6 轮的 1 important）
+
+provider 拿到的是 `convertToLlm(buildSessionProjection().messages)`（`dist/core/messages.js`），而 `convertToLlm` 会把
+`role: "bashExecution" && excludeFromContext`（交互式 `!!cmd`，`agent-session.js` 的 `recordBashResult`）整条丢掉；
+采样器此前把它按 `command + output` 计入 `chars`/`estimated` ⇒ 第一条 `!!` 之后的记录 baseline 低读
+（审查员夹具 13,264 对真值 17,766），输出足够大时该记录还会被自身密度下界判定剔除、fallback 归零。
+修法：`messageTokens` 镜像该丢弃（`isExcluded`），`contextTokensAtRate` 同步（回执与切分预算都不该把 provider 没收到的东西算进去）。
+
+**残余⑥ 登记**：`firstKeptEntryId` 保留的 pre-compaction usage 记录仍被采样（其 prompt 是压缩前分支、`chars` 是压缩后投影）——
+pi core 用 `assistantIsFromBeforeCompaction` 把这类记录视为失效，本采样器不失效。正常写入下只把读数顶高（fail-closed，与残余③同向）；
+低读需要摘要膨胀到 `summary > 8·S + 7·K`（模型摘要不可能），审查员的 1,543 局 fuzz 里 1,270 条分歧全属此类、compaction 之后 0 条。

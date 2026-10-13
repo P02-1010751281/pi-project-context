@@ -226,7 +226,9 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 现场三条会话读数不变：probe **17,763**（真值 17,753）、ctl **11,018**（真值 11,008）、活树 `01a13385` **52,151**
 （35 样本、rate 3.22、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）。活树那 8 条 `context_edit` 的**目标 content 全为空**
 （`replacement: null` 的 omit），所以对 `chars` 零影响；它们的 `split` 效应在 R4→R5 之间没有变化，两版现场读数才逐位相同 ——
-把这 8 条从文件里删掉会少 8 个 `split` 豁免点，活树读数会变成 **161,788 / 2 样本**（第 5 轮审查员实测），所以「无影响」只对 `chars` 成立。
+**订正（第 6 轮审查员实测）**：这 8 条对 `chars` 和样本集都**没有**影响 —— 良构删除（同时重连子条目 `parentId`）后读数与原文件逐位相同；
+第 5 轮报出的 **161,788 / 2 样本**是「删行但不重连 `parentId`」造成的**断链**产物（路径在最后一个被删条目处截断），
+与 `split` 豁免无关。原始归因已作废。
 
 ## R6（本轮修复：R5 的 1 important + 5 nit —— 待独立审查）
 
@@ -253,3 +255,25 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 去掉自身密度下界判定 **1**、后缀把未校准的 4.0 印成测得 rate **1**、图像字符重新计入 **1**、去掉区间一致性 **1**、
 忽略 `context_edit` **1**、去掉 rate 带下半 **3**、编辑链式应用 **1**。
 现场三条会话读数不变：probe **17,763**、ctl **11,018**、活树 `01a13385` **52,151**（35 样本、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）。
+
+## R7（本轮修复：R6 的 1 important + 2 nit —— 待独立审查）
+
+**改动**：`handoff/threshold.ts`（`isExcluded` + `messageTokens` 与 `contextTokensAtRate` 的跳过）、`tests/harness.mjs`（`bashEntry`）、
+`tests/handoff-test.mjs`（新契约 4g）、`CHANGELOG.md`、design §11/§12、本报告。
+
+**逐条处置**：
+
+- **R6-I-1 修**：镜像 `convertToLlm` 对 `bashExecution && excludeFromContext`（`!!cmd`）的丢弃 ⇒ 审查员夹具（40,000 字符输出）
+  现读 `18,266`、`estimated 1,001`（计数版读 13,266 / 11,001）；新契约 `an excluded bash execution is not part of the prompt`；
+  `contextTokensAtRate` 同步（回执/预算不把 provider 没收到的东西算进去）。真正的 200,000 字符输出（旧代码 fallback 归零）也在契约注释里点名。
+- **N-1 修（证据准确性）**：R5 「8 条 `context_edit` ⇒ 161,788 / 2 样本」的归因作废 —— 良构删除后读数逐位相同，
+  161,788 是断链（不重连 `parentId`）产物；报告已订正。
+- **N-2 登记（残余⑥）+ 枚举**：`firstKeptEntryId` 保留的 pre-compaction usage 记录仍被采样（正常写入下 fail-closed 高读，
+  低读需摘要膨胀 8 倍，审查员 1,543 局 fuzz 里 1,270 条分歧属此类、compaction 之后 0 条）；design §11 的「真实可达的低读」
+  改为三枚举（excluded `!!`、保留记录 + 膨胀摘要、`SPLIT_TURN_MARKER` 注入），并记下 `branchSummary` 前后缀那几个 token 的已知高读。
+
+**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 **32** 条 `check(`）。
+变异矩阵（11 条，每个只改一处、跑后 MD5 恢复校验）：system 重新计入 **3**、上界退回 rate 缩放 **10**、`min`→`max` **9**、
+去掉自身密度下界判定 **1**、后缀把未校准的 4.0 印成测得 rate **1**、图像字符重新计入 **1**、去掉区间一致性 **1**、
+忽略 `context_edit` **1**、去掉 rate 带下半 **3**、编辑链式应用 **1**、**计入被排除的 bash 输出 1（本轮新增）**。
+现场三条会话读数不变：probe **17,763**、ctl **11,018**、活树 `01a13385` **52,151**（35 样本、前缀非增、system 清零差 0）。

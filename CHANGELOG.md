@@ -25,7 +25,13 @@
   必须满足 `chars_r − chars_p ≤ (prompt_r − prompt_p) × 8`（由 `B_p ≤ B_r`、`T_r ≥ chars_r/8`、`T_p ≤ chars_p` 推出），违反即**丢弃**该记录；
   prompt 缩小的区间不检查，这是**有意**的 fail-open 取舍：交接继承的前任记录是大 prompt 对小 prompt（活树 131k 对本地记录），
   丢掉本地记录会把 baseline 钉死在前任量级上 —— 正是本 issue 要修的静默关闭。代价与残余 ④⑤（偏稀疏锚点；文件级陈旧锚点）
-  见 `.codestable/issues/2026-10-09-handoff-baseline-residual/design.md` §9–§11 与 review-report。
+  见 `.codestable/issues/2026-10-09-handoff-baseline-residual/design.md` §9–§12 与 review-report（§11 还枚举了真实可达的低读形状：
+  被排除的 `!!` 输出（本轮修）、保留的 pre-compaction 记录 + 膨胀摘要（残余⑥）、`SPLIT_TURN_MARKER` 注入）。
+- **被 `convertToLlm` 丢弃的 `!!cmd` 输出不再计入**（第 6 轮独立审查的 important，fail-open）：provider 收到的是
+  `convertToLlm(buildSessionProjection().messages)`，而 `convertToLlm` 会把 `role: "bashExecution" && excludeFromContext`
+  （交互式 `!!cmd`）整条丢掉；采样器此前按 `command + output` 计入 `chars`/`estimated` ⇒ 第一条 `!!` 之后的记录 baseline 低读
+  （审查员夹具 13,264 对真值 17,766），输出足够大时该记录还会被自身密度下界判定剔除、fallback 归零。现在 `messageTokens`
+  与 `contextTokensAtRate` 都镜像这条丢弃（回执与切分预算同样不把 provider 没收到的东西算进去）。
 - **同一目标被多次编辑时按 pi 的 last-wins 语义重算**（第 5 轮独立审查的 important）：pi 的投影对每个目标只留**最后一条** edit
   并把它应用到**原始**消息上（core 每次 overflow recovery 都追加一条 `null` 删除、扩展也可再编辑），所以「先删除再恢复」应当恢复内容；
   把每次编辑链式应用到上一次结果上会让目标永久消失 ⇒ `chars` 少算一段内容、baseline 无界高读（审查员夹具 30,000 对忠实值 28,875），
@@ -56,11 +62,11 @@
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
 变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；**本版新增或改写**的断言每条都有只改一处的补丁把它变红，
-其余断言的覆盖情况见 review-report）：system 消息重新计入估计红 3、上界退回 rate 缩放红 9、`min` 改 `max` 红 9、
+其余断言的覆盖情况见 review-report）：system 消息重新计入估计红 3、上界退回 rate 缩放红 10、`min` 改 `max` 红 9、
 去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、后缀**把未校准的 4.0 印成测得 rate**红 1、图像字符重新计入估计红 1、
-去掉区间一致性规则红 1、忽略 `context_edit`（用原始前缀）红 1、去掉 rate 带下半红 3、同一目标的编辑链式应用（不回到原始消息）红 1。
-两处 system 计入点在第 4 轮修复里合并成一个 `messageTokens`（两条断言合成一条变异），`rate > RATE_MAX` 那条过滤在样本路径上不可达
-（区间规则已推出 `rate ≤ RATE_MAX`）⇒ 删除、只保留下半。末节现有 31 条 `check(`。
+去掉区间一致性规则红 1、忽略 `context_edit`（用原始前缀）红 1、去掉 rate 带下半红 3、同一目标的编辑链式应用（不回到原始消息）红 1、
+计入被排除的 bash 输出红 1。两处 system 计入点在第 4 轮修复里合并成一个 `messageTokens`（两条断言合成一条变异），
+`rate > RATE_MAX` 那条过滤在样本路径上不可达（区间规则已推出 `rate ≤ RATE_MAX`）⇒ 删除、只保留下半。末节现有 32 条 `check(`。
 
 ## v0.4.9 — 2026-10-08
 

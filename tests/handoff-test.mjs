@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, contextEditEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
+import { bashExecutionEntry, loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, contextEditEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
@@ -1685,6 +1685,24 @@ try {
 	check(
 		"the last edit of a target wins, applied to the raw messages",
 		restoredRead.samples === 1 && restoredRead.baseline === 19_500 && restoredRead.estimated === 1_001,
+	);
+
+	// 4g. pi's `convertToLlm` drops interactive `!!cmd` output before the request (`role: "bashExecution"` with
+	//     `excludeFromContext`), but it is persisted like any other message and the raw entry list still holds it.
+	//     Counting it charged `chars` and `estimated` for text the provider never received: the reviewer's
+	//     round-6 fixture read 13,264 where the baseline is 17,766, and a 200,000-char output pushed the record
+	//     out of the sample set, leaving the fallback at 0. Here the excluded 40,000 chars are not counted, so
+	//     the record's chars stay g1's 4,000 and `18,766 - 500 = 18,266` bounds the baseline while `estimated`
+	//     is g1's 1,000 tokens plus the reply's 1. Mutation: counting it reads 13,266 (and `estimated` 11,001).
+	const withExcluded = chain([
+		messageEntry("g1", "user", "x".repeat(4_000), stamp(0)),
+		bashExecutionEntry("g2", "z".repeat(40_000), true, stamp(1)),
+		billed("g3", "ok", { input: 18_766 }, stamp(2)),
+	]);
+	const excludedRead = readOf(measureCtx(withExcluded, "sample-excluded", 60_000));
+	check(
+		"an excluded bash execution is not part of the prompt",
+		excludedRead.samples === 1 && excludedRead.baseline === 18_266 && excludedRead.estimated === 1_001,
 	);
 
 	// 5. A delta that is not a content delta cannot calibrate: the prompt grows 1,000 tokens per record while the

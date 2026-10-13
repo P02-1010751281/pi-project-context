@@ -273,6 +273,26 @@ export function messageEntry(id, role, text, timestamp) {
 	return contentEntry(id, role, [{ type: "text", text }], timestamp);
 }
 
+/** A persisted `bashExecution` message; pi's `convertToLlm` drops it when `excludeFromContext` (a `!!cmd`). */
+export function bashExecutionEntry(id, output, excludeFromContext, timestamp) {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp,
+		message: {
+			role: "bashExecution",
+			command: "true",
+			output,
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			timestamp: Date.parse(timestamp),
+			excludeFromContext,
+		},
+	};
+}
+
 /** A `context_edit` entry: pi applies its `replacement` (or drops the target when null) to the provider view. */
 export function contextEditEntry(id, targetId, replacement, timestamp) {
 	return { type: "context_edit", id, parentId: null, timestamp, targetId, replacement };
