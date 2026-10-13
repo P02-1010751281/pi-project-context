@@ -73,9 +73,11 @@ export interface ThresholdOverride {
 	by: "quality" | "window" | "tier";
 }
 
-/** Chars-per-token values a delta may calibrate to. The lower bound accepts tokenizers that split CJK near one
- * token per character (a pure-CJK message can sit below 1.5); above the upper bound the delta is not a content
- * delta (`cache` accounting, an unrelated request), so it is not a sample. */
+/** Chars-per-token values a delta may calibrate to, and the band the message content is assumed to sit in. The
+ * lower bound accepts tokenizers that split CJK near one token per character (a pure-CJK message can sit below
+ * 1.5); above the upper bound the delta is not a content delta (`cache` accounting, an unrelated request), so it
+ * is not a sample. `RATE_MAX` carries the second job too: at 8 chars per token the sparsest allowed content
+ * still costs `chars / RATE_MAX` tokens, which is the lower bound the physical floor's baseline is built on. */
 const RATE_MIN = 1.0;
 const RATE_MAX = 8.0;
 /** Calibration deltas the rate's median is taken over, so one odd request cannot move it. */
@@ -88,12 +90,12 @@ interface MessageUsage {
 	cacheWrite?: number;
 }
 
-/** One assistant usage record on the branch, paired with what pi's estimator thought at that point. */
+/** One assistant usage record on the branch, paired with the message content that precedes it. */
 interface ContextSample {
 	/** Provider-billed prompt tokens: `input + cacheRead + cacheWrite`. The reply's output is not context. */
 	prompt: number;
-	/** Estimated tokens of the branch messages as of this record, at the session rate. */
-	estimated: number;
+	/** Message characters before this record (`4 * plain`): the unit the allowed band is expressed in. */
+	chars: number;
 	/** The same estimate at pi's `chars/4`, kept so deltas between two records calibrate the rate. */
 	plain: number;
 	/** Estimated tokens added since the previous record. */
@@ -119,24 +121,47 @@ export interface ContextMeasure {
 	sampleIndex: number;
 	/** True when `rate` came from a real delta pair rather than pi's default. */
 	calibrated: boolean;
-	/** Estimated message tokens of the whole branch at `rate`. */
+	/** Estimated tokens of the branch's messages at `rate`. The system message is not part of it: see `measureContext`. */
 	estimated: number;
 }
 
 /**
- * Measure the non-conversation baseline from the session's own usage records instead of the last one.
+ * Measure the non-conversation baseline (system prompt, tool schemas, injected memory/context) from the
+ * session's own usage records.
  *
- * `usage.tokens` covers the whole prompt (pi's `calculateContextTokens` adds the last reply's output), while
- * the branch estimate runs at pi's `chars/4`; the residual therefore carries the estimate error, which grows
- * with the message characters (`1 - r/4`, measured `r = 2.2-3.8` in this repo). Reading each record's *prompt*
- * and keeping the **smallest credible** residual moves the sample to the emptiest point of the branch, where
- * that error is smallest, so the floor stops growing as the session fills (issue 2026-10-09-handoff-baseline-residual).
- * "Credible" because one rate cannot describe a branch that changes script: a sample the rate over-corrects
- * (its converted estimate exceeds its own prompt, so the residual would read 0) falls back to the chars/4
- * residual for that sample, which over-reads but never under-reads. A session with no usable record keeps
- * the historical formula byte-for-byte (the rate is pi's 4 there, so the conversion is the identity).
- * The rate those records imply is reported for the handoff receipt, which needs the same chars->tokens
- * conversion for the slices it describes.
+ * Each record couples an exactly-known number with an estimated one: `prompt_r = B + T_r`, where `B` is the
+ * baseline and `T_r` the true tokens of the messages before that record. `prompt_r` is the provider's own count
+ * for the whole prompt (`usage.input + cacheRead + cacheWrite`; the reply's output is not context), `T_r` is
+ * only known through pi's `chars/4`. The allowed content band bounds it instead of estimating it:
+ *
+ *   `chars_r / RATE_MAX <= T_r <= chars_r`  =>  `prompt_r - chars_r / RATE_MAX >= B >= prompt_r - chars_r`
+ *
+ * so the densest reading is an **upper** bound on `B` while the sparsest is a lower one. The baseline is the
+ * smallest of those upper bounds over the records. It cannot read below the truth, and because each later
+ * record's bound grows (`T_r` grows while the correction per added character is `r / RATE_MAX < 1`) the value is
+ * set by the emptiest record and does not grow as the branch fills (issue 2026-10-09-handoff-baseline-residual).
+ *
+ * Two properties of that formulation are load-bearing:
+ * - The **system message is not part of `T`**. pi's own `estimateTokens` covers a system message's content, its
+ *   sections and `toolsAdded`, so counting it here subtracted the tool schemas and the system prompt from the
+ *   baseline: the reading came out short by that amount (measured 9,881 on the probe sandbox `01a1331c` and
+ *   25,823 on a live session, against `probe-true-baseline.md`'s provider truth of 17,753). Only messages are
+ *   counted, which is also what makes the extension's own injected block readable at all: pi's estimate of the
+ *   system message cannot see it (the two sandboxes' system estimates differ by 1 token while their truths
+ *   differ by the 6,745-token block).
+ * - A record whose own densest reading still exceeds its prompt (`prompt_r <= chars_r / RATE_MAX`) does not
+ *   describe its branch at all, so it is not a measurement and never enters the minimum. The opposite case - a
+ *   handoff successor's replayed predecessor record, a whole predecessor prompt against a nearly empty branch -
+ *   simply never wins the minimum, which is why those need no explicit exclusion.
+ *
+ * The cost is the emptiest record's own slack: the reading can sit up to `chars * (1/r - 1/RATE_MAX)` above the
+ * truth, bounded by that record's content and no longer growing with the branch. That is the fail-closed side of
+ * a floor that is a **refusal gate** (a floor reading low fires a handoff early), and it is the trade a single
+ * session rate cannot make: scaling the whole prefix by it misreads any branch whose script changes (review
+ * round 2's I-1 - an ASCII opening block followed by CJK turns read 3,736 and then 106 where the truth was
+ * 17,766). The rate is still reported, because the handoff receipt and its split-turn budget describe slices in
+ * the session's own chars-per-token; a session with no usable record keeps the historical formula (there the
+ * conversion is the identity, so it is `usage.tokens` minus the chars/4 message estimate).
  */
 export function measureContext(ctx: ExtensionContext, usage: ContextUsage): ContextMeasure {
 	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
@@ -146,8 +171,12 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	for (const entry of entries) {
 		if (entry.type !== "message") {
 			// A compaction / branch summary / custom message is prompt content: the historical formula counted it,
-			// and skipping it here would push its tokens into the baseline and raise the floor.
-			for (const message of sessionEntryToContextMessages(entry)) plain += estimateTokens(message);
+			// and skipping it here would push its tokens into the baseline and raise the floor. A compaction entry
+			// can also carry pi's `systemMessage`, which is a prompt component, not content (see the doc block).
+			for (const message of sessionEntryToContextMessages(entry)) {
+				if (message.role === "system") continue;
+				plain += estimateTokens(message);
+			}
 			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
 			split = true;
 			continue;
@@ -158,19 +187,24 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		let entryTokens = 0;
 		let record: MessageUsage | undefined;
 		for (const message of sessionEntryToContextMessages(entry)) {
-			entryTokens += estimateTokens(message);
 			record = (message as { usage?: MessageUsage }).usage ?? record;
+			if (message.role === "system") continue;
+			entryTokens += estimateTokens(message);
 		}
 		plain += entryTokens;
 		if (!record) continue;
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
 		if (prompt <= 0) continue;
+		const chars = 4 * plainBefore;
+		// A record that does not hold even the densest reading of its own preceding content is not a
+		// measurement of this branch (see the doc block); it must not be clamped into a low reading.
+		if (prompt <= Math.ceil(chars / RATE_MAX)) continue;
 		samples.push({
 			prompt,
+			chars,
 			plain: plainBefore,
 			added: plainBefore - (samples.at(-1)?.plain ?? 0),
 			split,
-			estimated: 0,
 		});
 		split = false;
 	}
@@ -190,7 +224,6 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	const rate = recent.length > 0 ? recent[Math.floor(recent.length / 2)] : 4;
 	const atRate = (tokens: number): number => Math.ceil((tokens * 4) / rate);
 	const estimated = atRate(plain);
-	for (const sample of samples) sample.estimated = atRate(sample.plain);
 	if (samples.length === 0) {
 		// No usable record (first turn, or every record dropped by a compaction): keep the historical formula
 		// byte-for-byte, so a session without samples behaves exactly as it did before the sampler existed.
@@ -207,15 +240,11 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	let sampleIndex = 0;
 	for (let i = 0; i < samples.length; i += 1) {
 		const sample = samples[i];
-		const scaled = sample.prompt - sample.estimated;
-		// One rate cannot describe a branch that changes script, so a sample written in a denser script than
-		// the calibration window is over-corrected and its scaled residual reaches (or passes) zero. That is a
-		// measurement failure, not a reading (this baseline is never 0 in practice), so such a sample falls
-		// back to the historical chars/4 residual: it over-reads, but the minimum can then only be moved by a
-		// sample the rate reads honestly.
-		const residual = scaled > 0 ? scaled : Math.max(0, sample.prompt - sample.plain);
-		if (i === 0 || residual < baseline) {
-			baseline = residual;
+		// The densest content the band allows is a lower bound on that record's message tokens, so this bound
+		// can read high but never low; later records only produce larger ones (the comment on the doc block).
+		const bound = sample.prompt - Math.ceil(sample.chars / RATE_MAX);
+		if (i === 0 || bound < baseline) {
+			baseline = bound;
 			sampleIndex = i;
 		}
 	}
@@ -248,11 +277,12 @@ export function contextTokensAtRate(
  * content - the status line says so instead of sending the user to "a smaller baseline" as if it were a lever.
  */
 export function baselineSuffix(measure: ContextMeasure): string {
-	if (measure.samples === 0) return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usage sample)`;
-	if (!measure.calibrated) {
-		return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usable delta, best of ${measure.samples})`;
-	}
-	return ` · baseline ${fmtTokens(measure.baseline)} (${measure.rate.toFixed(1)} c/t, best of ${measure.samples})`;
+	if (measure.samples === 0) return ` · baseline ${fmtTokens(measure.baseline)} (chars/4, no usable record)`;
+	// The baseline itself no longer comes from the rate (it is the chars/8 bound), so naming the rate here would
+	// describe the receipt, not this number. Say which conversion the receipt got instead - a fallback 4.0 is not
+	// a measured rate, and printing it beside the baseline is how the status line used to claim one.
+	const receipt = measure.calibrated ? `${measure.rate.toFixed(1)} c/t` : "chars/4, no usable delta";
+	return ` · baseline ${fmtTokens(measure.baseline)} (chars/8 bound over ${measure.samples} records; receipt at ${receipt})`;
 }
 
 /** First request-wide pricing tier edge, e.g. a long-context surcharge. Model metadata. */

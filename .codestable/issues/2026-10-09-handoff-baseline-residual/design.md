@@ -118,3 +118,25 @@
 原报告的残余①不可能用文件考古闭合，但状态行现在自证。
 
 （早期的 §7 决策点保留在上面作记录：A 的取舍、切点不动的理由、D/C 都做。）
+
+## 9 C+A 实现（2026-10-13 落地；operator 决定「C+A」）
+
+§3 的 M（最小残差 + 单一 rate + 过度修正守卫）在本轮被 **C+A** 取代，两处都是被实测逼出来的：
+
+- **C（system 不进被减量）**：pi 的 `estimateTokens` 对 system 消息已算 `content + sections + toolsAdded`，把它计入 `plain`
+  等于把工具 schema 与系统提示从 baseline 减掉。两个沙箱实测低读 9,881 / 9,882（真值 17,753 / 11,008），活树低读 25,823；
+  同时两沙箱的 system 估算几乎相同而真值差 6,745（= 本扩展注入的记忆块）⇒ 也排除了「直接用 pi 的 system 估算当 baseline」。
+- **A（密度上界 + 精确增量）**：R2 的 I-1 证明单一 rate 只对与校准窗口同率的前缀成立（`ASCII 20,000 + CJK 尾` 读 3,736、
+  `25,200` 读 106，真值 17,766）。现在用取值带给出 `chars/8 ≤ T_r ≤ chars`，取 `prompt_r − chars_r/8` 作**上界**（永不低于真值），
+  在这些上界里取最小；后出现的记录上界只会更大 ⇒ 取值由最空记录定下、不随分支增长。
+
+代码（`handoff/threshold.ts`）：`ContextSample` 增加 `chars`、去掉 per-sample `estimated`；system 消息在两处累加点都跳过
+（message 条目与 `sessionEntryToContextMessages` 产出的非 message 条目，后者覆盖 compaction 的 `systemMessage`）；
+baseline 循环改成 `prompt − ceil(chars / RATE_MAX)` 的 min；`prompt <= ceil(chars / RATE_MAX)` 的记录不是测量（不参与 min，
+也不把读数拖成负数）；过度修正守卫随之删除（上界不可能过修正）；首回合/无记录公式同步只减消息估计；`baselineSuffix` 改说
+「chars/8 bound over N records; receipt at …」。rate 校准保留（回执与 mid-turn 预算要用），仅不再参与 baseline。
+
+残余（本轮不修，登记在报告）：① 最空记录自身字符数带来的高读 `chars × (1/r − 1/8)`（活树约 +12k，窗口 1M 时拐点仍先绑定，
+无功能影响；但对「首个大块」极重的会话会把 floor 推到拐点之上 ⇒ 拒绝）；② 读数是「设定它的那条记录时刻」的 baseline，
+注入块在会话内刷新时低读其增量（本仓实测漂移 13.8k 已消失，这一项以注入块自身增量为界）；③ 首回合只有 predecessor 重放记录时
+读虚高（R2 已登记，A 未改变它）。

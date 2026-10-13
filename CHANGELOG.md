@@ -7,34 +7,34 @@
 
 ### 修复
 
-- **物理下限的 baseline 改成「会话内取样 + 本会话自己的 chars/token」**（issue `2026-10-09-handoff-baseline-residual`）：
+- **物理下限的 baseline 改成「每条 usage 记录一个密度上界，取最小」**（issue `2026-10-09-handoff-baseline-residual`）：
   `baselineTokens` 一直把「当前这一点的 usage 残差」当非会话基线，而残差 = 真值 + `Σchars × (1/4 − 1/r)`（本仓实测
   `r = 2.2–3.8`），于是 floor 随对话变长自己长高，越过质量拐点后自动交接被**无声**关掉（现场：prompt 317k、floor 179k > knee 157k）。
-  现在读分支上每条 usage 记录的 **prompt**（`input+cacheRead+cacheWrite`，不含回复 output）与**该记录之前**的消息估计，取其中
-  **最小残差**；同一条会话内 delta 的中位数（`4·Δ估计/Δprompt`，取值带 `[1.0, 8.0]`，纯 CJK 约 1 token/字）把 chars 换算成 token。
-  隔离探针实测：真值 17,766 token（注入块 6,745 + 基础 system/工具/技能 11,021），且消息字符≈0 时报告值 = 真值 ⇒ 误差随字符增长，
-  不是常量偏移。无 usage 记录的会话（首回合）走原公式，逐字节不变。
-- **交接回执与 mid-turn 切分预算改说本会话的 chars/token**（同一根因的第二个消费者）：`dropping ~X / carrying ~Y` 原先用 pi 的
-  `chars/4`，CJK 重的会话会把真实切下的量少报约 `1 − r/4`；现在两处共用上面那个 rate。**切点本身仍是 pi 的 `findCutPoint`**
-  （chars/4），本轮不动（重写切点会重复 pi 的 turn 对齐）。
-- **状态行自证 + 诚实降级**：`/handoff status` 增加 `· baseline <值> (<rate> c/t, best of <n>)`；无样本时写
-  `(chars/4, no usage sample)`，有样本但无可用 delta 时写 `(chars/4, no usable delta, best of <n>)`，
-  不再让「baseline 是杆」看起来像唯一杠杆，也不把兑底的 4.0 印成测得的 rate。
-- **第 1 轮独立审查（冻结 `466ebcd`，CHANGES-REQUESTED，0 blocking / 2 important）后的修复**：
-  ① 会话级单一 rate 套到**异质分支**上时，较“省 token”的早期样本会被过度修正，残差被 `Math.max(0,…)` 夹到 0，
-  而 0 必赢 `min` ⇒ baseline=0、floor 过低、自动交接过早（本改动新引入的 fail-open；现场实测 `B_true = 17,766`，物理下限不可能是 0）。
-  现在换算估计 **≥ 自身 prompt** 的样本改用历史 chars/4 残差（会高读、不会低读），`min` 只由 rate 读得可信的样本来推动。
-  ② 「无 usage 记录 ⇒ 逐字节走旧公式」原本不成立：`plain` 只累加 `type === "message"` 条目，而旧公式对**全部**条目求和
-  （compaction / branch_summary / custom_message 都是 prompt 内容）⇒ 有 summary 的会话里 floor 被系统性抬高。
-  现在非 message 条目也计入 `plain`；`samples === 0` 时 rate 必为 pi 的 4、换算退化为恒等，旧公式真的逐字节回来了。
-  两条都是审查员用现场事实可追溯的缺陷（非新机制），报告与残余登记见 `.codestable/issues/2026-10-09-handoff-baseline-residual/review-report.md`。
+  现在用取值带给出每条记录上成立的不等式 `chars/8 ≤ T_r ≤ chars`，取 `prompt_r − chars_r/8`（对真值的**上界**，
+  永不低读），再在这些上界里取最小；后出现的记录上界只会更大（`r < 8`），所以取值由**最空的那条记录**定下、
+  不再随分支增长。代价是最空记录自身字符数带来的高读（`chars × (1/r − 1/8)`，以该记录为界），方向是 fail-closed ——
+  floor 是拒绝门，读低才会过早交接。
+- **system 消息不再进入被减的估计量**：pi 的 `estimateTokens` 对 system 消息已经算了 `content + sections + toolsAdded`，
+  把它计入被减量等于把工具 schema 与系统提示从 baseline 里减掉：隔离探针实测低读 **9,881**（真值 17,753），活树会话低读 **25,823**。
+  这也排除了「直接用 pi 的 system 估算当 baseline」这条路：两个沙箱的 system 估算几乎相同（9,881 / 9,882）而真值差 6,745 ——
+  那个差就是本扩展注入的记忆块，pi 的估算看不到它。无 usage 记录的首回合公式同步修正（同样只减消息估计）。
+- **交接回执与 mid-turn 切分预算改说本会话的 chars/token**（同一根因的第二个消费者，不受上面改动影响）：`dropping ~X / carrying ~Y` 原先用 pi 的
+  `chars/4`，CJK 重的会话会把真实切下的量少报约 `1 − r/4`；现在两处共用会话 delta 校准出的 rate（中位数，取值带 `[1.0, 8.0]`）。
+  **切点本身仍是 pi 的 `findCutPoint`**（chars/4），本轮不动（重写切点会重复 pi 的 turn 对齐）。
+- **状态行自证 + 诚实降级**：`/handoff status` 写 `· baseline <值> (chars/8 bound over <n> records; receipt at <rate> c/t)`；
+  无可用记录时写 `(chars/4, no usable record)`，无可用 delta 时写 `receipt at chars/4, no usable delta`。基线不再由 rate 决定，
+  所以后缀改成点名它**是**什么（密度上界）与回执**用了什么**换算，不把兑底的 4.0 印成测得的 rate。
+- **本版内被取代的中间形态**（同一未发布版本内的迭代，不是对外行为史）：先按「会话内最小残差 + 单一 rate + 过度修正守卫」实现（R1 轮修复，
+  冻结 `466ebcd`），第 2 轮独立审查（冻结 `d2e3e82`）用**异质分支**证伪：单一 rate 只对与校准窗口同率的前缀成立，
+  `ASCII 20,000 + CJK 尾` 读 3,736、`25,200` 读 106（真值均为 17,766，后者还低于物理下限 11,021）。
+  上面的密度上界把这一类 fail-open 从构造上消掉（同样两夹具现读 20,266 / 20,916，均 ≥ 真值）。报告与残余见
+  `.codestable/issues/2026-10-09-handoff-baseline-residual/review-report.md`。
 - **另修一条与本改动无关的测试竞态**：`consolidation-test.mjs` 读 `CONTEXT.md` 时不等待写入，负载高时 6 次里红 1–3 次（已在 HEAD 上
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
-变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条断言都有只改一处的补丁把它变红）：取样改成最后一条红 2、
-被减数改成 `totalTokens` 红 1、rate 固定为 4 红 7、去掉取值带红 3、退掉 fallback 的减法红 9（含既有端到端用例）、回执忽略 rate 红 1、
-把记录自己的消息算进自己的估计红 2、去掉状态行后缀红 1、去掉过度修正守卫红 1、非 message 条目不进估计红 1、未校准分支谎报 `4.0 c/t` 红 1。
-新增契约数按实测口径：原始实现的末节 15 条 `check(`（`git diff … \| grep -c '^+.*check('`），本轮后 17 条。
+变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；每条断言都有只改一处的补丁把它变红）：system 重新计入估计（message 分支）红 2、
+上界退回 rate 缩放（即 I-1 的形态）红 7、`min` 改 `max` 红 8、去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、
+compaction 条目的 `systemMessage` 计入估计红 1、后缀不写回执口径红 3。末节现有 19 条 `check(`，本轮新增或改写 7 条（`git diff … | grep -c '^+.*check('`）。
 
 ## v0.4.9 — 2026-10-08
 

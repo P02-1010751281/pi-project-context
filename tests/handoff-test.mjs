@@ -1353,44 +1353,64 @@ try {
 	};
 	const readOf = (ctx) => measured.measureContext(ctx, ctx.getContextUsage());
 
-	// 1. The same non-conversation baseline under 25x the message volume. Mutation: keeping the last sample
-	//    instead of the smallest makes the second reading follow the branch and reddens the equality.
+	// 1. The reading is the chars/8 bound at the emptiest record: `T >= chars/8` for allowed content, so
+	//    `prompt - chars/8` is an upper bound on the baseline that cannot read low, and the emptiest record's own
+	//    text is the whole slack. The fixtures' tasteless truth is their `base`. Mutation: scaling by the session
+	//    rate again reddens the I-1 pins below (it read 3,736 where the truth was 17,766).
 	const smallRead = readOf(measureCtx(sampled(4, 4_000, 2.5, 40_000), "sample-small", 60_000));
-	const bigRead = readOf(measureCtx(sampled(4, 100_000, 2.5, 40_000), "sample-big", 200_000));
 	check(
 		"a session's own deltas calibrate its chars-per-token",
 		smallRead.calibrated && Math.abs(smallRead.rate - 2.5) <= 0.35 && smallRead.samples === 4,
 	);
+	// 4,000 chars of CJK billed at r = 2.5: prompt 41,600 minus its own density floor of 500.
 	check(
-		"the baseline does not grow with the branch",
-		Math.abs(smallRead.baseline - 40_000) <= 5_000 && Math.abs(bigRead.baseline - smallRead.baseline) <= 5_000,
+		"the baseline is the density bound at the emptiest record, never below the truth",
+		Math.abs(smallRead.baseline - 41_100) <= 2 && smallRead.baseline >= 40_000,
 	);
-	// 1b. Content denser than any plausible band (0.8 chars/token, e.g. base64 in a message) cannot calibrate, so
-	//     the reading falls back to chars/4 - and then only the smallest residual is readable: the drift is
-	//     `chars * (1/0.8 - 1/4)` = one token per character, so the last record reads 12k above the first.
-	//     Mutation: taking the last sample instead of the smallest reddens this and only this.
+	// 1a. The same session read at its first record and at its last: each later bound is larger (`T_r` grows
+	//     while the correction per added character is `r / 8 < 1`), so the value is set by the emptiest record and
+	//     the floor stops moving as the session fills - the issue's own acceptance condition. Mutation: reading
+	//     the last record instead of the minimum reddens the equality.
+	const grown = sampled(4, 4_000, 2.5, 40_000);
+	check(
+		"the baseline does not grow as the branch fills",
+		readOf(measureCtx(grown.slice(0, 2), "sample-grown-first", 60_000)).baseline ===
+			readOf(measureCtx(grown, "sample-grown-last", 60_000)).baseline,
+	);
+	// 1b. The over-read is bounded by the emptiest record's own text, not by the branch: 100,000 chars at r = 2.5
+	//     leave `100_000 * (1/2.5 - 1/8)` = 27,500 tokens of slack, however long the branch grows afterwards.
+	const bigRead = readOf(measureCtx(sampled(4, 100_000, 2.5, 40_000), "sample-big", 200_000));
+	check(
+		"the over-read is bounded by the emptiest record, not by the branch",
+		bigRead.baseline >= 40_000 && bigRead.baseline <= 40_000 + 100_000 * (1 / 2.5 - 1 / 8) + 2,
+	);
+	// 1b-bis. Content outside the allowed band (0.8 chars/token, e.g. base64 in a message) cannot calibrate,
+	//     and the bound does not need it to: the reading is 45,000 - 500, the same density floor over a session
+	//     whose deltas are unusable. Mutation: taking the last sample instead of the smallest reddens this.
 	const denseRead = readOf(measureCtx(sampled(4, 4_000, 0.8, 40_000), "sample-dense", 60_000));
 	check(
-		"an uncalibrated session still reads the smallest residual",
-		!denseRead.calibrated && denseRead.sampleIndex === 0 && Math.abs(denseRead.baseline - 44_000) <= 500,
+		"an uncalibrated session still reads the emptiest record's bound",
+		!denseRead.calibrated && denseRead.sampleIndex === 0 && Math.abs(denseRead.baseline - 44_500) <= 500,
 	);
 	check(
-		"the status suffix names the rate and the sample count",
-		/· baseline \d+(\.\d)?k \(2\.\d c\/t, best of 4\)/.test(measured.baselineSuffix(smallRead)),
+		"the status suffix names the bound, the record count and the receipt's rate",
+		/· baseline \d+(\.\d)?k \(chars\/8 bound over 4 records; receipt at 2\.5 c\/t\)/.test(measured.baselineSuffix(smallRead)),
 	);
-	// 1e. A calibrated flag of false means the rate is pi's 4, so the suffix must not present that 4.0 as a
-	//     measured rate (the operator reads this line to decide whether the baseline is a lever).
+	// 1e. A bare 4.0 is pi's default, not a measurement, so the suffix must not present it as one: it names the
+	//     receipt's conversion instead (the operator reads this line to decide whether the baseline is a lever).
 	//     Mutation: printing `4.0 c/t` for that branch reddens this alone.
 	check(
-		"an uncalibrated suffix does not claim a measured rate",
-		/· baseline \d+(\.\d)?k \(chars\/4, no usable delta, best of 4\)/.test(measured.baselineSuffix(denseRead)),
+		"an uncalibrated suffix names the fallback, not a measured rate",
+		/· baseline \d+(\.\d)?k \(chars\/8 bound over 4 records; receipt at chars\/4, no usable delta\)/.test(
+			measured.baselineSuffix(denseRead),
+		),
 	);
 
-	// 1c. One rate cannot describe a branch that changes script. An ASCII opening block (r = 4) followed by CJK
-	//     turns (r ~= 1.05) calibrates at ~1.05, which over-corrects the opening sample: its converted estimate
-	//     exceeds its own prompt, so a clamped residual would read 0 and win the minimum. That sample falls back
-	//     to the chars/4 residual, which is exact here - the fixture's true baseline is 17,766.
-	//     Mutation: keeping the clamped residual reddens this alone (baseline 0).
+	// 1c. One rate cannot describe a branch that changes script - review round 2's I-1. An ASCII opening block
+	//     (r = 4) followed by CJK turns (r ~= 1.05) calibrates at ~1.05, and scaling the opening by it read 3,736
+	//     where the truth is 17,766. The bound reads the opening block's own density floor instead:
+	//     32,766 - 60,000/8 = 25,266, and the CJK records only add larger bounds. Mutation: scaling by the rate
+	//     again reddens the `>= 17,766` conjunct (3,736 < 17,766).
 	const mixed = chain([
 		messageEntry("m1", "user", "x".repeat(60_000), stamp(0)),
 		billed("m2", "ok", { input: 32_766 }, stamp(1)),
@@ -1401,18 +1421,37 @@ try {
 	]);
 	const mixedRead = readOf(measureCtx(mixed, "sample-mixed", 60_000));
 	check(
-		"a sample the session rate over-corrects falls back to the chars/4 residual",
+		"a mixed-script branch reads its own density floor, above the truth",
 		mixedRead.calibrated &&
 			Math.abs(mixedRead.rate - 1.05) <= 0.15 &&
 			mixedRead.sampleIndex === 0 &&
-			Math.abs(mixedRead.baseline - 17_766) <= 2,
+			Math.abs(mixedRead.baseline - 25_266) <= 2 &&
+			mixedRead.baseline >= 17_766,
+	);
+	// 1c-bis. The reviewer's own I-1 numbers as a regression pin: the same shape with a 20,000-char and a
+	//     25,200-char opening (the rate-scaled reading was 3,736 and then 106, below even the 11,021 physical
+	//     floor). The bound reads 20,266 and 20,916, both above the 17,766 truth by construction.
+	const mixedAt = (opening) => chain([
+		messageEntry(`o${opening}-1`, "user", "x".repeat(opening), stamp(0)),
+		billed(`o${opening}-2`, "ok", { input: 17_766 + Math.round(opening / 4) }, stamp(1)),
+		messageEntry(`o${opening}-3`, "user", "测".repeat(4_200), stamp(2)),
+		billed(`o${opening}-4`, "ok", { input: 17_766 + Math.round(opening / 4) + 4_001 }, stamp(3)),
+	]);
+	const mixed20 = readOf(measureCtx(mixedAt(20_000), "sample-mixed-20k", 60_000));
+	const mixed25 = readOf(measureCtx(mixedAt(25_200), "sample-mixed-25k", 60_000));
+	check(
+		"the I-1 fixtures read above the truth and above the physical floor",
+		Math.abs(mixed20.baseline - 20_266) <= 2 &&
+			Math.abs(mixed25.baseline - 20_916) <= 2 &&
+			mixed25.baseline >= 11_021 &&
+			mixed20.baseline >= 17_766,
 	);
 
-	// 1d. A compaction summary is prompt content. `summaryOnly` measures the summary's own estimate through the
-	//     module, so the expectation does not hardcode pi's rendering of it; the `>= 1_500` conjunct proves the
-	//     fixture really registered the entry (a malformed one would make the mutated code pass silently).
-	//     Mutation: dropping non-message entries from the estimate reddens this alone (baseline reads the
-	//     summary as if it were baseline).
+	// 1d. A compaction summary is prompt content, and the bound counts it: the 8,000-char summary plus the
+	//     4,000-char question are 12,000 chars, so 20,766 - 12,000/8 = 19,266. The summary's own estimate is
+	//     pinned as an absolute constant (`"x".repeat(8_000)` is 2,000 tokens at pi's chars/4) so the expectation
+	//     cannot pass by the module agreeing with itself (review round 2's N-3). Mutation: dropping non-message
+	//     entries from the estimate reads 20,266 and reddens this alone.
 	const summaryText = "x".repeat(8_000);
 	const summaryOnly = readOf(measureCtx(chain([summaryEntry("c1", summaryText, stamp(0))]), "sample-summary", 60_000));
 	const withSummary = readOf(
@@ -1428,8 +1467,21 @@ try {
 	);
 	check(
 		"a compaction summary is context, not baseline",
-		summaryOnly.estimated >= 1_500 &&
-			Math.abs(withSummary.baseline - (20_766 - summaryOnly.estimated - 1_000)) <= 2,
+		Math.abs(summaryOnly.estimated - 2_000) <= 2 && Math.abs(withSummary.baseline - 19_266) <= 4,
+	);
+	// 1d-bis. A compaction entry can also carry pi's `systemMessage` (`sessionEntryToContextMessages` returns
+	//     `[systemMessage, summary]`); it is a prompt component like any other system message and must not enter
+	//     the estimate. Mutation: counting it in the non-message branch shifts both numbers by 10,000.
+	const compactionWithSystem = { ...summaryEntry("c2", summaryText, stamp(0)) };
+	compactionWithSystem.systemMessage = { role: "system", content: "s".repeat(40_000), sections: [], toolsAdded: [] };
+	const summaryWithSystem = readOf(measureCtx(chain([compactionWithSystem]), "sample-summary-sys", 60_000));
+	const summaryNoSystemEntry = { ...compactionWithSystem };
+	delete summaryNoSystemEntry.systemMessage;
+	const summaryNoSystem = readOf(measureCtx(chain([summaryNoSystemEntry]), "sample-summary-nosys", 60_000));
+	check(
+		"a compaction entry's system message is not part of the estimated content",
+		summaryWithSystem.estimated === summaryNoSystem.estimated &&
+			summaryWithSystem.baseline === summaryNoSystem.baseline,
 	);
 
 	// 2. A record's own reply is not context: the same session with a 100k-character last reply reads the same
@@ -1450,9 +1502,22 @@ try {
 		"a single record reads its prompt, not its reply's output",
 		singleRead.samples === 1 && Math.abs(singleRead.baseline - 42_000) <= 500,
 	);
+	const systemText = "s".repeat(40_000);
+	const systemEntry = messageEntry("sys1", "system", systemText, stamp(0));
+	const withSystem = readOf(
+		measureCtx(chain([systemEntry, ...sampled(4, 4_000, 2.5, 40_000)]), "sample-system", 60_000),
+	);
+	// 2c. The system message is not part of the estimated content: pi's own `estimateTokens` already covers its
+	//     content, sections and `toolsAdded`, so counting it here subtracted the tool schemas and the system
+	//     prompt from the baseline - measured 9,881 short on the probe sandbox whose provider truth was 17,753.
+	//     Mutation: counting the system message again drops both numbers by its own amount and reddens this.
+	check(
+		"a system message is not part of the estimated content",
+		withSystem.baseline === smallRead.baseline && withSystem.estimated === smallRead.estimated,
+	);
 
-	// 3. Without a usage record the historical formula decides, byte for byte: the answer moves exactly with
-	//    `usage.tokens`, and the reading reports that it had no sample. Mutation: any other fallback reddens.
+	// 3. Without a usage record the historical formula decides: the answer moves exactly with `usage.tokens`, and
+	//    the reading reports that it had no sample. Mutation: any other fallback reddens.
 	const unrecorded = chain([
 		messageEntry("n1", "user", "测".repeat(4_000), stamp(0)),
 		messageEntry("n2", "assistant", "ok", stamp(1)),
@@ -1479,8 +1544,18 @@ try {
 	);
 	check(
 		"the suffix admits the uncalibrated reading",
-		measured.baselineSuffix(noSample).includes("chars/4, no usage sample"),
+		measured.baselineSuffix(noSample).includes("chars/4, no usable record"),
 	);
+	// 3b. The fallback has the system-message property too: `usage.tokens` minus the *messages* estimate, so a
+	//     system message belongs to the baseline here as well. Mutation: subtracting it again reads 10,000 low.
+	const unrecordedSystem = readOf(
+		measureCtx(
+			chain([messageEntry("n0", "system", systemText, stamp(0)), ...unrecorded]),
+			"sample-none-system",
+			60_000,
+		),
+	);
+	check("the fallback subtracts the messages, not the system message", unrecordedSystem.baseline === noSample.baseline);
 
 	// 4. A replayed predecessor record (its prompt covers the whole predecessor branch, its own text is tiny)
 	//    must never win the minimum. Mutation: taking the earliest (or the largest) sample reddens `sampleIndex`.
@@ -1495,6 +1570,26 @@ try {
 	check(
 		"a replayed predecessor record does not become the baseline",
 		replayRead.samples === 2 && replayRead.sampleIndex === 1 && Math.abs(replayRead.baseline - 20_000) <= 200,
+	);
+
+	// 4b. The other side of the same coin: a record whose prompt does not hold even the densest reading of its own
+	//     preceding content is not a measurement of this branch at all (a handoff whose first local request was
+	//     built before the replay landed looks like this). Keeping it would drive the minimum negative and the
+	//     baseline below zero, which the floor must never read. The arithmetic is exact: 400,000 ASCII chars are
+	//     100,000 tokens, z2's "ok" 1 and 4,000 CJK chars 1,000, so 101,001 tokens are 404,004 chars before the
+	//     record and `404,004 / 8 = 50,500.5` ceilings to 50,501.
+
+	//     Mutation: dropping the credibility test reddens all three conjuncts (baseline -45,000).
+	const omitted = chain([
+		messageEntry("z1", "user", "x".repeat(400_000), stamp(0)),
+		billed("z2", "ok", { input: 5_000 }, stamp(1)),
+		messageEntry("z3", "user", "测".repeat(4_000), stamp(2)),
+		billed("z4", "ok", { input: 60_000 }, stamp(3)),
+	]);
+	const omittedRead = readOf(measureCtx(omitted, "sample-omitted", 60_000));
+	check(
+		"a record below its own density floor is not a measurement",
+		omittedRead.samples === 1 && omittedRead.sampleIndex === 0 && omittedRead.baseline === 9_499 && omittedRead.baseline >= 0,
 	);
 
 	// 5. A delta that is not a content delta cannot calibrate: prompts that barely move while the text does
@@ -1519,15 +1614,17 @@ try {
 		Math.abs(measured.contextTokensAtRate(convertedMessages, 2) / measured.contextTokensAtRate(convertedMessages, 4) - 2) <= 0.05,
 	);
 
-	// 7. The floor uses the sampled baseline: this session's last residual is ~160k (base 100k + the drift), above
-	//    the 129k a 157k knee leaves, while its sampled baseline is 100k - so the handoff must still exist here.
-	//    Mutation: the current-point residual refuses the threshold and the auto handoff silently disappears.
+	// 7. The floor no longer follows the branch: this session's last residual is ~260k (base 100k plus a drift the
+	//    size of the conversation) while its reading is 127,500 - the 100k truth plus the emptiest record's
+	//    27,500-token slack - so the threshold still resolves. Mutation: the current-point residual refuses the
+	//    threshold and the auto handoff silently disappears. The margin is thin by construction (floor 155.5k
+	//    against a 157k knee), which is the fail-closed side: an even larger opening block refuses instead.
 	const heavySampled = measureCtx(sampled(4, 100_000, 2.5, 100_000), "sample-heavy", 400_000);
 	const heavyRead = readOf(heavySampled);
 	const heavyThreshold = handoff.resolveThreshold(heavySampled, heavySampled.getContextUsage());
 	check(
-		"a heavy branch keeps its auto handoff once the baseline is sampled correctly",
-		heavyRead.baseline <= 110_000 && heavyThreshold?.tokens === 157_000,
+		"a heavy branch keeps its auto handoff once the baseline is bounded instead of following the branch",
+		Math.abs(heavyRead.baseline - 127_500) <= 2 && heavyThreshold?.tokens === 157_000,
 	);
 
 	// 8. The two consumers of the rate: the status receipt names the sample it measured, and the handoff receipt
@@ -1536,7 +1633,7 @@ try {
 	const statusLine = handoff.handoffStatusLine(measureCtx(sampled(4, 4_000, 2.5, 40_000), "sample-status", 60_000));
 	check(
 		"the status receipt names the baseline measurement",
-		/· baseline \d+(\.\d)?k \(2\.\d c\/t, best of 4\)/.test(statusLine),
+		/· baseline \d+(\.\d)?k \(chars\/8 bound over 4 records; receipt at 2\.5 c\/t\)/.test(statusLine),
 	);
 	await writeFile(configPath, JSON.stringify({ handoffEnabled: true, handoffBudgetRecentTokens: 20_000 }));
 	const carryPi = makePi({ cwd: tmp });
