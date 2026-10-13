@@ -1,0 +1,43 @@
+# Lane A 独立审查 — 冻结修订 `acbf228`（issue `2026-10-09-handoff-baseline-residual`，第 4 轮：R4 修复）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev10`（= `acbf228` 的逐字节副本，**只读**）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先把目录复制到你自己的 `/tmp/<你的目录>` 再跑。
+工作区无未提交改动（除 `.agents/memory` 的自动渲染）。
+
+## 范围与背景
+
+第 3 轮（冻结 `3abd207`）判 CHANGES-REQUESTED / 0 blocking / 2 important（都是 fail-open 低读）：
+**I-1** pi 对每张图固定计 4,800 字符（`ESTIMATED_IMAGE_CHARS`），小图（~100 token）被按 600 token 扣 ⇒ 上界落真值之下并赢 `min`
+（审查员夹具：真值 17,766 + 图 100 token，读 17,264）；**I-2** `prompt <= chars/8` 只判记录自身，某记录计费后分支里被插入它没被计费的字符
+（前任重放插在它之前）⇒ `chars` 偏大 ⇒ 上界落真值之下（审查员夹具：prompt 18,766 + 重放 50k 字符 ⇒ 读 12,016）。
+
+本轮修复（`git show acbf228`，另有 `git diff 3abd207..acbf228` 只看修复）：
+- **I-1**：`chars` 与 `estimated` 都只计**文本**（`textEstimate` = 去掉 image block 后调 pi 的 `estimateTokens`），图 token 落进 baseline。
+- **I-2**：相邻**已接受**样本之间（无 split 且 `prompt >= previous.prompt`）要求 `chars_r − chars_p <= (prompt_r − prompt_p) × 8`，违反即丢弃该记录。
+- **nits**：三处「永不低读」措辞收窄为「相对设定它的那条记录时刻」；残余③表述与 `below-quality-knee` 拒绝句（baseline 不再被称作杆）；
+  `CHANGELOG` 契约数（末节 28 条 `check(`）与变异覆盖措辞；三处陈旧注释。
+- 记录：design `§10`（残余④ 偏稀疏锚点、⑤ 陈旧锚点）、review-report `R4`。
+
+## 你要独立验的
+
+1. **I-1**：自己复现第 3 轮那个图像夹具（含 image-only user 消息 + 一条 usage），确认读数 **≥ 真值**；再验修复引入的代价方向：
+   baseline 高读量是否 = 该图真实 token 数、`estimated + baseline` 是否不因图而重复计数（若把图只从 `chars` 去掉而 `estimated` 仍含图，floor 会多计约 1,100/图 —— 这轮选的是两者都去，验一下实际数值）。
+   另验 `withoutImages` 的实现面：`content` 为字符串、`content` 里夹 tool_result/tool_use、多图、image 块类型名不同（如 `"image_url"`）、`sections`/`toolsAdded` 的 system 消息经 `sessionEntryToContextMessages` 的路径 —— 有没有那条路径把图算进去、或把不该去的去掉。
+2. **I-2**：自己复现第 3 轮的重放夹具（含 R=50k/100k/140k/160k 四档）确认那条记录被**丢弃**且 min 落在前一条诚实记录上；
+   再对抗性看新规则的**豁免**：`prompt < previous.prompt` 时不检查 —— 有没有利用「prompt 缩小」构造仍会低读的形状（例如重放插在一条 prompt 变小的记录之前、或 context_edit 让 prompt 掉下来）？给出你自己夹具的读数。
+   同样验 **false exclusion**：新规则会不会在**正常**会话里丢掉合法样本、以致 `samples` 降到 1 而 baseline 被第一条记录抬到很高（= 自动交接被关掉的另一面）？构造一个密集/稀疏混合的会话来试。
+3. **契约与变异**：复现 8 个已发布变异的 `^FAIL ` 行数（system 重新计入 2、上界退回 rate 缩放 7、`min`→`max` 8、去掉自身密度下界判定 1、
+   compaction `systemMessage` 计入 1、后缀不写回执口径 1、图像字符重新计入 1、去掉区间一致性规则 2）；并检查本轮**新增/改写**的断言是否每条都能被打红。
+   注意 `absurd` 夹具的 `samples` 由 4 改成 1（区间规则丢弃三条 40 chars/token 的记录）—— 这是否是**契约弱化**？
+4. **发布面**：`CHANGELOG`/`docs/handoff.md`/`threshold.ts` 的新措辞是否仍承诺了代码做不到的事（本仓反复出现的那类 finding）？
+   残余④⑤的登记是否诚实、够用（尤其 4b 夹具的算术保持、只改注释这件事）？
+5. **现场复验**（只读，会话文件在 `/home/user/.pi/agent/sessions/` 下，可用 `pi` 的类型或直接解析 JSONL）：
+   probe 沙箱 `--tmp-pi-baseline-probe-8cNv--/…01a1331c…`（真值 17,753）、ctl `--tmp-pi-baseline-probe-ctl-sct2--/…01a1331d…`（真值 11,008）、
+   活树 `--run-media-…-pi-project-context--/2026-10-13T04-29-08-292Z_01a13385-…jsonl`（期望 52,151、前缀 131,433×4 后非增、35 样本）。
+   这三条会话是否真的不含 image block（即 R4 不动现场读数）？自己确认，不要采信报告。
+
+## 输出格式
+
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED`，并给出 blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现（命令或夹具）、方向（fail-open / fail-closed）、建议（修 / 登记残余）。
+- 明确写出你**无法**独立验证的点。

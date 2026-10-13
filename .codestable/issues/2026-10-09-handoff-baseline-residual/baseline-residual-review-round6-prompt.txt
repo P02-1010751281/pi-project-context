@@ -1,0 +1,37 @@
+# Lane A 独立审查 — 冻结修订 `12c0f72`（issue `2026-10-09-handoff-baseline-residual`，第 6 轮：R6 修复）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev12`（= `12c0f72` 的逐字节副本，**只读**）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先复制到你自己的 `/tmp/<你的目录>` 再跑。
+
+## 背景
+
+第 5 轮（冻结 `270b1b4`）判 0 blocking / **1 important** / 5 nit。那条 important 是：同一目标多次编辑时，
+采样器把编辑链式应用到上一次结果上，而 pi 的投影对每个目标只留**最后一条** edit 并应用到**原始**消息上
+（core 每次 overflow recovery 追加 `null` 删除、扩展可再编辑）⇒ 「先删除再恢复」在采样器里目标永久消失，
+`chars` 少算、baseline 无界高读（审查员夹具 30,000 对忠实值 28,875），方向是把自动交接推向静默拒绝。
+
+本轮修复（`git show 12c0f72`；`git diff 270b1b4..12c0f72` 只看修复）：
+- `seen` 同时保存 `raw`（该条目插入时的原始消息），每条 edit 都 `editedMessages(target.raw, …)` 重算 = pi 的 last-wins。
+- 5 条 nit：design 的 compaction 可达性说法（`firstKeptEntryId`）、CHANGELOG 里被推翻的措辞、4d 注释改为「文件级形状」、
+  R5 报告补上 8 条 `context_edit` 的 `split` 效应、变异矩阵恢复精确补丁定义。
+
+## 你要独立验的
+
+1. **修复正确性与面**：用你自己的「null → 恢复」夹具（以及 delete→restore→delete、同一目标三次替换、
+   assistant 目标 + 字符串 replacement 等组合）确认采样器的前缀与 `buildSessionProjection` 一致；给出数值对比表。
+2. **还有没有别的与「provider 实际收到的前缀」不一致的地方**（这是本轮的主题，请系统性穷举你想到的形状）：
+   compaction 的 `firstKeptEntryId` 保留旧条目、branch summary 条目、`custom` 条目、thinking/tool_use/tool_result 的计数、
+   不在当前路径上的条目、被压缩剪掉的记录（是否进入样本）、`SPLIT_TURN_MARKER` 注入、以及你上一轮提到的
+   「真实可达的低读只有 marker 注入」这一判断是否仍然成立。
+3. **契约与变异**：复现 10 个变异的 `^FAIL ` 行数（system 3、上界退回 rate 9、`min`→`max` 9、去掉自身密度下界 1、
+   后缀 measured-rate 1、图像 1、区间一致性 1、忽略 context_edit 1、rate 带下半 3、编辑链式应用 1）；末节 `check(` 是否 31 条。
+4. **现场复验**（只读）：probe `--tmp-pi-baseline-probe-8cNv--/…01a1331c…`（真值 17,753）、ctl `--tmp-pi-baseline-probe-ctl-sct2--/…01a1331d…`（真值 11,008）、
+   活树 `--run-media-…-pi-project-context--/2026-10-13T04-29-08-292Z_01a13385-…jsonl`（期望 52,151 / 35 样本 / 前缀 131,433×4 后非增）。
+5. **残余清单**：①②③④⑤ 的登记是否诚实、有无遗漏的新行为面（含发布面措辞）。
+
+**若没有 blocking 与 important 级问题，请直接给 `VERDICT: PASSED`** 并在末尾列出你唯一仍无法验证的点（PASS 只覆盖本冻结修订）。
+
+## 输出格式
+
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED`，并给出 blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现、方向（fail-open / fail-closed）、建议（修 / 登记残余）。

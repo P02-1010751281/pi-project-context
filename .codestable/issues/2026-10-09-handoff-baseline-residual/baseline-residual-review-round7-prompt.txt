@@ -1,0 +1,34 @@
+# Lane A 独立审查 — 冻结修订 `c31e40c`（issue `2026-10-09-handoff-baseline-residual`，第 7 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev13`（= `c31e40c` 的逐字节副本，**只读**）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先复制到你自己的 `/tmp/<你的目录>` 再跑。
+
+## 背景
+
+第 6 轮（冻结 `12c0f72`）判 0 blocking / **1 important** / 2 nit：I-1 是「`!!` 排除型 `bashExecution` 输出被计入 `chars`，
+而 `convertToLlm` 把它丢弃 ⇒ 记录低读（你的夹具 13,264 对 17,766）、大输出时 fallback 归零」；N-1 是 R5 报告把断链读数
+归因成 `split`；N-2 是 `firstKeptEntryId` 保留的 pre-compaction 记录被采样且未登记。
+
+本轮修复（`git show c31e40c`；`git diff 12c0f72..c31e40c`）：`isExcluded` 镜像 `convertToLlm` 的丢弃，`messageTokens` 与
+`contextTokensAtRate` 都跳过；残余⑥ 登记 + design §11 枚举真实可达的低读形状；R5 报告的归因订正；新契约 4g。
+
+## 你要独立验的
+
+1. **修复正确性**：用你自己的 `!!` 夹具（含 40,000 与 200,000 字符输出两档）确认采样器现在与 `convertToLlm(buildSessionProjection(...))` 一致；
+   再验 `contextTokensAtRate` 的调用面（回执/切分预算）在排除条目上是否也一致、有没有引入新偏差。
+2. **最后一次系统性穷举**：以「provider 实际收到的 `convertToLlm` 输出」为基准，逐角色/逐形状对比采样器的 `chars`/`estimated`
+   （`user`/`assistant`（含 thinking、tool_use）/`toolResult`/`system`/`custom`/`branchSummary`/`compactionSummary`/`bashExecution`（含 `!` 与 `!!`）/
+   image 块 / 被 `context_edit` 改写的条目 / `firstKeptEntryId` 保留的条目 / 不在路径上的条目）。给出偏差表（方向 + 量级），
+   并明确哪些是已登记残余、哪些是新问题。
+3. **契约与变异**：复现 11 个变异的 `^FAIL ` 行数（system 3、上界退回 rate 10、`min`→`max` 9、自身密度下界 1、后缀 measured-rate 1、
+   图像 1、区间一致性 1、忽略 context_edit 1、rate 带下半 3、编辑链式 1、计入排除 bash 1）；末节 `check(` 是否 32 条。
+4. **现场复验**（只读）：probe `--tmp-pi-baseline-probe-8cNv--/…01a1331c…`（真值 17,753）、ctl `--tmp-pi-baseline-probe-ctl-sct2--/…01a1331d…`（真值 11,008）、
+   活树 `--run-media-…-pi-project-context--/2026-10-13T04-29-08-292Z_01a13385-…jsonl`（期望 52,151 / 35 样本 / 前缀 131,433×4 后非增）。
+5. **残余清单与发布面**：①②③④⑤⑥ 的登记是否诚实完备、CHANGELOG/`docs/handoff.md`/design 的措辞有没有承诺代码做不到的事。
+
+**若没有 blocking 与 important 级问题，请给 `VERDICT: PASSED`**（PASS 只覆盖本冻结修订），并在末尾列出你仍无法验证的点。
+
+## 输出格式
+
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED`，并给出 blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现、方向、建议（修 / 登记残余）。

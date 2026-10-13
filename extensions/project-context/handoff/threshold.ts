@@ -232,6 +232,11 @@ export interface ContextMeasure {
  *   (150k in the test, 131k live) - the silent disable this issue is about. The price is a region the file
  *   cannot judge: a *stale* local record whose prompt was billed before a replay landed, sitting behind a
  *   larger predecessor prompt, still reads low (review round 4's I-1; residual ⑤ in the issue's design §10).
+ * - The minimum is taken over samples **since the last proven overhead increase**. A record whose prompt grew
+ *   by more than its text could carry (`prompt_r - prompt_p > chars_r - chars_p / RATE_MAX`) proves `B_r > B_p`,
+ *   so every earlier sample measures a stale baseline and the minimum restarts at that record (design §14,
+ *   residual ②: the injected block refreshing inside a session). An undetectable increase - one smaller than the
+ *   pair's slack - leaves the reading that much below the current baseline, which is bounded by the increase.
  * - `chars` follows pi's **projection**, not the raw entry list: a `context_edit` rewrites its target's
  *   messages (or drops them) and the provider is sent the edited text, so a message a user shortened or
  *   deleted must stop counting (round 4's I-2: the un-edited prefix read 5,267 where the baseline is 17,766).
@@ -257,6 +262,8 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	 * deltas are all built on (see `textEstimate`). */
 	let plain = 0;
 	let split = false;
+	/** Index in `samples` where the current baseline regime starts; a proven overhead increase resets it. */
+	let anchor = 0;
 	/** Each entry's raw messages, their projected ones and their contribution to `plain`, so a `context_edit`
 	 * can rewrite them in place. `raw` is kept because pi applies the *last* edit of a target to its original
 	 * messages: a `null` deletion followed by a replacement restores the target rather than editing nothing. */
@@ -311,6 +318,11 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		const previous = samples.at(-1);
 		if (previous && !split && prompt >= previous.prompt) {
 			if (chars - previous.chars > (prompt - previous.prompt) * RATE_MAX) continue;
+			// The mirror case: if the prompt grew by more than the text could carry (`T_r <= chars_r` from the
+			// band's upper end, `T_p >= chars_p / RATE_MAX` from its lower end), the **baseline** itself grew -
+			// the injected block refreshing inside a session is the field case - so every earlier sample measures
+			// a stale baseline and the minimum restarts here (design §14; residual ②).
+			if (prompt - previous.prompt > chars - Math.ceil(previous.chars / RATE_MAX)) anchor = samples.length;
 		}
 		samples.push({
 			prompt,
@@ -353,14 +365,14 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		};
 	}
 	let baseline = 0;
-	let sampleIndex = 0;
-	for (let i = 0; i < samples.length; i += 1) {
+	let sampleIndex = anchor;
+	for (let i = anchor; i < samples.length; i += 1) {
 		const sample = samples[i];
 		// The densest content the band allows is a lower bound on that record's message tokens, so this bound
-		// sits above the baseline whose prompt produced it; later accepted records only produce larger ones
-		// (the doc block, including what it does not cover: the injected block growing inside the session).
+		// sits above the baseline whose prompt produced it; within one baseline regime later accepted records
+		// only produce larger ones (the doc block).
 		const bound = sample.prompt - Math.ceil(sample.chars / RATE_MAX);
-		if (i === 0 || bound < baseline) {
+		if (i === anchor || bound < baseline) {
 			baseline = bound;
 			sampleIndex = i;
 		}
@@ -378,6 +390,12 @@ export function baselineTokens(ctx: ExtensionContext, usage: ContextUsage): numb
  * Rate-aware replacement for `Σ estimateTokens(...)`: the handoff receipt and its split-turn budget must speak
  * the session's own chars-per-token, or they describe a drop that is not the drop (issue
  * 2026-10-09-handoff-baseline-residual, second consumer).
+ *
+ * Two things differ from the sampler on purpose, and this is the registered difference rather than an oversight
+ * (design §13): images and system messages are counted here at pi's own estimate. This is a **budget device** -
+ * the kept slice is re-sent, so under-counting it is what would be wrong - while `chars` is a **lower-bound
+ * device** that has to under-count to stay safe. The one thing both must agree on is what the provider never
+ * receives: an excluded `!!cmd` output is skipped here too.
  */
 export function contextTokensAtRate(
 	messages: Iterable<Parameters<typeof estimateTokens>[0]>,

@@ -1,0 +1,40 @@
+# Lane A 独立审查 — 冻结修订 `270b1b4`（issue `2026-10-09-handoff-baseline-residual`，第 5 轮：R5 修复）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev11`（= `270b1b4` 的逐字节副本，**只读**）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先把目录复制到你自己的 `/tmp/<你的目录>` 再跑。
+工作区无未提交改动（除 `.agents/memory` 自动渲染）。
+
+## 背景：第 4 轮（冻结 `acbf228`）判 CHANGES-REQUESTED / 0 blocking / 2 important / 4 nit
+
+- **I-1**：区间一致性规则的豁免 `prompt < previous.prompt` 把第 3 轮 I-2 的原形重新放行（更大的前任 prompt + 重放 + 陈旧本地记录 ⇒ 读 12,015/12,016，真值 17,766）。
+- **I-2**：`chars` 走原始 `buildContextEntries` 而非 pi 的投影（`buildSessionProjection` 会应用 `context_edit`）⇒ 被缩短/删除的 100,000 字符消息仍计入，读数 5,267/5,268（真值 17,766）。
+- nit：`absurd` 夹具 `!calibrated` 成同义反复且 `rate > RATE_MAX` 无人覆盖；新 4c 注释算术写错；R4 报告声称残余③措辞已改但 design 里没有；`docs/architecture.md` 摘要未同步。
+
+本轮修复（`git show 270b1b4`；`git diff acbf228..270b1b4` 只看修复）：
+- **I-2 修**：`chars` 按 pi 投影语义在编辑条目出现处**就地改写**目标条目的贡献（`editedMessages` 镜像 `projectContextEntry`），
+  compaction `index > 0` 记 0；编辑之前的记录仍按原文计算。
+- **I-1 处置**：豁免保留（有意 fail-open 取舍：丢掉本地记录会把 baseline 钉死在前任 131k 上），边界写清 + 新契约 **4d** 钉住该形状（残余⑤），
+  design §10 里错误的「真实交接已覆盖」表述删除。
+- **nit**：删除 `rate > RATE_MAX`（声称不可达），`absurd` 改钉 band 下半；4c 算术订正；design §9③；architecture.md。
+
+## 你要独立验的
+
+1. **I-2 投影修复**：自己造夹具（父链 + `context_edit`）确认读数不再低读；对抗性看新代码的面：
+   ① 编辑把内容改**长**、② 同一目标被编辑两次、③ `replacement: null` 删除、④ 编辑目标是 toolResult 且 replacement 是字符串（pi 写入时会归一化，见 `session-manager.js` 的 `appendContextEdit`）、
+   ⑤ 编辑条目在记录**之后**（该记录必须仍按原文计）、⑥ 编辑目标不在 `buildContextEntries` 的数组里（被压缩剪掉）时 `seen` 取不到会怎样、
+   ⑦ 我写的 `compaction index > 0 ⇒ 0` 是否真的不可达（线性分支）或是否在某个真实形状里可达；⑧ `const messages = [...sessionEntryToContextMessages(entry)]` 的浅拷贝有没有改变行为。
+2. **I-1 处置是否诚实**：4d 契约钉的是形状还是数值？残余⑤ 的登记（design §10/§11、CHANGELOG、代码注释）有没有夸大或漏说？
+   是否存在比豁免更好的、既保住「本地记录不被丢弃」又不低读的判据（请给出可实现的候选与反例）？
+3. **可证声明**：`rate > RATE_MAX` 不可达的证明是否成立（接受样本都过了区间规则 ⇒ `4·added ≤ Δprompt·RATE_MAX`）？
+   有没有路径绕过（split、prompt 缩小的豁免、`previous` 是更早的样本？）？如果成立，删掉这条过滤是否有隐患？
+4. **契约与变异**：复现 9 个变异的 `^FAIL ` 行数（system 重新计入 3、上界退回 rate 缩放 8、`min`→`max` 9、去掉自身密度下界判定 1、
+   后缀不写回执口径 1、图像重新计入 1、去掉区间一致性 1、忽略 `context_edit` 1、去掉 rate 带下半 3）；末节 `check(` 是否 30 条。
+5. **现场复验**（只读；会话在 `/home/user/.pi/agent/sessions/`）：probe `--tmp-pi-baseline-probe-8cNv--/…01a1331c…`（真值 17,753）、
+   ctl `--tmp-pi-baseline-probe-ctl-sct2--/…01a1331d…`（真值 11,008）、活树 `--run-media-…-pi-project-context--/2026-10-13T04-29-08-292Z_01a13385-…jsonl`（期望 52,151、35 样本、前缀 131,433×4 后非增）。
+   并确认活树那 8 条 `context_edit` 对读数确实无影响（R4 报告如此声称）。
+
+## 输出格式
+
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED`，并给出 blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现、方向（fail-open / fail-closed）、建议（修 / 登记残余）。
+- 明确写出你**无法**独立验证的点。

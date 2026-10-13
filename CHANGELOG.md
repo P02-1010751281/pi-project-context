@@ -27,6 +27,10 @@
   丢掉本地记录会把 baseline 钉死在前任量级上 —— 正是本 issue 要修的静默关闭。代价与残余 ④⑤（偏稀疏锚点；文件级陈旧锚点）
   见 `.codestable/issues/2026-10-09-handoff-baseline-residual/design.md` §9–§13 与 review-report（§11 还枚举了真实可达的低读形状：
   被排除的 `!!` 输出（本轮修）、保留的 pre-compaction 记录 + 膨胀摘要（残余⑥）、`SPLIT_TURN_MARKER` 注入）。
+- **证明式重锚：注入块在会话内增长时，最小值从该记录重启**（残余②收尾）：读数原本是「设定它的那条记录时刻」的 `B`，
+  注入块刷新后它低读增量（以增量为界）。现在当某条记录的 prompt 增长超出文本能承载的上限
+  （`prompt_r − prompt_p > chars_r − chars_p / RATE_MAX`，由 `T_r ≤ chars_r`、`T_p ≥ chars_p / RATE_MAX` 推出）即证明 `B` 增长，
+  最小值从该记录重启；更小的增长不可判定，仍以该增量为界。
 - **被排除的 `!!` 不再被当作「user 可见」的 replay 首条**（第 7 轮独立审查的 important）：`excludeFromContext` 的 bash 经
   `convertToLlm` 整条消失，但 replay 的 user-facing 判据只按 role ⇒ 当切点落在 `!!` 条目上时 kept slice 以它开头、
   `SPLIT_TURN_MARKER` 不插，successor 发给 provider 的首条变成 assistant ⇒ Anthropic/Gemini 这类要求 user-first 的路由直接拒。
@@ -67,12 +71,13 @@
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
 变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；**本版新增或改写**的断言每条都有只改一处的补丁把它变红，
-其余断言的覆盖情况见 review-report）：system 消息重新计入估计红 3、上界退回 rate 缩放红 11、`min` 改 `max` 红 9、
+其余断言的覆盖情况见 review-report）：system 消息重新计入估计红 3、上界退回 rate 缩放红 12、`min` 改 `max` 红 9、
 去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、后缀**把未校准的 4.0 印成测得 rate**红 1、图像字符重新计入估计红 1、
 去掉区间一致性规则红 1、忽略 `context_edit`（用原始前缀）红 1、去掉 rate 带下半红 3、同一目标的编辑链式应用（不回到原始消息）红 1、
-计入被排除的 bash 输出红 2、`!!` slice 头退回 role 判定红 2、排除判定退回严格 `=== true` 红 2。
+计入被排除的 bash 输出红 2、`!!` slice 头退回 role 判定红 2、排除判定退回严格 `=== true` 红 2、去掉 overhead 增长 re-anchor 红 1。
+残余 ①③④⑤⑥ 与两条口径差异按 design §14 收尾（全部钉住，未改代码）。
 两处 system 计入点在第 4 轮修复里合并成一个 `messageTokens`（两条断言合成一条变异），
-`rate > RATE_MAX` 那条过滤在样本路径上不可达（区间规则已推出 `rate ≤ RATE_MAX`）⇒ 删除、只保留下半。末节现有 33 条 `check(`（另 2 条 `!!` 契约在更早的 replay 小节）。
+`rate > RATE_MAX` 那条过滤在样本路径上不可达（区间规则已推出 `rate ≤ RATE_MAX`）⇒ 删除、只保留下半。末节现有 35 条 `check(`（另 2 条 `!!` 契约在更早的 replay 小节）。
 
 ## v0.4.9 — 2026-10-08
 

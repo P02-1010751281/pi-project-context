@@ -1,0 +1,101 @@
+# Lane A 独立审查报告 — 冻结修订 `c31e40c`（issue `2026-10-09-handoff-baseline-residual`，第 7 轮）
+
+所有测试/变异/夹具均在我自己的副本 `/tmp/laneA-rev13` 与 `/tmp/laneA-work` 内完成；`/tmp/pi-context-rev13` 全程只读，`git diff --stat -- extensions tests docs CHANGELOG.md` 为空。
+
+**VERDICT: CHANGES-REQUESTED — blocking 0 / important 1 / nit 3**
+
+---
+
+## Important
+
+### I-1 `extensions/project-context/handoff/text.ts:27,75` — 被排除的 `!!` 作为 kept slice 首条时绕过 `SPLIT_TURN_MARKER`，successor 的 provider 首条变成 assistant
+
+- **现象**：`USER_FACING_ROLES` 无条件包含 `bashExecution`，但 `excludeFromContext: true` 的 bash 经 `convertToLlm` 是**整条消失**的。`findCutPoint` 把 `!!` 条目本身当作合法切点时（它是 turn start），kept slice 以该条目开头 ⇒ `replayable[0].role === "bashExecution"` 通过 user-facing 判定 ⇒ 不插 marker ⇒ ensure 的 user-first 不变量被打破。
+- **最小复现**（我的脚本，与仓库无写交互）：`u0 100k 字符 → a0 → u1 "look at the log" → !! 300k 字符 → a1`，keep 预算 20,000，`findCutPoint.firstKeptEntryIndex` 落在 `!!` 条目；`replayMessagesFor` 得到 `["bashExecution","assistant"]`；再追加交接 prompt 后 `convertToLlm(buildSessionProjection(...))` 得到 **provider roles = `assistant,user`，无 marker**（`excludeFromContext=false` 的对照组则是 `user,assistant`）。run.ts 的 setup/withSession 顺序（先 replay 再 `sendUserMessage`）不改变这一点。
+- **方向**：在 Anthropic / Gemini 这类要求 user-first 的路由上交接续接请求被拒（该 marker 存在的理由就是这条，代码注释自己也这么写）。这是 pre-existing（R7 未引入），但 R7 的语义「`excludeFromContext` ⇒ provider 不可见」恰恰说明该判定该同步；不属于 ①–⑥ 任何一条。
+- **建议**：修。把首条判定改成 provider 可见性（`role === "bashExecution" && excludeFromContext !== true` 才算 user-facing，或在 `isReplayableRole` 中直接过滤 excluded bash），并补一个 `!!` 开头的 replay 契约（含 `!!` 与 `!` 对照）。
+
+## Nit
+
+### N-1 `extensions/project-context/handoff/threshold.ts:125-130` — `isExcluded` 用 `=== true`，`convertToLlm` 用真值判断
+
+- **现象**：`convertToLlm` 的条件是 `if (m.excludeFromContext)`；采样器镜像用严格 `=== true`。`excludeFromContext: 1`（外来/手改 JSONL）时 provider 丢弃、采样器照计。
+- **最小复现**：`u1 4,000 字符 → bash(row, 40,000, excludeFromContext=1) → a2 prompt 5,000`：采样器把 a2 当「自身密度下界不达标」剔除 ⇒ `samples=0`、`baseline=max(0,5000-11001)=0`；provider 视图只余 `[user,assistant]`，诚实 baseline ≈ 4,500。
+- **方向**：低读（fail-open），但只对畸形文件；pi 自身的写者只写布尔 `true`（`agent-session.js:3164`）。
+- **建议**：登记残余或改成真值判断（1 行）。
+
+### N-2 `design.md:182,199`（及 `review-report.md:272`）— 残余⑥ 的低读门限写错，被说成「膨胀 8 倍、不可能」
+
+- **现象**：设计写「低读需要摘要膨胀到 `summary > 8·S + 7·K`」「低读需摘要膨胀 8 倍……模型摘要不可能」。实际条件（由 `bound = prompt − chars/8` 直接推出，chars 单位）是 **`summary > 2·dropped + kept_before`**，即 2 倍出头即可。
+- **最小复现**：`s0 8,000 字符 → a0(usage prompt = 17,766+2,000, firstKept 保留) → compaction summary 20,000 字符 → u1 2,000 → a1`：`summary/dropped = 2.5×` 时采样器读 **17,266 vs 真值 17,766（低 500）**；`D=40k / summary=100k` 低 2,500；恰 2.0× 为 0。对 734 个真实会话文件扫描的 25 条 compaction 而言 0 条超过 2×（所以现实风险低，但「不可能」不成立）。
+- **方向**：fail-open 被低报（残余登记不诚实完备）。
+- **建议**：改数字并保留「本机 25 条真实 compaction 均 < 2×、pi 正常摘要远短于被压缩前缀」的实测措辞；不必改代码。
+- 附带：`design §11` 的 fail-closed 高读枚举漏了保留的 `!`（非 `!!`）bash 的 `Ran \`cmd\`` 包装（实测 est −4、bound +2，几 token，同类），可顺手提一句。
+
+### N-3 `threshold.ts:394-405` — `contextTokensAtRate` 仍计图像块（与 system），而 `chars`/`estimated` 已去图（R4）
+
+- **现象**：回执/中途切分预算走 `estimateTokens(message)` 原值，图像按 4,800 字符计；`estimated`/`chars` 走 `textEstimate` 去图。R4 只改了密度基准，未登记这条调用面。
+- **最小复现**：单条 user「100 字符文本 + 1 图」在 rate 4 下：`contextTokensAtRate = 1,225`，`messageTokens = 25`。
+- **方向**：显示/预算过报（对 `prefixTokens` 的 snap 是保守方向，fail-closed），不是低读，但 ①–⑥ 都没写。
+- **建议**：登记，或把回执口径也统一为文本（含一则措辞说明）。
+
+---
+
+## 修复正确性与穷举对比（以 provider 实收 `convertToLlm(buildSessionProjection(...))` 为基准）
+
+方法：单 usage 记录夹具（rate=4，`baseline = prompt − ceil(chars/8)` ⇒ `chars = 8·(prompt−baseline)`），同时算 `estimated` 对 provider 文本估计；再用一份**插桩副本**（`threshold-audit.ts`，只加日志）跑 400 局随机会话、485 条样本，逐记录比 `chars` 与「计费时刻 provider 可见前缀 ×4」。
+
+| 形状 | `estimated` 偏差 | `chars`→bound 方向 | 结论 |
+|---|---|---|---|
+| user / assistant（含 thinking、tool_use）/ toolResult | 0 | 0 | 一致 |
+| custom_message / role custom | 0 | 0 | 一致 |
+| **`!!`（excludeFromContext，40k 与 200k）** | **0** | **0** | **R7 修复正确；200k 记录不再被自身密度下界剔除（samples 2、baseline 18,266）** |
+| `!`（保留 bash） | est −4 | bound +2 | fail-closed 高读，几 token，未逐项登记（N-2 附带） |
+| branchSummary | est −25 | bound +12 | fail-closed 高读，已登记 §11 |
+| compactionSummary（index 0 与 index>0） | est −27 | bound +13 | 同上 |
+| system 消息 | est 0（跳过）| 其 token 落 baseline | 设计 C，已登记 |
+| image 块 | 采样器去掉 4,800 字符/图；真实图 token 落 baseline | 设计 R4，已登记 |
+| context_edit（缩短 / null / null→恢复 last-wins） | 0 | 0 | 与投影一致 |
+| `firstKeptEntryId` 保留的 pre-compaction 记录 | 总量一致 | 残余⑥ | 登记存在，但门限写错（N-2） |
+| 不在路径上的条目 | 双方都忽略 | — | 一致 |
+| Fuzz 400 局 / 485 样本 | 除上述已登记包装差外 **0 条未登记分歧** | — | 无新低读形状 |
+
+- `contextTokensAtRate` 调用面：单元面 `withExcluded = withoutExcluded = provider = 2001`；端到端 `/handoff now` 中 300k 字符的 `!!` 不再进「carrying」（`dropping ~25.5k, carrying ~1`）。排除条目上一致，未引入新偏差。
+- 旧行为对照：M11（计入排除 bash）变异红 1，且手算旧 `chars` 会把 `a2` 的 bound 压到 14,266。
+
+## 契约与变异（`node tests/run-all.mjs` 的 `^FAIL ` 行；每变异 MD5 恢复校验通过）
+
+| 变异 | 我测 | 报告声称 |
+|---|---|---|
+| system 重新计入（messageTokens） | 3 | 3 ✓ |
+| 上界退回 rate 缩放 | 10 | 10 ✓ |
+| `min`→`max` | 9 | 9 ✓ |
+| 去掉自身密度下界 | 1 | 1 ✓ |
+| 后缀把未校准 4.0 印成 measured rate | 1 | 1 ✓ |
+| 图像字符重新计入 `textEstimate` | 1 | 1 ✓ |
+| 去掉区间一致性（只删内层 if，M7a/M7b 均） | 1 | 1 ✓ |
+| 忽略 `context_edit` | 1 | 1 ✓ |
+| 去掉 rate 带下半 | 3 | 3 ✓ |
+| 编辑链式应用（`target.messages`） | 1 | 1 ✓ |
+| 计入排除 bash | 1 | 1 ✓ |
+
+末节 `check(`：`NR≥1294` 匹配 33 行，减去第 1783 行 `console.log("... check(s) failed.")` 的假阳性 ⇒ **32 条** ✓。基线全绿：`All 15 tests passed`。
+
+## 现场复验（只读）
+
+- probe `01a1331c`：**17,763**（真值 17,753）✓；ctl `01a1331d`：**11,018**（真值 11,008）✓。
+- 活树 `01a13385`：**52,151 / 35 样本 / rate 3.22**；前缀序列 `131,433×4 → 52,151` 恒非增 ✓；每个前缀 system 清零后读数差 0 ✓。
+- N-1 归因订正复现：良构删除 8 条 `context_edit`（重连 `parentId`）⇒ **52,151/35 逐位不变**；仅删行不重连 ⇒ **161,788/2 样本** ✓。R5 的断链归因订正确实成立。
+
+## 残余清单与发布面
+
+- ①–⑥ 均已登记（①②③ 见 design §9，④⑤ 见 §10，⑥ 见 §12）；现场/夹具方向与措辞除 N-2 的门限数字外均与代码一致；CHANGELOG / `docs/handoff.md` 的「相对设定它的记录时刻的上界」「注入块增量低读」「图像落 baseline」「切点仍是 `findCutPoint`」等措辞没有承诺代码做不到的事。
+- 唯一不诚实处是残余⑥ 的 `8·S + 7·K` / 「8 倍」/「不可能」（N-2）；另 `contextTokensAtRate` 的图像口径未列入残余（N-3）。
+- 另注：`findCutPoint` 仍按 pi 的 chars/4 计入 `!!`（设计已把「切点不动」登记为边界），因此 `!!` 足够大时会出现 provider 可见旧内容仍在、却提示 `nothing older than the recent window to drop` 的保守跳过；这是已登记边界的表现，不是新读数偏差（但与 I-1 同源）。
+
+## 我仍无法验证的点
+
+1. R6 报告里的 1,543 局 fuzz / 1,270 条分歧（原始夹具未入库），只能用自己的 400 局 fuzz 证伪性替代；结论一致（compaction 类以外 0 条未登记分歧）。
+2. provider 真值 17,753 / 11,008 来自 `probe-true-baseline.md` 的一次性真实请求，本轮无法在不发新请求的前提下从文件侧重新推导（文件侧读数与使用量已复核一致）。
+3. Anthropic/Gemini 对 assistant-first 的实际拒绝行为未打真实请求验证；判定依据是这两个 API 的既定约束与扩展自己 `text.ts:22-23` 的注释（该 marker 正是为此而设）。
+4. 变异计数依赖精确补丁文本；我用自造单点补丁复现出全部 11 个数字（M7 需保留 `const previous`，删内层规则）。

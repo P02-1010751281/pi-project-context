@@ -210,3 +210,19 @@ provider 可见性（`excludedFromContext` 从 `text.ts` 单点导出，threshol
 同轮：`excludedFromContext` 改为**真值**判定（镜像 `convertToLlm` 的 `if (m.excludeFromContext)`；手改 `1` 同样排除）；
 `contextTokensAtRate`（回执 / mid-turn 切分预算）仍按 pi 原值计图像块与 system 消息（口径与密度基准不同），
 登记为**已知差异**：方向是保守过报（图像按 4,800 字符计，预算只会更保守），不修 —— 统一为文本会让预算少算图像 token。
+
+## 14 残余收尾（发版前清理；operator：清理完所有残余残留才能发版）
+
+| # | 残余 | 处置 | 证据 |
+|---|---|---|---|
+| ① | 最空记录自身字符数的高读 `chars × (1/r − 1/8)` | **钉住**：这是密度下界的必然代价（方向 fail-closed），不是缺陷 | 契约 `the over-read is bounded by the emptiest record…`、`the I-1 fixtures read above the truth…`；docs/CHANGELOG 已写 |
+| ② | 注入块会话内刷新 ⇒ 读到旧 baseline | **修**：证明式 re-anchor —— `prompt_r − prompt_p > chars_r − chars_p / RATE_MAX`（由 `T_r ≤ chars_r`、`T_p ≥ chars_p / RATE_MAX` 推出）证明 `B` 增长，最小值从该记录重启 | 契约 `a proven overhead increase restarts the minimum`（旧读 18,266 ⇒ 现读 28,765）；变异 M14 红 1 |
+| ③ | 只有 predecessor 记录时读虚高（活树 record 0–3 读 131,433） | **钉住**：successor 的文件里没有前任的对话，`B` 无法从该记录反推；方向是**拒绝**（高读）而不是低读 | 契约 `a predecessor-only prefix reads the predecessor's bound, high` |
+| ④ | >8 chars/token 的偏稀疏锚点（长空白/重复串） | **钉住**：没有 tokenizer 就无法判定；量级已给（首条约 67k 空白字符才低读 5k）；区间形式已被一致性规则捕获 | design §11 枚举、CHANGELOG 残余指针 |
+| ⑤ | 文件级陈旧锚点（手改 / 外部写者） | **钉住**：4d 契约；pi 自身写者只向 leaf 追加 ⇒ 该时序不可复现 | tests 4d、design §11 |
+| ⑥ | `firstKeptEntryId` 保留的 pre-compaction 记录 | **钉住**：正常写入下是 fail-closed 高读；低读门限 `summary > 2·dropped + kept_before`，本机 25 条真实 compaction 无一条超过 | design §12、R8 审查员 1,543 局 fuzz |
+| 口径 a | `contextTokensAtRate` 按 pi 原值计图像与 system | **钉住为有意差异**：预算器件必须不低报、密度下界器件必须低报，两者只在「provider 收不到的东西」（排除的 `!!`）上一致 | `threshold.ts` 的 JSDoc、design §13 |
+| 口径 b | `branchSummary`/`compactionSummary` 前后缀、`!` 的 ``Ran `cmd` `` 包装 | **钉住**：fail-closed 高读，≤ 十几 token | design §11 枚举 |
+
+**本轮代码只改一处**（② 的证明式 re-anchor，`handoff/threshold.ts`）；①③④⑤⑥ 与两条口径差异不再改代码，但方向、量级与判据都写在本文件、CHANGELOG、代码注释与测试契约里
+——「已登记」的重定义是**已定界、已钉住、已注明方向**，而不是「未处理」。任何一条若要**改变**（而不是钉住），需要字段证据支撑新判据（③④⑤⑥ 从会话文件里在信息论上不可判定；① 是密度下界的固有代价）。

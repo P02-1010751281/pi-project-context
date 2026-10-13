@@ -1,0 +1,134 @@
+All verification runs are complete. Here is my independent review report.
+
+---
+
+**VERDICT: CHANGES-REQUESTED — blocking 0 / important 1 / nit 5**
+
+冻结树只读验证：`threshold.ts` / `handoff-test.mjs` / `harness.mjs` / `CHANGELOG.md` / `docs/architecture.md` 的 md5 与 `git show HEAD:<file>` 逐位一致（`a7f8be45…`/`87143a00…`/`b126ce08…`/`0dd8633f…`/`efed6cdf…`）；所有实验在 `/tmp/rev11A`（变异）与 `/tmp/rev11B`（探针）副本里跑。另：冻结树在我动手前就带着 4 个未跟踪的 `.agents/skills/*` 文件（任务描述只说 `.agents/memory`），非我写入。
+
+---
+
+## 一、独立复现的结论
+
+### 1. I-2 投影修复：主路径正确，一个对抗面不成立
+
+自造差分器：用 pi 自己的 `buildSessionProjection(prefix, leaf)` 当参照，逐记录比较扩展的 `plainBefore`（从 `baseline`/`estimated` 反解，pi 1.2.0，4,000 随机夹具 + 定向夹具）：
+
+| 面 | 结果 |
+|---|---|
+| ① 编辑改**长** | ✓ ext=ref=2,250 token/9,000 chars |
+| ②a 同目标两次 content | ✓ 均为 B（last-wins 与顺序重写等价） |
+| ②b `null` 后再 content（恢复） | ✗ **ext=0，pi 恢复 9,000 chars**（见 Finding 1） |
+| ②c content 后再 `null` | ✓ 双方删除 |
+| ③ `replacement: null` | ✓ |
+| ④ toolResult + 字符串 replacement | ✓ ext=ref=1,750 |
+| ⑤ 编辑在记录之后 | ✓ 该记录按原文；其后记录按新文本（751=ref） |
+| ⑥ 目标被 compaction 剪掉 | ✓ 双方 no-op（325=ref） |
+| ⑦ `compaction index > 0 ⇒ 0` | **可达**：两条 compaction 的线性分支 `buildContextEntries` 返回 `[c_new, m1, c_old, m2, a1]`，pi 把 index=2 的 `c_old` 映射为 `[]`；扩展镜像正确（ref=ext）。doc 里「线性分支实测只会返回最新那条」是错的（Finding 2） |
+| ⑧ 浅拷贝 | 把 `[...sessionEntryToContextMessages(entry)]` 改成直接引用：整个套件 **0 FAIL**，无行为改变 |
+
+旧代码 `acbf228` 在 4e 夹具上读 **5,268**、新代码 **17,767**（测试注释算术无误）；4c 新读 18,266、4d 12,015，均与本轮报告一致。`estimated` 的 system/图像/投影语义与 `messageTokens` 合并后无双重计数。
+
+### 2. I-1 处置诚实性
+
+- 4d 契约钉的是**形状 + 方向**（`samples===2 && sampleIndex===1 && baseline<17,766 && >=0`），不是数值；它能拦「重造计费前缀」的修法（会翻红）。design §10 里「真实交接里前任记录就在前面 ⇒ 会被捕获」确实已删除；design §10/§11、CHANGELOG、代码注释四处都写了「prompt 缩小不检查是**有意**的 fail-open 取舍」。处置诚实。
+- 我复制的反例分析：**不存在更好的纯本地判据**。`leaf=record.id` 逐记录投影：4d 仍含 s3 → 仍 12,015、活树仍 52,151；「prompt 缩小时也套一致性规则」：4d 丢弃 s4 → 读数变 **130,933**（前任钉高，正是静默关闭）；「检测 system/model/replay 边界才豁免」在 4d（无边界）依旧只能在 12,015 与 130,933 之间二选一；要回到 17,766 只能读 `parentSession` 重建被计费前缀（跨会话 I/O、缺文件/外部写者时退化）。候选+反例可写进残余登记。
+- 但 4d 的**发生顺序**在 pi 自己的写者下不可复现：路径祖先在记录计费时必然已存在；R4 审查员自己也写了「无法复现产生顺序的真实并发/时序」。真实可达的同类低读只有重放时注入的 `SPLIT_TURN_MARKER`（数个 token 量级）。见 Finding 4。
+
+### 3. `rate > RATE_MAX` 不可达：证明成立，删除安全
+
+接受样本进入 rate 对时必满足：`newer.split===false`（否则 rate 循环 `continue`）且 `Δprompt>0`（否则 `continue`）⇒ 推入时一致性规则的条件 `previous && !split && prompt>=previous.prompt` 必为真且未丢弃 ⇒ `chars−chars_p ≤ Δprompt·8`，即 `4·added ≤ Δprompt·8` ⇒ `rate ≤ 8`。无 split / prompt 缩小 / `previous` 是更早样本的绕路均被 `newer.split` 与 `deltaPrompt<=0` 排除。删除后只剩 `rate < RATE_MIN`；即使未来有人放宽豁免，rate 也不再参与 baseline（只影响回执换算），隐患有限，且注释已把前提写在过滤点上。
+
+### 4. 变异与契约
+
+每个变异只改一处、跑完整 `node tests/run-all.mjs`、按行首 `FAIL ` 计数、跑后恢复并校验：
+
+| 变异 | 报告 | 我测 |
+|---|---|---|
+| system 重新计入 | 3 | **3** ✓ |
+| 上界退回 rate 缩放 | 8 | **8** ✓ |
+| `min`→`max` | 9 | **9** ✓ |
+| 去掉自身密度下界 | 1 | **1** ✓ |
+| 后缀不写回执口径 | 1 | **1**（「未校准也印测得 rate」读法）/ **2**（「永远印 fallback」读法）；字面删掉 `receipt at` 整段是 3 |
+| 图像重新计入 | 1 | **1** ✓ |
+| 去掉区间一致性 | 1 | **1** ✓ |
+| 忽略 context_edit | 1 | **1** ✓ |
+| 去掉 rate 带下半 | 3 | **3** ✓ |
+
+额外：浅拷贝→直接引用 **0**；我实现的 last-wins 修复（`raw`+最新 replacement）也是 **0** ⇒ ②b 这条语义在套件里**完全没有被钉**。末节 `check(`：从 `tests/handoff-test.mjs:1356` 起 `^\tcheck(` = **30** ✓；干净套件 `All 15 tests passed`。
+
+### 5. 现场复验（只读 JSONL + 本仓代码）
+
+| 会话 | R5 读数 | R4 读数 | 真值(文档) | samples/rate |
+|---|---:|---:|---:|---|
+| probe `01a1331c` | **17,763** | 17,763 | 17,753 | 1 / 4.000 |
+| ctl `01a1331d` | **11,018** | 11,018 | 11,008 | 1 / 4.000 |
+| 活树 `01a13385` | **52,151** | 52,151 | — | 35 / 3.222 |
+
+- 前缀序列：`131,433,131,433,131,433,131,433,52,151,…` 非增 ✓；system 清零前后差 **0** ✓；R4↔R5 delta **0** ✓。
+- 8 条 `context_edit` 全为 `replacement: null`，目标都是空 content 的 assistant（prompt=0）⇒ 对 `chars` 零影响 ✓。
+- 但注意：**这 8 条条目整体对读数并非惰性**——把它们删掉，读数变 **161,788 / 2 samples**，因为每条 edit 的 `split=true` 让其后记录豁免区间规则。R5 报告的「对字符数无影响，所以投影修复不动现场读数」结论对（delta 0），但因果说明不完整（Finding 5）。
+
+---
+
+## 二、Findings
+
+### IMPORTANT 1 — 同一目标 `null → 非 null` 的编辑没有镜像 pi 的 last-wins 投影
+
+- 文件:行：`extensions/project-context/handoff/threshold.ts:267`（`editedMessages` 定义在 `:134`，`seen` 状态在 `:264-271`）
+- 现象：编辑顺序应用在**上一次编辑后的** `target.messages` 上；先 `replacement: null`（删除 → `messages=[]`）再 non-null 时，`editedMessages([], repl)` 仍是 `[]`，目标永久消失。pi 的 `buildSessionProjection` 用 `edits.get(targetId) = 最后一条 edit` 应用到**原始**消息上，provider 实际收到恢复内容。`:131-132` 注释声称「mirrors what the provider is actually sent」，此形状不成立。
+- 最小复现（公开 API，pi 1.2.0）：
+  ```
+  sm = SessionManager.inMemory(...)
+  u1 = sm.appendMessage(user "x"×1000)
+  sm.appendContextEdit(u1, null)                                   // pi core _omitRecoveryAttempt 的用法
+  sm.appendContextEdit(u1, {content:[{text:"z"×9000}]})            // 扩展边界草稿 ContextEditEntryDraft
+  sm.appendMessage(assistant "ok", usage:{input:30000,...})
+  ```
+  结果：`buildSessionProjection()` 含恢复后的 9,000 字符 user；冻结 `measureContext` 的 `plainBefore=0, baseline=30,000, estimated=1`；pi 忠实值 `baseline=28,875, estimated=2,251`（over-read 1,125 = 恢复文本 token 的一半）。旧 `acbf228` 读 29,875（同样是高读，只是量不同）。可达性：pi core `agent-session.js:850` 每次 overflow recovery 追加 null edit；`ContextEditEntryDraft` 是公开 API（`types.d.ts:765`），`appendContextEdit` 允许同一 target 再次编辑。
+- 方向：**fail-closed**（baseline 高读 → `resolveThreshold` 的 `baseline + keep + MIN_DROP` floor 抬高 → 自动交接可能被无声拒绝，正是本 issue 的症状）；同时 `estimated` 低读当前内容。注意它**不在**残余①的界限内：残余①只界赢家记录自身的字符，这里的高读由**另一条**消息的内容带来，可任意大。
+- 建议：修。`seen` 里同时保存 `raw`（插入时的原始消息），每条 edit 都用 `editedMessages(raw, entry.replacement)` 重算（等价 pi map 的 last-wins）；补一条「null→content 恢复」契约。若 operator 按「有界 fail-closed 可登记残余」处理，可降为 nit，但残余①的措辞要相应扩大，且该语义目前 0 变异覆盖（我实现的修复 0 FAIL）。
+
+### NIT 2 — `design.md:175` 的 compaction 可达性说法错误
+
+- 现象：「`index > 0` 的 compaction 贡献 0；线性分支实测只会返回最新那条」——后半句错。两条 compaction 的线性分支 `buildContextEntries` 明确会保留旧 compaction 于 index>0（pi 自己的注释也如此写明），这正是该规则存在的原因。我的夹具 `[c_new, m1, c_old, m2, a1]` 中 `c_old` 在 index=2，扩展镜像正确。
+- 复现：`buildContextEntries(twoComp, "a1")` → `0:compaction(c_new) 1:message(m1) 2:compaction(c_old)…`；ref=ext=58,470。
+- 方向：文档（无行为影响）。建议：改为「旧 compaction 可因 `firstKeptEntryId` 落在其之后而保留在 index>0（pi `session-manager.js` 注释），本条即镜像该情形」，避免后人误删规则。
+
+### NIT 3 — `CHANGELOG.md:26-28` 的旧 R4 文段仍带着已被推翻的结论，与同段 R5 文段自相矛盾
+
+- 现象：同一未发布的 v0.4.10 段里，旧 bullet 仍写「prompt 缩小的区间不检查 —— …那正是 `min` 本就会跳过的情形」「只有在它前面还有可参照样本时才被上一条规则捕获」；这正是 design §10 已删除的错误表述，下面新增的 R5 bullet 又说该形状是登记的残余⑤、会读低。
+- 建议：因为是未发布版本，直接把旧 bullet 改成 R5 的订正措辞（保留历史可另开「本版内被取代的中间形态」条目，该段已有此先例）。
+
+### NIT 4 — 4d 夹具注释把「文件级形状」写成了真实时序
+
+- 文件:行：`tests/handoff-test.mjs:1636-1640`，另 `design.md:163` 的措辞。
+- 现象：注释说「a stale local record whose prompt was billed before a replay landed」。pi 的写者只在 leaf 追加，路径祖先在记录计费时必然存在，s3（stamp(2)）在 s4（stamp(3)）之前 ⇒ 「先计费后插入」不可复现（R4 审查员自己写了「无法复现产生顺序的真实并发/时序」）。真实可达的低读只有 `SPLIT_TURN_MARKER` 注入（数 token）。把它登记为对「外部写者/手改 JSONL」的文件级容错完全合理，但注释最好照 design §10 的口径写「文件级形状」，避免后人误以为现场会出现 50k 级低读。
+- 方向：文档。建议：改注释/报告措辞。
+
+### NIT 5 — 「8 条 context_edit 对读数无影响」的因果说明不完整
+
+- 文件:行：`review-report.md:226`（R5 验收段），`CHANGELOG.md:46-48`。
+- 现象：8 条条目对 `chars` 确实零影响（目标全为空 content），R4↔R5 delta 实测为 0。但这 8 条整体不是惰性的：删掉它们后 `split` 少 8 个豁免点，活树读数从 52,151/35 samples 变 **161,788/2 samples**。读者可能误以为 context_edit 条目可忽略。
+- 建议：把句子补成「对 chars 无影响；其 `split` 效应在 R4→R5 间未变，所以两版现场读数逐位相同」。
+
+### NIT 6 — 变异矩阵里「后缀不写回执口径 1」的补丁没有唯一定义
+
+- 文件:行：`review-report.md:223-226`、`CHANGELOG.md:52-56`。
+- 现象：按「把未校准的 4.0 印成测得 rate」打才红 **1**（我复现）；按字面「不写 `receipt at` 整段」红 **3**；按「永远印 fallback」红 **2**。R4 报告里已经用过精确措辞（「后缀把未校准的 4.0 印成测得 rate」），R5 缩写后丢掉了。
+- 建议：恢复精确措辞（我这边测得：measured-rate 1 / always-fallback 2 / 删整段 3）。
+
+---
+
+## 三、我无法独立验证的点
+
+1. **探针/对照的 provider 真值 17,753 / 11,008** 只来自仓库文档 `probe-true-baseline.md`；我只能验证采样器读 17,763 / 11,018（+10 高读，与「最空记录 slack」一致）及活树 52,151。
+2. **4d 在真实并发/时序下是否会发生**：我按 pi 1.2.0 的写者逐条走查（append 只接 leaf、branch 会换路径、fork/replay 保序），无法构造出「路径上的内容晚于记录计费」的合法顺序；R4 转录自己也承认没复现出时序。见 Finding 4。
+3. **作者的确切变异补丁**：9 条中 8 条与我的单点补丁计数逐位吻合，后缀一条只有在特定读法下吻合（Finding 6），其余可能的等价补丁我未穷举。
+4. **pi 1.1.0 行为**：R4 报告提到用 1.1.0 复跑数字相同；本环境只有 1.2.0，我未跨版本验证。
+5. **活体 pi 进程内运行**：现场复验全部是只读 JSONL + 本仓模块；没有起真实 `pi` 会话（避免写现场与会话目录）。
+6. **负载/稳定性**：干净套件只跑了 2 次（rev11A 初始与 rev11B 复跑），未做高负载重复。
+
+---
+
+**结论**：I-2 的主修复、I-1 的诚实登记、`rate>RATE_MAX` 删除、9 条变异、30 条末节契约与三条现场读数都已独立复现通过；但新 `editedMessages` 在「同一目标先删除后恢复」这一公开可达的形状上**没有**镜像 pi 的投影，且该语义 0 测试覆盖、方向上会导致自动交接被无声拒绝 —— 这是一个应修的 important。修掉它（或按残余登记并扩写残余①边界）后，其余 5 条仅需改文档/契约措辞。

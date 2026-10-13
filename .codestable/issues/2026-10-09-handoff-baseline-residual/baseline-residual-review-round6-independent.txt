@@ -1,0 +1,79 @@
+# Lane A 独立审查 — 冻结修订 `12c0f72`（R6 修复）
+
+`VERDICT: CHANGES-REQUESTED — blocking 0 / important 1 / nit 2`
+
+零写声明：所有实验在 `/tmp/laneA-r6a`（带调试导出的副本）、`/tmp/laneA-r6-mut`（逐字节副本）里跑；工作区 `extensions/…/threshold.ts` 的 md5 与 `git show HEAD:` 逐位相同（`87b7938b…`），`git status` 对代码/测试/文档为空。测试：`node tests/run-all.mjs` → All 15 tests passed。
+
+---
+
+## 一、R6 修复正确性（独立差分：采样器 `chars` vs pi `buildSessionProjection`）
+
+我自建差分器（`/tmp/laneA-r6a/laneA-r6-diff.mjs`，给 `measureContext` 加了只读的 `debugSamples` 导出），对每条 usage 记录按 `buildSessionProjection(entries, record.parentId)` 重建"计费当时 provider 收到的前缀"，文本基准对齐 `textEstimate`（去 system、去 image）。结果（数值为 chars，除非注明）：
+
+| 形状 | 记录 | 采样器 | pi 投影 | 读数 | 结论 |
+|---|---|---|---|---|---|
+| R5 夹具：9,000 字符目标 null→restore，prompt 30,000 | 1 | 9,000 | 9,000 | **28,875** / est 2,251（旧链式代码 30,000 / 1） | 一致 |
+| 4f 夹具：4,000 字符 null→restore，prompt 20,000 | 1 | 4,000 | 4,000 | 19,500 / est 1,001（链式 20,000 / 1） | 一致 |
+| null→restore→null | 1 | 0 | 0 | 50,000 | 一致 |
+| 同一目标三次替换（1k→2k→3k） | 1 | 3,000 | 3,000 | 52,625 | 一致 |
+| assistant 目标 + 字符串 replacement | 2 | 0, 20 | 0, 20 | 50,000 | 一致 |
+| 两条 edit 中间夹一条记录（last-wins 分时段重建） | 2 | 1,000, 2,004 | 1,000, 2,004 | 50,875 | 一致 |
+| 旧 compaction 保留在 index>0（`[c_new,m1,c_old,m2,a1]`） | 1 | 12,000 | 12,000 | 60,500 | 一致（R5 nit 2 的镜像正确） |
+| compaction systemMessage / branch_summary / custom_message / system / toolResult / thinking+toolCall / image / model_change / 不在路径上的旁支 | — | — | — | — | 全部一致 |
+| 编辑前先出现的 target（手改文件） | 1 | 50,000 | 4 | 43,754 vs B 50,000 | 分歧（见 N‑2，file-level fail-open） |
+| **`!!` 排除型 bashExecution（见 I‑1）** | 1 | 44,012 | 4,000 | 13,264 vs B 17,766 | **分歧** |
+
+随机差分（种子级逐条精确相等才算过）：
+- **纯 messages+edits：2,716 局全部 0 分歧**；再加 branch_summary/custom/toolResult/system/model_change（无 compaction）**2,677 局 0 分歧**。⇒ R6 的 last-wins-from-raw 修复对任意编辑链、任意目标角色、任意交错记录都精确等于 pi 投影。
+- compaction fuzz 1,543 局：1,270 条分歧**全部**是「被最新 compaction 保留、但在 compaction 之前计费」的记录（`chars` 用 post-compaction 前缀、`usage.prompt` 是 pre-compaction 分支）；**compaction 之后的记录 0 分歧**。这是剩余的唯一系统差分类别，见 N‑2。
+- compaction 的 `index>0` 记 0、`firstKeptEntryId` 保留/丢弃、被压缩剪掉的记录（不进样本）、不在路径上的条目（不进样本）、system 消息（不计 chars）：全部与 pi 一致。
+
+## 二、契约与变异（独立复现）
+
+10 个单点变异逐个应用后 `^FAIL ` 行数**逐项复现**：system 重计 **3**、上界退回 rate 缩放 **9**、`min`→`max` **9**、去掉自身密度下界 **1**、后缀把未校准 4.0 印成实测 **1**、图像重计 **1**、去掉区间一致性 **1**、忽略 `context_edit` **1**、去掉 rate 带下半 **3**、编辑链式应用 **1**。末节 `check(` 调用数 = **31**（32 次文本匹配中 1 次是 `console.log("…check(s) failed")`），与 CHANGELOG 一致。
+
+## 三、现场复验（只读，1.2.0 SDK，活树扩展代码）
+
+- probe `01a1331c`：baseline **17,763**（真值 17,753）、system 清零差 0；
+- ctl `01a1331d`：baseline **11,018**（真值 11,008）、差 0；
+- 活树 `01a13385`：baseline **52,151**、**35** 样本、rate 3.22、逐前缀 `131,433,131,433,131,433,131,433,52,151,…` 非增。与任务期望逐位一致。
+
+---
+
+## Findings
+
+### I-1（important，fail-open）`!!` 排除型 bash 输出计进 `chars`，provider 实际收不到
+
+- 位置：`extensions/project-context/handoff/threshold.ts:115-126`（`textEstimate`/`messageTokens`）、`:296-301`（message 条目把 `tokens` 累进 `plain`）；契约文字在 `:127-131` 声称「镜像的是 provider 实际收到的 `buildSessionProjection`」。
+- 现象：provider 实际收到的是 `convertToLlm(buildSessionProjection().messages)`（`dist/core/sdk.js:161-170,261`；`dist/core/messages.js:75-83`）。`role:"bashExecution", excludeFromContext:true`（交互式 `!!cmd`，`dist/modes/interactive/interactive-mode.js:2688`；由 `recordBashResult` 以 message 条目持久化，`dist/core/agent-session.js:3143-3164`）被 `convertToLlm` **整条丢弃**，但 `sessionEntryToContextMessages` 会把它带进投影，`estimateTokens` 又按 `command+output` 计数 ⇒ `chars`/`estimated` 计入了 provider 从未收到的文本。第一条 `!!` 之后的记录（或无样本时的 fallback）baseline 低读，最坏归零。
+- 最小复现（`/tmp/laneA-r6a/laneA-r6-bash.mjs`，真 SDK 函数）：u1 4,000 字符 + `!!` 输出 40,000 字符 + 记录 prompt 18,766 ⇒ 采样器该记录 `chars=44,012`，provider 前缀仅 4,000 字符；**baseline 13,264，真值 B 17,766（低 4,502）**；输出 200,000 字符 ⇒ 该记录被自身密度下界丢弃，fallback `usage.tokens − estimated` **= 0（低 17,766）**。对照组 `!`（不排除）faithful 44,028，只体现残余①的 fail-closed 高读，无此问题。本机 729 个会话文件中尚无 bashExecution 实例，但写者路径与 `!!`→exclude 语义均在 1.2.0 源码中确认（这也是 729 个文件都没触发过的原因：没人用过 `!`）。
+- 方向：**fail-open**（floor 低 → 自动交接过早 / `dropTokens` 高报）。与 R4-I-2（低读 12,500）、R3-I-1 同级，且完全未登记（`grep bashExecution|excludeFromContext|convertToLlm` 在 issue 文档/CHANGELOG/handoff 文档均无）。
+- 建议：**修**。在采样累计处镜像 `convertToLlm`：`role==="bashExecution" && excludeFromContext` 不入 `plain`/`estimated`（`contextTokensAtRate` 的调用面一并核对），加一条契约（同分支含/不含 excluded bash 读数相等，失败态为 fallback 归零）；并把 `design.md:178-180` / CHANGELOG 里「真实可达的低读只有 marker 注入」改成枚举。若本轮不修，必须单列残余——不能挂 ⑤（⑤ 讲的是文件级手改，这是 pi 自己写出来的）。
+
+### N-1（nit，证据准确性）R5 报告把「断链读数」归因成 `split` 豁免
+
+- 位置：`.codestable/issues/2026-10-09-handoff-baseline-residual/review-report.md:228-229`（R6 的 NIT 5 处置）。
+- 现象：报告称删掉那 8 条 `context_edit`「会少 8 个 `split` 豁免点，读数变成 161,788/2 样本」。我实测（`/tmp/laneA-r6-mut/splice-probe2.mjs`）：把 8 条从解析结果删除并**重连子条目 parentId**（良构删除）后，活树读数与原文件**逐位相同**（52,151/35，R6 与 R5 两版代码均如此）；161,788/2 只在「删 JSONL 行但不重连 parentId」时出现——路径在最后一个被删条目的子节点处截断，读数来自被截断的旁支，与 split 豁免无关。即：这 8 条对 `chars` **和**样本集都没有影响。
+- 方向：无代码方向；这是审查证据链的准确性。
+- 建议：改措辞（该 8 条读数无任何影响；若保留 161,788，须注明它是断链操作的产物）。
+
+### N-2（nit，残余完整性）compaction 保留的 pre-compaction usage 记录被采样，且不在残余清单
+
+- 位置：`extensions/project-context/handoff/threshold.ts:296-301`（采样范围）；`design.md:178-180`（「文件级」口径）。
+- 现象：最新 compaction 之前的保留记录，其 `usage.prompt` 是 compaction 前分支，`chars` 是 compaction 后投影前缀；pi core 对此类记录做失效处理（`agent-session.js` 的 `assistantIsFromBeforeCompaction` 与 `estimateProjectedContextTokens`），采样器未失效。fuzz 1,543 局中 1,270 条分歧全属此类、compaction 之后 0 条；随机摘要下 126 局 baseline < 真值（最坏低 1,359）。
+- 方向：正常写入下判界高读（fail-closed；摘要远短于被摘要文本时不低读，低读需 `summary > 8·S + 7·K`，模型摘要不可能）；仅手改/外部写者或摘要膨胀 8 倍才 fail-open。另一个效果是 compaction 后尚无新记录时 baseline 被这些大 prompt 顶高（与残余③同向的虚高）。
+- 建议：登记（⑤ 的子类或新⑥），并把 `design.md:178-180` 的「真实可达的低读只有 marker 注入」改为枚举（excluded `!!`、保留记录+膨胀摘要、marker 注入）。
+
+---
+
+## 其余核验结论
+
+- **①②③④⑤ 登记总体诚实**：① 的 `chars×(1/r−1/8)` 高读、② 的注入块增量、③ 的 `131,433×4 → 52,151`、④ 稀疏锚点、⑤ 陈旧锚点（4d 形状在 pi 写者下不可复现）均可复现；缺的是上面 I‑1/N‑2 两个面。
+- **发布面措辞**：CHANGELOG 的 last-wins 条目数字（30,000/28,875、19,500/1,001）、变异矩阵（3/9/9/1/1/1/1/1/3/1）、「末节 31 条」均准确；但「代价与残余 ④⑤…」的指针在 I‑1 修复前不完整。
+- 被验证为**无关紧要**的一致性差：`branchSummary`/`compactionSummary` 经 `convertToLlm` 会加前缀/后缀（~95/111 字符），采样器只数 `summary` ⇒ 约几个 token 的 fail-closed 高读。
+
+## 未验证 / 限制
+
+1. 无法在只读环境里真跑一次 `!!` 生成真实会话文件（本机无任何 bashExecution 记录），I‑1 由 1.2.0 的写者代码路径 + 真 SDK 函数合成夹具定论，未做端到端 provider 计费对照。
+2. 只验证到 pi core 的 `convertToLlm` 边界；pi-ai 路由相关的思考块裁剪（可能同样让 `chars` 偏大）没有文件级判据，本轮未量化。
+3. compaction-fuzz 的「膨胀摘要」低读是合成构造，未能在真实 pi compaction 产物上触发（正常摘要不可能满足 `summary > 8·S + 7·K`）；因此 N‑2 只按残余登记，不按 important 计。

@@ -1733,6 +1733,17 @@ try {
 	);
 	check("a truthy excludeFromContext excludes the message from the estimate", truthyExcluded.baseline === 18_266);
 
+	// 4h. A prefix holding only a predecessor record reads that record's bound: the successor's own baseline is
+	//     not visible yet and the predecessor's prompt carries a whole foreign conversation, so the reading is high
+	//     (a refusal, not a low read) until a local record appears - the live session reads 131,433 through record
+	//     3 and 52,151 from record 4 on (design residual ③). None of the fixes changes this; the check keeps the
+	//     intended behaviour visible.
+	const predecessorOnly = readOf(measureCtx(chain([billed("p1", "ok", { input: 131_433 }, stamp(0))]), "sample-predecessor", 60_000));
+	check(
+		"a predecessor-only prefix reads the predecessor's bound, high",
+		predecessorOnly.samples === 1 && predecessorOnly.baseline === 131_433 && predecessorOnly.baseline >= 17_766,
+	);
+
 	// 5. A delta that is not a content delta cannot calibrate: the prompt grows 1,000 tokens per record while the
 	//    text grows 150 (a refreshed injected block, not content), so the implied ~0.6 chars/token sits below the
 	//    band and no pair calibrates. All four records stay measurements (the consistency rule's other direction,
@@ -1748,6 +1759,25 @@ try {
 	check(
 		"an implausible delta is not a calibration",
 		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 4,
+	);
+
+	// 5b. An overhead increase the text cannot account for restarts the minimum: the earlier samples measure the
+	//     old baseline, and keeping them read the new baseline low by the increase - the injected block refreshing
+	//     inside a session (design residual ②). The detector is the mirror of the consistency rule: `T_r <= chars_r`
+	//     and `T_p >= chars_p / RATE_MAX`, so `prompt_r - prompt_p > chars_r - chars_p / RATE_MAX` proves `B` grew.
+	//     Here o2 bills the 17,766 baseline + 1,000 tokens, the overhead then grows by 10,000 and o4 bills
+	//     27,766 + 2,000: without the restart the minimum keeps o2's 18,266, with it the reading is o4's
+	//     `29,766 - ceil(8,004 / 8) = 28,765`. Mutation: no re-anchor reads 18,266.
+	const grewOverhead = chain([
+		messageEntry("o1", "user", "x".repeat(4_000), stamp(0)),
+		billed("o2", "ok", { input: 18_766 }, stamp(1)),
+		messageEntry("o3", "user", "x".repeat(4_000), stamp(2)),
+		billed("o4", "ok", { input: 29_766 }, stamp(3)),
+	]);
+	const grewRead = readOf(measureCtx(grewOverhead, "sample-grew", 60_000));
+	check(
+		"a proven overhead increase restarts the minimum",
+		grewRead.samples === 2 && grewRead.sampleIndex === 1 && grewRead.baseline === 28_765,
 	);
 
 	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for

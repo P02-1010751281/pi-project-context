@@ -1,0 +1,100 @@
+VERDICT: CHANGES-REQUESTED — blocking 0 / important 2 / nit 4
+
+验证环境：冻结树 `/tmp/pi-context-rev10` 全程只读（`threshold.ts`/`handoff-test.mjs` md5 与 HEAD blob 逐位一致，`git status` 只剩 `.agents/memory` 自动渲染）；所有实验在 `cp -a` 副本 `/tmp/laneA-r4` 与 `git archive 3abd207` 解出的 `/tmp/laneA-old` 里跑；node v26.11.1、pi 1.2.0（现场数据另用 1.1.0 复跑，数字相同）。
+
+---
+
+## 一、已独立闭合的点
+
+**1. I-1（图像）修好了，且方向是 fail-closed。** 自造夹具 `laneA-fixtures.mjs`（image-only user 消息 + `input=17_866`）：
+
+| 夹具 | 新代码 baseline / estimated | 旧代码（3abd207） |
+|---|---|---|
+| 1 张图，真值 B=17,766 + 图 100 | **17,866** / 1（floor 和 = 17,867 = 真值） | 17,266（低 500）/ 1,201（floor 和 18,467，多计 1,200） |
+| 2 张图，真值 B + 200 | **17,966** / 1（和 = 17,967） | 16,766（低 1,000）/ 2,401（和 19,167） |
+| 图 + 800 字符文本 | 17,966 / 201 | 17,366 / 1,401 |
+
+即：baseline 高读量 = 该图真实 token 数（1 张 +100，2 张 +200），`estimated` 完全不含图，`estimated+baseline` 与真值逐 token 相等，无重复计数。若只从 `chars` 去图而 `estimated` 仍含图，和会是 19,067（每图多计 1,200，与测试注释一致）。`withoutImages` 实现面逐条检查：字符串 content 原样、多图全滤、toolResult/custom 消息的图滤掉、`tool_use`/`tool_result` 这类块两边都不计（pi 只认 `text`/`image`）、`image_url` 两边都不计（数值无影响）、system 消息与 compaction 的 `systemMessage` 在两处累加点都被跳过。**没有任何路径把图算进 `chars`/`estimated`，也没有把非图内容误删。**
+
+**2. I-2 的已发布夹具被丢弃，min 落在前一条诚实记录上。** 复现 `laneA-fixtures.mjs` 的 b1..b4 夹具：R=50k/100k/140k/160k 在新代码下全部 `samples=1, baseline=18,266`；旧代码分别为 12,015 / 5,765 / 765 / 18,266（`ceil` 与 "ok" 回帖的 1 token 造成与 R3 的 12,016/5,766/766 差 1）。
+
+**3. 变异矩阵 8/8 复现**（`^FAIL ` 行数，先恢复再逐个单点打）：
+
+| 变异 | 发布数 | 我测 |
+|---|---|---|
+| system 重新计入（message 分支） | 2 | 2 ✓ |
+| 上界退回 rate 缩放 `plain*4/rate` | 7 | 7 ✓ |
+| `min`→`max` | 8 | 8 ✓（`run-all.mjs` 也是 8） |
+| 去掉自身密度下界判定 | 1 | 1 ✓ |
+| compaction `systemMessage` 计入 | 1 | 1 ✓ |
+| 后缀把未校准的 4.0 印成测得 rate | 1 | 1 ✓（若按字面删掉 `receipt at` 整段则是 3） |
+| 图像字符重新计入 | 1 | 1 ✓（只红新图像断言） |
+| 去掉区间一致性规则 | 2 | 2 ✓（只红 4c + absurd 两条） |
+
+本轮新增/改写的 3 条断言（图像、4c、absurd）都有单点变异打红。`node tests/run-all.mjs` clean = **All 15 tests passed**。末节真实 `check(` = **28**（29 行含末尾 `check(s) failed` 日志）与 CHANGELOG 一致。
+
+**4. 现场三条会话复验**（我自己解析 JSONL、自己跑 measureContext，新旧代码都跑）：
+
+| 会话 | baseline | 真值 | 差 | samples | 图像块 |
+|---|---|---|---|---|---|
+| probe `01a1331c` | 17,763 | 17,753 | +10 | 1 | 0（grep + 逐消息普查） |
+| ctl `01a1331d` | 11,018 | 11,008 | +10 | 1 | 0 |
+| 活树 `01a13385` | 52,151 | 无直报 | — | 35（sampleIndex 4，rate 3.2224） | 0 |
+
+逐前缀：`131,433 ×4 → 52,151` 后恒定，非增；system 清零后读数差 0；旧代码（3abd207）给出完全相同的三个数字与样本数 ⇒ **R4 确实没有移动现场读数，三条会话确实没有 image block**。活树里 8 条 `context_edit` 都是对空 content 的 assistant 做 `replacement: null` 的 omit，对字符数无影响。
+
+**5. false exclusion**：in-band（2.5/4/8 chars/token）的密集/稀疏（20k ASCII at 3.0、40k at 3.5）混合会话 `samples=6` 不掉；baseline 中途下降 3,000 token 的诚实会话也 `samples=5` 不掉。新规则只在 Δchars > 8·Δprompt（越带）时丢弃，且丢弃只能删掉更低的 bound，不会把 min 抬到第一条合法样本之上 ⇒ 不构成新的“自动交接被关掉”的向量。
+
+---
+
+## 二、Findings
+
+### I-1（important，fail-open，未登记）区间豁免 `prompt < previous.prompt` 把 R3 的 I-2 原形重新放行
+
+`extensions/project-context/handoff/threshold.ts:253-255`
+
+现象：豁免只在“前一条已接受样本的 prompt 更大”时跳检查，而交接成功者的形状正是「前任大 prompt 记录 → 重放 → 本地小 prompt 记录」。此时本地记录的 `chars` 可以含它没被计费的字符，`prompt−chars/8` 落到真值之下并**赢 min**（不是 design §10 写的“min 本就会跳过的情形”）。
+
+最小复现（我自己夹具，`/tmp/laneA-r4/laneA-adversarial.mjs`）：`p1=y×4,000`、`p2` billed `131,433`、`p3=x×50,000`（重放）、`p4` billed `18,766`，真值 B=17,766 ⇒ 新代码 `baseline=12,016, samples=2, sampleIndex=1`（正是 R3 I-2 的数字，低 5,750）；重放改 20k ⇒ 15,766（低 2,000）；重放 4k ⇒ 17,766（不低读）。旧代码同样 12,016。
+
+方向：fail-open（floor 低 → 过早交接），且这是 R4 声称修掉的同一形态。测试文件里 `stalePrompt` 夹具之所以被丢弃，只是因为它的前一条样本 b2 与 b4 prompt 相同；把 b2 换成更大的 prompt（前任记录）就绕过了。`CHANGELOG.md:26`、`docs/handoff.md:86-87`、`threshold.ts:198-200`（"that pair is the case the minimum already skips on its own"）和 design §10 ⑤（"只有在它前面还有一条可参照样本时才被第 2 条规则捕获 —— 真实交接里前任记录就在前面"）都把这个形状说成安全/已覆盖，实际上它恰是未覆盖的形状。
+
+建议：按 design §5.3 用记录自己的前缀重算 `chars`（真正修法，见下条），或至少把「prompt 缩小的区间」登记为新残余并删掉“真实交接已覆盖”的断言；若要保留豁免作为 fail-closed 回避，必须在 design 里明说这是有意的 fail-open 取舍。
+
+### I-2（important，fail-open）`chars` 走 raw `buildContextEntries` 而非 pi 的投影，`context_edit` 缩短/删除内容后读数低
+
+`extensions/project-context/handoff/threshold.ts:216-217` 与 `:226-231`
+
+现象：pi 真正发给 provider 的是 `buildSessionProjection().messages`（`agent-session.js:425/432`，`session-manager.js:256` 对 `targetId` 应用 `replacement`），而 `measureContext` 走 `buildContextEntries` + `sessionEntryToContextMessages`，**不应用 context_edit**。一条把 100,000 字符消息缩成 4 字符（或 `replacement:null` 删除）的编辑之后，后续记录的 `chars` 仍含原文，`prompt−chars/8` 大幅落到 B 之下。区间规则也拦不住：`chars` 没长（Δchars≈0/负），且编辑条目会置 `split=true`。
+
+最小复现：`laneA-adversarial.mjs` CE-1/CE-2（target 100k 字符，编辑后记录 prompt=17,768/17,766，B=17,766）⇒ `baseline=5,267 / 5,266`，低约 12,500。用 pi 自己的函数直接对拍：同一分支 `buildSessionProjection` 的消息估算是 **2**，raw 估算是 **25,001**（我实跑确认）。旧代码同值 ⇒ 洞本身是既有的，但 `CHANGELOG.md:23` 与 `docs/handoff.md:87` 声称「分支被编辑 ⇒ 丢弃而不是夹取」，这个承诺对缩短/删除编辑是假的。
+
+方向：fail-open。建议：与 I-1 同根——对每条记录用 `buildSessionProjection(entries, record.id)`（或等价地逐记录投影）算前缀；若性能上不做，就把它登记为残余并把“分支被编辑已覆盖”的文案删掉。
+
+### N-1（nit）`absurd` 夹具的 `!calibrated` 已成同义反复，且 `rate > RATE_MAX` 半边无人覆盖
+
+`tests/handoff-test.mjs:1645-1648`、`threshold.ts:275`。`samples=1` 时 `rates` 为空、`rate` 必为 4，`!calibrated` 恒真；该夹具现在只测区间规则，标签 “an implausible delta is not a calibration” 名不副实。实测：只删 `rate > RATE_MAX` 子句 => **0 条 FAIL**；只删 `rate < RATE_MIN` => 2 条 FAIL（denseRead 与后缀）。也就是说 >8 chars/token 的取值带上半边已结构性死代码（区间规则对可校准对先一步保证 Δchars ≤ 8Δprompt），发布面却仍把它写成一道在用守卫。建议：把该断言改名/重指（或注明上半边由区间规则替代），避免下一轮把它当成真覆盖。
+
+### N-2（nit）新 4c 注释的算术写错
+
+`tests/handoff-test.mjs:1620`：`17,866 - 50,000/8 - 500 = 12,016` 应为 `18,766 − 50,000/8 − 500`；且考虑 `b2/b4` 的 "ok" 回帖 1 token，未加守卫的实际读数是 12,015（`ceil(54,004/8)=6,751`）。图像注释里的 17,264 我也复现为 17,266（R3 夹具差 2）。本仓对夹具算术一贯要求精确，建议订正。
+
+### N-3（nit）R4 报告声称 N-2（残余③措辞）已改，但 design 里没有
+
+`review-report.md:188` 说“残余③表述改为「直到出现更小 bound 的记录（活树实测 record 0–3）」”，但 `design.md:141` 仍是「③ 首回合只有 predecessor 重放记录时读虚高（R2 已登记，A 未改变它）」，`design.md:163` 还写「既有残余 ①②③ 不变」；该新措辞在全仓注册性文件里不存在（只有 review-report 自己是这么说的）。`below-quality-knee` 拒绝句的修复是真的、已验。建议：要么更新 design §9 ③，要么更正报告。
+
+### N-4（nit）`docs/architecture.md:193` 的摘要仍只说 “system 消息不计入被减量”，未提图像块从 `chars`/`estimated` 中去掉，与 `docs/handoff.md:83` 的口径不一致。
+
+---
+
+## 三、我无法独立验证的点
+
+1. **真实 provider 的 chars/token 带**：本机无离线 tokenizer，>8 chars/token 的稀疏内容（长空白/重复串）以及图像真实 token 成本只能引用 pi 自己的 `ESTIMATED_IMAGE_CHARS` 注释与常识，无法实测。
+2. **I-1/I-2 两条 shrink 形状在现场是否真的发生**：三条会话都没有该形状（活树的 predecessor 记录都读高，local 记录在重放之后计费）；我复现的是文件级形状，无法复现产生顺序的真实并发/时序。
+3. **活树 52,151 距当前真值的量与符号**：没有 provider 直报，报告的「真值≈40k、高读≈+12k」只能信推算。
+4. **context_edit 缩短编辑的现实可达性**：我用 pi 的 `appendContextEdit`/`buildSessionProjection` 确认了机制与数值影响，但没找到一个现场/扩展流程会实际产生“缩短大消息”的编辑（活树 8 条都是对空 assistant 的 omit）。
+5. **多 provider 的 usage 记账归一化**（`input` 是否已含 `cacheRead` 等）未在真机验证。
+
+---
+
+零写声明：`/tmp/pi-context-rev10` 的生产文件 md5 与 `git show HEAD:` 逐位一致（`threshold.ts cfb86c00…`、`handoff-test.mjs d28e9312…`），`git status` 与开始时相同（仅 `.agents/memory`）；全部夹具/变异脚本在 `/tmp/laneA-r4/`（`laneA-fixtures.mjs`、`laneA-adversarial.mjs`、`laneA-sessions.mjs`、`laneA-mutate.sh`），变异后 MD5 恢复校验全部通过。
