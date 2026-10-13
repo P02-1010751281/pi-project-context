@@ -8,7 +8,7 @@
 | 轮 | 修订 | 判定模型 | verdict | blocking | important | 性质 |
 |---|---|---|---|---|---|---|
 | R1 | `466ebcd` | `deepseek/deepseek-flash`（thinking high） | CHANGES-REQUESTED | 0 | 2 | 新引入的 fail-open（单一 rate 套异质分支时 min 可读到 0）+「无 usage 记录逐字节等价」不成立（`plain` 漏掉非 message 条目） |
-| R2 | 待冻结 | — | — | — | — | 修复轮后再开一轮 |
+| R2 | `d2e3e82` | `deepseek/deepseek-flash`（thinking high） | CHANGES-REQUESTED | 0 | 1 | 守卫只认 `scaled <= 0`，异质前缀在 `0 < scaled < 真值` 整段仍低读（20k ASCII 前缀 ⇒ 3,736；25.2k ⇒ 106 < 物理下限 11,021） |
 
 R1 抄本：`baseline-residual-review-round1-independent.txt`；提示词：`baseline-residual-review-round1-prompt.txt`。
 沙箱：`/tmp/pc-baseline-review1`（`cp -a` 自 `466ebcd`），零写入证明：`git status --porcelain -uall` 与 `find … stat` 两次快照 diff 均为空
@@ -51,3 +51,42 @@ R1 抄本：`baseline-residual-review-round1-independent.txt`；提示词：`bas
   回执忽略 rate 1、自己消息计入自己 2、去掉状态行后缀 1、**去掉过度修正守卫 1**、**非 message 条目不进估计 1**、**未校准分支谎报 4.0 1**。
 - 全套 15 项测试连绿（多次），记录数字按实测口径订正。
 - R1 的 PASS 不覆盖修复后的修订 ⇒ **修复轮必须自己再开一轮**（R2），冻结候选为修复提交。
+
+## R2（冻结 `d2e3e82`）— 修复轮之后的复验
+
+判定：CHANGES-REQUESTED，**0 blocking / 1 important（I-1）**。抄本 `baseline-residual-review-round2-independent.txt`。
+审查员逐字节复现了两条 R1 修复的闭合（异质 60k 夹具 0 → 17,766；compaction 无 usage 59,000 → 57,000，且与 `3bafa26` 旧公式逐字节相同，
+`branch_summary` / `custom_message` 同样吻合），并确认守卫对**同质**会话零影响（rate 2.5/3.5/4/1.2 四个夹具在"有守卫/去守卫"两种代码下读数一致）。
+
+**I-1（important，同类 fail-open 未闭合）**：`threshold.ts` 的过度修正守卫只处理 `scaled <= 0`。当前缀比校准窗口**稀疏**（ASCII 前缀 + CJK 尾）而 `scaled`
+落在 `(0, 真值)` 区间时，既不触发守卫、又低读：
+
+| 夹具（真值 17,766） | 读数 |
+|---|---|
+| ASCII 60,000 字符 + CJK 尾 | 17,766（守卫触发，R1#1 闭合）|
+| ASCII 20,000 字符 + CJK 尾 | **3,736** |
+| ASCII 25,200 字符 + CJK 尾 | **106**（低于物理下限 11,021）|
+| 同一分支去掉 CJK 尾 | 17,766 |
+
+同一支分支加上尾巴反而塌掉 17.6k —— 正是本 issue 要修的「baseline 随分支漂移」的反向复现。`CHANGELOG:26` 的「会高读、不会低读」与
+`design.md` 的「只高不低」只对 `scaled <= 0` 成立，**对 `0 < scaled < 真值` 不成立**（措辞已在 `design.md` §3 收窄为"只对可信样本成立"，
+但 I-1 说明"可信"的判据本身不完整）。
+
+根因（审查员的 learning，值得留档）：**单向守卫修不了双向误差** —— 把"过度修正"等同于"残差被夹到 0/转负"，漏掉了"过度修正但残差仍为正"的连续区间；
+修一个符号缺陷前应先把出错量的**值域**画出来再定守卫形状。单个会话级 rate 只对与其同率的前缀有效。
+
+**待 operator 决定（本报告停在这里，未取 PASS）**：
+- **A. 重构成"锚点 + 精确增量"**（推荐）：两条 prompt 之差就是两者之间新增消息的**真实 token 数**（provider 自己数的，无估计），所以
+  `T_i = T_anchor + ΣΔprompt`；只有锚点（首条记录之前的内容）需要估计，取 `chars/8`（取值带允许的最稀内容）作为**下界**，于是每个读数都
+  ≥ 真值（可证：`须 r_anchor <= 8`），代价是 dense 锚点上最多高读 `chars*(1/r - 1/8)`，**以首条消息的字符数为界**（不再随分支增长）。
+  这套去掉守卫、min 的角色也缩小，净代码量与现在相当或更少。
+- **B. 接受现状 + 收窄措辞与残余**：把 I-1 登记为残余（现 R1–R7 未覆盖），明确写"baseline 可低读到物理下限之下，仅当前缀与校准段同率时不发生"，
+  并把状态行改成能自证"这次读数是否可信"。**不推荐**：fail-open 方向（过早起跳）不该只靠文档兜。
+
+**R2 的其它 finding（都便宜，等决定后一并处理）**：N-1 契约数仍差 1（实测 18，三处写 17）；N-2 状态行在"校准为真但赢家走了 chars/4 回退"时仍
+谎报 rate（应记 `fellBack`）；N-3 compaction 契约的期望值用的是模块自己的输出，改成 `+= 2 * estimateTokens` 后**仍绿** ⇒ 需加绝对常数钉
+（`|summaryOnly.estimated - 2_000| <= 2`）；S-1 `scaled === 0` 边界无覆盖；S-2 `RATE_PAIRS` 窗口无契约；S-3 `atRate` 取整方向无契约；
+S-4 `run.ts` 每条 status 行重复走 4–5 次全量 walk（非本轮回归，登记即可）。
+
+**R2 新登记的残余（RR）**：RR-1 I-1 本身（若选 B）；RR-2 状态行无法区分"赢家走了 chars/4 回退"；RR-3 全样本都被过度修正时退回 chars/4 的 min
+（60k 夹具 17,766 vs 旧公式 42,897 ⇒ 不会复现原始缺陷，但属 fail-closed 侧，需点名）；RR-4 S-1..S-3 的覆盖缺口。

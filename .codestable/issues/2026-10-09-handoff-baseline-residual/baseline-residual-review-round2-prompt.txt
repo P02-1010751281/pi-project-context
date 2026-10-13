@@ -1,0 +1,40 @@
+# Lane A 独立审查 — 冻结修订 `d2e3e82`（issue `2026-10-09-handoff-baseline-residual`，第 2 轮）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pc-baseline-review2`（= `d2e3e82` 的逐字节副本，**只读**）。
+**判定模型**：`deepseek/deepseek-flash`（thinking `high`）。
+**硬规则**：不得写入该工作区；不得 `git add/commit/checkout/stash/reset/clean`；要跑测试或变异，先复制到你自己的 `/tmp/<目录>` 再跑。
+
+## 范围与背景
+
+第 1 轮（冻结 `466ebcd`）给了 CHANGES-REQUESTED / 0 blocking / 2 important，本轮是修复后的**复验**：
+- diff `466ebcd..HEAD`（修复 + 记录订正）与 `3bafa26..HEAD`（整个实现）。
+- 报告与残余登记：`.codestable/issues/2026-10-09-handoff-baseline-residual/review-report.md`（含 R1–R7）；
+  现场事实在 `brief.md` / `probe-true-baseline.md` / `baseline-attribution-experiment.md`；设计在 `design.md` §8/§9。
+- 第 1 轮的 2 个 important：① 会话级单一 rate 套到**异质分支**上时，过度修正的样本残差被夹到 0，而 0 必赢 `min` ⇒ baseline=0（fail-open）；
+  ② 「无 usage 记录逐字节等价」不成立：`plain` 漏掉非 message 条目（compaction summary 等）。修复应把 ①的样本回退到历史 chars/4 残差、②把非 message 条目计入 `plain`。
+
+## 你要独立验的
+
+1. **两条修复是否真的闭合**：自己造第 1 轮那两个夹具（异质 ASCII 首块 + CJK 尾部；compaction + 无 usage），独立复现修复前后的读数。
+2. **修复有没有引入新的面**（对抗性 pass，假设 bug 就藏在这次修复里）：
+   - 守卫（`scaled > 0 ? scaled : max(0, prompt - plain)`）是否会在**正常**（非异质）会话上把读数改坏或改回旧的高读？
+   - **全部样本都被过度修正**时会怎样？会不会退回旧公式的高读（即本 issue 要修的原始缺陷复现）？若是，这算 R1 已登记，还是该改代码？
+     状态行在这个状态下的措辞是否诚实？
+   - 非 message 条目计入 `plain` 后，`samples===0` 的 fallback 是否真的与旧公式逐字节相同（自己用 `git show 3bafa26:…` 对照，含 `branch_summary` / `custom_message` 条目）？
+   - 有没有新的 fail-open（baseline 被读小 ⇒ 过早起跳）或 fail-closed（读大 ⇒ 该起跳不起跳）？
+3. **3 条新契约是否诚实**：异质分支那条（真值 17,766）、compaction 那条（含"夹具真注册了该条目"的合取）、未校准后缀那条。
+   期望值是否独立可推、还是把实现输出抄成期望？有没有断言恒真？
+4. **变异矩阵**：作者记录为 11 条全部变红（计法 `node tests/run-all.mjs` 的 `^FAIL ` 行：取最后一条 2、`totalTokens` 1、rate 固定 4 7、
+   去取值带 3、退 fallback 减法 9、回执忽略 rate 1、自己消息计入自己 2、去状态行后缀 1、去过度修正守卫 1、非 message 条目不进估计 1、未校准谎报 4.0 1）。
+   请至少自造 **3 条作者没列出的**变异（例如把守卫改成 `scaled >= 0`、把回退分支换成 `Math.max(0, prompt - estimated)` 之外的第三种写法、
+   把 `min` 里的比较改成 `<=`、把 rate 窗口 `RATE_PAIRS` 改掉、把 `plain` 的累加顺序改掉），报你自己的红数；全绿的变异是 finding。
+5. **记录准确性**：`CHANGELOG.md` v0.4.10 节、`design.md` §8/§9、`review-report.md` 的每个数字与措辞（含 15/17 条契约口径、11 条变异红数、
+   "逐字节不变"、4 处调用点、`17,766`/`17,769`）与代码、与你自己的复现是否一致。
+6. **残余登记是否恰当**：R1–R7 是否覆盖你找到的东西，有没有哪条其实应该在本轮修而不是登记。
+
+## 输出格式
+
+`blocking` / `important` / `nit` / `suggestion` / `learning` / `praise` / `residual-risk` 分节；每条给 `file:line`、影响与**最小修法**
+（新机制必须先引 issue 的现场事实，否则只能进 `residual-risk`）。`## Test And QA Focus` 附命令与结果（全套 `node tests/run-all.mjs` 只跑一次，
+变异用 `node tests/handoff-test.mjs` 省预算）。末尾一行 `VERDICT: PASSED` / `CHANGES-REQUESTED` / `BLOCKED`。
+**独立判断，不要继承第 1 轮结论**；找不到新的 fail-open 或误触发就明确说"这一类未再发现"并给 PASSED。"可以更严"属 `residual-risk`/`suggestion`。

@@ -1,0 +1,87 @@
+## Lane A 独立审查 — 冻结修订 `d2e3e82`（第 2 轮）
+
+我按提示词要求，把 `d2e3e82` 复制到 `/tmp/rev2` 与 `/tmp/rev466`（前者 HEAD 修复后，后者供对照的 `466ebcd`）后独立复现。工作区 `/tmp/pc-baseline-review2` 全程只读（`threshold.ts`/`handoff-test.mjs` 的 md5 与我的副本逐一相同，且与 `git show HEAD:` 一致）。两条 R1 important 我都能独立复现修复前后读数；但对抗性 pass 找到了一个**同类 fail-open 仍未被守卫关住**，故本轮给 CHANGES-REQUESTED。
+
+---
+
+## blocking
+无。
+
+## important
+
+**I-1 `threshold.ts:216` — 过度修正守卫只认 `scaled <= 0`，符号为正但仍被 rate 过度修正的样本会继续把 `min` 拉到物理下限之下（与 R1#1 同类，修复未闭合）**
+
+- 现场事实可推：`probe-true-baseline.md` 实测物理下限 **≥ 11,021**（隔离 ctl，无注入块）/ **17,766**（本仓含注入块）。baseline 读成三位数物理上不可能，与 R1#1「baseline 不可能是 0」同一条现场依据。
+- 独立复现（自造夹具，ASCII 前缀 + CJK 尾；夹具用法与作者 1c 同构，只把 ASCII 首块从 60,000 改成 ~20k–25k）：
+  - `ascii=60_000`（作者的夹具）：`scaled = 32766 - 57143 < 0` → 守卫生效 → `baseline=17766` ✅
+  - `ascii=20_000`：`scaled = 22766 - 19030 = 3736 > 0` → **守卫不触发** → `baseline=3736`
+  - `ascii=25_200`：`baseline=106`；`ascii=24_000`：`baseline=947`
+  - 同一支分支**去掉 CJK 尾**时该模块报 `17,766`；**加上 CJK 尾**反而塌到 `106`。分支增长只能让真值基线不变，读数却掉 17.6k——正是本 issue 要修的「baseline 随分支漂移」的反向复现。
+- 根因：`atRate(plain)=chars/rate` 只对**与校准窗口同率**的前缀有效。当前缀比校准段更稀（ASCII，r≈4）而尾段更密（CJK，rate≈1.05）时，`scaled = prompt - chars/rate` 可以落在 `(0, baseline_true)` 区间，既不触发守卫、又低读。CHANGELOG:26 的「会高读、不会低读」与 design.md:39/112 的「只高不低」只对 `scaled ≤ 0` 成立，对 `0 < scaled < 真值` 不成立。
+- 最小修法（二选一，须先落一条会红的契约）：
+  1. 新增契约：`ascii≈25_200 + CJK 尾` 的夹具必须 `baseline >= 11_021`（或 `>= prompt - plain`）；现实现会红。
+  2. 代码侧：不允许一个「其前缀未被任何 rate 校准 delta 覆盖」的样本独自推动 `min`（例如要求样本所在段与校准段同率，或退到 design §5.1 已写过的「最早一条」语义），至少让守卫覆盖 `0 < scaled < chars/4 残差` 的整段，而不是只看符号。若判定这是可接受的取舍，也必须把这条写进残余登记并把「只高不低」改成有范围的措辞——当前两处都没有。
+
+## nit
+
+- **N-1 记录数字仍差 1**：`CHANGELOG.md:37`、`design.md:109`、`review-report.md:24` 写「本轮后 17 条」。用同一条被引用的命令实测：`git diff 3bafa26..HEAD -- tests/handoff-test.mjs | grep -c '^+.*check('` = **18**（`3bafa26..466ebcd` = 15，`466ebcd..HEAD` 正好 +3；末节运行时 `OK/FAIL` 行 466ebcd=212 → HEAD=215）。最小修法：三处改 18。
+- **N-2 状态行在「校准为真但赢家走了 chars/4 回退」时仍谎报 rate**：`threshold.ts:249-253`。60k 异构夹具输出 `· baseline 17.8k (1.1 c/t, best of 3)`，而赢家样本的残差其实用的是 chars/4 回退，不是 1.1 c/t。R1#3 只修了 `samples>0 && !calibrated` 那一支；`calibrated=true` 但守卫触发的支仍无标记。最小修法：`ContextSample` 记一个 `fellBack`，赢家 `fellBack` 时后缀写 `(chars/4 fallback, <rate> c/t best of n)`。
+- **N-3 compaction 契约可被「双计非 message 条目」蒙混**：`tests/handoff-test.mjs:1431-1432` 的期望值 `20766 - summaryOnly.estimated - 1000` 用的是模块自己的输出，两边同步缩放 ⇒ 我把非 message 条目 `+= estimateTokens` 改成 `+= 2 * estimateTokens`（我的 M7）后该 check **仍绿**。`>= 1500` 合取只证明「至少算了一次」，不钉「恰算一次」。最小修法：加绝对钉 `Math.abs(summaryOnly.estimated - 2_000) <= 2`。
+
+## suggestion
+
+- **S-1 补边界契约**：作者契约只覆盖 `scaled<0`。加一条 `scaled===0` 的样本（或直接断言 `residual` 在 `scaled<=0` 时取 chars/4）——我的变异 `scaled > 0` → `scaled >= 0`（M1）全绿，说明恰好归零的边界无覆盖。
+- **S-2 钉住 rate 的窗口**：`RATE_PAIRS` 5→1 全绿（M4），中位数窗口大小无契约。若 5 是有意设计，加一条「>5 个 delta 时取最近 5 个中位」的纯函数契约。
+- **S-3 钉住 `atRate` 的取整方向**：`Math.ceil`→`Math.floor` 全绿（M6），±1 被 ±2 容差吃掉。
+- **S-4 `run.ts` 每次 status 行重复走分支**：`run.ts:57` 调一次 `measureContext`，`resolveThreshold`/`thresholdRefusal`/`thresholdRefusalText` 各自再经 `baselineTokens` 调一次，长会话下是 4–5 次全量 walk。非本轮回归（旧 `baselineTokens` 也多次调用），登记即可。
+
+## learning
+
+- 单向守卫修不了双向误差：把「过度修正」等同于「残差被夹到 0 / 转负」，漏掉了「过度修正但残差仍为正」的整段连续区间（本例 0–~25,295 字符）。修一个符号缺陷时，应先把出错量的**值域**画出来再决定守卫形状，而不是只处理报错的那个点。
+- 「模块输出当期望值」的契约在误差同向缩放时恒真（N-3）；纯函数契约里凡是拿被测模块的一个输出进期望，都应配一条绝对常数钉。
+
+## praise
+
+- 两条 R1 important 的修复我都能逐字节复现闭合：异构夹具 `466ebcd=0` → HEAD `17,766`（idx 0）；compaction 无 usage `466ebcd=59,000` → HEAD `57,000`，且与 `3bafa26` 旧公式（`flatMap(sessionEntryToContextMessages)` 全条目求和）**逐字节相同**；`branch_summary`、`custom_message` 同样吻合，`model_change/thinking_level_change/custom/label/context_edit` 经 `sessionEntryToContextMessages` 返回 0 条，非 message 的 `plain +=` 不引入虚假 token（我逐类型验证过）。
+- 守卫对**正常（同质）**会话零影响：4 个同质夹具（rate 2.5/3.5/4/1.2）在「有守卫」与「去掉守卫」两种代码下读数完全一致（40,001/40,000/40,003/40,000）。
+- 去掉守卫 / 非 message 不进估计 / 未校准谎报 4.0 三条新契约各恰好红 1，条目定位准确。
+- 未校准后缀 `chars/4, no usable delta, best of n`（`threshold.ts:252-253`）确实比旧措辞诚实，R1#3 闭合。
+
+## residual-risk
+
+- **RR-1（与 I-1 同源，未登记）**：R1–R7 里 R1 只写了「rate 超带退化为 4 ⇒ 极密样本偏高」（over-read/fail-closed）；design §5.1 承认过 `min` 会「略低」并「提前交接」，但既没写进残余列表，也没有 I-1 这个「17,766→106」量级。R1–R7 未覆盖 I-1；若 operator 选择不修代码，必须新增一条残余并收窄 design.md:39/112 与 CHANGELOG:26 的措辞。
+- **RR-2**：状态行无法区分「赢家走了 chars/4 回退」与「赢家按 rate 读」（N-2），现场自证因此少一档。
+- **RR-3**：全部样本都被过度修正时退回 chars/4 的 `min`（不是历史末点高读：60k 夹具 17,766 vs 旧公式 42,897），因此不会复现本 issue 的原始缺陷；但这是 fail-closed 侧，且 design.md:39 的「只高不低」对该状态之外不成立。属「接受取舍」即可，但需在残余里点名。
+- **RR-4**：N-1/N-3 之外的变异绿点见 S-1..S-3；这些是覆盖缺口，不是行为缺陷，登记为 `residual-risk` 更合适。
+
+---
+
+## Test And QA Focus
+
+全套只跑一次（在 `/tmp` 副本上）：
+```
+cd /tmp/rev2 && node tests/run-all.mjs
+→ repo hygiene ×2 ok；autolearn/aux-model/call-policy/consolidation/context-schema/external-edit/handoff/index/loadtest/memory-budget/memory-ops/registration/sections/switches/sync ... ok
+→ All 15 tests passed.
+```
+运行时契约数（`node tests/handoff-test.mjs | grep -cE '^(OK|FAIL) '`）：`466ebcd` = **212**，HEAD = **215**（+3）。
+契约计数（题面口径）：`git diff 3bafa26..466ebcd -- tests/handoff-test.mjs | grep -c '^+.*check('` = 15；`3bafa26..HEAD` = **18**（记录写 17）。
+
+我独立造的两个 R1 夹具 + 边界扫描（`node tests/probe/baseline-probe.mjs`、`mixed-boundary.mjs`、`normal-guard.mjs`，用 harness 真加载 `threshold.ts`）：
+
+| 夹具 | 466ebcd | HEAD | 备注 |
+|---|---:|---:|---|
+| 异构 60k ASCII + CJK（真值 17,766） | baseline 0 | 17,766 | R1#1 闭合 |
+| compaction 无 usage | 59,000 | 57,000 | = 旧公式，R1#2 闭合 |
+| branch_summary / custom_message 无 usage | 59,000 | 57,500 / 57,750 | = 旧公式 |
+| **异构 20k ASCII + CJK（真值 17,766）** | — | **3,736** | **fail-open，守卫不触发** |
+| **异构 25.2k ASCII + CJK** | — | **106** | **低于物理下限 11,021** |
+| 同质 rate 2.5/3.5/4/1.2 | 40,001/… | 同 | 守卫无影响（与去掉守卫逐值相同） |
+
+变异（`node tests/handoff-test.mjs`，`^FAIL ` 行；作者口径是全套，我按题面用单文件省预算）：
+- 复现作者 11 条：A1 取最后一条 2、A2 `totalTokens` 1、A3 rate 固定 4 7、A4 去取值带 3、A5 退 fallback 减法 7（其余 2 条在既有端到端文件，故全套 9）、A6 回执忽略 rate 2（我改的是 `contextTokensAtRate`，作者改 `run.ts` 得 1）、A7 自己消息计入自己 2、A8 去状态行后缀 4（我整函数返回空串，作者只删 append 得 1）、A9 去守卫 1、A10 非 message 不进估计 1、A11 未校准谎报 4.0 1 ⇒ **11 条全部变红**，与「全部变红」一致。
+- 我自造 6 条：`scaled>=0`(M1) **0**、回退 `-1`(M2) **0**、`min` 用 `<=`(M3) **0**、`RATE_PAIRS=1`(M4) **0**、非 message 只累加首条(M5) **0**、`atRate` 用 `floor`(M6) **0**；另加「非 message 双计」(M7) **0**。全绿即覆盖缺口（S-1..S-3、N-3），其中 M1/M5 与守卫同族、最值得补。
+
+零写入证明：`/tmp/pc-baseline-review2` 的 `threshold.ts`=3d887e70…、`handoff-test.mjs`=1786c572…，与我最初复制及 `git show HEAD:` 全同；工作区只读，未执行任何 `git add/commit/checkout/stash/reset/clean`。
+
+VERDICT: CHANGES-REQUESTED
