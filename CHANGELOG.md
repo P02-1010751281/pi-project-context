@@ -26,6 +26,13 @@
   prompt 缩小的区间不检查 —— 交接继承的前任记录就是大 prompt 对小 prompt，那正是 `min` 本就会跳过的情形。本轮登记的两条残余
   （④ 偏稀疏锚点：>8 chars/token 的长空白/重复串出现在**首条**样本里仍会低读；⑤ 陈旧锚点：一条记录自身的 prompt 相对其存储前缀已陈旧时
   文件无法自证，只有在它前面还有可参照样本时才被上一条规则捕获）与既有 ①②③ 见 `.codestable/issues/2026-10-09-handoff-baseline-residual/design.md` §9/§10。
+- **`chars` 按 pi 的投影算，而不是原始条目列表**（第 4 轮独立审查的 important I-2，fail-open）：provider 收到的是
+  `buildSessionProjection` 的投影，而 `context_edit` 会改写它目标消息的内容（或整条删掉）；按原始条目累加时，一条被缩短或删除的
+  100,000 字符消息仍在 `chars` 里 ⇒ 后续记录的读数落到 **5,268**（真值 17,766）。现在在编辑条目出现的位置**就地改写**目标条目的贡献
+  （编辑之前的记录仍按原文计算），并镜像 pi 投影的另两条语义：compaction 只发最新一条的 summary（更靠后的记 0）。
+- **区间一致性规则的边界写清并钉住**（第 4 轮独立审查的 important I-1）：prompt 缩小时不检查是**有意**的 fail-open 取舍 ——
+  交接继承的前任记录是大 prompt 对小 prompt，丢掉本地记录会把 baseline 钉在前任的 131k 上（正是本 issue 要修的静默关闭）。
+  代价是一条记录自身的 prompt 相对它存储的前缀已陈旧、且前面只站着更大的前任 prompt 时仍会读低（残余⑤；测试把该形状钉住）。
 - **system 消息不再进入被减的估计量**：pi 的 `estimateTokens` 对 system 消息已经算了 `content + sections + toolsAdded`，
   把它计入被减量等于把工具 schema 与系统提示从 baseline 里减掉：隔离探针实测低读 **9,881**（真值 17,753），活树会话低读 **25,823**。
   这也排除了「直接用 pi 的 system 估算当 baseline」这条路：两个沙箱的 system 估算几乎相同（9,881 / 9,882）而真值差 6,745 ——
@@ -45,10 +52,11 @@
   复现，非本改动引入），现在与 `MEMORY.md` 一样走 `waitUntil`。
 
 变异矩阵（计法：`node tests/run-all.mjs` 的 `^FAIL ` 行；**本版新增或改写**的断言每条都有只改一处的补丁把它变红，
-其余断言的覆盖情况见 review-report）：system 重新计入估计（message 分支）红 2、上界退回 rate 缩放红 7、`min` 改 `max` 红 8、
-去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、compaction 条目的 `systemMessage` 计入估计红 1、后缀不写回执口径红 1、
-图像字符重新计入估计红 1、去掉区间一致性规则红 2。末节现有 28 条 `check(`；C+A 一轮相对其父提交新增或改写 7 条，
-本轮（图像 + 区间一致性）再加 2 条（`git diff 3abd207 -- tests/handoff-test.mjs | grep -c '^+.*check('` = 2）。
+其余断言的覆盖情况见 review-report）：system 消息重新计入估计红 3、上界退回 rate 缩放红 8、`min` 改 `max` 红 9、
+去掉「记录不及其自身密度下界 ⇒ 不是测量」红 1、后缀不写回执口径红 1、图像字符重新计入估计红 1、去掉区间一致性规则红 1、
+忽略 `context_edit`（用原始前缀）红 1、去掉 rate 带下半红 3。两处 system 计入点在第 4 轮修复里合并成一个 `messageTokens`
+（两条断言合成一条变异），`rate > RATE_MAX` 那条过滤在样本路径上不可达（区间规则已推出 `rate ≤ RATE_MAX`）⇒ 删除、只保留下半。
+末节现有 30 条 `check(`。
 
 ## v0.4.9 — 2026-10-08
 

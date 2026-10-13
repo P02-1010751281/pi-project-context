@@ -273,6 +273,11 @@ export function messageEntry(id, role, text, timestamp) {
 	return contentEntry(id, role, [{ type: "text", text }], timestamp);
 }
 
+/** A `context_edit` entry: pi applies its `replacement` (or drops the target when null) to the provider view. */
+export function contextEditEntry(id, targetId, replacement, timestamp) {
+	return { type: "context_edit", id, parentId: null, timestamp, targetId, replacement };
+}
+
 /** Session entry with explicit content blocks (tool calls, tool results, images, ...). */
 export function contentEntry(id, role, content, timestamp, parentId = null) {
 	return {

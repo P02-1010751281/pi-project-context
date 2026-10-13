@@ -190,7 +190,8 @@ extensions/project-context/
 ├── handoff/                # ④ 交接（无 LLM）
 │   ├── run.ts              #    交接事务、自动触发、命令注册
 │   ├── threshold.ts        #    阈值：膝曲线与窗口末点两项、计价档位 cap、拒绝原因与护栏覆盖回执；baseline 对分支上每条 usage
-│   │                       #      记录取 `prompt − chars/8` 上界的最小值（system 消息不计入被减量），无记录时退回 pi 的 chars/4
+│   │                       #      记录取 `prompt − chars/8` 上界的最小值（chars 只计文本、按 pi 的投影应用 context_edit，
+│   │                       #      system 消息与图像块都不计入），无记录时退回 pi 的 chars/4
 │   ├── prompt.ts           #    续接提示与交接文档
 │   ├── language.ts         #    语言判定与提示词识别
 │   ├── text.ts             #    消息渲染与 replay 标记

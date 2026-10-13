@@ -199,3 +199,30 @@ prompt `baseline-residual-review-round3-prompt.txt`。零写证明：`git status
 现场复验（同一只读探针，三个真实会话）：probe 沙箱 **17,763**（真值 17,753）、ctl 沙箱 **11,018**（真值 11,008）、
 活树 `01a13385` **52,151**（35 样本、rate 3.22；前缀 `131,433 ×4 → 52,151` 非增）。三条会话「system 消息清零后读数不变（差 0）」
 ⇒ C 仍生效；R4 未移动任何现场读数（这三条会话无图像块）。
+
+## R5（本轮修复：R4 的 2 important + 4 nit —— 待独立审查）
+
+**改动**：`handoff/threshold.ts`（`editedMessages`/`messageTokens`：按 pi 投影就地改写 `context_edit` 目标、compaction 只计最新；
+区间规则边界注释与残余⑤措辞；rate 过滤去掉不可达的上半）、`tests/harness.mjs`（`contextEditEntry`）、`tests/handoff-test.mjs`
+（4c 算术订正、4d 残余⑤形状、4e context_edit、`absurd` 改钉 band 下半）、`CHANGELOG.md`、`docs/architecture.md`、design §9③/§10/§11。
+
+**逐条处置**：
+
+- **R4-I-2 修**：镜像 pi 投影（`context_edit` 就地改写、compaction index>0 记 0）⇒ 审查员夹具现读 **17,767**（真值 17,766；旧读 5,268）。
+  新契约 `a context edit shrinks the prefix the record was billed for`；变异「忽略 context_edit」红 1。
+- **R4-I-1 部分修 + 登记**：审查员夹具（更大前任 prompt + 重放 + 陈旧本地记录）由新契约 4d 钉为残余⑤形状
+  （`samples === 2`、`baseline < 17,766`），且 design §10 里「真实交接里前任记录就在前面 ⇒ 会被捕获」这句错误表述删除；
+  「prompt 缩小时不检查」在代码、CHANGELOG、design 三处写成**有意**的 fail-open 取舍（理由：丢掉本地记录会把 baseline 钉死在前任 131k 上）。
+- **N-1 修**：删除不可达的 `rate > RATE_MAX`（证明：接受样本已过区间规则 ⇒ `rate ≤ RATE_MAX`），`absurd` 夹具改钉下半
+  （4 条样本全在、无 pair 可校准）⇒ `!calibrated` 不再是 `rate === 4` 的同义反复。
+- **N-2 修**：4c 注释算术改为 `4,000 + 4 + 50,000 = 54,004`、`ceil(/8) = 6,751`、`18,766 − 6,751 = 12,015`。
+- **N-3 修**：design §9 残余③ 改为「直到出现更小 bound 的记录之前（活树 record 0–3 读 131,433、record 4 起 52,151）」。
+- **N-4 修**：`docs/architecture.md` 的 `threshold.ts` 摘要同步「chars 只计文本、按 pi 投影含 context_edit」。
+
+**验收**：`node tests/run-all.mjs` ⇒ All 15 tests passed（末节 30 条 `check(`）。
+变异矩阵（9 条，每个只改一处、跑后 MD5 恢复校验）：system 重新计入 **3**、上界退回 rate 缩放 **8**、`min`→`max` **9**、
+去掉自身密度下界判定 **1**、后缀不写回执口径 **1**、图像字符重新计入 **1**、去掉区间一致性规则 **1**、忽略 `context_edit` **1**、
+去掉 rate 带下半 **3**。
+现场三条会话读数不变：probe **17,763**（真值 17,753）、ctl **11,018**（真值 11,008）、活树 `01a13385` **52,151**
+（35 样本、rate 3.22、前缀 `131,433×4 → 52,151` 非增、system 清零差 0）——活树那 8 条 `context_edit` 都是对空 content 的
+`replacement: null`，对字符数无影响，所以投影修复不动现场读数。

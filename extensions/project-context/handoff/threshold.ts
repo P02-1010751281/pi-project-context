@@ -77,7 +77,9 @@ export interface ThresholdOverride {
  * lower bound accepts tokenizers that split CJK near one token per character (a pure-CJK message can sit below
  * 1.5); above the upper bound the delta is not a content delta (`cache` accounting, an unrelated request), so it
  * is not a sample. `RATE_MAX` carries the second job too: at 8 chars per token the sparsest allowed content
- * still costs `chars / RATE_MAX` tokens, which is the lower bound the physical floor's baseline is built on. */
+ * still costs `chars / RATE_MAX` tokens, which is the lower bound the physical floor's baseline is built on and
+ * the limit the interval rule enforces on every accepted delta (which is why the rate filter needs only its
+ * lower half). */
 const RATE_MIN = 1.0;
 const RATE_MAX = 8.0;
 /** Calibration deltas the rate's median is taken over, so one odd request cannot move it. */
@@ -112,6 +114,34 @@ function withoutImages(message: PiMessage): PiMessage {
  */
 function textEstimate(message: PiMessage): number {
 	return estimateTokens(withoutImages(message));
+}
+
+/** The text-only token estimate of a message list; system messages are pi's own components, not content. */
+function messageTokens(messages: readonly PiMessage[]): number {
+	let tokens = 0;
+	for (const message of messages) {
+		if ((message as { role?: string }).role === "system") continue;
+		tokens += textEstimate(message);
+	}
+	return tokens;
+}
+
+/**
+ * pi's own `projectContextEntry` (its `session-manager.js`): the messages a `context_edit` leaves behind.
+ * The projection this mirrors is what the provider is actually sent (`buildSessionProjection`), so the
+ * characters a record is charged with have to follow it rather than the raw entry list.
+ */
+function editedMessages(messages: readonly PiMessage[], replacement: { content?: unknown } | null): PiMessage[] {
+	if (replacement === null) return [];
+	return messages.map((message) => {
+		const role = (message as { role?: string }).role;
+		if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "custom") return message;
+		const content =
+			(role === "assistant" || role === "toolResult") && typeof replacement.content === "string"
+				? [{ type: "text", text: replacement.content }]
+				: replacement.content;
+		return { ...message, content } as PiMessage;
+	});
 }
 
 /** One assistant usage record on the branch, paired with the message content that precedes it. */
@@ -192,12 +222,18 @@ export interface ContextMeasure {
  *   baseline, so nothing is counted twice.
  * - A record measures an interval only when that interval is consistent with a constant baseline: given
  *   `B_p <= B_r`, `prompt_r - prompt_p = (B_r - B_p) + (T_r - T_p) >= chars_r / RATE_MAX - chars_p`. A record
- *   whose text grew faster than a **non-shrinking** prompt cannot have had that text billed - a predecessor
- *   replay inserted before it, an edited branch, or a non-text block heavier than the band allows - and is
- *   dropped rather than clamped (round 3's I-2, whose fixture read 12,016 where the truth is 17,766). A
- *   shrinking prompt is deliberately left alone: a handoff successor's predecessor record carries the whole
- *   predecessor prompt and the next local record a much smaller one, and that pair is the case the minimum
- *   already skips on its own (`samples` keeps both, and the local record wins).
+ *   whose text grew faster than a **non-shrinking** prompt cannot have had that text billed (a replay inserted
+ *   before it, a non-text block heavier than the band allows) and is dropped rather than clamped (round 3's
+ *   I-2, whose fixture read 12,016 where the truth is 17,766). A **shrinking** prompt is left alone on
+ *   purpose: a handoff successor's predecessor record carries the whole predecessor prompt and the next local
+ *   record a much smaller one, and dropping that local record would pin the baseline at the predecessor's
+ *   (150k in the test, 131k live) - the silent disable this issue is about. The price is a region the file
+ *   cannot judge: a *stale* local record whose prompt was billed before a replay landed, sitting behind a
+ *   larger predecessor prompt, still reads low (review round 4's I-1; residual ⑤ in the issue's design §10).
+ * - `chars` follows pi's **projection**, not the raw entry list: a `context_edit` rewrites its target's
+ *   messages (or drops them) and the provider is sent the edited text, so a message a user shortened or
+ *   deleted must stop counting (round 4's I-2: the un-edited prefix read 5,267 where the baseline is 17,766).
+ *   Records billed before the edit keep the old text, because the edit is applied where it appears.
  *
  * The cost is the emptiest record's own slack: the reading can sit up to `chars * (1/r - 1/RATE_MAX)` above the
  * truth, bounded by that record's content and no longer growing with the branch. That is the fail-closed side of
@@ -219,15 +255,35 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	 * deltas are all built on (see `textEstimate`). */
 	let plain = 0;
 	let split = false;
-	for (const entry of entries) {
+	/** Each entry's messages and their contribution to `plain`, so a `context_edit` can rewrite it in place. */
+	const seen = new Map<string, { messages: PiMessage[]; tokens: number }>();
+	for (const [index, entry] of entries.entries()) {
+		if (entry.type === "context_edit") {
+			// The provider saw the target's *edited* messages, so a message a user shortened or deleted must stop
+			// inflating `chars`: carrying the raw text read 5,267 where the baseline is 17,766 (review round 4, I-2).
+			// The edit is applied where it appears in the branch, so records billed before it keep the old text.
+			const target = seen.get(entry.targetId);
+			if (target) {
+				const messages = editedMessages(target.messages, entry.replacement);
+				const tokens = messageTokens(messages);
+				plain += tokens - target.tokens;
+				seen.set(entry.targetId, { messages, tokens });
+			}
+			// The prompt content changed under records that were billed before this edit, so a chars->tokens
+			// delta across it is not a content delta.
+			split = true;
+			continue;
+		}
+		const messages = [...sessionEntryToContextMessages(entry)] as PiMessage[];
+		// pi's projection sends the newest compaction's summary only: a compaction entry at a later index
+		// contributes no messages (its own `buildSessionProjection` maps those to `[]`).
+		const tokens = entry.type === "compaction" && index > 0 ? 0 : messageTokens(messages);
 		if (entry.type !== "message") {
 			// A compaction / branch summary / custom message is prompt content: the historical formula counted it,
 			// and skipping it here would push its tokens into the baseline and raise the floor. A compaction entry
 			// can also carry pi's `systemMessage`, which is a prompt component, not content (see the doc block).
-			for (const message of sessionEntryToContextMessages(entry)) {
-				if (message.role === "system") continue;
-				plain += textEstimate(message);
-			}
+			plain += tokens;
+			seen.set(entry.id, { messages, tokens });
 			// A compaction, context edit or model change invalidates a chars->tokens delta across it.
 			split = true;
 			continue;
@@ -236,11 +292,9 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		// counting the record's own reply would subtract tokens the provider never billed for it.
 		const plainBefore = plain;
 		let record: MessageUsage | undefined;
-		for (const message of sessionEntryToContextMessages(entry)) {
-			record = (message as { usage?: MessageUsage }).usage ?? record;
-			if (message.role === "system") continue;
-			plain += textEstimate(message);
-		}
+		for (const message of messages) record = (message as { usage?: MessageUsage }).usage ?? record;
+		plain += tokens;
+		seen.set(entry.id, { messages, tokens });
 		if (!record) continue;
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
 		if (prompt <= 0) continue;
@@ -272,7 +326,10 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		const deltaPrompt = newer.prompt - samples[i - 1].prompt;
 		if (deltaPrompt <= 0) continue;
 		const rate = (4 * newer.added) / deltaPrompt;
-		if (rate < RATE_MIN || rate > RATE_MAX) continue;
+		// Only the lower half needs checking: an accepted pair already passed the interval rule, which forces
+		// `4 * added <= deltaPrompt * RATE_MAX`, so `rate > RATE_MAX` cannot be reached through the sampler
+		// (review round 4, N-1: the upper half was unreachable and unpinned).
+		if (rate < RATE_MIN) continue;
 		rates.push(rate);
 	}
 	const recent = rates.slice(-RATE_PAIRS).sort((a, b) => a - b);

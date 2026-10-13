@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, contextEditEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
@@ -1616,9 +1616,10 @@ try {
 	// 4c. A record measures an interval only when that interval is consistent with a constant baseline: with
 	//     `B_p = B_r`, `prompt_r - prompt_p = T_r - T_p >= chars_r/8 - chars_p`. Here b3 (50,000 ASCII chars)
 	//     is a predecessor replay that landed *after* b4 was billed, so b4's prompt never grew: its own text
-	//     outgrew its prompt and the record is dropped instead of winning the minimum. Un-guarded, b4 read
-	//     17,866 - 50,000/8 - 500 = 12,016, which is the reviewer's round-3 I-2 number exactly. Mutation:
-	//     dropping the consistency rule reddens the `>= 17,766` conjunct.
+	//     outgrew its prompt and the record is dropped instead of winning the minimum. The arithmetic is exact:
+	//     the prefix is 4,000 + 4 + 50,000 = 54,004 chars, `ceil(54,004 / 8) = 6,751`, so the un-guarded read is
+	//     18,766 - 6,751 = 12,015 (the reviewer's round-3 I-2 fixture read 12,016 through its own prefix).
+	//     Mutation: dropping the consistency rule reddens the `>= 17,766` conjunct.
 	const stalePrompt = chain([
 		messageEntry("b1", "user", "y".repeat(4_000), stamp(0)),
 		billed("b2", "ok", { input: 18_766 }, stamp(1)),
@@ -1631,20 +1632,56 @@ try {
 		staleRead.samples === 1 && staleRead.sampleIndex === 0 && staleRead.baseline >= 17_766,
 	);
 
-	// 5. A delta that is not a content delta cannot calibrate: prompts that barely move while the text does
+	// 4d. The same shape with a *larger* predecessor prompt, which is the fail-open side review round 4 found:
+	//     the consistency rule is skipped when the prompt shrank, so a stale local record behind a predecessor
+	//     record still wins the minimum (12,015 against the 17,766 baseline) while the honest local record above
+	//     is caught. That is registered as residual ⑤ in the design, and this check pins the boundary rather
+	//     than the number: the honest sibling fixture 4c is caught, this one is not, and a fix that reconstructs
+	//     each record's billed prefix flips this assertion.
+	const staleBehindPredecessor = chain([
+		messageEntry("s1", "user", "y".repeat(4_000), stamp(0)),
+		billed("s2", "ok", { input: 131_433 }, stamp(1)),
+		messageEntry("s3", "user", "x".repeat(50_000), stamp(2)),
+		billed("s4", "ok", { input: 18_766 }, stamp(3)),
+	]);
+	const staleBehind = readOf(measureCtx(staleBehindPredecessor, "sample-stale-behind", 60_000));
+	check(
+		"a stale local record behind a larger predecessor prompt is the registered residual",
+		staleBehind.samples === 2 && staleBehind.sampleIndex === 1 && staleBehind.baseline < 17_766 && staleBehind.baseline >= 0,
+	);
+
+	// 4e. `chars` follows pi's projection rather than the raw entry list: a `context_edit` rewrites its target's
+	//     messages (or drops them) and the provider is sent the edited text, so a message a user shortened must
+	//     stop counting. Carrying the original 100,000-char message read 5,268 where the baseline is 17,766
+	//     (review round 4, I-2, whose own fixture read 5,267). Both numbers are exact: the edit leaves 5 chars
+	//     (pi's estimate 2), so `4 * 2 / 8 = 1` and 17,768 - 1 = 17,767; un-edited it is `4 * 25,000 / 8 =
+	//     12,500` and 17,768 - 12,500 = 5,268. Mutation: ignoring the edit entry reddens the equality.
+	const edited = chain([
+		messageEntry("e1", "user", "x".repeat(100_000), stamp(0)),
+		contextEditEntry("e2", "e1", { content: [{ type: "text", text: "short" }] }, stamp(1)),
+		billed("e3", "ok", { input: 17_768 }, stamp(2)),
+	]);
+	const editedRead = readOf(measureCtx(edited, "sample-edited", 60_000));
+	check(
+		"a context edit shrinks the prefix the record was billed for",
+		editedRead.samples === 1 && editedRead.baseline === 17_767 && editedRead.baseline >= 17_766,
+	);
+
+	// 5. A delta that is not a content delta cannot calibrate: the prompt grows 1,000 tokens per record while the
+	//    text grows 150 (a refreshed injected block, not content), so the implied ~0.6 chars/token sits below the
+	//    band and no pair calibrates. All four records stay measurements (the consistency rule's other direction,
+	//    `chars - chars_p <= (prompt - prompt_p) * 8`, holds), so `calibrated` and `samples` are separate facts
+	//    here rather than one restating the other. Mutation: dropping the band's lower half calibrates at ~0.6.
 	//    imply ~40 chars/token, so the band rejects every pair. Mutation: dropping the band reddens.
 	const absurd = [];
 	for (let i = 0; i < 4; i += 1) {
-		absurd.push(messageEntry(`x${i}u`, "user", "测".repeat(4_000), stamp(i * 2)));
-		absurd.push(billed(`x${i}a`, "ok", { input: 40_000 + i * 100 }, stamp(i * 2 + 1)));
+		absurd.push(messageEntry(`x${i}u`, "user", "测".repeat(600), stamp(i * 2)));
+		absurd.push(billed(`x${i}a`, "ok", { input: 40_000 + i * 1_000 }, stamp(i * 2 + 1)));
 	}
 	const absurdRead = readOf(measureCtx(chain(absurd), "sample-absurd", 50_000));
-	//     The consistency rule drops three of these four records as well - their text grows 4,000 chars per
-	//     100-token prompt step (40 chars/token, past the band), so they never measured this branch; the first
-	//     record is still a bound. Mutation: dropping that rule keeps all four and reddens `samples`.
 	check(
 		"an implausible delta is not a calibration",
-		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 1,
+		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 4,
 	);
 
 	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for
