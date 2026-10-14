@@ -1518,6 +1518,62 @@ try {
 		summaryWithSystem.estimated === summaryNoSystem.estimated &&
 			summaryWithSystem.baseline === summaryNoSystem.baseline,
 	);
+	// 1d-ter. pi invalidates a usage record billed at or before the newest compaction (`assistantIsFromBeforeCompaction`
+	//     in `agent-session.js`), and `firstKeptEntryId` keeps one such record in the branch: its prompt described the
+	//     pre-compaction branch while `chars` describes the projection the summary left behind, so it measures neither
+	//     prefix and must not enter the minimum (residual ⑥). Here the retained record billed 26,000 before a
+	//     80,000-character summary was made; its own bound would be `26,000 - 80,000/8 = 16,000`, i.e. 1,766 **below**
+	//     the 17,766 baseline, while the post-compaction record's bound is 28,265. Mutation: without the invalidation
+	//     the minimum keeps 16,000 (2 samples).
+	const compacted = readOf(
+		measureCtx(
+			chain([
+				summaryEntry("k0", "s".repeat(80_000), stamp(1)),
+				billed("k1", "ok", { input: 26_000 }, stamp(0)),
+				messageEntry("k2", "user", "y".repeat(4_000), stamp(2)),
+				billed("k3", "post", { input: 38_766 }, stamp(3)),
+			]),
+			"sample-compacted",
+			60_000,
+		),
+	);
+	check(
+		"a record billed before the newest compaction is not a sample",
+		compacted.samples === 1 && compacted.sampleIndex === 0 && compacted.baseline === 28_265 && compacted.baseline >= 17_766,
+	);
+	// 1d-quater. The cost of that invalidation is stated rather than hidden: a branch that holds the compaction and the
+	//     retained record but no newer one has no sample at all, so it keeps the historical fallback formula
+	//     (`usage.tokens - the chars/4 estimate`), which is the window right after a compaction. Mutation: sampling the
+	//     retained record reads 16,000 here instead of the fallback's 39,999.
+	const compactionOnly = readOf(
+		measureCtx(
+			chain([summaryEntry("k4", "s".repeat(80_000), stamp(1)), billed("k5", "ok", { input: 26_000 }, stamp(0))]),
+			"sample-compacted-only",
+			60_000,
+		),
+	);
+	check(
+		"a compaction window with no newer record falls back rather than reading the retained record",
+		compactionOnly.samples === 0 && compactionOnly.sampleIndex === -1 && compactionOnly.baseline === 39_999,
+	);
+	// 1d-quinquies. The control: the same shape without a compaction keeps both records, because the invalidation is
+	//     pi's timestamp rule and not "a record that sits behind a large summary". The ② re-anchor still fires on the
+	//     provable increase, so the reading comes from the later record.
+	const notCompacted = readOf(
+		measureCtx(
+			chain([
+				billed("n1", "ok", { input: 17_766 }, stamp(0)),
+				messageEntry("n2", "user", "y".repeat(4_000), stamp(2)),
+				billed("n3", "post", { input: 38_766 }, stamp(3)),
+			]),
+			"sample-not-compacted",
+			60_000,
+		),
+	);
+	check(
+		"the invalidation is the compaction's timestamp, not the summary's size",
+		notCompacted.samples === 2 && notCompacted.sampleIndex === 1 && notCompacted.baseline === 38_265,
+	);
 
 	// 2. A record's own reply is not context: the same session with a 100k-character last reply reads the same
 	//    baseline. Mutations: counting the record's own message, or using `usage.tokens` (which adds the reply's

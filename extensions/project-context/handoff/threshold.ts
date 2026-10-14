@@ -200,12 +200,14 @@ export interface ContextMeasure {
  * smallest of those upper bounds over the records. It cannot read below `B` **as of the record that set it**,
  * and because each later record's bound grows (`T_r` grows while the correction per added character is
  * `r / RATE_MAX < 1`) the value is set by the emptiest record and does not grow as the branch fills (issue
- * 2026-10-09-handoff-baseline-residual). It is not a blanket "never low": the injected block growing inside a
- * session is invisible to it, because the minimum is taken over records whose prompts were billed earlier -
- * that is residual ② in the issue's design §9, and it is why the status line names the record count instead of
- * promising a floor that holds at the current prompt.
+ * 2026-10-09-handoff-baseline-residual). It is not a blanket "never low": it is a lower bound **as of the record
+ * that set it**. An overhead increase large enough to be provable from the pair (`prompt_r - prompt_p >
+ * 2 * (chars_r - chars_p)`, the threshold in design §14) restarts the minimum at that record, so the injected
+ * block refreshing inside a session is re-anchored; an increase below that threshold stays invisible and leaves
+ * the reading that much low, bounded by the increase. That is residual ②, and it is why the status line names
+ * the record count instead of promising a floor that holds at the current prompt.
  *
- * Four properties of that formulation are load-bearing:
+ * The load-bearing properties of that formulation:
  * - The **system message is not part of `T`**. pi's own `estimateTokens` covers a system message's content, its
  *   sections and `toolsAdded`, so counting it here subtracted the tool schemas and the system prompt from the
  *   baseline: the reading came out short by that amount (measured 9,881 on the probe sandbox `01a1331c` and
@@ -243,6 +245,11 @@ export interface ContextMeasure {
  *   messages (or drops them) and the provider is sent the edited text, so a message a user shortened or
  *   deleted must stop counting (round 4's I-2: the un-edited prefix read 5,267 where the baseline is 17,766).
  *   Records billed before the edit keep the old text, because the edit is applied where it appears.
+ * - A record billed **at or before the newest compaction** is not a sample. pi invalidates exactly that
+ *   (`assistantIsFromBeforeCompaction` in its `agent-session.js`: `assistantMessage.timestamp <=
+ *   compactionEntry.timestamp`), and `firstKeptEntryId` keeps one such record in the branch - its prompt
+ *   described the pre-compaction branch while `chars` describes the projection the summary left behind, so it
+ *   measures neither prefix (design §14, residual ⑥; the sampling mirror of pi's own guard).
  *
  * The cost is the emptiest record's own slack: the reading can sit up to `chars * (1/r - 1/RATE_MAX)` above the
  * truth, bounded by that record's content and no longer growing with the branch. That is the fail-closed side of
@@ -257,9 +264,19 @@ export interface ContextMeasure {
  * way, and an **anchor** record made of it still reads low (residual ④ in design §9): an interval of it is caught
  * by the consistency rule above, but nothing in the file can catch it in the first sampled record.
  */
+/** An entry's own time in ms. pi compares the assistant *message*'s timestamp against the compaction entry's,
+ * and a persisted entry carries both (`message.timestamp` in epoch ms, `timestamp` as the ISO string). */
+function entryTime(entry: { timestamp?: string; message?: { timestamp?: number } }): number {
+	return typeof entry.message?.timestamp === "number" ? entry.message.timestamp : Date.parse(entry.timestamp ?? "");
+}
+
 export function measureContext(ctx: ExtensionContext, usage: ContextUsage): ContextMeasure {
 	const entries = buildContextEntries(ctx.sessionManager.getBranch(), ctx.sessionManager.getLeafId());
 	const samples: ContextSample[] = [];
+	// `buildContextEntries` puts the newest compaction first (older ones can be retained behind it), which is the
+	// one pi's own guard reads; without a compaction there is nothing to invalidate against.
+	const newestCompaction = entries.find((entry) => entry.type === "compaction");
+	const compactionTime = newestCompaction ? entryTime(newestCompaction) : Number.NaN;
 	/** pi's own estimate of the messages seen so far, text only: the unit `estimated`, `chars` and the rate
 	 * deltas are all built on (see `textEstimate`). */
 	let plain = 0;
@@ -311,6 +328,9 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		if (!record) continue;
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
 		if (prompt <= 0) continue;
+		// pi's own invalidation, mirrored: a record billed at or before the newest compaction is not a measurement
+		// of this prefix. NaN (no compaction, or no timestamp) compares false, so nothing is skipped without one.
+		if (entryTime(entry) <= compactionTime) continue;
 		const chars = 4 * plainBefore;
 		// A record that does not hold even the densest reading of its own preceding content is not a
 		// measurement of this branch (see the doc block); it must not be clamped into a low reading.
