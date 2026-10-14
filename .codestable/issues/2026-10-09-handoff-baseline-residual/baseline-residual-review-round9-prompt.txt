@@ -1,0 +1,32 @@
+# Lane A 独立审查 — 冻结修订 `e23620d`+清理（issue `2026-10-09-handoff-baseline-residual`，第 9 轮：残余收尾）
+
+你是独立审查员（lane A）。工作目录：`/tmp/pi-context-rev15`（**只读**；未经你同意不得写入；要跑测试/变异先复制到自己的 /tmp 目录）。
+
+## 背景
+第 8 轮在 `b9addeb` 上 PASS（0/0/3）。随后 operator 要求「清理完所有残余才能发版」，本轮做了：
+1. **修残余②**（唯一的代码改动）：读数是「设定它的那条记录时刻」的 baseline，注入块会话内刷新后低读增量。
+   新增证明式 re-anchor：`prompt_r − prompt_p > chars_r − chars_p / RATE_MAX`（由 `T_r ≤ chars_r`、`T_p ≥ chars_p / RATE_MAX` 推出）
+   证明 `B` 增长 ⇒ 最小值从该记录重启（`anchor` 索引）；契约 `a proven overhead increase restarts the minimum`（18,266 → 28,765）。
+2. **①③④⑤⑥ 与两条口径差异按 design §14 收尾**：① 密度下界的固有代价；③ predecessor-only 前缀读高（新增契约钉住）；
+   ④ 偏稀疏锚点（无 tokenizer 不可判定，量级已给）；⑤ 文件级陈旧锚点；⑥ `firstKeptEntryId` 保留记录（正常写入 fail-closed）；
+   口径 a：`contextTokensAtRate` 按 pi 原值计图像/system（预算器件 vs 下界器件，已写进 JSDoc）。
+3. 清理：第 4–7 轮审查抄本/prompt 入库；`/tmp` 沙箱删除；过时的 autolearn skill（`handoff-baseline-measurement`）按 shipped 语义改写；
+   已提升的 skill 候选（`candidate: true` 草稿）删除；记忆渲染快照提交。
+
+## 你要独立验的
+1. **② 的修复是否 sound**：自己造夹具验证 `anchor` 重启只在该证明成立时发生（prompt 增长确实超出文本上限），
+   并验反例：正常内容增长（含 CJK 密集、稀疏 ASCII）、小幅 overhead 增长（不可判定，读数以增量为界）**不会**误触发重启；
+   `anchor` 与 `rate` 的 delta 循环、`sampleIndex` 语义、无样本路径是否仍正确。
+2. **design §14 的每条「钉住」是否诚实**：逐条判断它是真的不可判定/固有代价，还是本可修而被回避（尤其 ④ 的空白字符排除、
+   ⑥ 的 `assistantIsFromBeforeCompaction` 镜像、口径 a 的统一）。给出你判断「可修」的理由与最小实现，或确认钉住成立。
+3. **回归**：复现 14 个变异的 `^FAIL ` 行数（system 3、上界退回 rate 12、`min`→`max` 9、自身密度下界 1、后缀 1、图像 1、
+   区间一致性 1、忽略 context_edit 1、rate 带下半 3、编辑链式 1、排除 bash 2、`!!` 头 2、严格 `=== true` 2、去掉 re-anchor 1）；
+   末节 `check(` 是否 35 条。
+4. **现场复验**（只读）：probe（真值 17,753）/ctl（真值 11,008）/活树 `01a13385`（期望 52,151 / 35 样本 / 前缀非增）。
+5. **发布面**：CHANGELOG / `docs/handoff.md` / design §9–§14 措辞与残余清单是否与代码一致、有无承诺做不到的事。
+
+**若没有 blocking 与 important，请给 `VERDICT: PASSED`**（只覆盖本冻结修订），并列出仍无法验证的点与任何建议登记的新面。
+
+## 输出格式
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` + blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现、方向、建议。

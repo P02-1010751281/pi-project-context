@@ -1,0 +1,24 @@
+# Lane A 独立审查 — 冻结修订 `1952178`（issue `2026-10-09-handoff-baseline-residual` 残余收尾 + 记忆读路径一处修复）
+
+你是独立审查员（lane A）。工作目录 `/tmp/pi-context-rev17`（**只读**；未经你同意不得写入；跑测试/变异请先复制到自己的 /tmp 目录）。
+上一轮（第 9 轮，冻结 `e23620d`）给的是 `VERDICT: CHANGES-REQUESTED`：I-1（② 的 re-anchor 门槛太松，活树 ~77k 才触发 ⇒ 等于没修）、I-2（清理提交声称删除候选但文件仍在）、N-1（② 的旧措辞与代码矛盾，四处）、N-2（我写「⑥ 不可判定」是错的，⑥ 可镜像 pi 的判据修）、N-3（autolearn skill 只改了头尾）。
+
+本冻结修订相对第 9 轮的改动：
+1. **② 门槛改紧**：`prompt_r − prompt_p > 2 × (chars_r − chars_p)`（原为 `chars_r − chars_p/RATE_MAX`）；现场夹具改成审稿人给的形状（40,000 字符前缀 + 30,000 token 刷新 + 8 字符新文本），读 52,767（真值 47,766）。
+2. **⑥ 实现**：采样器镜像 pi core 的 `assistantIsFromBeforeCompaction`（`agent-session.js`：`assistantMessage.timestamp <= compactionEntry.timestamp`）—— 凡在最新 compaction 之前计费的 usage 记录都不作样本（`entryTime` 取 `message.timestamp`，回退条目 ISO `timestamp`；无 compaction 时 `NaN`，比较恒假）。三条契约 + 变异「允许压缩前记录作样本」红 2。
+3. **记忆读路径**：`readRenderWithMtime` 的 `changed` 从 mtime+size 扩到 mtime+size+**ctime**（抽成纯函数 `renderChangedAcrossRead`），覆盖「保留 mtime 的同尺寸替换」；契约 6 条（含「消失」与「出现」边界），变异「去掉 ctime 子句」红 1。
+4. **文档/记忆**：N-1 四处措辞（`threshold.ts` doc block、`docs/handoff.md`、`CHANGELOG.md`、design §9）、N-3 skill（标题、step 2/3/6、gotchas）、design §12 末尾「⑥ 已实现」+ §14 表格（⑥ 改「修」、④ 补 ~20 chars/token 假设、新增 ⑦ receipt-rate 残余）、`docs/architecture.md` 的残留措辞、`MEMORY.md` 两条过时 pitfall（已按记忆规则手改 + 补 journal op，op 文本与文件字节一致）。
+5. CHANGELOG 的变异清单与矩阵数字按**最终修订**重测：`^FAIL` 计数 system 3、上界退回 rate 14、min→max 9、自身密度下界 1、后缀 1、图像 1、区间一致性 1、忽略 context_edit 1、rate 带下半 3、编辑链式 1、排除 bash 2、`!!` 头 2、严格 `=== true` 2、去掉 re-anchor 2、允许压缩前记录 2；记忆侧「去掉 ctime 子句」1。handoff 末节 `check(` = 38。
+
+## 你要独立验的
+1. **⑥ 是否 sound 且完整**：自己造夹具确认——(a) 时间戳 ≤ 最新 compaction 的记录确实被排除（含 `firstKeptEntryId` 保留、旧 compaction 被保留 `[c_new, m1, c_old, m2, a1]` 的形状）；(b) **不误伤**：无 compaction 的会话、压缩之后的记录、`context_edit`、只有 compaction 的窗口都不受影响；(c) 跳过它是否破坏区间一致性与 rate 校准链路（`split`/`previous`/`samples` 索引）；(d) 只有 compaction+保留记录 ⇒ `samples=0` 落回历史公式，这个代价是否可接受、是否该改成别的（例如把 compaction 当 anchor 重置）；(e) 用 `entryTime` 取 `message.timestamp` 而非条目 ISO 字段是否与 pi 的判据逐位一致。
+2. **ctime 改动是否 sound**：`renderChangedAcrossRead` 会不会在**正常路径**上误报（例如扩展自己写 render 之后紧接着自读、`writeAtomic` 的 rename、journal 侧写入）；误报的后果（`recheck` ⇒ 本次 pass 不写）是否安全；FIFO race/adopt 夹具的语义是否被改变（原夹具靠 mtime+size 已能判 changed，ctime 是否多余或反而掩盖）；纯函数表 + 6 条契约是否足够证明，或需要真实夹具；「文件在读取期间消失 ⇒ changed=false」这条 pin 是否正确（发布侧会写回 fold）。
+3. **回归**：复现上面 16 个 `^FAIL` 计数（单点补丁、跑后恢复）与 38 条 `check(`；`node tests/run-all.mjs` 15/15。
+4. **现场复验**（只读 session JSONL）：probe 沙箱（真值 17,753）/ctl（11,008）/活树 `01a13385`（期望 52,151 / 35 样本 / 前缀非增）。注意 ⑥ 会改变**有 compaction 的**会话读数，请另找一条真实 compaction 会话（如 `01a13317`）核对新读数是否符合预期方向。
+5. **发布面**：`CHANGELOG.md`、`docs/handoff.md`、`docs/architecture.md`、design §9–§14、两个 skill、`MEMORY.md` 与其 journal op 是否与代码一致；是否还有**未闭合**的残余（我声称 ② 修、⑥ 修、①③④⑤ + 口径 a/b + ⑦ 钉住）；有无承诺做不到的句子。
+
+**若没有 blocking 与 important，请给 `VERDICT: PASSED`**（只覆盖本冻结修订），并列出仍无法验证的点与任何建议登记的新面。
+
+## 输出格式
+- 一行 `VERDICT: PASSED` 或 `VERDICT: CHANGES-REQUESTED` + blocking / important / nit 计数。
+- 每条 finding：`文件:行`、现象、最小复现、方向、建议。

@@ -1,0 +1,52 @@
+**VERDICT: PASSED — 0 blocking / 0 important / 6 nit**
+
+冻结修订 `1952178` 的代码改动（② 阈值、⑥ 失效守卫、ctime 读一致性）在独立夹具、真实会话、变异矩阵与发布面上均成立；第 9 轮的 I-1（阈值）与 I-2（候选清理）已闭合。以下 6 条均为文字/证据面问题，不改变代码行为。
+
+## Findings（全部 nit）
+
+1. **`.codestable/issues/2026-10-09-handoff-baseline-residual/design.md:227`** — ② 行写「变异 M14 红 1」，最终修订实测 **2**（CHANGELOG:89 也已写 2）。
+   - 复现：对 `threshold.ts` 施加单点补丁删掉 `if (prompt - previous.prompt > 2 * (chars - previous.chars)) anchor = samples.length;`，`node tests/run-all.mjs | grep -c '^FAIL '` = 2（`an overhead increase the text cannot carry restarts the minimum` + `the invalidation is the compaction's timestamp, not the summary's size`）。
+   - 方向：证据偏低报覆盖，非行为问题。建议：改成「红 2」，与 CHANGELOG 一致。
+
+2. **`design.md:234`** — ⑦ 行的证据列写「design §11 枚举、CHANGELOG 残余指针」，但 §11（第 168–189 行）没有 receipt-rate 残余的枚举，`grep -n '⑦' CHANGELOG.md` 为 0。
+   - 复现：`grep -n 'receipt' design.md` 仅 §9/§14；`grep -rn 'receipt-rate\|rate 偏低' design.md` 只在该行自身。
+   - 方向：登记行指向不存在的内容。建议：把 ⑦ 的枚举补进 §11（或改指向 R9 抄本中审查员的建议位置），CHANGELOG 补一句指针。
+
+3. **「可证/证明式/provable」与「heuristic, not a proof」并存** — `threshold.ts:204`（"provable from the pair"）、`threshold.ts:284`（"a proven overhead increase"）、`docs/handoff.md:85`（"增长大到可证"）、`CHANGELOG.md:30`（标题"**证明式重锚**"，同 bullet 正文却写"启发式、不是证明"）、`CHANGELOG.md:14`、`design.md:139`（"可证增长重锚"）、`SKILL.md:12`（"a provable overhead increase"）；而 `threshold.ts:241` 明说 "This is a **heuristic**, not a proof"。
+   - 复现：`grep -n 'provable\|可证\|证明式\|proven'`，对照 `threshold.ts:241`。
+   - 方向：over-claim。`> 2·Δchars` 只在「新增文本 ≤2 token/字符」假设下才是证明，而 band 只保证 ≤1 token/字符，且 0.8 c/t 夹具正好违反该假设。建议：统一改成「在 ≤2 token/字符 假设下可判定」，标题去掉"证明式"。
+
+4. **`extensions/project-context/memory/store.ts:130`** — 注释「past residual R-L2」在全记录中不存在（`grep -rn 'R-L2' .codestable/` = 0 命中）；该残留登记为 S3 /「`readRenderWithMtime` 的 mtime+size 盲点」，见 `.codestable/issues/2026-10-06-handoff-shutdown-coupling/shutdown-flush-review-report.md:149,471`。
+   - 复现：同上 grep。
+   - 方向：新造的编号无出处。建议：改引该报告 S3 小节（或写「the mtime+size blind spot registered in the shutdown-flush review」）。
+
+5. **`extensions/project-context/handoff/threshold.ts:269-271`（`entryTime`）** — 对**消息条目**也回退到条目 ISO `timestamp`，与 pi 判据不完全逐位一致：删掉某 assistant 条目 `message.timestamp`（仅留 ISO）且 ISO ≤ compaction 时，扩展排除该记录，而 pi 的 `undefined <= t` 为 false（保留）。
+   - 复现（我的夹具 F/G）：`[f0, c4(compaction), f1(usage，删除 f1.message.timestamp，ISO 早于 c4)]` ⇒ 扩展 `samples=0`；pi 语义会采 f1。
+   - 真实数据：421 个 session.jsonl / 27,440 条 assistant usage 记录里 `message.timestamp` 缺失 **0** 条、pi-vs-扩展判定差异 **0**；仅当前不存在的畸形记录可达，方向是 fail-closed。
+   - 建议：ISO 回退只用于 compaction 条目（`entry.type !== "message"`），消息记录缺失即视为 NaN；或至少把「比 pi 更严」写进注释并加一条契约。
+
+6. **`docs/architecture.md:107` / `store.ts:127-131`** — ctime 论证是 POSIX 形状（"用户态改不动 ctime"）；Windows 上 Node 的 `ctime` 是创建时间、普通写入**不会**推进它（且 `SetFileTime` 可改创建时间），因此「保留 mtime 的同尺寸**原地**替换」在 Windows 上仍不可见（`cp -p` 式换 inode 的替换仍可见）。本机无法验证。
+   - 方向：平台限定缺失。建议：给该句加 POSIX 限定，或把 Windows 语义登记为残留。
+
+## 我独立验证通过的点
+
+- **⑥ sound 且完整**（自造夹具 + 真实 pi `buildContextEntries`）：
+  - 真实形状 `[c_new, h0, c_old, h1, a1]`（旧 compaction 被新 compaction 的 `firstKeptEntryId` 保留）⇒ 构建序 `hcnew,h0,hcold,h1,ha1`，只有压缩后的 `a1` 成样本（我另测等时间戳剔除、压缩后保留、无 compaction 不误伤、只有 compaction ⇒ `samples=0`、`context_edit` 不受影响）。
+  - `entryTime` 用 `message.timestamp`（回退 ISO）与 pi `assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime()` 在 421 个真实会话/27,440 条记录上 **0 失配**；`01a13317` 的 field 条目 `00d7f187` 确为带 usage、早于 compaction 的 assistant 消息。
+  - `split`/`previous`/`samples` 链路：跳过发生在 `samples.push` 之前，压缩设置的 `split=true` 保证不产生跨 compaction 的 rate pair；夹具（compaction + 两条压缩后记录）得到 rate=2.002、`calibrated=true`、`samples=2`。
+  - 只有 compaction 的窗口：夹具钉住 `samples=0`/`sampleIndex=-1`/fallback 39,999；真实 pi 在该窗口 `getContextUsage()` 返回 `tokens=null`（`agent-session.js` 的 `hasPostCompactionUsage` 守卫），`maybeTrigger`/`statusText` 在 `tokens===null` 时提前返回，故该 fallback 在真实窗口不会过早起手，代价可接受。
+  - 另取 6 条真实 compaction/普通会话对照旧代码：新读数 **从不低于**旧读数（`01a13317` 63,957→95,900；`01a13465` 58,763→140,917；`01a1354d` 77,841→124,191；`01a13363`/`01a13382`/`01a137f2` 不变），方向 fail-closed；分解证明这些升高全部来自 ②（去掉②的变体=旧读数），⑥ 单独不降读。
+- **ctime sound**：`cp -p` 实验确认 mtime（ns）保留而 ctime 前进；用 192MB 文件 + 原子 rename 竞态，6 次里 4 次在「size 与 mtimeNs 与原文完全一致」的替换下 `readRenderWithMtime` 返回 `changed=true`（端到端命中）。正常路径无假阳性：扩展从不 `utimes/chmod` render，`writeAtomic` 换新 inode 后 rename，`backupMemoryBeforeWrite` 只读目标写别处；FIFO race/adopt 夹具语义不变（ctime 只加析取项，不可能掩盖 changed）。「消失 ⇒ false ⇒ publish fold」与既有契约 `the exit republishes a missing render` 一致，是缺失 render 的既定行为（delete+create 窗口仍为已登记的 POSIX 写回窗口），我认为 pin 正确。
+- **回归**：16 个单点变异逐位复现 `^FAIL` 计数 —— system 3、上界退回 rate **14**、min→max 9、自身密度下界 1、后缀 1、图像 1、区间 1、忽略 context_edit 1、rate 带下半 3、编辑链式 1、排除 bash 2、`!!` 头 2、严格 `=== true` 2、去掉 re-anchor **2**、允许压缩前记录 **2**、去掉 ctime 子句 **1**；每个跑后恢复并校验 md5=HEAD blob。handoff 末节 `check(` = **38**（39 个子串含文件末尾报告串；`1303` 属上一节）；`node tests/run-all.mjs` **All 15 tests passed**。
+- **现场**：probe `01a1331c` 17,763（真值 17,753，+10）、ctl `01a1331d` 11,018（11,008，+10）；活树 `01a13385` **52,151 / 35 样本 / sampleIndex 4 / rate 3.2224**，前缀 `131,433×4 → 52,151` 后持平无非增；`01a13317` 新读数符合预期方向（见上）。
+- **发布面**：I-2 的候选 `pi-project-context-adaptive-handoff-threshold-review.md` 在两棵树均已不在（untracked，无法从 commit 验证；现存 tracked 候选 `real-data-prompt-verification` 与任何 shipped skill 不同名，approve 无覆盖入口）；`MEMORY.md` 两条 pitfall 已更新，journal 最后一条 op 文本与提交字节**逐位相等**，`memoryDocumentChars` = 31,875/32,000；CHANGELOG 的 14/9/1/1/1/1/1/3/1/2/2/2/2/1 与 38 条全部与实测一致。
+
+## 仍无法验证 / 建议登记
+
+- probe/ctl 的「真值」仍是 `B_ext = prompt − chars/4` 的推断，非 provider 二次直报；沙箱目录已删，session JSONL 仍在。
+- ctime 粒度内的替换（文件系统级）与 Windows ctime 语义（finding 6）本机不可验证。
+- ② 在真实会话上的抬升幅度（如 `01a13465` +82k）无 ground truth；这是第 9 轮选择方案 (b) 的已知 fail-closed 代价，建议在 design §11/§14 用这几条实测量级登记，避免只写「假阳性只抬高读数」。
+- 第六条的 ISO 回退差异当前不可达（27,440/27,440 有 `message.timestamp`），建议按 finding 5 收口或显式登记。
+- 「消失 ⇒ changed=false ⇒ publish」的并发窗口无确定性夹具（delete+create 两段式），本次按读代码 + 既有契约判定为安全。
+
+零写声明：`/tmp/pi-context-rev17` 我只读；全部实验在 `/tmp/laneA-rev17-copy`、`/tmp/laneA-old2`、`/tmp/laneA-no6`、`/tmp/laneA-no2`、`/tmp/laneA-inst`、`/tmp/laneA-probes`、`/tmp/laneA-ctime-race` 内完成；被审十个文件的 md5 与 HEAD blob 逐位一致。

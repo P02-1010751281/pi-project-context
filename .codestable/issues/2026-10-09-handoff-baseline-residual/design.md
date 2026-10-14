@@ -136,7 +136,7 @@ baseline 循环改成 `prompt − ceil(chars / RATE_MAX)` 的 min；`prompt <= c
 也不把读数拖成负数）；过度修正守卫随之删除（上界不可能过修正）；首回合/无记录公式同步只减消息估计；`baselineSuffix` 改说
 「chars/8 bound over N records; receipt at …」。rate 校准保留（回执与 mid-turn 预算要用），仅不再参与 baseline。
 
-残余（§9 当时的登记；② 与 ⑥ 已由 §14 收尾 —— ② 改成可证增长重锚、⑥ 镜像 pi 的失效判据 —— 其余仍按下述方向钉住）：① 最空记录自身字符数带来的高读 `chars × (1/r − 1/8)`（活树约 +12k，窗口 1M 时拐点仍先绑定，
+残余（§9 当时的登记；② 与 ⑥ 已由 §14 收尾 —— ② 改成可判定增长重锚（≤2 token/字符 假设）、⑥ 镜像 pi 的失效判据 —— 其余仍按下述方向钉住）：① 最空记录自身字符数带来的高读 `chars × (1/r − 1/8)`（活树约 +12k，窗口 1M 时拐点仍先绑定，
 无功能影响；但对「首个大块」极重的会话会把 floor 推到拐点之上 ⇒ 拒绝）；② 读数是「设定它的那条记录时刻」的 baseline，
 注入块在会话内刷新时低读其增量（本仓实测漂移 13.8k 已消失，这一项以注入块自身增量为界）；③ 只有 predecessor 重放记录的窗口里读虚高：直到出现更小 bound 的记录之前，
 读数停在前任记录的量级上（活树实测 record 0–3 读 131,433、record 4 起 52,151；R2 已登记，A/C 与 R5 都未改变它）。
@@ -224,14 +224,16 @@ provider 可见性（`excludedFromContext` 从 `text.ts` 单点导出，threshol
 | # | 残余 | 处置 | 证据 |
 |---|---|---|---|
 | ① | 最空记录自身字符数的高读 `chars × (1/r − 1/8)` | **钉住**：这是密度下界的必然代价（方向 fail-closed），不是缺陷 | 契约 `the over-read is bounded by the emptiest record…`、`the I-1 fixtures read above the truth…`；docs/CHANGELOG 已写 |
-| ② | 注入块会话内刷新 ⇒ 读到旧 baseline | **修**（部分）：启发式 re-anchor —— `prompt_r − prompt_p > 2 × (chars_r − chars_p)`（新增文本 ≤2 token/字符）即重启最小值；不是证明（假阳性只抬高读数），阈值以下的增长仍以该增量为界 | 契约 `an overhead increase the text cannot carry restarts the minimum`（第 9 轮审稿人的现场夹具：旧读 22,766 ⇒ 现读 52,767，真值 47,766）；变异 M14 红 1。**第 9 轮 I-1**：第一版的阈值 `chars_r − chars_p/RATE_MAX` 把 `7/8·chars_p` 白送给文本，活树需 ~77k 才触发（实测注入块 6,745）⇒ 已按审稿人验证过的紧阈值改正 |
+| ② | 注入块会话内刷新 ⇒ 读到旧 baseline | **修**（部分）：启发式 re-anchor —— `prompt_r − prompt_p > 2 × (chars_r − chars_p)`（新增文本 ≤2 token/字符）即重启最小值；不是证明（假阳性只抬高读数），阈值以下的增长仍以该增量为界 | 契约 `an overhead increase the text cannot carry restarts the minimum`（第 9 轮审稿人的现场夹具：旧读 22,766 ⇒ 现读 52,767，真值 47,766）；变异 M14 红 2。**第 9 轮 I-1**：第一版的阈值 `chars_r − chars_p/RATE_MAX` 把 `7/8·chars_p` 白送给文本，活树需 ~77k 才触发（实测注入块 6,745）⇒ 已按审稿人验证过的紧阈值改正 |
 | ③ | 只有 predecessor 记录时读虚高（活树 record 0–3 读 131,433） | **钉住**：successor 的文件里没有前任的对话，`B` 无法从该记录反推；方向是**拒绝**（高读）而不是低读 | 契约 `a predecessor-only prefix reads the predecessor's bound, high` |
 | ④ | >8 chars/token 的偏稀疏锚点（长空白/重复串） | **钉住**：没有 tokenizer 就无法判定；量级已给（首条约 67k 空白字符才低读 5k，**按 ~20 chars/token 计**；R8 有 `r = 100` 的夹具）；区间形式已被一致性规则捕获 | design §11 枚举、CHANGELOG 残余指针 |
 | ⑤ | 文件级陈旧锚点（手改 / 外部写者） | **钉住**：4d 契约；pi 自身写者只向 leaf 追加 ⇒ 该时序不可复现 | tests 4d、design §11 |
 | ⑥ | `firstKeptEntryId` 保留的 pre-compaction 记录 | **修**（R9 的 N-2 订正后）：镜像 pi 的 `assistantIsFromBeforeCompaction` ⇒ 压缩前计费的记录不作样本 | 契约 `a record billed before the newest compaction is not a sample`（16,000 ⇒ 28,265；真值 17,766）、`a compaction window with no newer record falls back …`；变异红 2；现场条目 `01a13317` 的 `firstKeptEntryId` |
 | 口径 a | `contextTokensAtRate` 按 pi 原值计图像与 system | **钉住为有意差异**：预算器件必须不低报、密度下界器件必须低报，两者只在「provider 收不到的东西」（排除的 `!!`）上一致 | `threshold.ts` 的 JSDoc、design §13 |
 | 口径 b | `branchSummary`/`compactionSummary` 前后缀、`!` 的 ``Ran `cmd` `` 包装 | **钉住**：fail-closed 高读，≤ 十几 token | design §11 枚举 |
-| ⑦ | 未达重锚门槛的小幅 overhead 增长会压低 receipt 的 rate（rate 只供 split-turn 预算） | **钉住**：方向 fail-closed（rate 偏低 ⇒ 预算偏松）；第 9 轮审查员建议登记 | design §11 枚举、CHANGELOG 残余指针 |
+| ⑦ | 未达重锚门槛的小幅 overhead 增长会压低 receipt 的 rate（rate 只供 split-turn 预算） | **钉住**：方向 fail-closed（rate 偏低 ⇒ 预算偏松）；现场量级：R10 审查员在 `01a13465` 实测 +82k 的抬升，属②的 fail-closed 代价 | R9 抄本「仍无法独立验证 / 建议登记」第 1 条、R10 抄本同节 |
+| ⑧ | 消息条目缺 `message.timestamp` 时 `entryTime` 回退 ISO ⇒ 比 pi 严（pi 保留该记录） | **钉住**：27,440/27,440 条真实记录都带 `message.timestamp`，当前不可达；方向 fail-closed | R10 抄本 finding 5 |
+| ⑨ | Windows 上 Node 的 `ctime` 是创建时间 ⇒ 保留 mtime 的同尺寸**原地**替换仍不可见（换 inode 的替换可见） | **钉住为平台限定**：POSIX 之外；本机不可验证 | R10 抄本 finding 6、docs/architecture.md |
 
 **本轮代码改两处**（② 的 re-anchor 与 ⑥ 的压缩前记录失效，均在 `handoff/threshold.ts`）；①③④⑤ 与两条口径差异不再改代码，但方向、量级与判据都写在本文件、CHANGELOG、代码注释与测试契约里
 ——「已登记」的重定义是**已定界、已钉住、已注明方向**，而不是「未处理」。任何一条若要**改变**（而不是钉住），需要字段证据支撑新判据。**第 9 轮审查员的订正**（本轮采纳）：③④⑤ 从会话文件里不可判定、

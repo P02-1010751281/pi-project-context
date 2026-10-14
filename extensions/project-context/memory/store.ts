@@ -127,7 +127,9 @@ export async function readRenderWithMtime(file: string): Promise<{ text: string;
  * Whether the stats taken around a read describe the same file version. `mtime` + `size` is what a
  * replacement normally moves; `ctime` catches the one that does not - a writer that preserves mtime
  * (`cp -p`, `rsync -t`) and lands the same number of bytes leaves both untouched, and ctime cannot be set
- * from userspace, so it also covers the copy that used to stay invisible (past residual R-L2).
+ * from userspace, so it also covers the copy that used to stay invisible (the mtime + size blind spot
+ * registered as S3 in the shutdown-flush review report; on Windows `ctime` is the creation time, so an
+ * in-place same-size replacement that preserves mtime stays invisible there - registered, not fixable here).
  * Exported as a pure decision so a test can pin that case directly.
  */
 export function renderChangedAcrossRead(

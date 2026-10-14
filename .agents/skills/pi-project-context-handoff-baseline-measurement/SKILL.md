@@ -9,7 +9,7 @@ description: "Diagnose or change pi-project-context's handoff baseline: the char
 
 The baseline is the minimum `prompt − chars/8` density bound over the accepted records (text only: system messages, image payloads and
 `convertToLlm`-excluded inputs are out; `chars` follows pi's projection including `context_edit`); the rate only converts the receipt and
-the split-turn budget; a record billed at or before the newest compaction is not a sample at all, and a provable overhead increase
+the split-turn budget; a record billed at or before the newest compaction is not a sample at all, and an increase the text cannot carry under the <=2 tokens-per-added-character assumption
 (`prompt_r − prompt_p > 2 × (chars_r − chars_p)`) restarts the minimum. See design §9–§14 and review-report R8/R9.
 
 # When to use

@@ -201,8 +201,8 @@ export interface ContextMeasure {
  * and because each later record's bound grows (`T_r` grows while the correction per added character is
  * `r / RATE_MAX < 1`) the value is set by the emptiest record and does not grow as the branch fills (issue
  * 2026-10-09-handoff-baseline-residual). It is not a blanket "never low": it is a lower bound **as of the record
- * that set it**. An overhead increase large enough to be provable from the pair (`prompt_r - prompt_p >
- * 2 * (chars_r - chars_p)`, the threshold in design §14) restarts the minimum at that record, so the injected
+ * that set it**. An overhead increase the pair can account for (`prompt_r - prompt_p >
+ * 2 * (chars_r - chars_p)`, the threshold in design §14, sound under <=2 tokens per added character) restarts it, so the injected
  * block refreshing inside a session is re-anchored; an increase below that threshold stays invisible and leaves
  * the reading that much low, bounded by the increase. That is residual ②, and it is why the status line names
  * the record count instead of promising a floor that holds at the current prompt.
@@ -234,7 +234,7 @@ export interface ContextMeasure {
  *   (150k in the test, 131k live) - the silent disable this issue is about. The price is a region the file
  *   cannot judge: a *stale* local record whose prompt was billed before a replay landed, sitting behind a
  *   larger predecessor prompt, still reads low (review round 4's I-1; residual ⑤ in the issue's design §10).
- * - The minimum is taken over samples **since the last detected overhead increase**: a record whose prompt grew
+ * - The minimum is taken over samples **since the last judged overhead increase**: a record whose prompt grew
  *   by more than twice its added text (`prompt_r - prompt_p > 2 * (chars_r - chars_p)`) restarts it, because the
  *   text cannot have carried that much (`<= 2` tokens per added character, the band's dense end relaxed by two;
  *   `T <= chars` would fire on base64-like content, `chars_p / RATE_MAX` needs ~77k on the live session). This is
@@ -265,7 +265,10 @@ export interface ContextMeasure {
  * by the consistency rule above, but nothing in the file can catch it in the first sampled record.
  */
 /** An entry's own time in ms. pi compares the assistant *message*'s timestamp against the compaction entry's,
- * and a persisted entry carries both (`message.timestamp` in epoch ms, `timestamp` as the ISO string). */
+ * and a persisted entry carries both (`message.timestamp` in epoch ms, `timestamp` as the ISO string). The ISO
+ * fallback is for the compaction entry itself, which has no message; for a message entry it can only make this
+ * side stricter than pi (it would invalidate a record pi keeps), and every one of the 27,440 records in the
+ * session files here carries `message.timestamp`, so that shape is unreachable rather than merely untested. */
 function entryTime(entry: { timestamp?: string; message?: { timestamp?: number } }): number {
 	return typeof entry.message?.timestamp === "number" ? entry.message.timestamp : Date.parse(entry.timestamp ?? "");
 }

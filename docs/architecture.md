@@ -104,7 +104,7 @@ session.jsonl ──► session.md ──► INDEX.md
 
 flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不留记忆状态、不取跨进程锁），文件与 fold 的比较键相同时不写，
 要写回或采纳时，判定用的字节与 mtime 必须来自同一版本：自读都走 `readRenderWithMtime`（判定收在纯函数 `renderChangedAcrossRead`：mtime、size，
-外加 **ctime** —— 后者覆盖「保留 mtime 的同尺寸替换」这种 `cp -p`/`rsync -t` 式的写回，用户态改不动 ctime；残留只剩落在文件系统 **ctime** 粒度内的那次替换），自带 render key 的调用方，其 mtime 判定取本调用的自读，
+外加 **ctime** —— POSIX 上用户态改不动它，覆盖「保留 mtime 的同尺寸替换」这种 `cp -p`/`rsync -t` 式的写回（Windows 上 Node 的 `ctime` 是创建时间，原地同尺寸替换仍看不见，已登记）；残留只剩落在文件系统 **ctime** 粒度内的那次替换），自带 render key 的调用方，其 mtime 判定取本调用的自读，
 并在 append 前校验该 key 仍是文件当前字节（残留窗口只剩最后一次核对到 append 之间）。
 最后一条由 `flushActionFor` 这张纯表表达：`recheck`（读取期间文件被替换 ⇒ journal 与文件都不动，留给下一次 pass）、
 `none`（文件已是 fold）、`keep`（render 比 journal 新 ⇒ 只采纳进 journal、原字节不动）、`publish`（缺失、render 为空/不可比较，或 journal 不旧于它 ⇒ 写回 fold）。

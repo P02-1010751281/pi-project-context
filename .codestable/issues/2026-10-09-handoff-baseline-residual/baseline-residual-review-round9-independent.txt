@@ -1,0 +1,69 @@
+I have completed the independent verification. Here is the review.
+
+---
+
+VERDICT: CHANGES-REQUESTED — 0 blocking / 2 important / 3 nit
+
+## Important
+
+### I-1 `extensions/project-context/handoff/threshold.ts:325` — re-anchor 的门槛用松证明，残余②在真实会话里实际未闭合（fail-open）
+
+- **现象**：触发式 `prompt_r − prompt_p > chars_r − ceil(chars_p/8)` 的 RHS 含整段前缀 `chars_p`，所以需要 `ΔB > 7/8·chars_p` 才重锚。但同一 band 下更紧、同样成立的证明是 `Δprompt > chars_r − chars_p`（新增消息的 `ΔT ≤ chars_added = chars_r − chars_p`，`prompt` 超出它即 `ΔB > 0`）；当前 RHS 把 `7/8·chars_p` 白送给了文本容量。4,000 字符前缀的契约夹具（RHS 7,503，增长 11,000）刚好越过，掩盖了这个门槛。
+- **最小复现**（harness，40,000 字符 ASCII 前缀，注入块 +30,000 token，新增文本仅 8 字符）：
+  ```js
+  const big = chain([
+    messageEntry("u1","user","x".repeat(40_000), stamp(0)),
+    billed("a1","ok",{input:17_766+10_000}, stamp(1)),
+    messageEntry("u2","user","ok", stamp(2)),
+    billed("a2","ok",{input:17_766+30_000+10_002}, stamp(3)),
+  ]);
+  readOf(measureCtx(big,"sample-big-prefix",60_000));
+  // 实测 {baseline:22_766, sampleIndex:0}；a2 的真实 B = 47_766 ⇒ 读数低 25_000。
+  // Δprompt=30_002、Δchars=8，证明 B 增长，但 RHS=35_008 ⇒ 不重锚。
+  ```
+  增量 6,745（本 issue 实测的注入块）在同前缀下同样不触发（读 22,766 vs 真值 24,511，低 1,745）。活树 `01a13385` 的胜出样本 `chars=83,984`（i=4，重锚 RHS=78,570）⇒ 需要约 77k 的 overhead 增长，实测块是 6,745。任何超过 ~2k 文本 token 的会话，本修复都不再触发。
+- **方向**：fail-open（floor 低于当前真值 ⇒ 自动交接过早），正是 issue 的主症状侧；design §14 把 ② 记为「修」与实测不符，代码片段承认“小于 pair slack 的增长不可判定”，但没说出 slack = 7/8 前缀字符。
+- **建议**（两条都已在副本验证）：
+  - (a) 收紧为 `prompt_r − prompt_p > chars_r − chars_p`（与 rate<1 过滤同一条镜像）：field fixture 修复（读 28,767，fail-closed 高读 5,001）；代价是冻结合同 `an uncalibrated session still reads the emptiest record's bound`（`tests/handoff-test.mjs:1404-1408`，0.8 chars/token 的 out-of-band 会话）会红——需同时决定 out-of-band 记录是否允许重锚。
+  - (b) 折中 `> 2·(chars_r − chars_p)`（假设新增文本 ≤2 token/字符，比 band 的 ≤1 更弱）：我实测 15/15 全绿、field fixture 修复、denseRead 合同保持；doc block/§14/CHANGELOG 需写明该假设。
+  - (c) 若保持现状，把 §14 的 ② 改成「部分修」并写明门槛 `ΔB ≤ 7/8·chars_p`（活树 ≈77k vs 实测块 6.7k），契约 5b 换成有代表性前缀的夹具。
+
+### I-2 `.agents/memory/skill-candidates/pi-project-context-adaptive-handoff-threshold-review.md` — 清理提交声称删除候选，文件仍在（清理项未完成 + 可覆盖已发布 skill）
+
+- **现象**：`a517270` 的信息说该 candidate 是 leftover 并 drop；`git show --stat a517270` 只改了 4 个 memory render 文件，没有任何删除。文件在冻结树与源仓库都在（untracked，mtime 10:01 早于 23:01 的提交），frontmatter 仍是 `candidate: true`。同名 promoted skill 带 `autolearn-generated`，而 `candidate.ts` 的 `approveCandidate` 对 autolearn-provenance 的 existing 直接覆盖并删除候选 ⇒ `/autolearn approve pi-project-context-adaptive-handoff-threshold-review` 可把现行 skill 换回旧草稿。
+- **最小复现**：`ls .agents/memory/skill-candidates/`；`git show --stat a517270`；`git status --porcelain`（`??` untracked）。
+- **方向**：发布前清理声明不实；留下一个能回写 shipped skill 的入口。
+- **建议**：删除该文件（untracked，无需 commit；若需记录另开 commit/notes），并确认另一个 tracked 候选不在此次清理范围。
+
+## Nit
+
+### N-1 `extensions/project-context/handoff/threshold.ts:203-205`、`docs/handoff.md:85`、`CHANGELOG.md:14`、`design.md:139` — ② 的旧措辞与新 bullet 矛盾
+
+- **现象**：新 bullet（`threshold.ts:232-238`）说可证增长会重锚；但同段仍写 “the injected block growing inside a session is invisible to it … residual ②”，docs/CHANGELOG 仍无条件说“注入块长大则读低其增量”，design §9 残余清单仍写“本轮不修”。方向是 under-claim，不制造 over-promise，但与被修对象不一致。
+- **建议**：四处补一句“可证增长（门槛见 §14）从该记录重锚；更小的增量读低其量”。
+
+### N-2 `design.md:228`（§14 收尾段）、`design.md:221` — “③④⑤⑥ 从会话文件里在信息论上不可判定”对 ⑥ 不成立
+
+- **现象**：⑥ 的 pre-compaction 记录可由文件判定——compaction 条目自带 timestamp/`firstKeptEntryId`，pi core 用的就是 `assistantMessage.timestamp <= compactionEntry.timestamp`（`agent-session.js:2379-2382`）。最小实现约 5 行：采样时对每条 usage 记录跳过 timestamp ≤ 最近 compaction 的记录（或把该点当 anchor 重置），代价是刚 compaction 后无样本时退回 fallback。钉住可以是 trade-off，但理由应是“收益小/会伤无样本路径”，不是“不可判定”。③ 成立；⑤ 的歧义形状确实无法区分（我复核了 4d：prompt 缩小的豁免正是为了让本地记录存活，per-record 重建也救不了它）；④ 的“无 tokenizer 不可判定”成立。另 ④ 的“首条约 67k 空白字符才低读 5k”没给假设（按 ~20 chars/token 才成立），建议注明或引用 R8 的 r=100 夹具。
+
+### N-3 `.agents/skills/pi-project-context-handoff-baseline-measurement/SKILL.md:8,17,21` — “按 shipped 语义改写”只改了头尾
+
+- **现象**：标题 `#**Shipped state` 缺空格；step 2/3 仍把“从 branch estimate 里减 system”的旧 fail-open 写成现状（shipped 已排除 system）；step 6 “take the minimum residual across records”是旧 estimate-residual 语义（shipped 是 `prompt−chars/8` 的 min）；body 混着旧 rate 框架。另 `Four properties` 的 bullet 现为 6 条。
+- **建议**：step 2/3/6 改写或标 Historical；修 heading 空格与 bullet 计数。
+
+## 复现与验证（本次实测）
+
+- **14 个变异逐位复现**（`^FAIL ` 行数，单点补丁、跑后恢复）：system 3 / 上界退回 rate 12 / `min`→`max` 9 / 自身密度下界 1 / 后缀 1 / 图像 1 / 区间一致性 1 / 忽略 `context_edit` 1 / rate 带下半 3 / 编辑链式 1 / 排除 bash 2 / `!!` 头 2 / 严格 `=== true` 2 / 去掉 re-anchor 1。末节 `check(` = **35**（`awk 'NR>=1308' tests/handoff-test.mjs | grep -cE '^\s*check\('`）。冻结构建 `node tests/run-all.mjs` 15/15 全绿。
+- **② 的 over-trigger 侧 sound**：自造 A–I fixtures 全部通过——真增长触发（28,765/sampleIndex 1）；正常 ASCII、密集 CJK、稀疏空白后的密集增长、小幅 overhead 增长均不触发；6,503 边界仍不触发、6,504 触发（严格不等式与整数 ceil 一致）；`anchor` 与 `sampleIndex` 语义、无样本路径（-1/fallback）正确；400 局与独立实现 differential 0 mismatch。触发对必 `rate<1` ⇒ 不会污染 rate 校准（Δprompt > RHS ≥ Δchars）。重锚只会抬高读数（suffix min），方向 fail-closed。
+- **现场复验（只读，session JSONL）**：probe `01a1331c` 17,763（文档真值 17,753，+10）、ctl `01a1331d` 11,018（11,008，+10）；活树 `01a13385` **52,151 / 35 样本 / sampleIndex 4 / rate 3.2224**，前缀 `131,433×4 → 52,151`，running min 非增。repo 内归档的 session.jsonl 与 `~/.pi/agent/sessions/` 原件逐位一致。
+- **§14 逐条判断**：① 固有代价（无 tokenizer 时 `T≥chars/8` 是唯一通用下界）——成立；② 见 I-1（部分修）；③ 成立（前任被丢弃的对话不在 successor 文件）；④ 成立（空白排除只是挪裂缝，且会破坏 upper band 的一致使用）；⑤ 成立（4d 的两种解释同形）；⑥ 可修（见 N-2），钉住作为 trade-off 可接受；口径 a 与 b 方向确为保守过报，钉住成立。
+- **发布面数字**：CHANGELOG 的 12/35、design §14 的 18,266→28,765 与实测一致；R4–R7 抄本/prompt 已入库；`/tmp` 沙箱目录已不存在；记忆渲染已随 `a517270` 提交。唯一未兑现的是 I-2 的候选删除。
+
+## 仍无法独立验证 / 建议登记
+
+- probe/ctl 的“真值”是 `B_ext = prompt − chars/4` 的推断（沙箱目录已删，session JSONL 仍在；我核对了 17,766/13 与 11,021/13），不是 provider 的二次直报。
+- ④ 的 tokenizer 假设（>8 chars/token）无离线 tokenizer 可实测——与 design 的登记一致。
+- I-1 的活树门槛 ≈77k 是由 session 样本（chars=83,984）推得的静态数字；没有 2026-10-13 之后的现场刷新数据。
+- 建议登记的既有面（非本轮引入）：未触发重锚的小幅 overhead 增长仍会压低 receipt 的 rate（供给 split-turn 预算，方向 fail-closed），可归入残余②/口径面。
+
+**PASS/FAIL 边界**：I-1 与 I-2 修好（或 ② 改登记为部分修并按 (c) 写明门槛）后可复审；其余为文字面。除 I-1/I-2 外，本冻结修订的代码改动与测试契约、现场读数均自洽。

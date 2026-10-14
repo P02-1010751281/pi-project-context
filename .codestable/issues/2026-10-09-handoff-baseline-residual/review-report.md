@@ -333,3 +333,33 @@ prompt `baseline-residual-review-round8-prompt.txt`；零写证明两份快照 d
 链条按仓内规则在此关闭。**PASS 只覆盖 `b9addeb`**：其后的 post-PASS 跟进只改 CHANGELOG / 本报告 / 一条测试注释 / `docs/handoff.md`
 （可执行行与断言零变化）。未闭合项作为后续工作：残余 ①②③④⑤⑥、两条已登记口径差异（`contextTokensAtRate` 仍按 pi 原值计图像与 system；
 `branchSummary`/`!` 包装的几个 token 高读）、以及发布动作（v0.4.10 tag + `~/.pi` pin 同步）。
+
+## R9（冻结 `e23620d`）— **VERDICT: CHANGES-REQUESTED**（2 important + 3 nit）
+
+抄本与 prompt 已入库（`baseline-residual-review-round9-{independent,prompt}.txt`）。
+
+- **I-1（important）**：② 的 re-anchor 门槛 `chars_r − chars_p / RATE_MAX` 把 `7/8 · chars_p` 白送给文本 ⇒ 活树要 ~77k 的增长才触发
+  （实测注入块 6,745）⇒ 残余②实际未闭合（fail-open）。审稿人给了两条已在副本验证的替换方案，采纳 (b)（`2 × Δchars`）。
+- **I-2（important）**：`a517270` 的提交信息声称删除 superseded skill 候选，但 `git rm` 对未跟踪路径失败、文件仍在，
+  且 `approveCandidate` 可把它写回现行 skill。已在 `9d0ef59` 真正删除并订正提交信息。
+- **N-1**：② 的旧措辞（`threshold.ts` doc block「invisible to it」、`docs/handoff.md`、`CHANGELOG.md`、design §9）与新 bullet 矛盾 ⇒ 四处改写。
+- **N-2**：我写「⑥ 不可判定」是错的 —— ⑥ 可由 `compactionEntry.timestamp` + `firstKeptEntryId` 判定，pi 的判据可直接镜像 ⇒ 本轮实现。
+- **N-3**：`handoff-baseline-measurement` skill 只改了头尾（标题缺空格、step 2/3/6 仍是旧 rate 框架）⇒ 改写并修 gotcha。
+
+## R10（冻结 `1952178`）— **VERDICT: PASSED**（0 blocking / 0 important / 6 nit）
+
+抄本与 prompt 已入库（`baseline-residual-review-round10-{independent,prompt}.txt`）。
+
+审稿人独立验证：⑥ 在真实 `buildContextEntries` 形状（含旧 compaction 被新 compaction 保留的 `[c_new, h0, c_old, h1, a1]`）上 sound 且不误伤，
+`entryTime` 与 pi 判据在 421 个真实会话 / 27,440 条记录上 0 失配；6 条真实会话对照旧代码新读数**从不更低**
+（`01a13317` 63,957→95,900、`01a13465` 58,763→140,917、`01a1354d` 77,841→124,191，其余三条不变），且这些抬升全部来自②、⑥ 单独不降读；
+ctime 改动由 `cp -p` 与 192MB 文件的原子 rename 竞态端到端命中（6 次里 4 次在 size 与 mtimeNs 全同的替换下 `changed=true`），正常路径无假阳性；
+16 个变异与 38 条 `check(` 逐位复现；现场读数 probe 17,763 / ctl 11,018 / 活树 52,151 不变；记忆 journal 最后一条 op 与提交字节逐位相等（31,875 / 32,000）。
+
+6 条 nit 全部按「文档 + 注释」在 post-PASS 收口：M14 计数 1→2；⑦ 的证据改指真实出处（R9 抄本）并登记 ⑧（消息条目 ISO 回退比 pi 严、不可达）
+与 ⑨（Windows 的 `ctime` 是创建时间）；措辞从「证明式 / provable」统一为「≤2 token/字符 假设下可判定」；`store.ts` 的 R-L2 改引 shutdown-flush 报告的 S3；
+`entryTime` 注明 ISO 回退的适用边界；`docs/architecture.md` 补 POSIX/Windows 限定。
+
+**收尾**：**PASS 只覆盖 `1952178`**。其后的 post-PASS 跟进只改 CHANGELOG / 本报告 / design / `docs/handoff.md` / `docs/architecture.md` / 一个 skill
+与两个 `.ts` 的**注释** —— 去注释（`//` 与 `/* */`）后与 `1952178` 逐字节相同（两文件均「完全相同」），可执行行、断言与行为零变化。
+未闭合项作为后续工作留在 design §14：①③④⑤⑦⑧⑨ 与两条口径差异（全部钉住并注明方向与量级），其中 ⑧⑨ 是 **R10 新登记**的两条平台/形状面。
