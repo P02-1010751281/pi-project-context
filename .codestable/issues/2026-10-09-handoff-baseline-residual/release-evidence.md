@@ -19,3 +19,9 @@
   扩展侧产物：`.agents/memory/session-logs/INDEX.md` 与 `01a13837-…/session.{md,jsonl}`、两个 `.gitignore` 均生成 ✓
   （新沙箱没有 MEMORY.md，故没有注入块 —— 这一项的端到端差异由本 issue 的 probe/ctl 沙箱读数承载：17,763 / 11,018）。
 - **需要重启**：运行中的 pi 进程仍载旧模块，`MEMORY.md`/交接面要等重启后才走 v0.4.10 的代码。
+- **重启前的核实（2026-10-14T02:2xZ，发布后复查）**：托管本会话的 pi 进程 `pid 614239`（`args=pi`）启动于 **2026-10-13 09:47:36**，早于本次安装
+  （clone HEAD 提交 `7b38cf4` 10:19:42、`pi update` 的 fetch 10:22:14）⇒ 磁盘上是 v0.4.10、内存里仍是旧模块。
+  10:25:39 的那个会话边界（上一会话 `01a137f2` 写出 `HANDOFF.md`、新会话接手）**不是重启**：同一进程内 `ctx.newSession` 的会话替换，
+  `errors.log` 10:25:47 的 `[autolearn] … stale after session replacement or reload … ctx.newSession(` 即其痕迹（该条是辅助调用失败，非机制错误）。
+  该边界发生时上一会话用量约 19%：成功交接不落盘记录，因此「自动阈值还是操作者手动 `/handoff now`」**无法从现有 artifact 判定**，此处不结论。
+  复核方式：重启后看 `MEMORY.md`/`CONTEXT.md` 的 mtime 是否晚于 10:22，以及 `errors.log` 是否只有辅助调用类条目。
