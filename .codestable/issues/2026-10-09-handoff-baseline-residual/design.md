@@ -216,7 +216,7 @@ provider 可见性（`excludedFromContext` 从 `text.ts` 单点导出，threshol
 | # | 残余 | 处置 | 证据 |
 |---|---|---|---|
 | ① | 最空记录自身字符数的高读 `chars × (1/r − 1/8)` | **钉住**：这是密度下界的必然代价（方向 fail-closed），不是缺陷 | 契约 `the over-read is bounded by the emptiest record…`、`the I-1 fixtures read above the truth…`；docs/CHANGELOG 已写 |
-| ② | 注入块会话内刷新 ⇒ 读到旧 baseline | **修**：证明式 re-anchor —— `prompt_r − prompt_p > chars_r − chars_p / RATE_MAX`（由 `T_r ≤ chars_r`、`T_p ≥ chars_p / RATE_MAX` 推出）证明 `B` 增长，最小值从该记录重启 | 契约 `a proven overhead increase restarts the minimum`（旧读 18,266 ⇒ 现读 28,765）；变异 M14 红 1 |
+| ② | 注入块会话内刷新 ⇒ 读到旧 baseline | **修**（部分）：启发式 re-anchor —— `prompt_r − prompt_p > 2 × (chars_r − chars_p)`（新增文本 ≤2 token/字符）即重启最小值；不是证明（假阳性只抬高读数），阈值以下的增长仍以该增量为界 | 契约 `an overhead increase the text cannot carry restarts the minimum`（第 9 轮审稿人的现场夹具：旧读 22,766 ⇒ 现读 52,767，真值 47,766）；变异 M14 红 1。**第 9 轮 I-1**：第一版的阈值 `chars_r − chars_p/RATE_MAX` 把 `7/8·chars_p` 白送给文本，活树需 ~77k 才触发（实测注入块 6,745）⇒ 已按审稿人验证过的紧阈值改正 |
 | ③ | 只有 predecessor 记录时读虚高（活树 record 0–3 读 131,433） | **钉住**：successor 的文件里没有前任的对话，`B` 无法从该记录反推；方向是**拒绝**（高读）而不是低读 | 契约 `a predecessor-only prefix reads the predecessor's bound, high` |
 | ④ | >8 chars/token 的偏稀疏锚点（长空白/重复串） | **钉住**：没有 tokenizer 就无法判定；量级已给（首条约 67k 空白字符才低读 5k）；区间形式已被一致性规则捕获 | design §11 枚举、CHANGELOG 残余指针 |
 | ⑤ | 文件级陈旧锚点（手改 / 外部写者） | **钉住**：4d 契约；pi 自身写者只向 leaf 追加 ⇒ 该时序不可复现 | tests 4d、design §11 |
@@ -225,4 +225,6 @@ provider 可见性（`excludedFromContext` 从 `text.ts` 单点导出，threshol
 | 口径 b | `branchSummary`/`compactionSummary` 前后缀、`!` 的 ``Ran `cmd` `` 包装 | **钉住**：fail-closed 高读，≤ 十几 token | design §11 枚举 |
 
 **本轮代码只改一处**（② 的证明式 re-anchor，`handoff/threshold.ts`）；①③④⑤⑥ 与两条口径差异不再改代码，但方向、量级与判据都写在本文件、CHANGELOG、代码注释与测试契约里
-——「已登记」的重定义是**已定界、已钉住、已注明方向**，而不是「未处理」。任何一条若要**改变**（而不是钉住），需要字段证据支撑新判据（③④⑤⑥ 从会话文件里在信息论上不可判定；① 是密度下界的固有代价）。
+——「已登记」的重定义是**已定界、已钉住、已注明方向**，而不是「未处理」。任何一条若要**改变**（而不是钉住），需要字段证据支撑新判据。**第 9 轮审查员的订正**（本轮采纳）：③④⑤ 从会话文件里不可判定、
+① 是密度下界的固有代价，但 **⑥ 可修** —— pi core 用 `assistantIsFromBeforeCompaction`（`agent-session.js`）把压缩前计费的记录视为失效，
+采样器可以镜像它；本行原先写「⑥ 不可判定」是错的，⑥ 因此**不按钉住收尾**，而是留作下一轮实现项（镜像 pi 的失效判据 + 契约 + 变异）。

@@ -232,11 +232,13 @@ export interface ContextMeasure {
  *   (150k in the test, 131k live) - the silent disable this issue is about. The price is a region the file
  *   cannot judge: a *stale* local record whose prompt was billed before a replay landed, sitting behind a
  *   larger predecessor prompt, still reads low (review round 4's I-1; residual ⑤ in the issue's design §10).
- * - The minimum is taken over samples **since the last proven overhead increase**. A record whose prompt grew
- *   by more than its text could carry (`prompt_r - prompt_p > chars_r - chars_p / RATE_MAX`) proves `B_r > B_p`,
- *   so every earlier sample measures a stale baseline and the minimum restarts at that record (design §14,
- *   residual ②: the injected block refreshing inside a session). An undetectable increase - one smaller than the
- *   pair's slack - leaves the reading that much below the current baseline, which is bounded by the increase.
+ * - The minimum is taken over samples **since the last detected overhead increase**: a record whose prompt grew
+ *   by more than twice its added text (`prompt_r - prompt_p > 2 * (chars_r - chars_p)`) restarts it, because the
+ *   text cannot have carried that much (`<= 2` tokens per added character, the band's dense end relaxed by two;
+ *   `T <= chars` would fire on base64-like content, `chars_p / RATE_MAX` needs ~77k on the live session). This is
+ *   a **heuristic**, not a proof, and its false positives only raise the reading. Every earlier sample measures a
+ *   baseline that may be stale otherwise - the injected block refreshing inside a session is the field case - and
+ *   an increase below the threshold leaves the reading that much low, bounded by the increase (design §14, ②).
  * - `chars` follows pi's **projection**, not the raw entry list: a `context_edit` rewrites its target's
  *   messages (or drops them) and the provider is sent the edited text, so a message a user shortened or
  *   deleted must stop counting (round 4's I-2: the un-edited prefix read 5,267 where the baseline is 17,766).
@@ -318,11 +320,14 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		const previous = samples.at(-1);
 		if (previous && !split && prompt >= previous.prompt) {
 			if (chars - previous.chars > (prompt - previous.prompt) * RATE_MAX) continue;
-			// The mirror case: if the prompt grew by more than the text could carry (`T_r <= chars_r` from the
-			// band's upper end, `T_p >= chars_p / RATE_MAX` from its lower end), the **baseline** itself grew -
-			// the injected block refreshing inside a session is the field case - so every earlier sample measures
-			// a stale baseline and the minimum restarts here (design §14; residual ②).
-			if (prompt - previous.prompt > chars - Math.ceil(previous.chars / RATE_MAX)) anchor = samples.length;
+			// The mirror case: if the prompt grew by more than twice the added text, the **baseline** itself grew -
+			// the injected block refreshing inside a session is the field case - so every earlier sample measures a
+			// stale baseline and the minimum restarts here (design §14; residual ②). Two tokens per added character
+			// is the band's dense end relaxed by two; the band's own `T <= chars` false-positives on base64-like
+			// content, and subtracting `chars_p / RATE_MAX` instead (as this first did) hands 7/8 of the prefix to
+			// the text, so it needs an increase of ~77k on the live session and never fires in practice
+			// (independent review round 9).
+			if (prompt - previous.prompt > 2 * (chars - previous.chars)) anchor = samples.length;
 		}
 		samples.push({
 			prompt,

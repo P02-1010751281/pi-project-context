@@ -1761,23 +1761,24 @@ try {
 		!absurdRead.calibrated && absurdRead.rate === 4 && absurdRead.samples === 4,
 	);
 
-	// 5b. An overhead increase the text cannot account for restarts the minimum: the earlier samples measure the
-	//     old baseline, and keeping them read the new baseline low by the increase - the injected block refreshing
-	//     inside a session (design residual ②). The detector is the mirror of the consistency rule: `T_r <= chars_r`
-	//     and `T_p >= chars_p / RATE_MAX`, so `prompt_r - prompt_p > chars_r - chars_p / RATE_MAX` proves `B` grew.
-	//     Here o2 bills the 17,766 baseline + 1,000 tokens, the overhead then grows by 10,000 and o4 bills
-	//     27,766 + 2,000: without the restart the minimum keeps o2's 18,266, with it the reading is o4's
-	//     `29,766 - ceil(8,004 / 8) = 28,765`. Mutation: no re-anchor reads 18,266.
+	// 5b. An overhead increase the text cannot account for restarts the minimum: the earlier sample measures the
+	//     old baseline, and keeping it reads the new one low by the increase - the injected block refreshing
+	//     inside a session (design residual ②). The detector is `prompt_r - prompt_p > 2 * (chars_r - chars_p)`,
+	//     i.e. more growth than two tokens per added character could carry; the shape below is review round 9's
+	//     field fixture (a 40,000-char prefix, a +30,000-token refresh, eight characters of new text), where the
+	//     looser first threshold never fired. a2 bills 17,766 + 30,000 + 10,002 = 57,768 and its prefix is
+	//     40,008 chars, so the restarted reading is `57,768 - ceil(40,008 / 8) = 52,767` - 5,001 above the true
+	//     baseline, i.e. fail-closed. Mutation: no re-anchor keeps the old minimum, 22,766.
 	const grewOverhead = chain([
-		messageEntry("o1", "user", "x".repeat(4_000), stamp(0)),
-		billed("o2", "ok", { input: 18_766 }, stamp(1)),
-		messageEntry("o3", "user", "x".repeat(4_000), stamp(2)),
-		billed("o4", "ok", { input: 29_766 }, stamp(3)),
+		messageEntry("o1", "user", "x".repeat(40_000), stamp(0)),
+		billed("o2", "ok", { input: 27_766 }, stamp(1)),
+		messageEntry("o3", "user", "ok", stamp(2)),
+		billed("o4", "ok", { input: 57_768 }, stamp(3)),
 	]);
 	const grewRead = readOf(measureCtx(grewOverhead, "sample-grew", 60_000));
 	check(
-		"a proven overhead increase restarts the minimum",
-		grewRead.samples === 2 && grewRead.sampleIndex === 1 && grewRead.baseline === 28_765,
+		"an overhead increase the text cannot carry restarts the minimum",
+		grewRead.samples === 2 && grewRead.sampleIndex === 1 && grewRead.baseline === 52_767,
 	);
 
 	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for
