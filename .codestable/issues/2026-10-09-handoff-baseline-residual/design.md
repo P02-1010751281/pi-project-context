@@ -1,6 +1,8 @@
 # 设计：baseline 的取样修正（issue 2026-10-09-handoff-baseline-residual）
 
-状态：**待 operator 定稿**；按本仓惯例，实现前需一轮独立审查（冻结修订 + `/tmp` 只读沙箱）。
+状态：**frozen / 已实现 / 已发布** —— 实现提交 `1952178`（lane A 第 10 轮独立审查 PASSED，抄本见 `review-report.md`），
+发布 `v0.4.10`（peeled commit `7b38cf4`，证据见 `release-evidence.md`，逐文件 why 与非目标见 `fix-note.md`）。
+残余的最终处置见 §14。
 上游证据：`brief.md`（机制与证伪条件）、`baseline-attribution-experiment.md`（漂移量级）、
 `probe-true-baseline.md`（provider 直报真值）。
 
