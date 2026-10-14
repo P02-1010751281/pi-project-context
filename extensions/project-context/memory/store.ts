@@ -116,12 +116,26 @@ export async function readRenderWithMtime(file: string): Promise<{ text: string;
 	const text = await readOptional(file);
 	const after = await stat(file).catch(() => undefined);
 	// A file replaced under the read would give the key of one version and the time of another, so the
-	// caller must journal neither and overwrite neither. The test is mtime + size: a replacement that keeps
-	// both (a same-size edit inside the filesystem's timestamp granularity) stays invisible here, which is
-	// the accepted residual. It is the caller's decision from there, and the two write paths differ: the
-	// journal append is guarded by the append-time recheck in adoptExternalEdit, the publish side by this flag.
-	const changed = Boolean(after) && (before?.mtimeMs !== after.mtimeMs || before?.size !== after.size);
+	// caller must journal neither and overwrite neither. It is the caller's decision from there, and the two
+	// write paths differ: the journal append is guarded by the append-time recheck in adoptExternalEdit, the
+	// publish side by this flag.
+	const changed = renderChangedAcrossRead(before, after);
 	return { text, mtimeMs: after?.mtimeMs, changed };
+}
+
+/**
+ * Whether the stats taken around a read describe the same file version. `mtime` + `size` is what a
+ * replacement normally moves; `ctime` catches the one that does not - a writer that preserves mtime
+ * (`cp -p`, `rsync -t`) and lands the same number of bytes leaves both untouched, and ctime cannot be set
+ * from userspace, so it also covers the copy that used to stay invisible (past residual R-L2).
+ * Exported as a pure decision so a test can pin that case directly.
+ */
+export function renderChangedAcrossRead(
+	before: { mtimeMs: number; size: number; ctimeMs: number } | undefined,
+	after: { mtimeMs: number; size: number; ctimeMs: number } | undefined,
+): boolean {
+	if (!after) return false;
+	return before?.mtimeMs !== after.mtimeMs || before?.size !== after.size || before?.ctimeMs !== after.ctimeMs;
 }
 
 /**

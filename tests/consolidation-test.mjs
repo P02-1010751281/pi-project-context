@@ -2387,6 +2387,28 @@ try {
 			check("flush decision: an unstatable render is not treated as new", flushActionFor("A", undefined, 10, "F", false) === "publish");
 			check("flush decision: an unstatable journal is not treated as old", flushActionFor("A", 20, undefined, "F", false) === "publish");
 			check("flush decision: a key with no file behind it still publishes", flushActionFor("", 20, 10, "F", false) === "publish");
+			// The read's own consistency judgement as a pure decision: mtime and size are what a replacement
+			// normally moves, ctime is what catches a writer that preserves mtime (`cp -p`, `rsync -t`) and lands
+			// the same byte count - the copy that used to stay invisible to the flag. A file that appeared under
+			// the read is a change; one that vanished is the caller's missing-render case, which publishes the
+			// fold. Mutation: dropping the ctime clause reddens the mtime-preserving replacement alone.
+			const { renderChangedAcrossRead } = await loadNamespace(`${PC}/memory/store.ts`);
+			const version = (mtimeMs, size, ctimeMs) => ({ mtimeMs, size, ctimeMs });
+			check(
+				"read consistency: an untouched file is not changed",
+				renderChangedAcrossRead(version(10, 100, 500), version(10, 100, 500)) === false,
+			);
+			check("read consistency: a newer mtime is a change", renderChangedAcrossRead(version(10, 100, 500), version(11, 100, 500)) === true);
+			check("read consistency: another size is a change", renderChangedAcrossRead(version(10, 100, 500), version(10, 101, 500)) === true);
+			check(
+				"read consistency: a same-size mtime-preserving replacement is a change",
+				renderChangedAcrossRead(version(10, 100, 500), version(10, 100, 501)) === true,
+			);
+			check("read consistency: a file that appeared under the read is a change", renderChangedAcrossRead(undefined, version(10, 100, 500)) === true);
+			check(
+				"read consistency: a file that vanished under the read is the missing-render case",
+				renderChangedAcrossRead(version(10, 100, 500), undefined) === false,
+			);
 		} finally {
 			await rmTemp(gateTmp);
 		}
