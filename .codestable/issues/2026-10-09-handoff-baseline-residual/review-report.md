@@ -340,8 +340,10 @@ prompt `baseline-residual-review-round8-prompt.txt`；零写证明两份快照 d
 
 - **I-1（important）**：② 的 re-anchor 门槛 `chars_r − chars_p / RATE_MAX` 把 `7/8 · chars_p` 白送给文本 ⇒ 活树要 ~77k 的增长才触发
   （实测注入块 6,745）⇒ 残余②实际未闭合（fail-open）。审稿人给了两条已在副本验证的替换方案，采纳 (b)（`2 × Δchars`）。
-- **I-2（important）**：`a517270` 的提交信息声称删除 superseded skill 候选，但 `git rm` 对未跟踪路径失败、文件仍在，
-  且 `approveCandidate` 可把它写回现行 skill。已在 `9d0ef59` 真正删除并订正提交信息。
+- **I-2（important）**：`a517270` 的提交信息声称删除 superseded skill 候选，但提交里没有任何删除动作，且 `approveCandidate` 可把它写回现行 skill。
+  **收口方式**：该候选是 **untracked** 文件（`.agents/memory/skill-candidates/pi-project-context-adaptive-handoff-threshold-review.md`），
+  它的删除永远不会出现在任何提交里 —— `a517270` 的信息描述的就是这种带外 `rm`（`0a95b4b` 的「retire two superseded candidates」同理）。
+  现状核对（发布后）：被点名文件已不存在、其 promoted 同名 skill 在位；`a517270` 的信息未改写，因为它是已发布 tag 的祖先，改写会作废 tag。
 - **N-1**：② 的旧措辞（`threshold.ts` doc block「invisible to it」、`docs/handoff.md`、`CHANGELOG.md`、design §9）与新 bullet 矛盾 ⇒ 四处改写。
 - **N-2**：我写「⑥ 不可判定」是错的 —— ⑥ 可由 `compactionEntry.timestamp` + `firstKeptEntryId` 判定，pi 的判据可直接镜像 ⇒ 本轮实现。
 - **N-3**：`handoff-baseline-measurement` skill 只改了头尾（标题缺空格、step 2/3/6 仍是旧 rate 框架）⇒ 改写并修 gotcha。

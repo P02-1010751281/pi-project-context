@@ -11,7 +11,8 @@ The baseline is the minimum `prompt − chars/8` density bound over the accepted
 `convertToLlm`-excluded inputs are out; `chars` follows pi's projection including `context_edit`); the rate only converts the receipt and
 the split-turn budget; a record billed at or before the newest compaction is not a sample at all, and an interval whose overhead the text
 cannot carry under the `<=2 tokens-per-added-character` assumption restarts the minimum. The re-anchor is a documented heuristic, not a
-proof. Both the compaction-eligibility mirror (step 21) and the wording sweep are shipped as v0.4.10 (`1952178` + `7b38cf4`); what is
+proof. Both the compaction-eligibility mirror (step 21, `44f7104`) and the wording sweep are shipped in v0.4.10 (the tag is peeled at the
+docs commit `7b38cf4`); what is
 still open is what design §14 registers (residuals ①③④⑤⑦⑧⑨ and the two rate-scope differences), not this.
 
 # When to use

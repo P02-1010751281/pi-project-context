@@ -1,7 +1,8 @@
 # 发布证据 v0.4.10（issue `2026-10-09-handoff-baseline-residual` 的收尾）
 
-- **实现提交**：`1952178`（`fix(handoff): invalidate records billed before the newest compaction, and correct the residual wording`）
-  之前两片：`44f7104`（⑥ + 措辞）、`1952178`（记忆读路径 ctime + MEMORY 两条 pitfall 重写）。
+- **实现提交（按顺序）**：`e23620d`（② re-anchor 首版 + 残余收口）、`9d0ef59`（② 按 R9 I-1 收紧为 `2 × Δchars`）、
+  `44f7104`（⑥ 压缩前记录不作样本 + 措辞）、`1952178`（记忆读路径 ctime —— **R10 冻结的最后一版代码提交**）。
+  发布 tag v0.4.10 落在其后的文档提交 `7b38cf4` 上（上一版本文此处把 `44f7104` 的信息挂在了 `1952178` 上，已改正）。
 - **独立审查**：lane A 第 10 轮，冻结 `1952178`，`VERDICT: PASSED`（0 blocking / 0 important / 6 nit）；
   抄本 `baseline-residual-review-round10-{independent,prompt}.txt`，6 条 nit 的收口见 `review-report.md`。
 - **Post-PASS 说明**：`1952178` 之后的提交只改 CHANGELOG / review-report / design / `docs/handoff.md` / `docs/architecture.md` /
