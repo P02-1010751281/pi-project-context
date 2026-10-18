@@ -9,6 +9,8 @@
 | R3 | cleanup batch (intermediate closing + baseline test nits) | PASSED | 0 | 0 | byte-exact 0ca14ba closing, suffix interaction understood, accumulation fixture mutation-sensitive |
 | R4 | `/skill:` block detection | CHANGES-REQUESTED | 0 | 1 | docs re-claimed recency for the index sources; fixed in R5, plus three nits and three test suggestions |
 | R5 | `/skill:` source after the R4 fixes | PASSED | 0 | 0 | docs wording exact, real pi parser, mutation matrix 5/3/1/1/3, no model call |
+| R6 | codemode nested-read source | CHANGES-REQUESTED | 0 | 2 | issue records contradicted the code (codemode residual; standalone `.md` claim); fixed in R7 |
+| R7 | nested-read source after the R6 fixes | PASSED | 0 | 0 | nested-read shape, negative/malformed pins, 2-FAIL mutation; records agree |
 
 ## R1 (transcript: `review-round1-independent.txt`)
 
@@ -90,8 +92,28 @@ Post-PASS nits fixed: the three fix-note mutation counts, the bound comment ("ea
 keeps its recency order within itself"), the cap-residual wording, and the three-entry no-downgrade
 test.
 
+## R6 (codemode nested reads; transcript: `review-round6-nested-read-independent.txt`)
+
+**VERDICT: CHANGES-REQUESTED**. The code and tests were confirmed against pi's
+`extractFileOpsFromMessage` (`nestedCalls.calls`, arguments at start, status ignored) and the 1-FAIL
+mutation. Two important record contradictions: the fix-note still said codemode nested reads were
+undetected, and the review report claimed a standalone `.md` skill was visible to `/skill:` (it is
+not; `isSkillFile` gates that source too). Nits: the comment overclaimed "script-side"/"real read";
+errored nested reads needed recording. Suggestions: generic producer wording, negative/malformed
+pins, and the `collectFileOps` asymmetry.
+
+## R7 (nested-read source after the R6 fixes; transcript: `review-round7-nested-read-independent.txt`)
+
+**VERDICT: PASSED**. Records now agree with the code and each other; the nested-read source is
+generic over extension tools, the standalone-`.md` residual is exact, and the negative pins
+(nested write, non-SKILL read, malformed, errored) are individually mutation-sensitive. Removing
+the nested scan gives exactly 2 FAIL (positive + errored). Post-PASS nits fixed: drop MCP from the
+producer wording, enumerate the negative pins in the fix-note, pin a non-array `nestedCalls` list,
+and record oversized-call arguments as invisible. The `collectFileOps` asymmetry remains named for
+a separate file-index slice.
+
 Residual risks remain as disclosed: a prompt-sourced hop-1 mode can be evicted by eight newer
-reads; a compaction inside the successor drops the stored prompt; `bash`/`cat` and codemode
-`nestedCalls` reads are invisible; a `branch_summary` file list is not scanned (its files belong to
-the abandoned branch); a standalone `.md` skill is invisible to every source; the successor may
-still ignore the instruction.
+reads; a compaction inside the successor drops the stored prompt; a `bash`/`cat` read is invisible;
+a `branch_summary` file list is not scanned (its files belong to the abandoned branch); a
+standalone `.md` skill is invisible to every source (including `/skill:`: `isSkillFile` requires the
+`SKILL.md` basename); the successor may still ignore the instruction.

@@ -161,6 +161,54 @@ Ask one question at a time.
 		),
 	]);
 	check("a /skill: entry survives the 8-cap against eight reads", cappedCommand.length === 8 && cappedCommand[0]?.name === "grilling" && !cappedCommand.some((skill) => skill.name === "cap-skill-00"));
+	const nestedRead = {
+		type: "message",
+		id: "skn1",
+		parentId: null,
+		timestamp: "2026-09-16T00:49:05.900Z",
+		message: {
+			role: "toolResult",
+			toolCallId: "codemode1",
+			content: [{ type: "text", text: "script output" }],
+			timestamp: Date.parse("2026-09-16T00:49:05.900Z"),
+			nestedCalls: { calls: [{ name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }] },
+		},
+	};
+	const nestedReads = handoff.collectActiveSkills([nestedRead]);
+	check("a codemode nested read is detected", nestedReads.length === 1 && nestedReads[0]?.name === "grilling");
+	const nestedResult = (id, calls) => ({
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: "2026-09-16T00:49:05.910Z",
+		message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "script output" }], timestamp: Date.parse("2026-09-16T00:49:05.910Z"), nestedCalls: { calls } },
+	});
+	check(
+		"a nested read of a non-SKILL file is ignored",
+		handoff.collectActiveSkills([nestedResult("skn2", [{ name: "read", arguments: { path: "/tmp/notes.md" } }])]).length === 0,
+	);
+	check(
+		"a nested write is not a skill read",
+		handoff.collectActiveSkills([nestedResult("skn3", [{ name: "write", arguments: { path: "/repo/.agents/skills/grilling/SKILL.md" } }])]).length === 0,
+	);
+	let nestedThrew = false;
+	try {
+		handoff.collectActiveSkills([nestedResult("skn4", [null, 42, { name: "read", arguments: null }])]);
+	} catch {
+		nestedThrew = true;
+	}
+	check("malformed nested calls do not throw", !nestedThrew);
+	let nonArrayNestedThrew = false;
+	try {
+		handoff.collectActiveSkills([nestedResult("skn6", "not-an-array")]);
+	} catch {
+		nonArrayNestedThrew = true;
+	}
+	check("a non-array nestedCalls list does not throw", !nonArrayNestedThrew);
+	check(
+		"an errored nested read still counts (pi records the call at start)",
+		handoff.collectActiveSkills([nestedResult("skn5", [{ name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" }, status: "error" }])]).length === 1,
+	);
 	const fakePrompt = "随便看看\n<read-files>\n/home/user/.agents/skills/grilling/SKILL.md\n</read-files>";
 	check("an ordinary user message is not a skill source", handoff.collectActiveSkills([contentEntry("sk6", "user", [{ type: "text", text: fakePrompt }], "2026-09-16T00:49:06.000Z")]).length === 0);
 	const hooked = handoff.collectActiveSkills([

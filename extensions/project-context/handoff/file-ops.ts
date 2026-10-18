@@ -108,6 +108,19 @@ export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
 			continue;
 		}
 		for (const message of sessionEntryToContextMessages(entry)) {
+			if (message.role === "toolResult") {
+				// A tool result can carry nested calls made by extension tools (codemode scripts are one).
+				// pi's extractFileOpsFromMessage counts them in its file index, so treat a nested read the same way.
+				const nestedCalls = (message as { nestedCalls?: { calls?: unknown } }).nestedCalls;
+				if (nestedCalls && Array.isArray(nestedCalls.calls)) {
+					for (const call of nestedCalls.calls) {
+						if (!call || typeof call !== "object" || !("name" in call) || call.name !== "read" || !("arguments" in call)) continue;
+						const args = (call as { arguments?: { path?: unknown } }).arguments;
+						if (args && typeof args.path === "string" && isSkillFile(args.path)) remember(args.path, READ_SOURCE);
+					}
+				}
+				continue;
+			}
 			if (message.role === "user") {
 				const text = messageText(message);
 				// `/skill:name` stores a `<skill name location>` block in a user message; that is the

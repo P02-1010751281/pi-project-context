@@ -118,7 +118,7 @@ E-4000
 
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
 2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`）；
-3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块、`read` 过 `SKILL.md` 的工具调用、compaction 的 `readFiles`、以及上一份交接提示的
+3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块、`read` 过 `SKILL.md` 的工具调用（含工具结果上记录的嵌套 `read`）、compaction 的 `readFiles`、以及上一份交接提示的
    `<read-files>` 收集（去重；`/skill:` 最优先，其次真实 `read`，两者内部按最近出现排序；提示/压缩的文件清单最后，
    按块内倒序只填剩余名额；最多 8 个），每个条目带技能名与 `SKILL.md` 路径，并附一条「若某个设定了持续生效的模式，
    先重新读取它的 `SKILL.md` 并继续遵循」的指令（v0.4.11）。这样即使技能说明随被丢弃的前缀一起离开上下文，

@@ -1,0 +1,39 @@
+# R7 Re-review: tool-result nested-read source (active-skills handoff slice)
+
+All five R6 items were re-verified against the live repo **and** the installed pi 1.3.0 sources. All claims check out; two record-precision nits remain, no important/blocking findings.
+
+## Verification evidence
+
+**I-1/I-2 records (issue files agree with code and each other)**
+- `fix-note.md:29-31` now lists nested `read`s on tool results as a detected source; `fix-note.md:91-94` leaves only `bash`/`cat`/arbitrary commands undetected. No stale "codemode reads not detected" wording anywhere in current-state text.
+- Standalone-`.md` claim is exact for every source, verified in pi's loader: `skills.js` loads root-level `.md` children as skills (`loadSkillsFromDirInternal`, `includeRootFiles`), and `/skill:` stores `location="${skill.filePath}"` (`agent-session.js:1710`) — the `.md` path. `isSkillFile` (basename `SKILL.md`) gates `/skill:`, direct read, nested read, compaction `readFiles`, and prompt `<read-files>` — so invisible everywhere, including `/skill:`. ✓
+- `review-report.md:12-13` R6/R7 rows and the residual paragraph (`:95-101`) match the fix-note; historical R1-section rows describe then-state, which is this report's established convention.
+
+**Code (pi cross-check)**
+- pi's `extractFileOpsFromMessage` (`dist/core/compaction/utils.js`): `if (message.role === "toolResult") { for (const call of message.nestedCalls?.calls ?? []) addFileOp(...); return; }` — counts nested reads, ignores `status`. The repo's comment (`file-ops.ts:112-113`) is accurate; no "script-side"/"real read" residue. ✓
+- Shape: `NestedToolCalls = { calls: NestedToolCallRecord[], complete }`, record `{ id, name, status, arguments?, argumentsBytes?, … }` (`pi-ai/types.d.ts:395-411`); `recorder.start()` stores name+arguments **before** execution, `finish()` only sets status (`nested-tool-calls.js`) — so N-4's "recorded at start, status ignored" is exact. ✓
+- Preservation: `sessionEntryToContextMessages` returns the raw message for message entries (`session-manager.js:166-183`), and `agent-session.js:721` attaches `nestedCalls` at `message_start` — the scan sees it. ✓
+- Priority 3 / dedupe / order / cap: nested reads share `READ_SOURCE` (3) with direct reads; same-file dedupe and recency semantics hold; the flooding-at-cap residual (`fix-note.md:95-97`) is correct; S-5's `collectFileOps` asymmetry is real (local `extractFileOpsFromMessage` is assistant-only; pi's compaction does include nested reads). ✓
+
+**Tests (all run in-sandbox, zero-write held — `git status` unchanged beyond the incoming 6 files)**
+- `node tests/handoff-test.mjs` → all checks passed, "no scenario above reached a model".
+- `node tests/run-all.mjs` → `All 15 tests passed.`
+- Mutation in a /tmp copy (whole `toolResult` branch removed) → **exactly 2 FAIL**: "a codemode nested read is detected", "an errored nested read still counts" — matches `fix-note.md:84`. ✓
+- New pins are individually mutation-sensitive (verified in /tmp copies): drop `name !== "read"` → 1 FAIL (nested write); drop null/object guards → 1 FAIL (malformed no-throw); drop nested `isSkillFile` gate → 1 FAIL (non-SKILL). No missed write/non-SKILL case; a nested `edit` shares the write pin's guard.
+
+## Findings
+
+- **nit** — `extensions/project-context/handoff/file-ops.ts:112`, `fix-note.md:30,93`: "MCP" is named as a nested-call producer, but only tools that receive `ctx.executeTool()` can produce `nestedCalls` — that is extension tools (codemode is one). The MCP tool wrapper's execute is `(_toolCallId, params, signal, onUpdate)` (`pi-coding-agent/dist/extensions/mcp/tools.js:255`) and never touches the context; remote MCP servers cannot call the host's recorder. MCP tools are nested-call *targets* (`getCallableTools`), not producers. Impact: record accuracy only (the class R6 dinged), no behavior; docs/CHANGELOG wording ("工具结果上记录的嵌套 `read`") is neutral and fine. Fix boundary: say "extension tools (e.g. codemode scripts)" in the comment and the two fix-note parentheticals.
+- **nit** — `fix-note.md:56-62`: the verification paragraph names only the positive nested read; the three new negative pins (nested write ignored, non-SKILL nested read ignored, malformed no-throw) are enumerated nowhere except indirectly via the mutation row's errored pin. The fix-note's convention enumerates pin coverage; one sentence would complete it.
+- **suggestion** — `tests/handoff-test.mjs:164-204`: no pin for a non-array `nestedCalls.calls` or `nestedCalls: null` (both skip via the `Array.isArray` / `nestedCalls &&` guards; no-throw holds but is unpinned). Low value — the malformed pin covers the guard family.
+- **learning** — pi's own `extractFileOpsFromMessage` for-ofs `nestedCalls?.calls ?? []` without an `Array.isArray` check, so a corrupt session file with non-iterable `calls` would throw inside pi's compaction; the repo mirror is more defensive while matching semantics. Also, `NESTED_CALL_LIMITS` (8 KB/call, 32 KB total) omits `arguments` entirely for oversized nested calls — such reads are invisible to both pi and this scan (undisclosed corner; residual-risk).
+- **praise** — every R6 claim reproduced: the 2-FAIL mutation, the start-recorded/status-ignored semantics, the `nestedCalls` shape and persistence path, the standalone-`.md` invisibility (all five sources), and the `collectFileOps` asymmetry. The docs' "其次真实 `read`" tier wording remains accurate: a nested read is a real read execution, sharing tier 3.
+
+## Test And QA Focus
+
+- `node tests/handoff-test.mjs` (276 checks) and `node tests/run-all.mjs` (15/15) — pass; handoff makes no model call.
+- Mutation: remove the `toolResult` nested-read branch → exactly 2 FAIL (positive + errored). Keep re-running this alongside the guard mutations (`name`, null/object, `isSkillFile`) — each reddens exactly its own pin.
+- If the nits are applied: re-run the full suite; the fix-note verification line should then name all five nested pins, and the comment/fix-note producer list should drop MCP.
+- Zero-write proof: only the 6 incoming files are modified; no untracked files; `.agents/` untouched.
+
+VERDICT: PASSED

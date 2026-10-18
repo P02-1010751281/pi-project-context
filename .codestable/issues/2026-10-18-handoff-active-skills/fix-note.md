@@ -26,7 +26,9 @@ session returns both from the prompt text, so the new continuation would name th
 - `handoff/file-ops.ts`: `collectActiveSkills(entries)` collects `SKILL.md` paths from
   - a user `/skill:name` invocation's `<skill name location>` block (pi's own `parseSkillBlock`;
     the location is the skill's `SKILL.md`),
-  - assistant `read` tool calls (the normal way pi loads a skill),
+  - assistant `read` tool calls (the normal way pi loads a skill), and nested `read` calls
+    recorded on a tool result (extension tools such as codemode; pi's own
+    `extractFileOpsFromMessage` reads them),
   - a compaction entry's non-hook `details.readFiles`,
   - a recognized handoff prompt's `<read-files>` block (the only copy left after a read call was
     dropped); a user message that is not a handoff prompt is ignored.
@@ -54,7 +56,9 @@ session returns both from the prompt text, so the new continuation would name th
   and for a non-`SKILL.md` location is ignored; a `/skill:` block outranks a read; the same file
   through `/skill:` and `read` dedupes in both orders; a skill block embedded in prose or with a
   single-newline trailer is not a load; a `/skill:` entry survives the 8-cap against eight reads; a
-  `read` of `SKILL.md` is found; a normal file read is not; a duplicate is
+  codemode nested `read` is detected, while a nested write, a non-SKILL nested read and malformed
+  nested calls are ignored (the last without throwing); a `read` of `SKILL.md` is found; a normal
+  file read is not; a duplicate is
   deduped and reads are most-recent-first; a compaction `readFiles` entry is found and a `fromHook`
   compaction is ignored; a prior continuation prompt's `<read-files>` is found; an ordinary user
   message quoting `<read-files>` is not; a draft-added list marker is stripped; a real read outranks
@@ -79,19 +83,29 @@ session returns both from the prompt text, so the new continuation would name th
   - remove the `/skill:` scan -> 5 FAIL (no-read, trailing message, outranks read, cap survival, no-downgrade);
   - lower `SKILL_COMMAND_SOURCE` to 2 -> 3 FAIL (outranks read, cap survival, no-downgrade);
   - remove the `isSkillFile` guard -> 1 FAIL (non-SKILL location);
-  - change the priority guard `>` to `!==` -> 1 FAIL (no-downgrade).
+  - change the priority guard `>` to `!==` -> 1 FAIL (no-downgrade);
+  - remove the nested-read scan -> 2 FAIL (positive nested read, errored nested read).
 - Full suite: `node tests/run-all.mjs` -> `All 15 tests passed.`
 
 ## Residuals
 
 - A skill read once for reference (not as a mode) is listed too; the section says "if one set an
   active mode", so the successor decides. Direction is prompt-level, not enforced.
-- Detection relies on a `/skill:` block, a `read` of `SKILL.md`, a compaction `readFiles`, or a
-  prior handoff prompt. A `bash`/`cat` read, a codemode `nestedCalls` read, or an arbitrary command
-  that injects a skill without one of these shapes is not detected.
+- Detection sources are `/skill:` blocks, direct `read` calls, nested `read` calls recorded on a
+  tool result (extension tools such as codemode), compaction `readFiles`, and prior prompts. A
+  `bash`/`cat` read or an arbitrary command that injects a skill without one of these shapes is
+  not detected.
+- A nested read with an error status still counts: pi records the call's arguments at start and
+  ignores status in its own `extractFileOpsFromMessage`. A script-side scan of many `SKILL.md` files
+  can fill read-priority slots ahead of prompt/compaction evidence at the 8-cap. An oversized nested
+  call is recorded without its arguments, so such a read is invisible to pi's file index and this
+  scan too.
+- `collectFileOps` (the `<read-files>` index) does not scan nested calls, so a codemode read appears
+  in the active-skill list but not in the file index; pi's compaction does include it. Pre-existing
+  asymmetry, left for a separate file-index slice.
 - A standalone Markdown skill (pi accepts a `.md` file, not only `<dir>/SKILL.md`) is invisible to
-  every source: `/skill:` and `read` record its `.md` path, but `isSkillFile` matches only the
-  directory form.
+  every source, including `/skill:`: `/skill:` and `read` record its `.md` path, but `isSkillFile`
+  matches only the directory form.
 - The cap is 8. `/skill:` and read entries are the newest of their own source; a prompt-only list keeps the last 8
   block lines (an index, not a recency order), so an alphabetically early mode with no surviving
   read evidence can still be evicted at hop 2.
@@ -100,9 +114,8 @@ session returns both from the prompt text, so the new continuation would name th
 - A compaction inside the successor session drops the stored continuation prompt; only a real
   re-read by that successor keeps the skill in its `readFiles`, so a mode ignored at hop 1 is still
   lost at hop 2.
-- A codemode script's `nestedCalls` reads are not scanned: that is a script-side file access, not
-  the assistant loading a skill into its own context (the assistant-content scan matches
-  `collectFileOps`; pi's own `extractFileOpsFromMessage` reads them for its file index).
+- A `bash`/`cat` read of a skill is not detected; it is a shell command, not a `read`/nested-read
+  tool call, and parsing shell text would list files that were only `grep`ped or `ls`ed.
 - A `branch_summary` entry's `details.readFiles` describe the branch that was **left**, not the
   current branch, so they are not active-skill evidence; scanning them would list skills from an
   abandoned branch. `collectFileOps` excludes them for the same reason. Only `compaction` is

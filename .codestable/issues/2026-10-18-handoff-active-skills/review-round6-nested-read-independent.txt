@@ -1,0 +1,55 @@
+# Independent review — round 6, codemode nested-read source (active-skills handoff slice)
+
+## What I verified
+
+- **Diff vs `7b6f72d`**: only the 6 files stated; nothing else changed (`git status` matches the declared set).
+- **Pi cross-check (installed 1.3.0)**:
+  - `dist/core/compaction/utils.js` `extractFileOpsFromMessage` (lines 16–35): for `toolResult` it iterates `message.nestedCalls?.calls ?? []` and calls `addFileOp(call.name, call.arguments)`; `addFileOp` requires `typeof args?.path === "string"` and only tracks `read`/`write`/`edit`. The extension's scan is an exact mirror, minus write/edit (irrelevant for skills), **plus per-call shape guards pi lacks** (pi's `addFileOp(call.name, …)` would throw on a `null` call entry).
+  - `dist/core/session-manager.js` `sessionEntryToContextMessages` (166–177): returns `[message]` unchanged for message entries — `nestedCalls` is preserved; the `content == null` path spreads the message, so it survives there too.
+  - `dist/core/agent-session.js` (~716–720): `nestedCalls` is attached at toolResult `message_start` via `takeRecord` → persisted whole (`appendMessage`), so the fixture shape `nestedCalls: { calls: […] }` is the real on-disk shape (real records also carry `id`/`status`/`complete`; the code needs neither).
+  - Real recorder (`dist/core/nested-tool-calls.js`): `arguments` may be **absent** when over byte limits — the `"arguments" in call` + `typeof args.path === "string"` gate handles that. `read` is the only nested call relevant to loading a skill. Non-SKILL paths and directories fail `isSkillFile`. Malformed shapes (`nestedCalls` null / non-array `calls` / null or primitive call / `arguments: null` or primitive) all skip without throwing — verified by reading every branch.
+  - `/skill:` blocks store `location="${skill.filePath}"` (`agent-session.js:1710`); a standalone `.md` skill's `filePath` basename is not `SKILL.md`, so `isSkillFile` rejects it **for the `/skill:` source too** (see finding 2).
+- **Priority/order**: nested read at `READ_SOURCE` (3) is defensible — pi's own index does not distinguish nested reads from direct reads (they land in compaction `readFiles` and would resurface at `PROMPT_SOURCE`/`COMPACTION_SOURCE` anyway); priority 3 gives them recency order and cap protection consistently with pi. Same-file dedupe, `/skill:` outranking, prompt/compaction fill-in, and the 8-cap all behave correctly (`remember` only updates recency on equal priority; no order-counter side effect).
+- **Self-reference**: no `ctx.executeTool()` anywhere in the extension, so the handoff's own result never carries `nestedCalls`; the hop-2 scan of the previous handoff's result finds nothing.
+- **Tests**: `node tests/handoff-test.mjs` — all pass; `node tests/run-all.mjs` — **All 15 tests passed**. Mutation re-run (temp copy `/tmp/mut-nested-check`, reviewed repo untouched): removing the nested scan → **exactly 1 FAIL** (`a codemode nested read is detected`). Fixture is a real message entry (`type:"message"`, `toolCallId`, `timestamp`) that flows through pi's `sessionEntryToContextMessages`, and is not self-referential.
+- **Docs**: `docs/handoff.md` and `CHANGELOG.md` wording ("含 codemode 脚本里记录的嵌套 `read`") matches the code; the `bash`/`cat` residual rationale ("not a `read`/nested-read tool call, shell parsing would list `grep`ed/`ls`ed files") is accurate.
+
+## Findings
+
+**IMPORTANT 1** — `.codestable/issues/2026-10-18-handoff-active-skills/fix-note.md:91-93`
+The residual bullet still says "Detection relies on a `/skill:` block, a `read` of `SKILL.md`, a compaction `readFiles`, or a prior handoff prompt. A `bash`/`cat` read, **a codemode `nestedCalls` read**, or an arbitrary command … is not detected." This directly contradicts the new feature and the same file's own updated verification list ("a codemode nested `read` is detected") and the replaced residual. Impact: the authoritative issue record misstates the behavior being shipped. Fix boundary: this one bullet — fold nested reads into the detected-sources list and drop the codemode mention from the undetected list (only `bash`/`cat` and arbitrary injection remain).
+
+**IMPORTANT 2** — `.codestable/issues/2026-10-18-handoff-active-skills/review-report.md:101`
+The residual-risks paragraph now says "a standalone `.md` skill is invisible to every source **except `/skill:`**". That is wrong: `collectActiveSkills` applies `isSkillFile` (basename `SKILL.md`) to the `/skill:` location too (`file-ops.ts:129`), and a standalone skill's location is its `.md` path — so it is invisible to **every** source, including `/skill:`. The fix-note's own residual (`fix-note.md:94-96`) states this correctly, so the two records now disagree. Fix boundary: revert to "every source" (or name the exception precisely, e.g., "only a `<dir>/SKILL.md`-shaped path counts").
+
+**NIT 3** — `extensions/project-context/handoff/file-ops.ts:112-113`
+Two comment imprecisions: (a) `nestedCalls` is recorded for **any** tool calling `ctx.executeTool()` (extensions, MCP), not only codemode scripts — pi's own comment says "for example from codemode scripts"; (b) "a skill read inside a script is a real read" overstates — it is script-side and pi's file index, not the assistant, treats it as a read. Suggest: "pi's `extractFileOpsFromMessage` counts nested reads in its file index, so treat them as reads too." No code impact; the gate itself is correct.
+
+**NIT 4** — `file-ops.ts:116-119` (behavior nuance, consistent with pi)
+A nested read with `status: "error"` (or from a failed script) is still counted, since the record is attached regardless of the parent result's success and `arguments` are recorded at call start. pi's `addFileOp` also ignores status, so this mirrors pi exactly — and the failed path would surface in pi's compaction `readFiles` anyway. Not a defect; worth one line in the record so "脚本里记录的嵌套 read" is understood to include errored calls.
+
+**SUGGESTION 5** — asymmetry in the extension's own `extractFileOpsFromMessage` (`file-ops.ts:63-74`)
+`collectFileOps` does not read `nestedCalls`, so a nested SKILL.md read is now skill evidence at priority 3 but still absent from the handoff's own `<read-files>` block (it does enter pi's compaction `readFiles`). Pre-existing and out of slice scope, but now slightly sharper; either mirror the nested scan there or note the asymmetry in the fix-note.
+
+**SUGGESTION 6** — negative pins for the nested path (tests)
+Only the positive detection is pinned; the mutation (remove scan → 1 FAIL) is solid and the `isSkillFile` guard is shared with the direct-read path (already mutation-pinned), but a nested non-SKILL read, a nested `write`, and a malformed `nestedCalls` that must not throw are unpinned. Cheap `check(...)` lines. The fixture could also carry `status`/`complete` for shape fidelity — the current omission is harmless because the code path doesn't read them.
+
+## Praise
+
+- Exact, and more defensive, mirror of pi's `extractFileOpsFromMessage`; correct gate (`read` + `SKILL.md`), verified no-throw on every malformed shape, and no self-reference via the handoff's own result.
+- Priority-3 choice is well-founded (pi's index makes no direct/nested distinction) and interacts correctly with `/skill:`, dedupe, recency, and the 8-cap.
+- Mutation pin verified exactly (1 FAIL); full suite green; docs/CHANGELOG wording is precise about the new source; the `bash`/`cat` residual rationale is accurate.
+
+## Residual risks
+
+- A script-side reader that scans many `SKILL.md` files (e.g., a skill-lister codemode) fills `READ_SOURCE` slots ahead of prompt/compaction evidence at the 8-cap; partially covered by the existing "read once for reference" residual, but the flooding case at priority 3 is new and worth a sentence.
+- Errored nested reads count (consistent with pi; see NIT 4).
+
+## Test And QA Focus
+
+1. Fix the two issue-record bullets (findings 1–2) and re-check the fix-note/review-report against the code's source list and `isSkillFile` behavior for `/skill:` locations.
+2. Add the negative/malformed nested pins (finding 6) and re-run the mutation matrix + `node tests/run-all.mjs`.
+3. Decide (and document) whether `collectFileOps` should also mirror nested calls so the `<read-files>` index matches the new skill evidence (finding 5).
+4. Re-verify the "remove the scan → 1 FAIL" mutation after any edit.
+
+VERDICT: CHANGES-REQUESTED
