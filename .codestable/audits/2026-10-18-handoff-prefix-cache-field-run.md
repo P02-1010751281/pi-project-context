@@ -133,10 +133,11 @@ toolResult 正文占据。再跑一个 4 轮 fixture：每轮让模型 `read` �
 | 沙箱：toolResult 正文 cap 1000 字符 | ~89 | 887 / 1554 | 总 2,071 字符，其中 toolResult 398 |
 
 沙箱只把超长 toolResult 的 `content` 换成 `[tool result omitted: N chars; see session log]`，保留
-`toolCallId` 与 call/result 配对；不是生产实现，也没有测模型是否因此多读文件。它说明的是：
-**当前 handoff 的首轮成本主要由 carried toolResult 正文决定，而不是 system/cache。** 要在生产做，
-需要先定策略（只裁最近一轮之前？按 token 而非字符？保留最新结果？），并补 provider 形状与
-session log 回读的验收；不能直接把 1000 字符硬编码。
+`toolCallId` 与 call/result 配对；它只是探针，没有测模型是否因此多读文件。它说明的是：
+**当前 handoff 的首轮成本主要由 carried toolResult 正文决定，而不是 system/cache。** 生产实现已按这个
+结论落成一个**默认关闭**的 opt-in：`handoffBudgetToolResultTokens` / `/handoff budget toolresult <tokens|off>`，
+每个结果独立限额、只换文本块、保留图片/嵌套调用与配对；默认 `0` 不改变原行为。只裁最近一轮之前、
+按字符还是 token、以及模型回读成本仍是策略取舍，见 docs/handoff.md。
 
 ## 噪声与边界
 
@@ -160,5 +161,5 @@ system 块逐字节稳定、不要在 handoff 同刻改 memory render；若要�
 recent budget 的 12 轮对照进一步说明：首轮 cacheRead 不随 keep 变化（始终 384），首轮 input/total
 却随 carried tail 近似线性增长。工具 fixture 又把这一点推到极端：successor 文本的 96% 是 toolResult
 正文，沙箱 cap 1000 字符后 carried 从 ~7.3k 降到 ~89、首轮 input 从 8578 降到 887。因此如果目标是
-成本，**先调 `handoffBudgetRecentTokens` 或裁剪 toolResult 正文，比加 head 更直接**；代价是 recent
+成本，**先调 `handoffBudgetRecentTokens` 或 opt-in 的 toolResult cap，比加 head 更直接**；代价是 recent
 原文连续性下降，必须用“少带多少原文、模型多查多少次 session log”来验收，而不是只看 token 数。
