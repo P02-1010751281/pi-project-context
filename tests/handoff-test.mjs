@@ -94,6 +94,7 @@ try {
 	check("zh says oversized tool output was trimmed", zhTrimmed.includes("过大的工具输出已按 toolResult 上限裁剪") && !zhTrimmed.includes("已原文带入"));
 	const enTrimmed = handoff.buildHandoffPrompt({ ...base, language: "en", trimmedToolResults: 1 });
 	check("en says oversized tool output was trimmed", enTrimmed.includes("oversized tool output was trimmed") && !enTrimmed.includes("carried over verbatim"));
+	check("a trimmed continuation is still recognized as a handoff prompt", handoff.isHandoffPromptText(zhTrimmed) && handoff.isHandoffPromptText(enTrimmed));
 
 	const zhGuarded = handoff.buildHandoffPrompt({ ...base, language: "zh", guardWaiting: true, pendingQuestion: "选 1 还是 2？" });
 	check("zh guarded prompt carries the question", zhGuarded.includes("## 待用户回答的问题") && zhGuarded.includes("选 1 还是 2？"));
