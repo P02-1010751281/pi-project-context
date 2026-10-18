@@ -11,6 +11,7 @@
 | R5 | `/skill:` source after the R4 fixes | PASSED | 0 | 0 | docs wording exact, real pi parser, mutation matrix 5/3/1/1/3, no model call |
 | R6 | codemode nested-read source | CHANGES-REQUESTED | 0 | 2 | issue records contradicted the code (codemode residual; standalone `.md` claim); fixed in R7 |
 | R7 | nested-read source after the R6 fixes | PASSED | 0 | 0 | nested-read shape, negative/malformed pins, 2-FAIL mutation; records agree |
+| R8 | residual cleanup: standalone `.md`, nested file ops | PASSED | 0 | 0 | `/skill:` standalone, neutral "skill file" wording, nested `<read-files>`/`<modified-files>`; mutations 2/1/6/2 |
 
 ## R1 (transcript: `review-round1-independent.txt`)
 
@@ -112,8 +113,22 @@ producer wording, enumerate the negative pins in the fix-note, pin a non-array `
 and record oversized-call arguments as invisible. The `collectFileOps` asymmetry remains named for
 a separate file-index slice.
 
+## R8 (residual cleanup: standalone `.md`, nested file ops; transcript: `review-round8-residual-independent.txt`)
+
+**VERDICT: PASSED**. Verified against pi: a real `/skill:` block carries the loader-verified skill
+file path and name, so accepting any `.md` location is correct; a direct read of a standalone `.md`
+and a non-Markdown `/skill:` location stay ignored. `extractFileOpsFromMessage` now mirrors pi's
+nested `read`/`write`/`edit` handling; a nested read enters `<read-files>`, a nested write enters
+`<modified-files>`, and malformed shapes do not throw. The prompt's "skill file" wording covers both
+forms, and the v0.4.11 `SKILL.md` closing remains recognized. Mutations re-measured: nested file-op
+branch 2 FAIL, `/skill:` extension guard 1, `/skill:` scan 6, direct-read `isSkillFile` guard 2.
+Post-PASS nits fixed: the direct-read mutation label, an en old-closing pin, the stale comments, the
+malformed `collectFileOps` pin, and this section.
+
 Residual risks remain as disclosed: a prompt-sourced hop-1 mode can be evicted by eight newer
 reads; a compaction inside the successor drops the stored prompt; a `bash`/`cat` read is invisible;
 a `branch_summary` file list is not scanned (its files belong to the abandoned branch); a
-standalone `.md` skill is invisible to every source (including `/skill:`: `isSkillFile` requires the
-`SKILL.md` basename); the successor may still ignore the instruction.
+standalone `.md` skill is detected only via `/skill:` (direct read/compaction/prompt still require
+the `SKILL.md` basename); the successor may still ignore the instruction. The `collectFileOps`
+asymmetry is closed; a hand-crafted `<skill>` block and an empty path remain trusted/degenerate
+inputs.

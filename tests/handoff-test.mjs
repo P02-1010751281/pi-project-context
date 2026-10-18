@@ -26,6 +26,7 @@ try {
 	await mkdir(path.join(tmp, ".agents/memory"), { recursive: true });
 
 	const handoff = await loadNamespace(`${PC}/handoff/handoff.ts`);
+	const fileOps = await loadNamespace(`${PC}/handoff/file-ops.ts`);
 	const settings = await loadNamespace(`${PC}/handoff/session-settings.ts`);
 	const lineage = await loadNamespace(`${PC}/handoff/session-lineage.ts`);
 
@@ -54,7 +55,7 @@ try {
 	check("zh carries the file list", zh.includes("<read-files>") && zh.includes("a.ts"));
 	check("zh details", zh.includes("- 上一会话 id：01a0a58e") && zh.includes("- 原始记录（JSONL）：/home/user/.pi/agent/sessions/x.jsonl"));
 	check("zh detail lookup merges index and how-to", zh.includes(".agents/memory/session-logs/INDEX.md 指向的会话日志里查"));
-	check("zh closing asks for a restatement first", zh.trimEnd().endsWith("先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。"));
+	check("zh closing asks for a restatement first", zh.trimEnd().endsWith("先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的技能文件，再从上次中断处继续。"));
 	check(
 		"zh has no English scaffolding",
 		!zh.includes("## Handoff Summary") && !zh.includes("Continue the task from where it left off.") && !zh.includes("First restate"),
@@ -66,16 +67,22 @@ try {
 		en.startsWith("This session continues work handed off from a previous session (16% of its context window had been used).") &&
 			en.includes("## Previous session details") &&
 			!en.includes("## Handoff Summary") &&
-			en.trimEnd().endsWith("First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off."),
+			en.trimEnd().endsWith("First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its skill file first, then continue from where it left off."),
 	);
 
 	const activeParts = { ...base, activeSkills: [{ name: "grilling", file: "/home/user/.agents/skills/grilling/SKILL.md" }] };
 	const zhActive = handoff.buildHandoffPrompt({ ...activeParts, language: "zh" });
 	check("zh names the previous session's active skills", zhActive.includes("## 上一会话加载的技能与模式") && zhActive.includes("- grilling：/home/user/.agents/skills/grilling/SKILL.md"));
-	check("zh tells the successor to re-read the skill", zhActive.includes("先重新读取它的 SKILL.md 并继续遵循"));
+	check("zh tells the successor to re-read the skill", zhActive.includes("先重新读取它的技能文件并继续遵循"));
 	check("an active-skills section does not break prompt recognition", handoff.isHandoffPromptText(zhActive));
+	const oldSkillClosing = "先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。";
+	const oldSkillPrompt = zhActive.slice(0, zhActive.lastIndexOf("先复述上一轮")) + oldSkillClosing;
+	check("the v0.4.11 SKILL.md closing is still recognized", handoff.isHandoffPromptText(oldSkillPrompt));
 	const enActive = handoff.buildHandoffPrompt({ ...activeParts, language: "en" });
 	check("en names the previous session's active skills", enActive.includes("## Skills and modes from the previous session") && enActive.includes("- grilling: /home/user/.agents/skills/grilling/SKILL.md"));
+	const oldEnClosing = "First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off.";
+	const oldEnPrompt = enActive.slice(0, enActive.lastIndexOf("First restate")) + oldEnClosing;
+	check("the v0.4.11 English SKILL.md closing is still recognized", oldEnPrompt !== enActive && handoff.isHandoffPromptText(oldEnPrompt));
 	check("no active skills means no section", !zh.includes("## 上一会话加载的技能与模式") && !en.includes("## Skills and modes from the previous session"));
 
 	const zhSummaryOnly = handoff.buildHandoffPrompt({ ...base, language: "zh", keptTokens: 0 });
@@ -126,8 +133,12 @@ Ask one question at a time.
 	check("a /skill: invocation is detected without a read", fromSkillCommand.length === 1 && fromSkillCommand[0]?.name === "grilling" && fromSkillCommand[0]?.file === "/home/user/.agents/skills/grilling/SKILL.md");
 	const fromSkillCommandWithMessage = handoff.collectActiveSkills([contentEntry("skc2", "user", [{ type: "text", text: `${skillBlock}\n\n请继续盘问` }], "2026-09-16T00:49:05.600Z")]);
 	check("a /skill: block with a trailing user message is still detected", fromSkillCommandWithMessage.length === 1 && fromSkillCommandWithMessage[0]?.name === "grilling");
-	const nonSkillBlock = `<skill name="notes" location="/tmp/notes.md">\nReferences are relative to /tmp.\n\n# Notes\nA note.\n</skill>`;
-	check("a /skill: block for a non-SKILL file is ignored", handoff.collectActiveSkills([contentEntry("skc5", "user", [{ type: "text", text: nonSkillBlock }], "2026-09-16T00:49:05.750Z")]).length === 0);
+	const standaloneBlock = `<skill name="notes" location="/tmp/notes.md">\nReferences are relative to /tmp.\n\n# Notes\nA note.\n</skill>`;
+	const standalone = handoff.collectActiveSkills([contentEntry("skc5", "user", [{ type: "text", text: standaloneBlock }], "2026-09-16T00:49:05.750Z")]);
+	check("a /skill: block for a standalone .md skill is detected with its block name", standalone.length === 1 && standalone[0]?.name === "notes" && standalone[0]?.file === "/tmp/notes.md");
+	const nonMarkdownBlock = `<skill name="notes" location="/tmp/notes.txt">\nReferences are relative to /tmp.\n\n# Notes\nA note.\n</skill>`;
+	check("a /skill: block for a non-Markdown file is ignored", handoff.collectActiveSkills([contentEntry("skc5b", "user", [{ type: "text", text: nonMarkdownBlock }], "2026-09-16T00:49:05.760Z")]).length === 0);
+	check("a direct read of a standalone .md is still ignored", handoff.collectActiveSkills([contentEntry("skc5c", "assistant", [{ type: "toolCall", id: "skc5c", name: "read", arguments: { path: "/tmp/notes.md" } }], "2026-09-16T00:49:05.770Z")]).length === 0);
 	const commandVsRead = handoff.collectActiveSkills([
 		contentEntry("skc3", "assistant", [{ type: "toolCall", id: "skc3", name: "read", arguments: { path: "/repo/.agents/skills/mcl-spec/SKILL.md" } }], "2026-09-16T00:49:05.700Z"),
 		contentEntry("skc4", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.800Z"),
@@ -176,6 +187,8 @@ Ask one question at a time.
 	};
 	const nestedReads = handoff.collectActiveSkills([nestedRead]);
 	check("a codemode nested read is detected", nestedReads.length === 1 && nestedReads[0]?.name === "grilling");
+	const nestedReadLists = fileOps.computeFileLists(fileOps.collectFileOps([nestedRead]));
+	check("a nested read enters <read-files>", nestedReadLists.readFiles.includes("/home/user/.agents/skills/grilling/SKILL.md"));
 	const nestedResult = (id, calls) => ({
 		type: "message",
 		id,
@@ -191,6 +204,8 @@ Ask one question at a time.
 		"a nested write is not a skill read",
 		handoff.collectActiveSkills([nestedResult("skn3", [{ name: "write", arguments: { path: "/repo/.agents/skills/grilling/SKILL.md" } }])]).length === 0,
 	);
+	const nestedWriteLists = fileOps.computeFileLists(fileOps.collectFileOps([nestedResult("skn3w", [{ name: "write", arguments: { path: "/tmp/nested-write.ts" } }])]));
+	check("a nested write enters <modified-files>", nestedWriteLists.modifiedFiles.includes("/tmp/nested-write.ts"));
 	let nestedThrew = false;
 	try {
 		handoff.collectActiveSkills([nestedResult("skn4", [null, 42, { name: "read", arguments: null }])]);
@@ -205,6 +220,13 @@ Ask one question at a time.
 		nonArrayNestedThrew = true;
 	}
 	check("a non-array nestedCalls list does not throw", !nonArrayNestedThrew);
+	let nestedOpsThrew = false;
+	try {
+		fileOps.collectFileOps([nestedResult("skn7", [null, 42, { name: "read", arguments: null }])]);
+	} catch {
+		nestedOpsThrew = true;
+	}
+	check("malformed nested calls do not throw in collectFileOps", !nestedOpsThrew);
 	check(
 		"an errored nested read still counts (pi records the call at start)",
 		handoff.collectActiveSkills([nestedResult("skn5", [{ name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" }, status: "error" }])]).length === 1,
@@ -255,8 +277,8 @@ Ask one question at a time.
 		"- Previous session id: 01a0a58e-7ef4-7763-95f3-5bcf04fdc388",
 		"Continue the task from where it left off.",
 	].join("\n");
-	const currentZhClosing = "先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。";
-	const currentEnClosing = "First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off.";
+	const currentZhClosing = "先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的技能文件，再从上次中断处继续。";
+	const currentEnClosing = "First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its skill file first, then continue from where it left off.";
 	const legacyZh = zh.replace(currentZhClosing, "从上次中断处继续。");
 	const intermediateZh = zh.replace(currentZhClosing, "先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。");
 	const intermediateEn = en.replace(currentEnClosing, "First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off.");

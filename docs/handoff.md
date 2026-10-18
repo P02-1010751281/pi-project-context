@@ -117,16 +117,15 @@ E-4000
 交接**不调用任何模型**（v0.4.1 起）：successor 收到的是机械载荷，没有任何生成物。successor 接收：
 
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
-2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`）；
-3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块、`read` 过 `SKILL.md` 的工具调用（含工具结果上记录的嵌套 `read`）、compaction 的 `readFiles`、以及上一份交接提示的
+2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`，含扩展工具的嵌套调用）；
+3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块（含 standalone `.md`）、`read` 过 `SKILL.md` 的工具调用（含工具结果上记录的嵌套 `read`）、compaction 的 `readFiles`、以及上一份交接提示的
    `<read-files>` 收集（去重；`/skill:` 最优先，其次真实 `read`，两者内部按最近出现排序；提示/压缩的文件清单最后，
-   按块内倒序只填剩余名额；最多 8 个），每个条目带技能名与 `SKILL.md` 路径，并附一条「若某个设定了持续生效的模式，
-   先重新读取它的 `SKILL.md` 并继续遵循」的指令（v0.4.11）。这样即使技能说明随被丢弃的前缀一起离开上下文，
+   按块内倒序只填剩余名额；最多 8 个），每个条目带技能名与文件路径（目录形式为 `SKILL.md`，单独文件为其 `.md`），并附一条「若某个设定了持续生效的模式，先重新读取它的技能文件并继续遵循」的指令（v0.4.11）。这样即使技能说明随被丢弃的前缀一起离开上下文，
    像 grilling 这样的模式在常见的一次交接里也不会消失（8 个上限与 successor 内部的 compaction 仍可能丢，
    见 `.codestable/issues/2026-10-18-handoff-active-skills/fix-note.md`）；
 4. `HANDOFF.md` 与续接提示里的旧 session log 指针，以及一条「缺的细节必须先查该日志、不确定不得凭印象作答」的强指令；
 5. 一条收尾指令：successor 先用一两句话复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式，再从上次中断处继续（v0.4.11）；
-   若该技能的说明已被丢弃，先重新读取它的 `SKILL.md`。旧版以「从上次中断处继续 / Continue the task from where it left off」结尾的
+   若该技能的说明已被丢弃，先重新读取它的技能文件。旧版以「从上次中断处继续 / Continue the task from where it left off」结尾的
    prompt 仍被识别，重放时照旧替换为 omission marker。
 
 较早的部分不再以摘要散文进入 successor，而是留在旧会话日志里按需取回：日志是原文，不会像摘要那样二次压缩。

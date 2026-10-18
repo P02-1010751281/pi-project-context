@@ -14,7 +14,7 @@ interface FileOps {
 	edited: Set<string>;
 }
 
-/** A skill whose SKILL.md the previous session loaded; the continuation names it so a mode survives the cut. */
+/** A skill the previous session loaded; the continuation names it so a mode survives the cut. */
 export interface ActiveSkill {
 	name: string;
 	file: string;
@@ -68,16 +68,34 @@ function createFileOps(): FileOps {
 	return { read: new Set(), written: new Set(), edited: new Set() };
 }
 
+function addFileOp(ops: FileOps, name: unknown, args: unknown): void {
+	if (name !== "read" && name !== "write" && name !== "edit") return;
+	if (!args || typeof args !== "object" || !("path" in args)) return;
+	const file = (args as { path?: unknown }).path;
+	if (typeof file !== "string") return;
+	if (name === "read") ops.read.add(file);
+	else if (name === "write") ops.written.add(file);
+	else ops.edited.add(file);
+}
+
 function extractFileOpsFromMessage(message: AgentMessage, ops: FileOps): void {
+	// A tool result can carry calls made by extension tools (codemode scripts are one); pi's own
+	// extractFileOpsFromMessage includes them in the file index, so the continuation must too.
+	if (message.role === "toolResult") {
+		const nestedCalls = (message as { nestedCalls?: { calls?: unknown } }).nestedCalls;
+		if (nestedCalls && Array.isArray(nestedCalls.calls)) {
+			for (const call of nestedCalls.calls) {
+				if (!call || typeof call !== "object" || !("name" in call) || !("arguments" in call)) continue;
+				addFileOp(ops, call.name, (call as { arguments?: unknown }).arguments);
+			}
+		}
+		return;
+	}
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return;
 	for (const block of message.content) {
 		if (!block || typeof block !== "object" || !("type" in block) || block.type !== "toolCall") continue;
 		if (!("name" in block) || !("arguments" in block)) continue;
-		const args = block.arguments as { path?: unknown } | undefined;
-		if (!args || typeof args.path !== "string") continue;
-		if (block.name === "read") ops.read.add(args.path);
-		else if (block.name === "write") ops.written.add(args.path);
-		else if (block.name === "edit") ops.edited.add(args.path);
+		addFileOp(ops, block.name, block.arguments);
 	}
 }
 
@@ -89,13 +107,15 @@ function extractFileOpsFromMessage(message: AgentMessage, ops: FileOps): void {
  * it when its instructions were dropped by the cut.
  */
 export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
-	const seen = new Map<string, { priority: number; order: number }>();
+	const seen = new Map<string, { priority: number; order: number; name?: string }>();
 	let order = 0;
-	const remember = (file: string, priority: number): void => {
+	const remember = (file: string, priority: number, name?: string): void => {
 		const previous = seen.get(file);
-		if (!previous || priority > previous.priority) seen.set(file, { priority, order: order++ });
-		else if (priority === previous.priority) previous.order = order++;
-		else order += 1;
+		if (!previous || priority > previous.priority) seen.set(file, { priority, order: order++, ...(name ? { name } : {}) });
+		else if (priority === previous.priority) {
+			previous.order = order++;
+			if (name) previous.name = name;
+		} else order += 1;
 	};
 	for (const entry of entries) {
 		if (entry.type === "compaction") {
@@ -126,7 +146,11 @@ export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
 				// `/skill:name` stores a `<skill name location>` block in a user message; that is the
 				// user explicitly loading a skill, even when no `read` call follows.
 				const skill = parseSkillBlock(text);
-				if (skill && isSkillFile(skill.location)) remember(skill.location, SKILL_COMMAND_SOURCE);
+				// A `/skill:` block names the skill even when it is a standalone `.md` file, so accept
+				// any file location here; the block itself is the explicit evidence.
+				if (skill && typeof skill.location === "string" && path.extname(skill.location).toLowerCase() === ".md") {
+					remember(skill.location, SKILL_COMMAND_SOURCE, skill.name);
+				}
 				if (isHandoffPromptText(text)) {
 					for (const file of promptSkillFiles(text)) remember(file, PROMPT_SOURCE);
 				}
@@ -145,7 +169,7 @@ export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
 	return [...seen.entries()]
 		.sort((left, right) => right[1].priority - left[1].priority || right[1].order - left[1].order)
 		.slice(0, MAX_ACTIVE_SKILLS)
-		.map(([file]) => ({ name: skillName(file), file }));
+		.map(([file, meta]) => ({ name: meta.name || skillName(file), file }));
 }
 
 /** Cumulative across pi-generated compactions, like pi's own compaction. */

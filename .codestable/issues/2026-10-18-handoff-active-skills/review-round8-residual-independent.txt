@@ -1,0 +1,48 @@
+# R8 Independent Review: residual cleanup (standalone `.md`, nested file ops)
+
+## Verifications against installed pi (1.3.0)
+
+- **`parseSkillBlock`** (`dist/core/agent-session.js:53`): anchored regex `<skill name="([^"]+)" location="([^"]+)">…`; name always non-empty. The block is produced by `_expandSkillCommand` (line 1710) as `<skill name="${skill.name}" location="${skill.filePath}">`, so a real `/skill:` block's location is the skill's own file path — for a standalone skill that is the `.md` path, and the name is the loader's name.
+- **Skills loader** (`dist/core/skills.js`): `loadSkills` accepts a file path only if it `endsWith(".md")`; `loadSkillFromFile` requires a non-empty `description` for any non-`SKILL.md` file, so a *non-skill* `.md` never enters the skill map and can never produce a `/skill:` block. → Accepting any `.md` location in a `/skill:` block is **correct**: the block is the explicit evidence, and genuine blocks only exist for loader-verified skills. The `.md`-extname guard matches pi's own acceptance domain (pi's `endsWith(".md")` is case-sensitive; the extension's `toLowerCase()` is slightly more lenient, harmless).
+- **`extractFileOpsFromMessage`** (`dist/core/compaction/utils.js:16`): toolResult → `nestedCalls?.calls`, `addFileOp(name, arguments)`, status never read; assistant → toolCall blocks, `name`/`arguments` required. The extension mirrors this exactly (read/write/edit, `arguments.path`, no status check), with defensive guards pi lacks (pi throws on a `null` call; the extension skips — the test `malformed nested calls do not throw` pins a shape pi itself would crash on, which is the right call for a handoff path). `computeFileLists` is byte-equivalent to pi's (modified precedence, sort). Only divergence: pi's `if (!path) return` drops an empty-string path; the extension's `typeof file !== "string"` check admits `""`. No real tool emits `""`; no test.
+- **`skillName` fallback**: `meta.name || skillName(file)` — `meta.name` is always present for `/skill:` (regex `+`), so the fallback never applies to standalone files (which can only arrive via `/skill:`); read/compaction/prompt sources still fall back to parent dir. Dedupe/priority/cap unchanged and hold: a direct read of a standalone `.md` is filtered by `isSkillFile`, so no competing lower-priority entry can exist for it; the both-orders dedupe test covers the directory form. The block name now wins over the parent-dir guess, which is also what pi itself names the skill (`frontmatterName || parentDirName`).
+
+## Findings
+
+**No blocking, no important findings.**
+
+### Nit
+
+- **N-1** `fix-note.md:94` — mutation-matrix parenthetical inaccurate. "remove the direct-read `isSkillFile` guard -> 2 FAIL (direct `.md`, nested non-SKILL read)". Measured: the 2 FAILs are `a direct read of a standalone .md is still ignored` and `detects SKILL.md reads, dedupes and keeps the most recent first` (its embedded normal-read pin, sk2 `/tmp/notes.md`). The nested non-SKILL read pin has its own guard in the nested scan and stays green; removing both guards would give 3 FAIL, so no reading yields the claimed pair. Count is right; the second label should be "normal read". *Fix boundary:* fix-note mutation row only.
+- **N-2** `tests/handoff-test.mjs` (v0.4.11 closing pin) — the pin only exercises the **zh** old closing, and that entry in `HANDOFF_PROMPT_CLOSINGS` is redundant: the old zh closing ends with the legacy `从上次中断处继续。` suffix, so recognition holds even with both new entries removed (measured: 0 FAIL). The **en** v0.4.11 entry is the load-bearing one (its tail is not a suffix of any legacy closing) but is unpinned. Behavior is correct — both old closings are recognized today (verified directly) — only the pin is weak. Same suffix-redundancy class as the R3-documented intermediate zh closing, so the redundant zh entry is fine; the test just doesn't pin what it claims to. *Fix boundary:* add an en fixture spliced with the old en closing (with an `!== enActive` inequality guard, matching the intermediate fixtures' anti-drift pattern).
+- **N-3** `extensions/project-context/handoff/language.ts:55-58` — comment still says "The pre-v0.4.11 closings stay in the list…"; the list now also carries the v0.4.11 `SKILL.md` wording (a superseded *current-era* closing, not pre-v0.4.11). Also `file-ops.ts:17` ("A skill whose SKILL.md the previous session loaded") no longer covers the standalone-`.md`-via-`/skill:` case. Comment-accuracy only.
+- **N-4** `review-report.md` (R7 tail) — the report's last paragraph ("Residual risks remain as disclosed… a standalone `.md` skill is invisible to every source (including `/skill:`…)") is now stale as the report's final word; the R8 row's "see below"/empty-cells placeholder needs this round's section appended, and the R7 tail should be marked R7-scoped or superseded (it is historically accurate for R7). No code impact.
+
+### Suggestion
+
+- **S-1** `extractFileOpsFromMessage`'s malformed nested shapes are exercised only through `collectActiveSkills`; the `collectFileOps` path shares the same guards (`addFileOp`), so coverage is structural rather than direct. A one-line `computeFileLists(collectFileOps([…malformed…]))` pin would make the no-throw claim symmetric.
+
+### Learning
+
+- The zh v0.4.11 closing's redundancy via the legacy suffix mirrors the R3 finding about the intermediate zh closing — the maintainer's convention of keeping zh entries as documentation is fine, but N-2 shows the test should pin the mechanism, not the redundant instance.
+
+### Praise
+
+- The nested file-op branch is a faithful mirror of pi's own `extractFileOpsFromMessage`; the `addFileOp` extraction removes the R7-disclosed asymmetry cleanly, and the guards are strictly more defensive than pi's.
+- Accepting any `.md` location for `/skill:` blocks is the *right* guard — verified against the loader that only verified skills can produce blocks; the standalone residual in the fix-note is now exact ("detected only when loaded via `/skill:`"), and docs/CHANGELOG always carry the `/skill:` qualifier (no overclaim found).
+- Preferring the block name over the parent-dir fallback matches pi's own naming for standalone skills.
+- All four requested mutations reproduced exactly: nested file-op branch removed → 2 FAIL; `/skill:` extension guard removed → 1 FAIL; `/skill:` scan removed → 6 FAIL (labels match); direct-read `isSkillFile` guard removed → 2 FAIL (labels see N-1). New pins are hardcoded fixtures, not self-referential.
+
+### Residual-risk (disclosed, no action required)
+
+- A hand-crafted `<skill name location>` block in a user message is accepted at face value (existence/skill-ness never checked) — the same trust model the old `isSkillFile` guard had; genuine blocks are only generated for loader-verified skills.
+- The `""`-path divergence from pi's `addFileOp` could in theory render a blank `<read-files>` line; unreachable in practice.
+
+## Test And QA Focus
+
+- `node tests/handoff-test.mjs` → all checks passed; `node tests/run-all.mjs` → **All 15 tests passed** (no regression to exact `<read-files>`/closing strings, baseline suite untouched).
+- Mutation matrix re-measured on temp copies: 2 / 1 / 6 / 2 FAIL, plus an extra probe (remove the two v0.4.11 closings → 0 FAIL) that exposed N-2.
+- Zero-write held: `git status` shows exactly the 8 expected modified files, no untracked files; only `/tmp` fixtures written.
+- QA focus for the next slice: (1) pin the **en** v0.4.11 closing recognition with an inequality guard; (2) correct the fix-note mut4 parenthetical; (3) finalize the R8 review-report section and mark the R7 tail as superseded; (4) optionally pin malformed nested calls through `collectFileOps`; (5) touch the two stale comments (language.ts closings doc, file-ops.ts:17).
+
+VERDICT: PASSED
