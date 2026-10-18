@@ -141,8 +141,8 @@ toolResult 正文占据。再跑一个 4 轮 fixture：每轮让模型 `read` �
 
 同一 4 轮工具 fixture 走真实 RPC，先 `/handoff budget toolresult 100` 再 `/handoff now`：命令回执出现
 `each carried tool result is capped at ~100 tokens`，handoff 回执出现 `1 tool result trimmed`；successor 首轮
-`input=907`，successor JSONL 的 toolResult 文本 228 字符（总文本 1,933，2 条 toolResult），原 `CAP` 正文未出现。
-这验证的是命令行 → config → `runHandoff` → replay 的真实链路，不证明模型能无成本地回读被裁正文。
+`input=907`，successor JSONL 的 toolResult 文本 228 字符（总文本 1,933，2 条 toolResult），被裁的 `bigN.txt`
+正文未出现。这验证的是命令行 → config → `runHandoff` → replay 的真实链路，不证明模型能无成本地回读被裁正文。
 
 ## 噪声与边界
 
