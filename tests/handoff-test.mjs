@@ -328,6 +328,7 @@ Ask one question at a time.
 	check("trimming keeps non-text blocks", trimmedTool?.content?.some((block) => block.type === "image"));
 	check("trimming does not mutate the source message", JSON.stringify(trimEntry.message).includes("TOOL_TRIM_SECRET"));
 	check("a short tool result is left alone", handoff.trimToolResultText(toolResultEntry("trim2", "trim-tc2", "short", "2026-09-16T00:42:31.000Z").message, 100) === undefined);
+	check("a cap smaller than the marker does not grow a tiny result", handoff.trimToolResultText(toolResultEntry("trim3", "trim-tc3", "tiny", "2026-09-16T00:42:32.000Z").message, 1) === undefined);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
