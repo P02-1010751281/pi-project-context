@@ -54,7 +54,7 @@ try {
 	check("zh carries the file list", zh.includes("<read-files>") && zh.includes("a.ts"));
 	check("zh details", zh.includes("- 上一会话 id：01a0a58e") && zh.includes("- 原始记录（JSONL）：/home/user/.pi/agent/sessions/x.jsonl"));
 	check("zh detail lookup merges index and how-to", zh.includes(".agents/memory/session-logs/INDEX.md 指向的会话日志里查"));
-	check("zh closing asks for a restatement first", zh.trimEnd().endsWith("先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。"));
+	check("zh closing asks for a restatement first", zh.trimEnd().endsWith("先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。"));
 	check(
 		"zh has no English scaffolding",
 		!zh.includes("## Handoff Summary") && !zh.includes("Continue the task from where it left off.") && !zh.includes("First restate"),
@@ -66,8 +66,17 @@ try {
 		en.startsWith("This session continues work handed off from a previous session (16% of its context window had been used).") &&
 			en.includes("## Previous session details") &&
 			!en.includes("## Handoff Summary") &&
-			en.trimEnd().endsWith("First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off."),
+			en.trimEnd().endsWith("First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off."),
 	);
+
+	const activeParts = { ...base, activeSkills: [{ name: "grilling", file: "/home/user/.agents/skills/grilling/SKILL.md" }] };
+	const zhActive = handoff.buildHandoffPrompt({ ...activeParts, language: "zh" });
+	check("zh names the previous session's active skills", zhActive.includes("## 上一会话加载的技能与模式") && zhActive.includes("- grilling：/home/user/.agents/skills/grilling/SKILL.md"));
+	check("zh tells the successor to re-read the skill", zhActive.includes("先重新读取它的 SKILL.md 并继续遵循"));
+	check("an active-skills section does not break prompt recognition", handoff.isHandoffPromptText(zhActive));
+	const enActive = handoff.buildHandoffPrompt({ ...activeParts, language: "en" });
+	check("en names the previous session's active skills", enActive.includes("## Skills and modes from the previous session") && enActive.includes("- grilling: /home/user/.agents/skills/grilling/SKILL.md"));
+	check("no active skills means no section", !zh.includes("## 上一会话加载的技能与模式") && !en.includes("## Skills and modes from the previous session"));
 
 	const zhSummaryOnly = handoff.buildHandoffPrompt({ ...base, language: "zh", keptTokens: 0 });
 	check("zh no-carry line says nothing was carried", zhSummaryOnly.includes("上一会话没有原文带入本会话"));
@@ -86,6 +95,57 @@ try {
 		"en unknown percent keeps the legacy wording",
 		handoff.buildHandoffPrompt({ ...base, language: "en", percent: null }).startsWith("This session continues work handed off from a previous session (over threshold"),
 	);
+
+	console.log("\n=== collectActiveSkills ===");
+	const skillEntries = [
+		contentEntry("sk1", "assistant", [{ type: "toolCall", id: "sk1", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:00.000Z"),
+		contentEntry("sk2", "assistant", [{ type: "toolCall", id: "sk2", name: "read", arguments: { path: "/tmp/notes.md" } }], "2026-09-16T00:49:01.000Z"),
+		contentEntry("sk3", "assistant", [{ type: "toolCall", id: "sk3", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:02.000Z"),
+		contentEntry("sk4", "assistant", [{ type: "toolCall", id: "sk4", name: "read", arguments: { path: "/repo/.agents/skills/mcl-spec/SKILL.md" } }], "2026-09-16T00:49:03.000Z"),
+	];
+	const skills = handoff.collectActiveSkills(skillEntries);
+	check("detects SKILL.md reads, dedupes and keeps the most recent first", skills.length === 2 && skills[0]?.name === "mcl-spec" && skills[1]?.name === "grilling");
+	const compactedSkill = handoff.collectActiveSkills([
+		{ type: "compaction", id: "csk", parentId: null, timestamp: "2026-09-16T00:49:04.000Z", fromHook: false, details: { readFiles: ["/home/user/.agents/skills/grilling/SKILL.md"] } },
+	]);
+	check("a compaction's readFiles keeps a skill that fell out of the branch", compactedSkill.length === 1 && compactedSkill[0]?.name === "grilling");
+	const priorPrompt = handoff.buildHandoffPrompt({
+		...base,
+		language: "zh",
+		fileOperations: "<read-files>\n/home/user/.agents/skills/grilling/SKILL.md\n</read-files>",
+	});
+	const fromPriorPrompt = handoff.collectActiveSkills([contentEntry("sk5", "user", [{ type: "text", text: priorPrompt }], "2026-09-16T00:49:05.000Z")]);
+	check("a prior continuation prompt keeps a skill whose read call was dropped", fromPriorPrompt.length === 1 && fromPriorPrompt[0]?.name === "grilling");
+	const fakePrompt = "随便看看\n<read-files>\n/home/user/.agents/skills/grilling/SKILL.md\n</read-files>";
+	check("an ordinary user message is not a skill source", handoff.collectActiveSkills([contentEntry("sk6", "user", [{ type: "text", text: fakePrompt }], "2026-09-16T00:49:06.000Z")]).length === 0);
+	const hooked = handoff.collectActiveSkills([
+		{ type: "compaction", id: "csk2", parentId: null, timestamp: "2026-09-16T00:49:07.000Z", fromHook: true, details: { readFiles: ["/home/user/.agents/skills/grilling/SKILL.md"] } },
+	]);
+	check("a hook compaction's readFiles is not a skill source", hooked.length === 0);
+	const mixedSources = handoff.collectActiveSkills([
+		contentEntry("sk7", "assistant", [{ type: "toolCall", id: "sk7", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:08.000Z"),
+		contentEntry("sk8", "user", [{ type: "text", text: handoff.buildHandoffPrompt({ ...base, language: "zh", fileOperations: "<read-files>\n/repo/.agents/skills/mcl-spec/SKILL.md\n</read-files>" }) }], "2026-09-16T00:49:09.000Z"),
+	]);
+	check("a real read outranks a later prompt file list", mixedSources.length === 2 && mixedSources[0]?.name === "grilling" && mixedSources[1]?.name === "mcl-spec");
+	const markerPrompt = handoff.buildHandoffPrompt({ ...base, language: "zh", fileOperations: "<read-files>\n- /home/user/.agents/skills/grilling/SKILL.md\n</read-files>" });
+	const marked = handoff.collectActiveSkills([contentEntry("sk9", "user", [{ type: "text", text: markerPrompt }], "2026-09-16T00:49:10.000Z")]);
+	check("a list marker in a hand-edited read-files block is stripped", marked.length === 1 && marked[0]?.file === "/home/user/.agents/skills/grilling/SKILL.md");
+	const manyPrompt = handoff.buildHandoffPrompt({
+		...base,
+		language: "zh",
+		fileOperations: `<read-files>\n${Array.from({ length: 10 }, (_, index) => `/skills/p-skill-${String(index).padStart(2, "0")}/SKILL.md`).join("\n")}\n</read-files>`,
+	});
+	const many = handoff.collectActiveSkills([
+		contentEntry("sk10", "user", [{ type: "text", text: manyPrompt }], "2026-09-16T00:49:11.000Z"),
+		contentEntry("sk11", "assistant", [{ type: "toolCall", id: "sk11", name: "read", arguments: { path: "/skills/a-skill/SKILL.md" } }], "2026-09-16T00:49:12.000Z"),
+	]);
+	check("the cap keeps a real read above the prompt's alphabetical list", many.length === 8 && many[0]?.name === "a-skill" && many.some((skill) => skill.name === "p-skill-09") && !many.some((skill) => skill.name === "p-skill-00"));
+	const nineReads = handoff.collectActiveSkills(
+		Array.from({ length: 9 }, (_, index) =>
+			contentEntry(`r${index}`, "assistant", [{ type: "toolCall", id: `r${index}`, name: "read", arguments: { path: `/skills/r-skill-${String(index).padStart(2, "0")}/SKILL.md` } }], `2026-09-16T00:49:${String(13 + index).padStart(2, "0")}.000Z`),
+		),
+	);
+	check("the cap keeps the eight most recent reads", nineReads.length === 8 && nineReads[0]?.name === "r-skill-08" && !nineReads.some((skill) => skill.name === "r-skill-00"));
 
 	console.log("\n=== isHandoffPromptText ===");
 	// Literal text generated by the pre-language build (kept 01a0a58e's prompt shape).
@@ -852,7 +912,11 @@ try {
 		contentEntry(
 			"p2",
 			"assistant",
-			[{ type: "text", text: "Reading the current implementation first." }, { type: "toolCall", id: "pc1", name: "bash", arguments: { command: "cat extensions/project-context/shared/project-state.ts" } }],
+			[
+				{ type: "text", text: "Reading the current implementation first." },
+				{ type: "toolCall", id: "pc1", name: "bash", arguments: { command: "cat extensions/project-context/shared/project-state.ts" } },
+				{ type: "toolCall", id: "pc2", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } },
+			],
 			"2026-09-16T00:50:01.000Z",
 			"p1",
 		),
@@ -901,6 +965,11 @@ try {
 		String(captured.prompt).includes("handoff-pin") &&
 			String(captured.prompt).includes("session-logs/INDEX.md") &&
 			String(captured.prompt).includes("不确定的事实不得凭印象作答"),
+	);
+	check(
+		"the prompt names a skill loaded in the previous session",
+		String(captured.prompt).includes("## 上一会话加载的技能与模式") &&
+			String(captured.prompt).includes("- grilling：/home/user/.agents/skills/grilling/SKILL.md"),
 	);
 	check(
 		"the split turn's opening question is anchored into the replay",

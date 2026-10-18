@@ -1,0 +1,57 @@
+# R2 Review: active-skills handoff slice (ordering fix)
+
+Scope: `collectActiveSkills` priority/order comparator, new tests, mutation matrix, docs/claims, adversarial probes (13 shapes, run against the sandbox code via the test harness), field check against the live JSONL, regression suite. Sandbox left untouched (`git status` identical before/after; all tracked mtimes unchanged).
+
+## Verdict summary of I-1
+
+The comparator is **correct** in every traced case. `extensions/project-context/handoff/file-ops.ts:98-103`:
+
+- weaker source after stronger, same file → `order` bumps, entry keeps the stronger priority (probe D: read→prompt→read gives `[later, keep]` with correct read recency);
+- same file in several sources → strongest priority wins and its own sighting sets the order (probe C: prompt+read dedupe to one entry, read-sighted);
+- prompt after read (different files) → read stays first even though the prompt is later in the branch (probe B: read `z-late` outranks prompt `a-early`);
+- within a source, later sightings sort first: reads are recency-ordered; within one prompt block the output is the block reversed (probes A/J).
+
+The priority interpretation is sound. Verified against pi's installed dist again: `compaction/utils.js:59-60` sorts `readFiles` — prompt/compaction lists really are alphabetical indexes with no activity signal, so they can never legitimately outrank a real `read` (use-evidence with chronological order). The one "burying" shape — a prompt-sourced mode evicted by 8 newer read-sourced skills (probe I) — is the disclosed 8-cap residual, strictly better than R1 (where an index could outrank a real read), and requires ≥8 later reads to manifest. The 8-cap is defensible: bounded prompt payload, disclosed as "最多 8 个", and now orders its contents by the strongest available evidence.
+
+## Findings
+
+### Nit
+
+- **N-A** `fix-note.md` ("prompt/compaction lists keep their own order") and the `file-ops.ts:28-33` comment are loose: the output **reverses** the block (later lines first), pinned by the `many` test (`p-skill-09` kept, `p-skill-00` dropped) and probe J. `docs/handoff.md:122-123` and `CHANGELOG.md:21-22` deliberately avoid the claim, so user-facing text is accurate. Fix boundary: wording only.
+- **N-B** `file-ops.ts:23,83` — "only the most recent are likely still active" / "most recently read first" is strictly true only for the read-sourced head; mixed lists append index-ordered entries. Comment-level.
+- **N-C** The cap residual line ("Only the 8 most recently read skills are listed") doesn't cover the prompt-only shape: a 10-entry prompt-only list keeps the last 8 block lines — the same alphabetical eviction R1 flagged, now honestly disclosed as an arbitrary index order, but the residual wording fits read-sourced lists only. One clarifying line would complete the disclosure.
+- **N-D** `docs/handoff.md:126` — "像 grilling 这样的模式也不会消失" is absolute; the cap and the compaction-inside-successor shapes can still lose a mode (both disclosed in `fix-note.md`, but not in this sentence).
+
+### Suggestion
+
+- **S-1** `language.ts:56-63` — `HANDOFF_PROMPT_CLOSINGS` does not contain the intermediate 0ca14ba `closingContinue` ("先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。" / "First restate in one or two sentences what the user last asked and where the work stands, …"). Field sweep across all pi sessions: **0 stored prompts end with it** (0ca14ba never shipped; the two phrase-bearing sessions are prose or end with `closingPaused`), so no shipped artifact breaks and the docs claim about released closings holds. Residual exposure: a non-paused handoff run from the local 0ca14ba build before v0.4.11 ships would create a successor prompt v0.4.11 can't recognize. Adding the two literal lines costs nothing.
+
+### Praise
+
+- Comparator edge cases all correct (see above); the `order`-counter bump on a discarded weaker sighting keeps cross-source recency monotonic.
+- Mutation matrix reproduces the fix-note exactly on a /tmp copy: 4/1/1/1/1/2/1/1 FAIL, and each mutation reddens **only** the intended assertions (remove-section → zh/en section + re-read + integration; remove-priority → `mixedSources`; remove-8cap → both cap checks; marker strip, fromHook, drop-activeSkills, every-read, re-read phrase → exactly their own check). The R1 N-1 invisible edges (fromHook, 8-cap) now have pins; fixtures are built through `buildHandoffPrompt` + real entry shapes, so none of the new pins is self-referential (a mutation in either producer or parser reddens them).
+- Field-check claim reproduces: live successor session `01a14ddb` (2026-10-18T07:12 JSONL) → `collectActiveSkills` returns exactly the two review skills from the stored v0.4.10 prompt; that prompt ends with `closingPaused` and passes `isHandoffPromptText`.
+- Residuals N-3/N-4 verified as field facts against pi dist: `utils.js:19` (nestedCalls), `branch-summarization.js:247` (`details.readFiles` on `branch_summary`), `compaction.js:720` (`details.readFiles` on compaction), `compaction.js:21` (fromHook guard the skip mirrors).
+- No remaining "most recent" overclaim in user-facing docs; `docs/handoff.md`/`CHANGELOG` claim only what the code does (read priority, read recency, cap 8).
+
+### Residual risk (field facts, no new mechanisms)
+
+- **R-A** (probe I): a prompt-sourced hop-1 mode is evicted when 8 newer read-sourced skills exist — index entries only fill the slots reads leave. Same root as the disclosed cap residual, now with a concrete shape.
+- **R-B**: draft-mode flow (`guard=draft`/`mode=draft`): the stored message is the user's edited text; any appended answer fails `isHandoffPromptText` (the "quote with appended text" test pins the gating), so that message contributes no skills at hop 2 — only a successor re-read survives. Consequence of deliberate quote-gating, unrecorded.
+- **R-C**: prompt-only 10-skill list keeps the last 8 block lines (alphabetically last of pi's sorted block); an alphabetically early active skill with no surviving read evidence is still evicted at hop 2. Arbitrary by nature of the index; see N-C.
+
+## Test And QA Focus
+
+```
+node tests/handoff-test.mjs   # 256 OK / 0 FAIL (R1: 251) — "handoff: all checks passed"
+node tests/run-all.mjs        # All 15 tests passed
+```
+- Mutation matrix (tmp copy, restored after each): remove-section 4, drop-activeSkills 1, every-read 1, re-read phrase 1, fromHook 1, 8-cap 2, priority 1, marker strip 1 — all match `fix-note.md`; each reddens only its own assertions.
+- Adversarial probes (13 shapes): read+10 prompt entries (read first, cap 8, last-7 block lines), alphabetically-late read, prompt/read duplicate, weaker-after-stronger, fromHook, dash/star markers, quoted prompt, second handoff after compaction, burying shape, block reversal, legacy closing recognition — all sane; the two loss shapes (R-A, R-C) are the disclosed residuals.
+- Field probe on the live `01a14ddb` JSONL: two review skills recovered from the stored v0.4.10 prompt — fix-note field claim reproduced.
+- Regression: old closings recognized, paused path waits, language auto, replay markers, threshold/baseline tests, and the `modelCalls === 0` pin all green.
+- Zero-write: sandbox `git status` identical before/after; tracked mtimes unchanged; tests wrote only `/tmp` fixtures.
+
+No blocking or important findings: the priority/order fix is correct, fully pinned, and the docs now claim only what the code does.
+
+VERDICT: PASSED

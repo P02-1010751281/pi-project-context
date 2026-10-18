@@ -1,0 +1,63 @@
+All evidence is gathered. Here is the review report.
+
+---
+
+# Independent Review: active-skills handoff slice (frozen sandbox /tmp/pc-active-review1)
+
+**Scope:** `collectActiveSkills` (3 sources, dedupe/order/cap/name), prompt section + new closings, whole-branch wiring, tests/mutation matrix, docs/claims, import graph, adversarial probes. Baseline math not re-reviewed.
+
+## Findings
+
+### Important
+
+**I-1 — "most recently seen first" is false for two of the three sources; cap eviction can drop the active skill at the second handoff**
+`extensions/project-context/handoff/file-ops.ts:41-49, 74-88` (and the claim in `docs/handoff.md:121-123`, `CHANGELOG.md:20-22`, fix-note "Deduped by file, most recently seen first").
+Both pi-generated sources are alphabetically sorted, not chronological: pi's own `computeFileLists` sorts `readFiles` (`pi-coding-agent/dist/core/compaction/utils.js`), and the prompt source parses that sorted block. So a prompt/compaction-sourced entry gets a recency order it does not have, can outrank a genuine later `read` call, and at the 8-cap the last-8-alphabetically win.
+Reproducible probe (ran against the real code): a recognized prompt with 10 skill files in `<read-files>` keeps `i-skill,h-skill,grilling,g-skill,f-skill,e-skill,d-skill,c-skill` — `a-skill`/`b-skill` are dropped regardless of actual recency; a real read call that precedes the prompt message is assigned a lower order than every prompt-sourced line after it. So at hop 2 with >8 skills and an alphabetically early active skill that the intermediate successor never re-read, the mode the fix exists to preserve can still vanish at the cut. The 8-cap itself is disclosed as a residual, but the recency-loss for two sources is not.
+Impact: successor may be told alphabetical order is "most recent", and the cap can silently evict the genuinely active mode. Fix boundary: qualify the wording in the fix-note/docs/CHANGELOG ("read-call source is recency-ordered; prompt/compaction sources keep the block's alphabetical order"), and add a test pinning cap behavior for >8 prompt-sourced skills (optional one-line change: rank tool-call-sourced entries above prompt-sourced ones in `collectActiveSkills`).
+
+### Nits
+
+- **N-1** `tests/handoff-test.mjs` — the `fromHook` skip (`file-ops.ts:82`) and the 8-cap (`file-ops.ts:24,102`) are mutation-invisible: I applied both mutations to a /tmp copy and each passed the full suite with 0 FAIL. All four mutations claimed in the fix-note reproduce exactly (4/1/1/1 FAIL), but these two behaviors deserve pins.
+- **N-2** `file-ops.ts:44-48` — a leading list marker in `<read-files>` (only reachable via draft-mode hand edits; the generator never emits markers) is accepted, producing `file = "- /path/SKILL.md"`; the successor's re-read would target that corrupted path. Probe confirmed.
+- **N-3** Fix-note Verification "a `read` of `SKILL.md` is found" slightly overclaims: reads recorded only on a tool result's `nestedCalls` (codemode scripts) are invisible — pi's own `extractFileOpsFromMessage` reads those (`utils.js`), the extension's assistant-only scan does not. Consistent with pre-existing `collectFileOps`; worth one residual line.
+- **N-4** `file-ops.ts:76-80` — pi-generated `branch_summary` entries also carry `details.readFiles` (`branch-summarization.js:106,132` reads both types); only `type === "compaction"` is consulted. Mirrors `collectFileOps` (consistent), but a skill surviving only in a branch summary is missed.
+
+### Praise
+
+- The `fromHook` skip exactly mirrors pi's own guard (`compaction.js:21: if (!prevCompaction.fromHook && prevCompaction.details)`).
+- Import graph is safe: `prompt.ts` imports `file-ops.ts` type-only (erased), so the new `file-ops → language → text` edges add no value cycle; the only value cycle (language ↔ text) predates the change and none of the three modules touches imported bindings at module-eval time. Confirmed by the suite loading under jiti with `moduleCache: false`.
+- Wording discipline: "loaded" not "active", conditional "if one set an active mode / if its instructions were dropped" — the successor keeps the decision, no overclaim.
+- The field check is genuine: the fix pass's own successor session (`01a14ddb`, 2026-10-18T07:12 JSONL) stores its v0.4.10 continuation prompt as a user message whose `<read-files>` lists exactly the two review-skill paths; my probe against the live code returned both, `isHandoffPromptText` = true.
+
+### Residual risk (not new mechanisms; field facts)
+
+- The only evidence that survives a pi compaction *inside the successor session* is a real re-read by that successor: the prompt message is dropped by compaction, and its `readFiles` accumulate only the successor's own reads. The prompt's re-read instruction is the designed bridge; if ignored, the mode is lost at hop 2. This sharpens the fix-note's "successor may still ignore the instruction" residual with the compaction fact.
+- `/skill:name` with no read, and `bash`/`cat` reads, are undetectable (already disclosed).
+- A SKILL.md read and then edited leaves `<read-files>` (pi filters modified files), so the prompt source misses it; the tool-call source covers it while the call is in the branch.
+
+## Answers to the specific questions
+
+- **Sources:** all three are the right evidence; `fromHook` respected (probe: hook compaction → `[]`); user messages are gated by `isHandoffPromptText` (quoted prompt + appended text → not recognized, 0 skills); paths with spaces work; dedupe by file with latest-sighting order is correct for the tool-call source; `skillName` falls back sanely for `/SKILL.md`, `SKILL.md`, `grilling/SKILL.md` (probe verified).
+- **Prompt:** section sits between details and file list, both languages pinned, no break of `isHandoffPromptText` (test + probe), old closings still recognized (the real v0.4.10 prompt ending in `closingPaused` parses), paused path still says wait (test line 84-86), model-free (integration asserts `modelCalls === 0`).
+- **Integration:** `collectActiveSkills(allEntries)` is whole-branch (run.ts:187); the pin branch's grilling read reaches the prompt with the call in the dropped prefix and no read result anywhere; the real v0.4.10 continuation prompt parses both review skills.
+- **Second-handoff hole:** covered — the opening prompt is stored verbatim as a user message in the successor (verified in the real JSONL; the replay marker only replaces carried copies), so the next handoff parses its `<read-files>` from the whole branch. The uncovered residue is the compaction-drop shape described above.
+- **Docs/claims:** every sentence checked against code except the ordering claim (I-1); the 8-cap, three sources, "old closings stay recognized", and the field check are all accurate.
+
+## Test And QA Focus
+
+```
+cd /tmp/pc-active-review1
+node tests/handoff-test.mjs          # 251 OK, 0 FAIL — "handoff: all checks passed"
+node tests/run-all.mjs               # All 15 tests passed (+ repo hygiene ok)
+```
+Mutation matrix (on a /tmp copy; sandbox untouched, `git status` identical before/after):
+- remove section → 4 FAIL (zh/en section, re-read line, integration) — matches fix-note
+- drop `activeSkills` from run.ts → 1 FAIL — matches
+- treat every read as a skill → 1 FAIL — matches
+- remove re-read phrase → 1 FAIL — matches
+- **remove `fromHook` skip → 0 FAIL; remove 8-cap → 0 FAIL** (untested edges, N-1)
+
+Adversarial probes (real code, real session JSONL): two review skills recovered from the live v0.4.10 prompt; 10-skill alphabetical cap eviction (I-1); marker-line path corruption (N-2); fromHook `[]`; quoted prompt ignored; space paths, root/relative names, 9-read cap boundary all sane.
+
+VERDICT: PASSED

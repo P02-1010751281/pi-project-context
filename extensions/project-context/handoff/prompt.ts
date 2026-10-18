@@ -5,6 +5,7 @@
  * the dropped prefix had.
  */
 
+import { type ActiveSkill } from "./file-ops.ts";
 import { fmtPct } from "./format.ts";
 import { type HandoffLanguage } from "./language.ts";
 
@@ -20,6 +21,9 @@ interface HandoffScaffolding {
 	detailTranscript: (file: string) => string;
 	detailLookup: string;
 	pendingHeading: string;
+	activeHeading: string;
+	activeLead: string;
+	activeItem: (name: string, file: string) => string;
 	closingContinue: string;
 	closingPaused: string;
 	documentTitle: (sessionId: string) => string;
@@ -41,7 +45,10 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		detailTranscript: (file) => `- Raw transcript (JSONL): ${file}`,
 		detailLookup: "- A detail that is not in this session must be looked up in the session log linked by .agents/memory/session-logs/INDEX.md (grep; do not load whole files); a fact you are not sure of must not be answered from memory.",
 		pendingHeading: "## Pending question (waiting for the user)",
-		closingContinue: "First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off.",
+		activeHeading: "## Skills and modes from the previous session",
+		activeLead: "The previous session loaded these skills. If one set an active mode, re-read its SKILL.md and keep following it.",
+		activeItem: (name, file) => `- ${name}: ${file}`,
+		closingContinue: "First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off.",
 		closingPaused: "The task is paused on the pending question above. Do not choose an option or start work on the user's behalf; wait for their answer.",
 		documentTitle: (sessionId) => `# Handoff from pi session ${sessionId}`,
 		documentCreated: (iso) => `- Created: ${iso}`,
@@ -60,7 +67,10 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		detailTranscript: (file) => `- 原始记录（JSONL）：${file}`,
 		detailLookup: "- 本会话里没有的细节，必须在 .agents/memory/session-logs/INDEX.md 指向的会话日志里查（用 grep，不要把整个文件读进来）；不确定的事实不得凭印象作答。",
 		pendingHeading: "## 待用户回答的问题",
-		closingContinue: "先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。",
+		activeHeading: "## 上一会话加载的技能与模式",
+		activeLead: "上一会话加载过这些技能。若其中某个设定了持续生效的模式，先重新读取它的 SKILL.md 并继续遵循。",
+		activeItem: (name, file) => `- ${name}：${file}`,
+		closingContinue: "先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。",
 		closingPaused: "任务停在上面的问题上。不要替用户选选项或开工，等用户回答。",
 		documentTitle: (sessionId) => `# pi 会话 ${sessionId} 的交接文档`,
 		documentCreated: (iso) => `- 生成时间：${iso}`,
@@ -76,6 +86,7 @@ export interface HandoffPromptParts {
 	keptTokens: number;
 	guardWaiting: boolean;
 	pendingQuestion?: string;
+	activeSkills?: ActiveSkill[];
 	fileOperations: string;
 	previousSessionId: string;
 	previousSessionFile?: string;
@@ -99,6 +110,10 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 		"",
 		...detailLines,
 	];
+	const activeSkills = parts.activeSkills ?? [];
+	if (activeSkills.length > 0) {
+		body.push("", text.activeHeading, "", text.activeLead, "", ...activeSkills.map((skill) => text.activeItem(skill.name, skill.file)));
+	}
 	const files = parts.fileOperations.trim();
 	if (files) body.push("", files);
 	if (parts.guardWaiting) body.push("", text.pendingHeading, "", parts.pendingQuestion ?? "", "");

@@ -11,7 +11,7 @@ import { completeSubValues, completeValues, completeVerbs } from "../shared/comp
 import { errorText, getProjectRoot, logError, memoryDir, notify, safeSessionId, writeAtomic } from "../shared/project-state.ts";
 import { resolveHandoffParentSession } from "./session-lineage.ts";
 import { clearHandoffSessionSettings, stageHandoffSessionSettings } from "./session-settings.ts";
-import { collectFileOps, computeFileLists, formatFileOperations } from "./file-ops.ts";
+import { collectActiveSkills, collectFileOps, computeFileLists, formatFileOperations } from "./file-ops.ts";
 import { fmtPct, fmtTokens } from "./format.ts";
 import { languageMessagesFor, resolveLanguage } from "./language.ts";
 import { buildHandoffDocument, buildHandoffPrompt } from "./prompt.ts";
@@ -181,6 +181,10 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 
 		const { readFiles, modifiedFiles } = computeFileLists(collectFileOps(olderEntries));
 		const fileOperations = formatFileOperations(readFiles, modifiedFiles);
+		// A skill the previous session loaded is a standing instruction: the tail may still hold its body,
+		// but the cut can drop the read result, and the successor otherwise sees only a file path. Name the
+		// skills (the whole branch, not just the dropped prefix) so a mode like grilling survives.
+		const activeSkills = collectActiveSkills(allEntries);
 
 		// "wait" (default) keeps the continuation automatic but hands the open
 		// question to the new session with a do-not-answer instruction; "draft"
@@ -197,6 +201,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			keptTokens,
 			guardWaiting,
 			pendingQuestion,
+			activeSkills,
 			fileOperations,
 			previousSessionId,
 			previousSessionFile: previousSessionFile || undefined,

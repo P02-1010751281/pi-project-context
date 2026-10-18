@@ -7,6 +7,8 @@
  * extension entry and the tests address by name.
  */
 
+export { collectActiveSkills } from "./file-ops.ts";
+export type { ActiveSkill } from "./file-ops.ts";
 export { detectHandoffLanguage, isHandoffPromptText, languageMessagesFor, resolveLanguage } from "./language.ts";
 export type { HandoffLanguage } from "./language.ts";
 export { buildHandoffDocument, buildHandoffPrompt } from "./prompt.ts";
