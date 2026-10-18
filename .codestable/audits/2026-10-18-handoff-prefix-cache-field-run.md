@@ -121,6 +121,23 @@ keep=0 约 $0.00049，keep=1k 约 $0.00129，keep=2k 约 $0.00205，keep=5k 约 
 **首轮开销几乎线性随 carried tail 增长，而不是随 cache 命中变化**；tail 是比 cache miss 大一个量级的
 成本项。代价是 carried tail 提供最近工作的原文连续性，砍掉它会让 successor 更多依赖 session log。
 
+## 追加：toolResult 占 carried payload 的比例（2026-10-18，合成工具 fixture）
+
+recent budget 对照里的 fixture 没有工具调用；真实 coding session 的 tail 往往由 `read`/`bash` 的
+toolResult 正文占据。再跑一个 4 轮 fixture：每轮让模型 `read` 一个约 19k 字符的本地文件，keep=5000，
+然后 `/handoff now`。successor JSONL 的文本统计：
+
+| 版本 | carried | successor 第 1 次 input / total | successor 文本 |
+| --- | ---: | ---: | ---: |
+| 当前实现 | ~7.3k | 8578 / 8654 | 总 39,896 字符，其中 toolResult **38,400**（96%） |
+| 沙箱：toolResult 正文 cap 1000 字符 | ~89 | 887 / 1554 | 总 2,071 字符，其中 toolResult 398 |
+
+沙箱只把超长 toolResult 的 `content` 换成 `[tool result omitted: N chars; see session log]`，保留
+`toolCallId` 与 call/result 配对；不是生产实现，也没有测模型是否因此多读文件。它说明的是：
+**当前 handoff 的首轮成本主要由 carried toolResult 正文决定，而不是 system/cache。** 要在生产做，
+需要先定策略（只裁最近一轮之前？按 token 而非字符？保留最新结果？），并补 provider 形状与
+session log 回读的验收；不能直接把 1000 字符硬编码。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
@@ -141,6 +158,7 @@ system 块逐字节稳定、不要在 handoff 同刻改 memory render；若要�
 `keepHead` 实验，而不是直接换成 compaction。
 
 recent budget 的 12 轮对照进一步说明：首轮 cacheRead 不随 keep 变化（始终 384），首轮 input/total
-却随 carried tail 近似线性增长。因此如果目标是成本，**先调 `handoffBudgetRecentTokens` 或裁剪
-toolResult 正文，比加 head 更直接**；代价是 recent 原文连续性下降，必须用“少带多少原文、模型多查
-多少次 session log”来验收，而不是只看 token 数。
+却随 carried tail 近似线性增长。工具 fixture 又把这一点推到极端：successor 文本的 96% 是 toolResult
+正文，沙箱 cap 1000 字符后 carried 从 ~7.3k 降到 ~89、首轮 input 从 8578 降到 887。因此如果目标是
+成本，**先调 `handoffBudgetRecentTokens` 或裁剪 toolResult 正文，比加 head 更直接**；代价是 recent
+原文连续性下降，必须用“少带多少原文、模型多查多少次 session log”来验收，而不是只看 token 数。
