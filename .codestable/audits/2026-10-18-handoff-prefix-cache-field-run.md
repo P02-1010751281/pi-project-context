@@ -46,6 +46,17 @@ predecessor 最后一次 `cacheRead=2048`，后继第一次 `cacheRead=384`：
 
 `/new` 后首轮 `input=97, cacheRead=384`，与 handoff 后继第一轮相同。跨会话的 system block 可以命中；handoff 特有的损失来自 conversation 起点变化。
 
+## 对照：手动 compaction（独立 20 轮沙箱）
+
+`handoffEnabled:false`，用 RPC `{type:"compact"}`（不是 `/compact` 文本，后者在 prompt 模式会被模型当成用户消息）压缩 20 轮、predecessor 最后一次 `input=1730, cacheRead=30976`；压缩后同一 session 再发两轮：
+
+| 压缩后实际调用 | input | cacheRead |
+| --- | ---: | ---: |
+| 第 1 次 | 13415 | **384** |
+| 第 2 次 | 115 | 13696 |
+
+手动 compaction 同样只命中 system block，旧 conversation 前缀（30976）一次丢掉；后继首轮 total 13801，第二轮 13813。它保留摘要和尾部，但摘要插入后前缀同样从新位置起算，所以 compaction 不比 handoff 更缓存友好；这次对照中 handoff 的首轮 total 只有 1446。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
@@ -54,4 +65,4 @@ predecessor 最后一次 `cacheRead=2048`，后继第一次 `cacheRead=384`：
 
 ## 结论
 
-handoff 不能高效复用被丢掉的对话前缀；它只能保住静态 system 前缀。实测一次 successor 首轮从 2048 掉到 384，之后按新会话自己的 prefix 重建。要减少损失，目标应是保持 system 块逐字节稳定、不要在 handoff 同刻改 memory render，并接受一次 conversation miss；不是恢复旧对话前缀。
+handoff 不能高效复用被丢掉的对话前缀；它只能保住静态 system 前缀。实测一次 successor 首轮从 2048 掉到 384，之后按新会话自己的 prefix 重建；20 轮后的手动 compaction 也从 30976 掉到 384，说明换会话不是损失的唯一来源。要减少损失，目标应是保持 system 块逐字节稳定、不要在 handoff 同刻改 memory render，并接受一次 conversation miss；不是恢复旧对话前缀，也不是换成 compaction。
