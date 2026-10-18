@@ -13,6 +13,11 @@ handoff 有两种阈值模式：
 
 手动 `/handoff now` 不等待阈值；自动触发只在宿主允许的 TUI 模式中运行。
 
+pi 的 `_checkCompaction` 在 post-run 循环里先于 `agent_settled` 运行，所以单轮涨幅跨过两条线时 pi 会先压缩，handoff 只能看到压缩后的分支。
+现在 `session_before_compact` 在 handoff 已到阈值时取消这次自动 `threshold` / `overflow` compaction，让 settle 触发器在未压缩的分支上交接；
+手动 `/compact` 不拦（用户显式选择）。handoff 失败会进入 failure backoff，下一次自动 compaction 照常进行；`nothing older ...` 的 skip 和被其他扩展取消的 handoff 也会进入冷却，
+不会每轮重复取消。
+
 ## 自适应预算公式
 
 符号：

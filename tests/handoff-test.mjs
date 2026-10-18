@@ -27,6 +27,9 @@ try {
 
 	const handoff = await loadNamespace(`${PC}/handoff/handoff.ts`);
 	const fileOps = await loadNamespace(`${PC}/handoff/file-ops.ts`);
+	// One loader so the pre-compaction test observes the same module-level cooldown clock that
+	// `registerHandoff` writes.
+	const [sharedHandoff, handoffState] = await loadShared([`${PC}/handoff/handoff.ts`, `${PC}/handoff/state.ts`]);
 	const settings = await loadNamespace(`${PC}/handoff/session-settings.ts`);
 	const lineage = await loadNamespace(`${PC}/handoff/session-lineage.ts`);
 
@@ -551,6 +554,68 @@ Ask one question at a time.
 	// Negative assertion: a pending setTimeout(0) trigger runs before this timer, so one flush is enough.
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	check("an attempted auto handoff does not retrigger on the next settle", auto.sentMessages.length === 1);
+
+	console.log("\n=== pre-compaction handoff guard ===");
+	const preemptPi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`))(preemptPi);
+	const preemptCtx = makeCtx(tmp, {
+		sessionManager: autoCtx.sessionManager,
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 190_000, percent: 95, contextWindow: 200_000 }),
+	});
+	await runHandlers(preemptPi, "session_start", preemptCtx);
+	const thresholdCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "threshold" });
+	check("a due handoff cancels threshold compaction", thresholdCompaction.some((result) => result?.cancel === true));
+	const manualCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "manual" });
+	check("manual compaction is not cancelled", manualCompaction.every((result) => result?.cancel !== true));
+	const overflowCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "overflow", willRetry: true, signal: undefined });
+	check("automatic overflow compaction is cancelled for a due handoff", overflowCompaction.some((result) => result?.cancel === true));
+	const belowCtx = makeCtx(tmp, {
+		sessionManager: autoCtx.sessionManager,
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 100_000, percent: 50, contextWindow: 200_000 }),
+	});
+	const belowCompaction = await runHandlers(preemptPi, "session_before_compact", belowCtx, { reason: "threshold" });
+	check("compaction proceeds below the handoff threshold", belowCompaction.every((result) => result?.cancel !== true));
+	const printCtx = makeCtx(tmp, {
+		sessionManager: autoCtx.sessionManager,
+		mode: "print",
+		getContextUsage: () => ({ tokens: 190_000, percent: 95, contextWindow: 200_000 }),
+	});
+	const printCompaction = await runHandlers(preemptPi, "session_before_compact", printCtx, { reason: "threshold" });
+	check("compaction proceeds outside the TUI", printCompaction.every((result) => result?.cancel !== true));
+	// The cancelled compaction leaves the branch intact for the settle trigger.
+	await runHandlers(preemptPi, "agent_settled", preemptCtx);
+	await waitUntil(() => preemptPi.sentMessages.includes("/handoff force-auto"));
+	check("the pre-compaction guard hands the trigger back to settle", preemptPi.sentMessages.includes("/handoff force-auto"));
+	// The mock has no newSession, so this attempt fails and arms the failure backoff; compaction must
+	// then proceed rather than being cancelled forever.
+	await preemptPi.commands.get("handoff").handler("force-auto", preemptCtx);
+	const afterFailure = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "threshold" });
+	check("compaction proceeds after a failed handoff", afterFailure.every((result) => result?.cancel !== true));
+	const cancelPreemptPi = makePi({ cwd: tmp });
+	sharedHandoff.registerHandoff(cancelPreemptPi);
+	const cancelEntries = [];
+	let cancelParent = null;
+	for (let index = 0; index < 12; index += 1) {
+		const entry = messageEntry(`cn${index}`, index % 2 === 0 ? "user" : "assistant", `turn ${index} `.repeat(20), `2026-09-16T00:50:${String(index).padStart(2, "0")}.000Z`);
+		entry.parentId = cancelParent;
+		cancelParent = entry.id;
+		cancelEntries.push(entry);
+	}
+	const cancelPreemptCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(cancelEntries, "handoff-cancel"),
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 190_000, percent: 95, contextWindow: 200_000 }),
+	});
+	cancelPreemptCtx.newSession = async () => ({ cancelled: true });
+	await runHandlers(cancelPreemptPi, "session_start", cancelPreemptCtx);
+	await cancelPreemptPi.commands.get("handoff").handler("now", cancelPreemptCtx);
+	check(
+		"the cancelled handoff is reported",
+		cancelPreemptCtx.notifications.some(([message]) => message.includes("cancelled by another extension")),
+	);
+	check("the cancelled handoff arms its cooldown", handoffState.handoffCooldownUntil() > Date.now());
 
 	console.log("\n=== adaptive threshold: the conservative knee, with a physical floor ===");
 	// Auto hands off at the **two-term** guardrail: the lower of the model's conservative quality knee

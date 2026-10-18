@@ -304,6 +304,9 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			});
 		if (result.cancelled) {
 			if (handoffRoot) await clearHandoffSessionSettings(handoffRoot).catch(() => {});
+			// A cancellation must not leave the pre-compaction guard cancelling every compaction while
+			// no handoff can start; the cooldown lets the next automatic compaction proceed.
+			armHandoffCooldown(RETRIGGER_COOLDOWN_MS);
 			notify(ctx, "Handoff: cancelled by another extension.", "warning");
 			return;
 		}
@@ -316,17 +319,21 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 	}
 }
 
+/** The trigger predicate shared by the settle trigger and the pre-compaction guard. The cooldown and
+ * failure-backoff clocks stay at both call sites so a third caller cannot silently skip them. */
+function handoffDue(ctx: ExtensionContext, usage: ReturnType<ExtensionContext["getContextUsage"]>): boolean {
+	if (!handoffEnabled() || handoffInFlight()) return false;
+	if (ctx.mode !== "tui") return false;
+	if (!usage || usage.tokens === null) return false;
+	const threshold = resolveThreshold(ctx, usage);
+	return threshold !== undefined && usage.tokens >= threshold.tokens;
+}
+
 function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	if (!handoffEnabled() || handoffInFlight()) return;
-	if (ctx.mode !== "tui") return;
 	if (!ctx.isIdle()) return;
 	const now = Date.now();
 	if (now < handoffCooldownUntil() || now < handoffFailureBackoffUntil()) return;
-
-	const usage = ctx.getContextUsage();
-	if (!usage || usage.tokens === null) return;
-	const threshold = resolveThreshold(ctx, usage);
-	if (!threshold || usage.tokens < threshold.tokens) return;
+	if (!handoffDue(ctx, ctx.getContextUsage())) return;
 
 	setHandoffInFlight(true);
 	// Defer past agent_settled bookkeeping before the session is replaced.
@@ -374,6 +381,19 @@ export function registerHandoff(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", (_event, ctx) => {
 		maybeTrigger(pi, ctx);
+	});
+
+	// pi checks automatic compaction inside the post-run loop, before `agent_settled`; a turn that
+	// crosses pi's reserve line would compact first and the handoff would only see the compressed
+	// branch. When a handoff is already due, cancel automatic threshold/overflow compaction and let
+	// the settle trigger run on the intact branch. Manual /compact is left alone: it is an explicit
+	// user choice. A failed handoff arms the failure backoff, so the next compaction proceeds.
+	pi.on("session_before_compact", (event, ctx) => {
+		if (event.reason === "manual") return;
+		const now = Date.now();
+		if (now < handoffCooldownUntil() || now < handoffFailureBackoffUntil()) return;
+		if (!handoffDue(ctx, ctx.getContextUsage())) return;
+		return { cancel: true };
 	});
 
 	pi.registerCommand("handoff", {

@@ -1,0 +1,61 @@
+# Independent Review — Round 1: preempt automatic pi compaction when a handoff is due
+
+**Scope:** `c67ed8e` + uncommitted slice. Verified against installed pi 1.3.0 (`/home/user/.pi/agent/install/releases/1.3.0/node_modules/@earendil-works/pi-coding-agent`), repo tests, and mutation copies under `/tmp`. Zero-write held (git status unchanged beyond the slice's own four files + issue record; tests wrote only `/tmp` fixtures).
+
+---
+
+## Blocking
+
+None.
+
+## Important
+
+**I-1 — The cancelled-handoff cooldown arm is mutation-invisible (0 FAIL).**
+`extensions/project-context/handoff/run.ts:307-309` (the `armHandoffCooldown(RETRIGGER_COOLDOWN_MS)` inside `if (result.cancelled)`).
+*Impact:* This is one of the two loop-escape valves the slice exists for ("the guard cannot cancel every compaction while no handoff can start"). The failure backoff is pinned (`compaction proceeds after a failed handoff`), but the cancelled branch is not: I removed only that arm line in a copy and `node tests/handoff-test.mjs` stayed green (0 FAIL). The existing cancelled-handoff test (`tests/handoff-test.mjs:~1485-1488`) checks stage clearing and the notification, not the cooldown; none of the four documented mutations touches it. A future edit dropping the line would reintroduce cancel-every-compaction whenever another extension keeps cancelling handoffs.
+*Fix boundary:* extend the pre-compaction test block — give `preemptCtx` a `newSession` returning `{ cancelled: true }`, run `handler("force-auto")`, then fire `session_before_compact` and assert no cancel (mirror of the failure-backoff pin). Add the mutation row to the fix-note.
+
+## Nits
+
+- **N-1** `.codestable/issues/2026-10-18-handoff-before-compaction/design.md` — "On a 272K window that is 251.6K versus 255.6K: only 4K apart." With the current constants, W=272K gives pi's compact line at 256.0K (`W − 16384`) and the handoff line at 252.1K (`min(knee, W − 16384 − 4000)`; knee ≈ W below the transition). The "4K apart" claim is exact (`TIER_EDGE_MARGIN`), the absolute figures are ~4K off each. Doc precision only.
+- **N-2** `design.md` / `fix-note.md` residuals — "Manual `/compact` and a handoff cancelled by another extension are not preempted." A cancelled handoff isn't a compaction, so "not preempted" doesn't describe it; what happens is the new cooldown lets the next compaction run. Rewording suggested.
+- **N-3** `docs/handoff.md` / `CHANGELOG.md` — neither mentions the cancelled-handoff cooldown wiring; only the failure backoff and the skip cooldown are described. The code comment covers it, but the behavior table in the docs would be more complete with it.
+
+## Suggestions
+
+- **S-1** `tests/registration-test.mjs:30` — the `expected` list is a superset check, so the new `on:session_before_compact` registration isn't pinned at the surface; adding it would catch a registration loss independently of the behavioral pins.
+- **S-2** `run.ts` `handoffDue` — the predicate excludes the cooldown/backoff clocks, which both call sites re-check (guard before, settle after). Fine today; a comment on the predicate (or folding the clocks in) would prevent a third call site from forgetting them.
+- **S-3** Test mock — `runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "overflow" })` omits `willRetry`/`signal`. The handler doesn't read them, so the pin is honest today; if the handler ever starts reading `willRetry`, the mock would silently pass `undefined`.
+
+## Learning
+
+- **Ordering verified in pi 1.3.0** (`dist/core/agent-session.js:~1420-1441`): `_handlePostAgentRun()` → `_checkCompaction()` → `_runAutoCompaction()` (emits `session_before_compact`) → `_runBeforeSettleBoundary()` → `agent.continue()`/break; `_emitAgentSettled()` runs in the `finally` — so `session_before_compact` always precedes `agent_settled` and the settle event fires even after a cancel. The record's line-for-line claim is accurate.
+- **Cancel semantics verified:** `{ cancel: true }` → `cancelledByExtension` → throw → `compaction_end`/`session_compact_failed` with `aborted: true, willRetry: false`, `_runAutoCompaction` returns false, `_failedResponse` never set → no retry, no stale retry, and `_overflowRecoveryAttempted` resets on the next user message or successful assistant message. Cancelling `overflow` (willRetry) is safe and leaves the session usable.
+- **"Intact branch" holds even for overflow:** `_omitRecoveryAttempt` runs *before* the hook, but it only appends a `context_edit`; `buildContextEntries` ignores edits and `sessionEntryToContextMessages` skips them, so the handoff's own replay still sees the failed turn in the raw branch.
+- **Manual exemption is reachable:** `AgentSession.compact()` emits `session_before_compact` with `reason: "manual"` (agent-session.js:~2204-2230).
+- **Fail-safe bias:** a stuck `handoffInFlight` disables the guard (compaction proceeds) — the failure mode leans toward pi's own compaction, never toward cancel-forever.
+- **Multi-extension:** the runner returns the first `{cancel:true}` and short-circuits, so the guard's cancel dominates other handlers' compaction content.
+
+## Praise
+
+- `session_before_compact` is the right hook — it is pi's only cancellable point before compaction (`agent_before_settle` runs after; supplying a `compaction` result would still compact).
+- `handoffDue` matches the settle trigger's conditions exactly (enabled, in-flight, TUI, usage null, refusal, at/above threshold); `maybeTrigger`'s refactor is behavior-preserving.
+- Threshold geometry is coherent: the adaptive line sits 4K below pi's compact line, so whenever pi auto-compacts and a handoff *can* trigger, the guard sees it due; when `resolveThreshold` refuses, the settle trigger would never fire either, so letting pi compact is correct. Fixed ratios above the reserve line get the same single-turn-crossing protection.
+- Mutation matrix reproduced exactly as claimed: remove handler → 2 FAIL, exclude overflow → 1 FAIL, remove TUI guard → 1 FAIL, remove cooldown/backoff guard → 1 FAIL.
+- Skip/failure/busy paths all arm a clock, so no cancel-forever path exists in the code as written; only I-1's pin is missing.
+
+## Residual risks
+
+- `_prepareRun` cancellations let a prompt run above threshold before the settle-time handoff (documented).
+- After a cancelled overflow compaction, `_overflowRecoveryAttempted` stays true until the next user message / successful reply; if the handoff then fails and the user immediately overflows again in the same session, pi would skip compact-and-retry once — mitigated by the failure backoff letting the next threshold compaction through and by the flag reset.
+- Module-level cooldown/backoff persist into the successor session (pre-existing design).
+- pi's cancel-merge semantics (first cancel wins) is a runtime behavior of 1.3.0; a future pi change to result merging would need re-verification.
+
+## Test And QA Focus
+
+- `node tests/handoff-test.mjs` — pass; the 7 new pre-compaction pins all green; "no scenario above reached a model" holds.
+- `node tests/run-all.mjs` — "All 15 tests passed." (registration, active-skills, backoff, baseline all green — no regression.)
+- Mutation matrix re-run on `/tmp` copies: 2/1/1/1 FAIL as claimed; extra probe (cancelled-arm removal) → 0 FAIL (I-1).
+- **Manual TUI QA to try:** one turn crossing both lines (e.g. fixed threshold 0.99 on a 200K window) — expect no compaction, handoff on settle; `/compact` while due — expect compaction to proceed; abort a response (overflow path) — expect the failed turn omitted from pi's view but carried in the successor replay; an extension-cancelled handoff — expect the next auto compaction to run (currently only code-inspected, not pinned); print mode — expect pi to compact.
+
+VERDICT: PASSED

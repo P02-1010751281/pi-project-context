@@ -7,6 +7,11 @@
 
 ### 修复
 
+- **自动 handoff 先于 pi 的自动 compaction**：pi 在 post-run 循环里先跑 `_checkCompaction`、再发 `agent_settled`，单轮涨幅跨过两条线时
+  compaction 会先生效，handoff 只能看到压缩后的分支——正是它要规避的损失。现在 `session_before_compact` 在阈值已到时取消自动
+  `threshold` / `overflow` compaction，让 settle 触发器在未压缩的分支上交接；手动 `/compact` 仍由用户决定。失败的 handoff 进入
+  failure backoff，下一次自动 compaction 照常进行；被其他扩展取消的 handoff 进入冷却，`nothing older ...` 的 skip 也会冷却。
+
 - **重锚不再把分支文本没有承载的计费内容当成 baseline 增长**：`measureContext` 的 ② 检测
   （`prompt_r − prompt_p > 2 × (chars_r − chars_p)`）在中转站推理路由上逐轮触发 —— provider 把未落盘的隐藏推理计入下一次 prompt，
   而持久化消息里只有空 thinking 块；截图重的会话同理，`chars` 按设计排除图像块。每次重锚都把整段文本的 `chars × (1/r − 1/8)` 高读重新计入，

@@ -27,7 +27,7 @@ for (const [name, file] of [
 		const registrations = [...pi.handlers.keys()].map((event) => `on:${event}`).concat([...pi.commands.keys()].map((command) => `cmd:${command}`));
 		console.log(`OK   ${name}: ${registrations.join(", ")}`);
 		if (name === "project-context") {
-			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:session-log", "cmd:autolearn", "cmd:handoff"];
+			const expected = ["on:session_start", "on:before_agent_start", "on:turn_end", "on:agent_settled", "on:session_before_compact", "on:session_shutdown", "cmd:project-context", "cmd:memory", "cmd:session-log", "cmd:autolearn", "cmd:handoff"];
 			const missing = expected.filter((item) => !registrations.includes(item));
 			if (missing.length > 0) {
 				console.log(`FAIL missing registrations: ${missing.join(", ")}`);
