@@ -1,0 +1,54 @@
+All verification is complete. Here is the review.
+
+---
+
+# Independent Review — Round 5: explicit `/skill:` skill-load source (re-review after R4 CHANGES-REQUESTED)
+
+**Scope**: uncommitted diff on `master` (6 files: `file-ops.ts`, `tests/handoff-test.mjs`, `docs/handoff.md`, `CHANGELOG.md`, `fix-note.md`, `review-report.md`). Verified against the installed pi 1.3.0 sources (`dist/core/agent-session.js`, `dist/core/skills.js`) and by executing the tests and 12 mutations on a temp copy. Sandbox untouched: `git status` shows only the six pre-existing modifications, zero writes to the repo.
+
+## Findings
+
+### blocking
+None.
+
+### important
+None.
+
+### nit
+- **N-1 — `fix-note.md:76,79,80`: three mutation rows undercount the measured FAILs.** Executed on a temp copy:
+  - "remove the `/skill:` scan -> 3 FAIL" → **4 FAIL**: the three named checks plus "a `/skill:` entry survives the 8-cap against eight reads" (without the scan, `[0]` becomes `cap-skill-07`).
+  - "lower `SKILL_COMMAND_SOURCE` to 2 -> 1 FAIL (outranks read)" → **2 FAIL**: also the cap check (priority 2 < 3 lets the eight reads evict grilling).
+  - "remove the 8-cap -> 2 FAIL" → **3 FAIL**: the new `cappedCommand` check now also fails (9 entries, `cap-skill-00` present).
+  - The "remove the source priority -> 1 FAIL" row is still accurate under its parenthetical reading (read==prompt measured 1 FAIL; full flattening would be 2), and "remove the `isSkillFile` guard -> 1 FAIL" is exact.
+  - Impact: verification record is measurably wrong; direction is safe (tests are *more* sensitive than claimed). Fix boundary: update the three counts and parentheticals in `fix-note.md` (~lines 76–80).
+- **N-2 — `extensions/project-context/handoff/file-ops.ts:23`**: "the explicitly-sourced head is recency-ordered" compresses per-source recency into one phrase; across sources the head is priority-partitioned (all `/skill:` before all `read`s), not merged-recency. The docs got this exactly right ("两者内部按最近出现排序"); the bound comment could say "each explicit source keeps its recency order within itself". Comment-level only.
+- **N-3 — `fix-note.md:94`**: the residual bullet "Read-sourced entries are the newest reads" predates the `/skill:` source and now underdescribes the head ("explicitly-sourced entries are the newest of their source"). The bullet's substantive claim (a prompt-only list can evict an alphabetically early mode at hop 2) is still true; wording-level.
+
+### suggestion
+- **S-1 — the both-orders check cannot observe the no-downgrade branch.** The output name derives from the file path, so a downgrade-overwrite mutation (`priority !== previous.priority` instead of `>`) passes every current test — measured 0 FAIL — because a single file still yields one `grilling` entry. The `else order += 1` line is output-inert in all cases (a constant shift of later order values never changes relative sort order), so no mutation of it alone can fail any test. The properties the check *does* pin: dedupe (a priority-keyed map mutation fails it, measured 4 FAIL) and, indirectly, the 4 > 3 ladder via the cap test (S-1 of the brief holds through the cap check, not the both-orders check). If the priority guard is worth pinning, a three-entry fixture `/skill:(A)`, `read(A)`, `read(B)` asserting A-first would catch the downgrade-overwrite mutation.
+
+### learning
+- **L-1 — `parseSkillBlock` integration mirrors pi exactly.** The exported parser is the same regex the TUI uses to render a skill invocation, and pi's `_expandSkillCommand` generates `${block}\n\n${args}` — precisely the shapes the positive fixtures use. The negatives are real edges of the installed parser: the `^` anchor rejects leading prose; the `(?:\n\n…)?$` group rejects a single-newline trailer (and a bare `\n\n` with empty args). Loose-regex substitution fails both negatives (measured 2 FAIL).
+- **L-2 — standalone `.md` residual is accurate.** pi's `loadSkillsFromDir` loads direct `.md` children of the root (`includeRootFiles`); their `filePath`/`location` is the `.md` path, so `isSkillFile` (basename `SKILL.md`) rejects them from every source. Not contradicted by the non-SKILL fixture (`/tmp/notes.md`), which is the same shape.
+- **L-3 — a verbatim pasted skill block counts as a load.** By design: pi's own TUI renders such a message as a skill invocation, so the extension mirrors pi's interpretation rather than guessing user intent. Not a defect; worth knowing when reading the negative fixtures (they pin anchoring strictness, not provenance).
+
+### praise
+- **P-1**: Reusing pi's own exported `parseSkillBlock` instead of a local copy means the detection cannot drift from the format pi stores — the fixtures are verified against the real 1.3.0 parser, not self-referential.
+- **P-2**: I-1 wording is now exact in both user-facing docs: per-source recency for the explicit sources, priority partition, prompt/compaction as reverse-block filler of remaining slots. No "同一级"/cross-source "most recent" overclaim remains outside historical transcripts. N-1's comment fix and N-2's verification-list additions land correctly.
+- **P-3**: The cap test doubles as the true priority-ladder pin: lowering `SKILL_COMMAND_SOURCE` to 2 evicts the `/skill:` entry at the cap, so 4 > 3 is pinned by output, not just by construction.
+- **P-4**: Full-suite hygiene gate (`git diff --check`, trailing-blank-line scan) passes; the new import is from the same already-imported pi entry (`dist/index.js` exports `parseSkillBlock`), so no new dependency risk.
+
+### residual-risk (kept honest)
+- All fix-note residuals re-verified against pi sources: `bash`/`cat` and codemode `nestedCalls` reads invisible; `branch_summary` excluded (abandoned-branch files); draft-mode appended answers lose hop-2 skills; successor may ignore the instruction. The standalone-`.md` blind spot is accurately recorded (L-2).
+- Remaining: the three stale mutation counts (N-1) are the only factual error introduced by this diff's corrections; the `review-report.md` R4 row is still the expected "see below / Pending" placeholder awaiting this review's disposition.
+
+## Test And QA Focus
+
+Executed (sandbox read-only; mutations on `/tmp/pc-mut-check2`):
+- `node tests/handoff-test.mjs` → all checks pass, including all 11 new/affected `/skill:` checks; "no scenario above reached a model" holds.
+- `node tests/run-all.mjs` → `All 15 tests passed.` (includes handoff, prompt-recognition, baseline/memory-budget suites).
+- Mutation matrix measured: scan-removed 4 FAIL; priority→2 2 FAIL; guard-removed 1 FAIL; cap-removed 3 FAIL; cap→9 3 FAIL; loose parse 2 FAIL; priority-keyed dedupe 4 FAIL (fails both-orders); read==prompt 1 FAIL; always-overwrite/first-only/no-downgrade-consume 0 FAIL each (basis of S-1).
+- Cross-checks: `parseSkillBlock` regex and `_expandSkillCommand` block generation in installed pi `dist/core/agent-session.js`; `.md` root-file loading in `dist/core/skills.js`; `sessionEntryToContextMessages` passes user content verbatim; `messageText` join+trim is compatible with the anchored regex.
+- QA focus for the follow-up commit: re-measure the three fix-note rows after correction; if S-1 is adopted, add the three-entry fixture and confirm the downgrade-overwrite mutation turns it red; keep the no-model-call pin green.
+
+VERDICT: PASSED

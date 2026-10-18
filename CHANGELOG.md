@@ -17,8 +17,9 @@
 - **交接后的首条回复先复述上一轮**：续接提示的收尾从「从上次中断处继续 / Continue the task from where it left off」改为
   「先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式」，然后继续。successor 不再直接开工而让用户不知道在继续什么；
   旧版收尾仍被 `isHandoffPromptText` 识别，重放时照旧替换为 omission marker。
-- **交接保留上一会话加载的技能与模式**：successor 现在收到一份「上一会话加载的技能与模式」清单，来源是 `read` 过 `SKILL.md` 的工具调用、
-  compaction 的 `readFiles`、以及上一份交接提示的 `<read-files>`（去重；真实 `read` 优先，`read` 之间按最近读取排序；最多 8 个）；每个条目带技能名与 `SKILL.md` 路径，
+- **交接保留上一会话加载的技能与模式**：successor 现在收到一份「上一会话加载的技能与模式」清单，来源是用户 `/skill:` 加载的技能块、`read` 过 `SKILL.md` 的工具调用、
+  compaction 的 `readFiles`、以及上一份交接提示的 `<read-files>`（去重；`/skill:` 最优先，其次真实 `read`，两者内部按最近出现排序；
+  提示/压缩清单最后，按块内倒序只填剩余名额；最多 8 个）；每个条目带技能名与 `SKILL.md` 路径，
   并被告知若某个设定了持续生效的模式，先重新读取它的 `SKILL.md` 再继续。此前技能说明被切掉后，successor 只看到 `<read-files>` 里的路径，
   grilling 这类模式不会延续。
 

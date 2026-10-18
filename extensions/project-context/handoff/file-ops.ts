@@ -4,7 +4,7 @@
 
 import path from "node:path";
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
-import { type SessionEntry, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { parseSkillBlock, type SessionEntry, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { isHandoffPromptText } from "./language.ts";
 import { messageText } from "./text.ts";
 
@@ -20,15 +20,17 @@ export interface ActiveSkill {
 	file: string;
 }
 
-/** Bound on the active-skill list: the read-sourced head is recency-ordered; index-sourced entries fill the rest. */
+/** Bound on the active-skill list: each explicit source keeps its recency order within itself; index-sourced entries fill the rest. */
 const MAX_ACTIVE_SKILLS = 8;
 
 /**
- * Evidence strength, highest first. A real `read` is the skill being used; a continuation prompt's
- * read-files block and a compaction's readFiles are file indexes (pi sorts them), so they only fill
- * the slots reads leave, rendered in reverse block order. This is what keeps an alphabetically early
- * active skill from being evicted by the 8-cap at the second handoff.
+ * Evidence strength, highest first. A user's `/skill:` invocation is the most explicit evidence;
+ * then a real `read` (the skill being used); a continuation prompt's read-files block and a
+ * compaction's readFiles are file indexes (pi sorts them), so they only fill the slots the explicit
+ * sources leave, rendered in reverse block order. This is what keeps an alphabetically early active
+ * skill from being evicted by the 8-cap at the second handoff.
  */
+const SKILL_COMMAND_SOURCE = 4;
 const READ_SOURCE = 3;
 const PROMPT_SOURCE = 2;
 const COMPACTION_SOURCE = 1;
@@ -80,11 +82,11 @@ function extractFileOpsFromMessage(message: AgentMessage, ops: FileOps): void {
 }
 
 /**
- * Skills the previous session loaded. A real read is the skill being used, so reads come first in
- * read order; a continuation prompt's read-files block and a compaction's readFiles are pi-sorted
- * indexes with no activity order, so they follow and only fill the slots reads leave. The
- * continuation names the file so the successor can re-read it when its instructions were dropped by
- * the cut.
+ * Skills the previous session loaded. A user's `/skill:` invocation is the strongest evidence; then
+ * a real read (the skill being used), in read order; a continuation prompt's read-files block and a
+ * compaction's readFiles are pi-sorted indexes with no activity order, so they follow and only fill
+ * the slots the explicit sources leave. The continuation names the file so the successor can re-read
+ * it when its instructions were dropped by the cut.
  */
 export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
 	const seen = new Map<string, { priority: number; order: number }>();
@@ -108,6 +110,10 @@ export function collectActiveSkills(entries: SessionEntry[]): ActiveSkill[] {
 		for (const message of sessionEntryToContextMessages(entry)) {
 			if (message.role === "user") {
 				const text = messageText(message);
+				// `/skill:name` stores a `<skill name location>` block in a user message; that is the
+				// user explicitly loading a skill, even when no `read` call follows.
+				const skill = parseSkillBlock(text);
+				if (skill && isSkillFile(skill.location)) remember(skill.location, SKILL_COMMAND_SOURCE);
 				if (isHandoffPromptText(text)) {
 					for (const file of promptSkillFiles(text)) remember(file, PROMPT_SOURCE);
 				}

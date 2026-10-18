@@ -116,6 +116,51 @@ try {
 	});
 	const fromPriorPrompt = handoff.collectActiveSkills([contentEntry("sk5", "user", [{ type: "text", text: priorPrompt }], "2026-09-16T00:49:05.000Z")]);
 	check("a prior continuation prompt keeps a skill whose read call was dropped", fromPriorPrompt.length === 1 && fromPriorPrompt[0]?.name === "grilling");
+	const skillBlock = `<skill name="grilling" location="/home/user/.agents/skills/grilling/SKILL.md">
+References are relative to /home/user/.agents/skills/grilling.
+
+# Grilling
+Ask one question at a time.
+</skill>`;
+	const fromSkillCommand = handoff.collectActiveSkills([contentEntry("skc1", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.500Z")]);
+	check("a /skill: invocation is detected without a read", fromSkillCommand.length === 1 && fromSkillCommand[0]?.name === "grilling" && fromSkillCommand[0]?.file === "/home/user/.agents/skills/grilling/SKILL.md");
+	const fromSkillCommandWithMessage = handoff.collectActiveSkills([contentEntry("skc2", "user", [{ type: "text", text: `${skillBlock}\n\n请继续盘问` }], "2026-09-16T00:49:05.600Z")]);
+	check("a /skill: block with a trailing user message is still detected", fromSkillCommandWithMessage.length === 1 && fromSkillCommandWithMessage[0]?.name === "grilling");
+	const nonSkillBlock = `<skill name="notes" location="/tmp/notes.md">\nReferences are relative to /tmp.\n\n# Notes\nA note.\n</skill>`;
+	check("a /skill: block for a non-SKILL file is ignored", handoff.collectActiveSkills([contentEntry("skc5", "user", [{ type: "text", text: nonSkillBlock }], "2026-09-16T00:49:05.750Z")]).length === 0);
+	const commandVsRead = handoff.collectActiveSkills([
+		contentEntry("skc3", "assistant", [{ type: "toolCall", id: "skc3", name: "read", arguments: { path: "/repo/.agents/skills/mcl-spec/SKILL.md" } }], "2026-09-16T00:49:05.700Z"),
+		contentEntry("skc4", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.800Z"),
+	]);
+	check("a /skill: invocation outranks a read", commandVsRead.length === 2 && commandVsRead[0]?.name === "grilling" && commandVsRead[1]?.name === "mcl-spec");
+	const sameSkillBothOrders = [
+		handoff.collectActiveSkills([
+			contentEntry("skc6", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.810Z"),
+			contentEntry("skc7", "assistant", [{ type: "toolCall", id: "skc7", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:05.820Z"),
+		]),
+		handoff.collectActiveSkills([
+			contentEntry("skc8", "assistant", [{ type: "toolCall", id: "skc8", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:05.830Z"),
+			contentEntry("skc9", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.840Z"),
+		]),
+	];
+	check("the same skill through /skill: and read dedupes in both orders", sameSkillBothOrders.every((list) => list.length === 1 && list[0]?.name === "grilling"));
+	const noDowngrade = handoff.collectActiveSkills([
+		contentEntry("skc14", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.805Z"),
+		contentEntry("skc15", "assistant", [{ type: "toolCall", id: "skc15", name: "read", arguments: { path: "/home/user/.agents/skills/grilling/SKILL.md" } }], "2026-09-16T00:49:05.815Z"),
+		contentEntry("skc16", "assistant", [{ type: "toolCall", id: "skc16", name: "read", arguments: { path: "/repo/.agents/skills/mcl-spec/SKILL.md" } }], "2026-09-16T00:49:05.825Z"),
+	]);
+	check("a later read of the same skill does not downgrade the /skill: entry", noDowngrade.length === 2 && noDowngrade[0]?.name === "grilling" && noDowngrade[1]?.name === "mcl-spec");
+	const proseSkillBlock = `先看看：\n${skillBlock}`;
+	const singleNewlineTrailer = `${skillBlock}\n请继续`;
+	check("a skill block embedded in prose is not a load", handoff.collectActiveSkills([contentEntry("skc10", "user", [{ type: "text", text: proseSkillBlock }], "2026-09-16T00:49:05.850Z")]).length === 0);
+	check("a skill block with a single-newline trailer is not a load", handoff.collectActiveSkills([contentEntry("skc11", "user", [{ type: "text", text: singleNewlineTrailer }], "2026-09-16T00:49:05.860Z")]).length === 0);
+	const cappedCommand = handoff.collectActiveSkills([
+		contentEntry("skc12", "user", [{ type: "text", text: skillBlock }], "2026-09-16T00:49:05.870Z"),
+		...Array.from({ length: 8 }, (_, index) =>
+			contentEntry(`skc13${index}`, "assistant", [{ type: "toolCall", id: `skc13${index}`, name: "read", arguments: { path: `/repo/.agents/skills/cap-skill-${String(index).padStart(2, "0")}/SKILL.md` } }], `2026-09-16T00:49:${String(6 + index).padStart(2, "0")}.000Z`),
+		),
+	]);
+	check("a /skill: entry survives the 8-cap against eight reads", cappedCommand.length === 8 && cappedCommand[0]?.name === "grilling" && !cappedCommand.some((skill) => skill.name === "cap-skill-00"));
 	const fakePrompt = "随便看看\n<read-files>\n/home/user/.agents/skills/grilling/SKILL.md\n</read-files>";
 	check("an ordinary user message is not a skill source", handoff.collectActiveSkills([contentEntry("sk6", "user", [{ type: "text", text: fakePrompt }], "2026-09-16T00:49:06.000Z")]).length === 0);
 	const hooked = handoff.collectActiveSkills([

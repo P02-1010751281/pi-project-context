@@ -10,7 +10,8 @@ to answer it.
 ## Mechanism
 
 A pi skill is loaded by reading its `SKILL.md` (pi advertises only name, description and path at
-startup). The handoff cut can drop that tool result; the continuation then carries only the path in
+startup) or by `/skill:name`, which stores a `<skill name="..." location="...">` block in a user
+message. The handoff cut can drop that tool result; the continuation then carries only the path in
 its `<read-files>` block, with no instruction that the skill was an active mode. The closing asked
 the successor to restate the last request and the state, not the skill/mode, so the successor starts
 fresh. The same loss happens one handoff later when the original read call is already outside the
@@ -23,15 +24,18 @@ session returns both from the prompt text, so the new continuation would name th
 ## Fix
 
 - `handoff/file-ops.ts`: `collectActiveSkills(entries)` collects `SKILL.md` paths from
+  - a user `/skill:name` invocation's `<skill name location>` block (pi's own `parseSkillBlock`;
+    the location is the skill's `SKILL.md`),
   - assistant `read` tool calls (the normal way pi loads a skill),
   - a compaction entry's non-hook `details.readFiles`,
   - a recognized handoff prompt's `<read-files>` block (the only copy left after a read call was
     dropped); a user message that is not a handoff prompt is ignored.
-  Deduped by file; a real `read` outranks a prompt/compaction file list and reads keep their
-  recency; prompt/compaction lists are indexes with no activity order, so their lines are rendered in
-  reverse block order and only fill the slots reads leave; capped at 8, name = parent directory. The
-  priority matters at the cap: pi sorts its file indexes, so an alphabetically early active skill
-  would otherwise be evicted by a prompt/compaction list (independent review I-1).
+  Deduped by file; `/skill:` outranks a real `read`, which outranks a prompt/compaction file list;
+  `read`s keep their recency; prompt/compaction lists are indexes with no activity order, so their
+  lines are rendered in reverse block order and only fill the slots the explicit sources leave;
+  capped at 8, name = parent directory. The priority matters at the cap: pi sorts its file indexes,
+  so an alphabetically early active skill would otherwise be evicted by a prompt/compaction list
+  (independent review I-1).
 - `handoff/prompt.ts`: when the list is non-empty, the continuation gets a localized
   "skills and modes" section naming each skill and its `SKILL.md` path, plus a line telling the
   successor to re-read any skill that set an active mode. The closing now asks for the last request,
@@ -46,7 +50,11 @@ session returns both from the prompt text, so the new continuation would name th
 
 ## Verification
 
-- `collectActiveSkills`: a `read` of `SKILL.md` is found; a normal file read is not; a duplicate is
+- `collectActiveSkills`: a `/skill:` block is found without a read, with a trailing user message,
+  and for a non-`SKILL.md` location is ignored; a `/skill:` block outranks a read; the same file
+  through `/skill:` and `read` dedupes in both orders; a skill block embedded in prose or with a
+  single-newline trailer is not a load; a `/skill:` entry survives the 8-cap against eight reads; a
+  `read` of `SKILL.md` is found; a normal file read is not; a duplicate is
   deduped and reads are most-recent-first; a compaction `readFiles` entry is found and a `fromHook`
   compaction is ignored; a prior continuation prompt's `<read-files>` is found; an ordinary user
   message quoting `<read-files>` is not; a draft-added list marker is stripped; a real read outranks
@@ -65,18 +73,26 @@ session returns both from the prompt text, so the new continuation would name th
   - treat every read as a skill -> 1 FAIL (dedupe/detection);
   - remove the re-read phrase -> 1 FAIL;
   - remove the `fromHook` skip -> 1 FAIL;
-  - remove the 8-cap -> 2 FAIL;
+  - remove the 8-cap -> 3 FAIL;
   - remove the source priority -> 1 FAIL (a read vs a later prompt list);
-  - remove the list-marker strip -> 1 FAIL.
+  - remove the list-marker strip -> 1 FAIL;
+  - remove the `/skill:` scan -> 5 FAIL (no-read, trailing message, outranks read, cap survival, no-downgrade);
+  - lower `SKILL_COMMAND_SOURCE` to 2 -> 3 FAIL (outranks read, cap survival, no-downgrade);
+  - remove the `isSkillFile` guard -> 1 FAIL (non-SKILL location);
+  - change the priority guard `>` to `!==` -> 1 FAIL (no-downgrade).
 - Full suite: `node tests/run-all.mjs` -> `All 15 tests passed.`
 
 ## Residuals
 
 - A skill read once for reference (not as a mode) is listed too; the section says "if one set an
   active mode", so the successor decides. Direction is prompt-level, not enforced.
-- Detection relies on a `read` of `SKILL.md`, a compaction `readFiles`, or a prior handoff prompt.
-  A skill injected by a command that leaves no read and no prior prompt is not detected.
-- The cap is 8. Read-sourced entries are the newest reads; a prompt-only list keeps the last 8
+- Detection relies on a `/skill:` block, a `read` of `SKILL.md`, a compaction `readFiles`, or a
+  prior handoff prompt. A `bash`/`cat` read, a codemode `nestedCalls` read, or an arbitrary command
+  that injects a skill without one of these shapes is not detected.
+- A standalone Markdown skill (pi accepts a `.md` file, not only `<dir>/SKILL.md`) is invisible to
+  every source: `/skill:` and `read` record its `.md` path, but `isSkillFile` matches only the
+  directory form.
+- The cap is 8. `/skill:` and read entries are the newest of their own source; a prompt-only list keeps the last 8
   block lines (an index, not a recency order), so an alphabetically early mode with no surviving
   read evidence can still be evicted at hop 2.
 - The successor may still ignore the instruction; the fix makes the mode visible and re-readable,
