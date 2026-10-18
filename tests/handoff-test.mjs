@@ -54,8 +54,11 @@ try {
 	check("zh carries the file list", zh.includes("<read-files>") && zh.includes("a.ts"));
 	check("zh details", zh.includes("- 上一会话 id：01a0a58e") && zh.includes("- 原始记录（JSONL）：/home/user/.pi/agent/sessions/x.jsonl"));
 	check("zh detail lookup merges index and how-to", zh.includes(".agents/memory/session-logs/INDEX.md 指向的会话日志里查"));
-	check("zh closing", zh.trimEnd().endsWith("从上次中断处继续。"));
-	check("zh has no English scaffolding", !zh.includes("## Handoff Summary") && !zh.includes("Continue the task from where it left off."));
+	check("zh closing asks for a restatement first", zh.trimEnd().endsWith("先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。"));
+	check(
+		"zh has no English scaffolding",
+		!zh.includes("## Handoff Summary") && !zh.includes("Continue the task from where it left off.") && !zh.includes("First restate"),
+	);
 
 	const en = handoff.buildHandoffPrompt({ ...base, language: "en" });
 	check(
@@ -63,7 +66,7 @@ try {
 		en.startsWith("This session continues work handed off from a previous session (16% of its context window had been used).") &&
 			en.includes("## Previous session details") &&
 			!en.includes("## Handoff Summary") &&
-			en.trimEnd().endsWith("Continue the task from where it left off."),
+			en.trimEnd().endsWith("First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off."),
 	);
 
 	const zhSummaryOnly = handoff.buildHandoffPrompt({ ...base, language: "zh", keptTokens: 0 });
@@ -1835,6 +1838,103 @@ try {
 	check(
 		"an overhead increase the text cannot carry restarts the minimum",
 		grewRead.samples === 2 && grewRead.sampleIndex === 1 && grewRead.baseline === 52_767,
+	);
+
+	// 5c. Hidden reasoning is content the next prompt carries but the persisted message does not: a route that
+	//     returns `usage.output` (reasoning) while storing an empty thinking block grows the prompt every turn
+	//     with almost no text. Without the allowance the ② detector fires on every turn and each reset re-adds
+	//     the whole text over-read, so the baseline ratchets toward the window (the relay field case in
+	//     .codestable/issues/2026-10-18-handoff-successor-baseline/). The allowance is the previous reply's
+	//     `max(0, output - messageTokens)`. Mutation: dropping the allowance reads the last turn's bound
+	//     (~18,768 after two turns and ~26,780 after ten) instead of the 17,767 first sample; a 10-turn branch
+	//     makes the difference impossible to confuse with rounding.
+	const reasoningBranch = [];
+	let reasoningText = 0;
+	let reasoningHidden = 0;
+	for (let i = 0; i < 10; i += 1) {
+		reasoningBranch.push(messageEntry(`hr${i}u`, "user", "x".repeat(8), stamp(i * 2)));
+		reasoningText += 2; // ceil(8 / 4)
+		reasoningBranch.push(billed(`hr${i}a`, "ok", { input: 17_766 + reasoningText + reasoningHidden, output: 1_001 }, stamp(i * 2 + 1)));
+		reasoningText += 1; // ceil(2 / 4)
+		reasoningHidden += 1_000; // the provider echoes the reasoning into the next prompt
+	}
+	const reasoningRead = readOf(measureCtx(chain(reasoningBranch), "sample-reasoning", 60_000));
+	check(
+		"hidden reasoning does not reset the baseline every turn",
+		reasoningRead.samples === 10 && reasoningRead.sampleIndex === 0 && reasoningRead.baseline === 17_767,
+	);
+
+	// 5d. An image block is excluded from `chars` by design, so the prompt increase it causes looks like a
+	//     baseline increase. The re-anchor allows pi's own per-image budget (1,200 tokens); an image at or under
+	//     it must not reset, or a screenshot-heavy session ratchets by the whole text over-read on every shot.
+	//     Mutation: dropping the image allowance resets on each shot and reads ~17,766 + 800 per image instead of
+	//     the first sample's 17,766.
+	const imageTurns = [billed("im0", "ok", { input: 17_766 }, stamp(0))];
+	for (let i = 0; i < 3; i += 1) {
+		imageTurns.push(contentEntry(`im${i + 1}`, "user", [{ type: "image", data: "aGk=", mimeType: "image/png" }], stamp(i * 2 + 1)));
+		imageTurns.push(billed(`im${i + 1}a`, "ok", { input: 17_766 + 801 * (i + 1) + 1 }, stamp(i * 2 + 2)));
+	}
+	const imageRenchorRead = readOf(measureCtx(chain(imageTurns), "sample-image-reanchor", 60_000));
+	check(
+		"an image within pi's budget does not reset the baseline",
+		imageRenchorRead.samples === 4 && imageRenchorRead.sampleIndex === 0 && imageRenchorRead.baseline === 17_766,
+	);
+
+	// 5e. A record the sampler drops still leaves its reply in every later prompt. If that reply's output is
+	//     hidden (the same relay shape as 5c), the next comparison must receive it; otherwise it reads the
+	//     hidden output as a baseline increase and resets (review round 1, I-1). Here B is dropped by the
+	//     interval-consistency rule (a replay landed before it, so its text outgrew its stale prompt), and C's
+	//     prompt carries B's 2,001 hidden tokens. Mutation: dropping the carry resets to C's bound (~20,142)
+	//     instead of the 17,766 first sample.
+	const droppedHidden = chain([
+		billed("dh0", "ok", { input: 17_766 }, stamp(0)),
+		messageEntry("dh1", "user", "测".repeat(200), stamp(1)),
+		billed("dh2", "ok", { input: 17_766, output: 2_001 }, stamp(2)),
+		billed("dh3", "ok", { input: 20_168 }, stamp(3)),
+	]);
+	const droppedHiddenRead = readOf(measureCtx(droppedHidden, "sample-dropped-hidden", 60_000));
+	check(
+		"a dropped record's hidden output is carried to the next comparison",
+		droppedHiddenRead.samples === 2 && droppedHiddenRead.sampleIndex === 0 && droppedHiddenRead.baseline === 17_766,
+	);
+
+	// 5f. The image allowance is exactly pi's per-image budget: 1,200 billed tokens must not reset, 1,201 must.
+	//     The first reply is empty, so the interval has no text delta and the bound is exactly the image cost;
+	//     halving IMAGE_CONTENT_TOKENS to 800-anything reddens the at-budget case, and multiplying it reddens
+	//     the over-budget case. This is the boundary the 801-token fixture above cannot see.
+	const imageBoundary = (cost) =>
+		chain([
+			billed("if0", "", { input: 17_766 }, stamp(0)),
+			contentEntry("if1", "user", [{ type: "image", data: "aGk=", mimeType: "image/png" }], stamp(1)),
+			billed("if2", "", { input: 17_766 + cost }, stamp(2)),
+		]);
+	const atBudget = readOf(measureCtx(imageBoundary(1_200), "sample-image-at-budget", 60_000));
+	const overBudget = readOf(measureCtx(imageBoundary(1_201), "sample-image-over-budget", 60_000));
+	check(
+		"the image allowance boundary is exact",
+		atBudget.samples === 2 &&
+			atBudget.sampleIndex === 0 &&
+			atBudget.baseline === 17_766 &&
+			overBudget.samples === 2 &&
+			overBudget.sampleIndex === 1 &&
+			overBudget.baseline === 18_967,
+	);
+
+	// 5g. The allowance resets at a split sample: an image added in a split interval must not be credited to
+	//     the comparison after it. A no-op context edit makes the image interval split; B is accepted with the
+	//     check skipped, and C (a 1,200-token increase, no image) must still re-anchor. Mutation: leaking the
+	//     pre-split image allowance keeps the 17,766 minimum instead of C's 20,165.
+	const splitImage = chain([
+		billed("sg0", "ok", { input: 17_766 }, stamp(0)),
+		contextEditEntry("sg1", "sg0", { content: "ok" }, stamp(1)),
+		contentEntry("sg2", "user", [{ type: "image", data: "aGk=", mimeType: "image/png" }], stamp(2)),
+		billed("sg3", "", { input: 17_766 + 1_200 }, stamp(3)),
+		billed("sg4", "", { input: 17_766 + 2_400 }, stamp(4)),
+	]);
+	const splitImageRead = readOf(measureCtx(splitImage, "sample-image-split", 60_000));
+	check(
+		"an image in a split interval is not credited after the split sample",
+		splitImageRead.samples === 3 && splitImageRead.sampleIndex === 2 && splitImageRead.baseline === 20_165,
 	);
 
 	// 6. The receipt's conversion follows the session rate (run.ts uses this for the slices it reports and for

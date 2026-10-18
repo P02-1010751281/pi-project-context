@@ -86,11 +86,20 @@ const RATE_MAX = 8.0;
 /** Calibration deltas the rate's median is taken over, so one odd request cannot move it. */
 const RATE_PAIRS = 5;
 
+/** pi's own per-image budget (`ESTIMATED_IMAGE_CHARS` 4,800 chars) in tokens. It is the allowance the
+ * re-anchor gives an image block, which `chars` excludes on purpose (round 3's I-1): pi charges this much
+ * per image, so an image at or under it is treated as content, not as a baseline increase. A larger image
+ * still fires the detector; the reset then is the fail-closed side of the same trade. */
+const IMAGE_CONTENT_TOKENS = 1_200;
+
 /** Prompt components of a persisted assistant usage: what the provider billed for the context it was sent. */
 interface MessageUsage {
 	input?: number;
 	cacheRead?: number;
 	cacheWrite?: number;
+	/** The reply's output tokens. The prompt does not include them, but the **next** prompt carries the reply,
+	 * so the re-anchor uses the part the persisted text does not account for. */
+	output?: number;
 }
 
 type PiMessage = Parameters<typeof estimateTokens>[0];
@@ -128,6 +137,26 @@ function messageTokens(messages: readonly PiMessage[]): number {
 	return tokens;
 }
 
+/** The tokens pi's own per-image budget assigns to the image blocks in a message list. `chars` excludes
+ * images, so this is the content the re-anchor has to allow for before calling a prompt increase a
+ * baseline increase. */
+function imageTokens(messages: readonly PiMessage[]): number {
+	let count = 0;
+	for (const message of messages) {
+		const content = (message as { content?: unknown }).content;
+		if (!Array.isArray(content)) continue;
+		for (const block of content as { type?: unknown }[]) if (block?.type === "image") count += 1;
+	}
+	return count * IMAGE_CONTENT_TOKENS;
+}
+
+/** Output tokens a reply billed that the branch text does not account for. Used both for an accepted
+ * sample's allowance and for a record the sampler drops: the reply is still in the next prompt, so a
+ * dropped record must hand its hidden output to the next comparison (review round 1, I-1). */
+function unreportedOutput(record: MessageUsage, textTokens: number): number {
+	return Math.max(0, (record.output ?? 0) - textTokens);
+}
+
 /**
  * pi's own `projectContextEntry` (its `session-manager.js`): the messages a `context_edit` leaves behind.
  * The projection this mirrors is what the provider is actually sent (`buildSessionProjection`), so the
@@ -160,6 +189,11 @@ interface ContextSample {
 	added: number;
 	/** A context boundary (compaction / context_edit / model change) sits between the two records. */
 	split: boolean;
+	/** Output tokens this record's reply billed (`usage.output`) that the persisted message text does not
+	 * account for: hidden reasoning on a route that does not persist it, or a provider's tool-call markup
+	 * the estimate rounds down. The next prompt carries it, so the re-anchor allows for it (see the doc
+	 * block); it is never treated as part of the baseline itself. */
+	unreported: number;
 }
 
 /**
@@ -202,10 +236,11 @@ export interface ContextMeasure {
  * `r / RATE_MAX < 1`) the value is set by the emptiest record and does not grow as the branch fills (issue
  * 2026-10-09-handoff-baseline-residual). It is not a blanket "never low": it is a lower bound **as of the record
  * that set it**. An overhead increase the pair can account for (`prompt_r - prompt_p >
- * 2 * (chars_r - chars_p)`, the threshold in design §14, sound under <=2 tokens per added character) restarts it, so the injected
- * block refreshing inside a session is re-anchored; an increase below that threshold stays invisible and leaves
- * the reading that much low, bounded by the increase. That is residual ②, and it is why the status line names
- * the record count instead of promising a floor that holds at the current prompt.
+ * 2 * (chars_r - chars_p) + allowance`, the threshold in design §14; the allowance is the previous reply's
+ * unreported output plus the image budget, see below) restarts it, so the injected block refreshing inside a
+ * session is re-anchored; an increase below that threshold stays invisible and leaves the reading that much
+ * low, bounded by the increase. That is residual ②, and it is why the status line names the record count
+ * instead of promising a floor that holds at the current prompt.
  *
  * The load-bearing properties of that formulation:
  * - The **system message is not part of `T`**. pi's own `estimateTokens` covers a system message's content, its
@@ -218,12 +253,18 @@ export interface ContextMeasure {
  * - A record whose own densest reading still exceeds its prompt (`prompt_r <= chars_r / RATE_MAX`) does not
  *   describe its branch at all, so it is not a measurement and never enters the minimum. The opposite case - a
  *   handoff successor's replayed predecessor record, a whole predecessor prompt against a nearly empty branch -
- *   simply never wins the minimum, which is why those need no explicit exclusion.
+ *   normally loses to the successor's first accepted local sample; a successor with no accepted local record
+ *   yet reads the predecessor's bound (test 4h), which is the documented transient, not a measurement of this
+ *   branch.
  * - `chars` and `estimated` count **text only**. pi's per-image budget is a token estimate for a
  *   provider-specific cost, so on a small image it exceeds the real charge several times over; images therefore
- *   stay out of both and their own tokens land in the baseline (round 3's I-1, which read 502 low on a
- *   100-token image). The floor stays exact where it matters: `estimated + baseline` is text tokens + the whole
- *   baseline, so nothing is counted twice.
+ *   stay out of both. The re-anchor gives each image pi's own budget (`ESTIMATED_IMAGE_CHARS / 4 = 1,200`
+ *   tokens, `IMAGE_CONTENT_TOKENS`) as content, so an image at or under that budget no longer resets the sample
+ *   regime; its tokens are then **not** in the baseline either, which leaves the floor that much low (fail-open,
+ *   bounded per image) - the trade that keeps a screenshot-heavy session from ratcheting its baseline to the
+ *   window. An image above the budget still fires the reset, and the whole image cost (plus the re-added text
+ *   over-read) enters the baseline - the fail-closed side of the same trade. On the first sample the image's
+ *   tokens are in the bound as before, so `estimated + baseline` stays text tokens + the whole baseline.
  * - A record measures an interval only when that interval is consistent with a constant baseline: given
  *   `B_p <= B_r`, `prompt_r - prompt_p = (B_r - B_p) + (T_r - T_p) >= chars_r / RATE_MAX - chars_p`. A record
  *   whose text grew faster than a **non-shrinking** prompt cannot have had that text billed (a replay inserted
@@ -235,12 +276,23 @@ export interface ContextMeasure {
  *   cannot judge: a *stale* local record whose prompt was billed before a replay landed, sitting behind a
  *   larger predecessor prompt, still reads low (review round 4's I-1; residual ⑤ in the issue's design §10).
  * - The minimum is taken over samples **since the last judged overhead increase**: a record whose prompt grew
- *   by more than twice its added text (`prompt_r - prompt_p > 2 * (chars_r - chars_p)`) restarts it, because the
- *   text cannot have carried that much (`<= 2` tokens per added character, the band's dense end relaxed by two;
- *   `T <= chars` would fire on base64-like content, `chars_p / RATE_MAX` needs ~77k on the live session). This is
- *   a **heuristic**, not a proof, and its false positives only raise the reading. Every earlier sample measures a
- *   baseline that may be stale otherwise - the injected block refreshing inside a session is the field case - and
- *   an increase below the threshold leaves the reading that much low, bounded by the increase (design §14, ②).
+ *   by more than twice its added text plus the allowance (`prompt_r - prompt_p > 2 * (chars_r - chars_p)
+ *   + unreported_p + images`) restarts it, because the text cannot have carried that much (`<= 2` tokens per
+ *   added character, the band's dense end relaxed by two; `T <= chars` would fire on base64-like content,
+ *   `chars_p / RATE_MAX` needs ~77k on the live session). The allowance is content the provider bills but the
+ *   branch text does not carry: `unreported_p = max(0, output_p - estimate(message_p))` is hidden reasoning on a
+ *   route that persists an empty thinking block, and `images` is pi's per-image budget for the image blocks
+ *   added since the previous sample (see the image bullet). On dense CJK text the estimate's `chars/4` gap also
+ *   makes `unreported` over-credit the reply (up to ~0.7 x chars), so the allowance can be larger than the
+ *   hidden part; that direction is fail-open and bounded by the reply too. Without the allowance, a relay
+ *   reasoning route or a screenshot-heavy session fired the reset on every turn, and every reset re-adds the
+ *   whole text over-read (`chars * (1/r - 1/8)`), ratcheting the reading toward the window until the floor
+ *   crossed the knee and auto handoff went silent
+ *   (`.codestable/issues/2026-10-18-handoff-successor-baseline/`). This is still a **heuristic**, not a proof;
+ *   an under-counted allowance only makes the detector fire more, which raises the reading (fail-closed). An
+ *   **over-counted** allowance - one covering output the next prompt does not carry (a provider that bills
+ *   reasoning but does not echo it back) - misses resets and reads the baseline low by that reply's hidden
+ *   output, bounded by the reply (fail-open).
  * - `chars` follows pi's **projection**, not the raw entry list: a `context_edit` rewrites its target's
  *   messages (or drops them) and the provider is sent the edited text, so a message a user shortened or
  *   deleted must stop counting (round 4's I-2: the un-edited prefix read 5,267 where the baseline is 17,766).
@@ -286,6 +338,11 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 	let split = false;
 	/** Index in `samples` where the current baseline regime starts; a proven overhead increase resets it. */
 	let anchor = 0;
+	/** Tokens of the image blocks added since the last sample in the current, non-split interval. `chars`
+	 * excludes them, so the re-anchor has to allow for them before treating a prompt increase as a baseline
+	 * increase (see the doc block). A split interval resets the allowance at its first sample, so images a
+	 * `context_edit` or a compaction adds there need no adjustment. */
+	let imageAllowance = 0;
 	/** Each entry's raw messages, their projected ones and their contribution to `plain`, so a `context_edit`
 	 * can rewrite them in place. `raw` is kept because pi applies the *last* edit of a target to its original
 	 * messages: a `null` deletion followed by a replacement restores the target rather than editing nothing. */
@@ -326,23 +383,39 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 		const plainBefore = plain;
 		let record: MessageUsage | undefined;
 		for (const message of messages) record = (message as { usage?: MessageUsage }).usage ?? record;
+		const entryImages = imageTokens(messages);
 		plain += tokens;
 		seen.set(entry.id, { raw: messages, messages, tokens });
-		if (!record) continue;
+		if (!record) {
+			imageAllowance += entryImages;
+			continue;
+		}
 		const prompt = (record.input ?? 0) + (record.cacheRead ?? 0) + (record.cacheWrite ?? 0);
-		if (prompt <= 0) continue;
+		if (prompt <= 0) {
+			imageAllowance += entryImages + unreportedOutput(record, tokens);
+			continue;
+		}
 		// pi's own invalidation, mirrored: a record billed at or before the newest compaction is not a measurement
 		// of this prefix. NaN (no compaction, or no timestamp) compares false, so nothing is skipped without one.
-		if (entryTime(entry) <= compactionTime) continue;
+		if (entryTime(entry) <= compactionTime) {
+			imageAllowance += entryImages;
+			continue;
+		}
 		const chars = 4 * plainBefore;
 		// A record that does not hold even the densest reading of its own preceding content is not a
 		// measurement of this branch (see the doc block); it must not be clamped into a low reading.
-		if (prompt <= Math.ceil(chars / RATE_MAX)) continue;
+		if (prompt <= Math.ceil(chars / RATE_MAX)) {
+			imageAllowance += entryImages + unreportedOutput(record, tokens);
+			continue;
+		}
 		// The interval since the last measurement must be consistent with a constant baseline, or this
 		// record's characters include content its prompt never held (see the doc block).
 		const previous = samples.at(-1);
 		if (previous && !split && prompt >= previous.prompt) {
-			if (chars - previous.chars > (prompt - previous.prompt) * RATE_MAX) continue;
+			if (chars - previous.chars > (prompt - previous.prompt) * RATE_MAX) {
+				imageAllowance += entryImages + unreportedOutput(record, tokens);
+				continue;
+			}
 			// The mirror case: if the prompt grew by more than twice the added text, the **baseline** itself grew -
 			// the injected block refreshing inside a session is the field case - so every earlier sample measures a
 			// stale baseline and the minimum restarts here (design §14; residual ②). Two tokens per added character
@@ -350,7 +423,17 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 			// content, and subtracting `chars_p / RATE_MAX` instead (as this first did) hands 7/8 of the prefix to
 			// the text, so it needs an increase of ~77k on the live session and never fires in practice
 			// (independent review round 9).
-			if (prompt - previous.prompt > 2 * (chars - previous.chars)) anchor = samples.length;
+			//
+			// The detector must not count a prompt increase the branch text cannot show but the provider still
+			// bills as baseline growth. Two shapes did exactly that in the field: a reasoning route whose hidden
+			// output the provider echoes into the next prompt while the persisted thinking block is empty, and an
+			// image block, which `chars` excludes by design. Each fired the reset on every turn, and each reset
+			// re-adds the whole text over-read (`chars * (1/r - 1/8)`), ratcheting the reading toward the window
+			// until the floor crossed the knee and auto handoff went silent (the relay/browser-test sessions this
+			// issue is about). The previous reply's unreported output and the images added since it are therefore
+			// content for this comparison, not baseline; a genuine refresh still exceeds the allowed bound.
+			const allowance = previous.unreported + imageAllowance;
+			if (prompt - previous.prompt > 2 * (chars - previous.chars) + allowance) anchor = samples.length;
 		}
 		samples.push({
 			prompt,
@@ -358,7 +441,10 @@ export function measureContext(ctx: ExtensionContext, usage: ContextUsage): Cont
 			plain: plainBefore,
 			added: plainBefore - (previous?.plain ?? 0),
 			split,
+			unreported: unreportedOutput(record, tokens),
 		});
+		// The reply's own images belong to the next interval, not this prompt.
+		imageAllowance = entryImages;
 		split = false;
 	}
 	// chars = 4 * plain tokens, so a delta implies rate = 4 * dPlain / dPrompt. The latest deltas describe the

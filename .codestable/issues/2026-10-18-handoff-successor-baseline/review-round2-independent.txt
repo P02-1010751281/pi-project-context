@@ -1,0 +1,69 @@
+# Independent Review Round 2: v0.4.11 candidate (post-R1 fixes), /tmp/pc-baseline-review2
+
+## Verdict summary
+
+Both R1 important findings are genuinely fixed. I re-derived everything independently (including re-running the full mutation matrix, adversarial probes of the two un-fixtured drop paths, and the shipped-column regression via mutation), and every claimed number reproduces. No blocking or important findings remain. Three nits/suggestions below, all non-blocking.
+
+## I-1 fix correctness (threshold.ts)
+
+- **Reach**: the carry is uniform on all three drop paths — zero-prompt (line 395), self-density (408), interval-consistency (416) — each adds `entryImages + unreportedOutput(record, tokens)` to the pending `imageAllowance`, which the next comparison consumes at line 435 (`previous.unreported + imageAllowance`). 5e pins the interval path; I probed the other two with a purpose-built fixture (A at 17,766; B dropped with 2,001 hidden output; C billed 17,766 + text + 2,000): fixed code reads **17,766, sampleIndex 0** on both paths; removing the carry on either path alone flips that probe to **19,778, sampleIndex 1** (false re-anchor), and the no-drop control re-anchors as it should. The probe is sensitive, so the carries are real, not cosmetic.
+- **No double-count**: structurally airtight — all drop paths `continue` before the push, an accepted record's own `unreported` is stored in the sample (line 444) and never added to `imageAllowance`, so each reply's hidden output is credited exactly once, in the first comparison after it. A dropped record followed by an accepted one credits the dropped reply via the allowance and the accepted reply via `previous.unreported` — disjoint slots.
+- **Images stay credited in the same slot**: `entryImages` rides alongside `unreportedOutput` on every drop path; `plain` only ever counts text, so no overlap with `chars`.
+- **No leak across a split**: the reset at line 447 is pinned by 5g (mutation G → exactly 5g reddens). The split discard is sound, not just pinned: content the split left in the branch (a dropped reply's hidden output, an edit-added image) is present in *both* the split sample's prompt and the next one, so it cancels in the post-split Δprompt; content a compaction removed is not billed at all. Verified by reading the split/skip flow including the drop-keeps-split-true case.
+- **Reset sample**: `imageAllowance = entryImages` after every accepted push (the reply's own images preload the next interval, correctly, since the next prompt carries them); the reset also fires after an anchor reset, which is right.
+
+## I-2 fix correctness (threshold.ts doc block)
+
+- Lines 292–295 now state: under-counted allowance → detector fires more → reading raises (fail-closed); over-counted allowance (billed-but-not-echoed reasoning) → misses resets → reads low, bounded by the reply (fail-open). Both directions match the probe behavior exactly (allowance removed: StegoMark 51,525 → 135,141, a raise; allowance doubled: resets are masked, reading stays low — fail-open).
+- The dense-CJK sentence (line 286, "up to ~0.7 × chars") is arithmetic-correct: `output ≈ chars/1.05`, estimate `chars/4`, over-credit ≈ 0.70×chars; it neither over- nor under-states what `max(0, output − textEstimate)` does.
+- N-1 wording ("whole image cost (plus the re-added text over-read)", lines 265–266, and the same in docs/handoff.md) and N-2 (`chars × (1/r − 1/8)`, CHANGELOG.md:13 and threshold.ts:289) are both now right; I re-derived the 1,500-token-image shape R1 probed and the bound admits 17,766 + 1,499, as the wording now claims.
+
+## New tests 5e/5f/5g
+
+Re-ran the full mutation matrix on a /tmp copy (candidate file restored per run): **A** whole allowance removed → 4 FAIL (5c, 5d, 5e, 5f); **B** `previous.unreported` only → 1 FAIL (5c); **C** `imageAllowance` only → 3 FAIL (5d, 5e, 5f); **D** carry removed from all three paths → 1 FAIL (5e); **E** `IMAGE_CONTENT_TOKENS` 600 → 5d+5f; **F** 2,400 → 5f; **G** reset `=`→`+=` → 5g. All seven match the fix-note matrix exactly. Expected numbers 17,766 / 18,967 / 20,165 are all re-derived by hand and reproduced by probe; 5e's comment "~20,142" and 5c's "~18,768 / ~26,780" are **exact** (26,780 = 26,795 − ceil(116/8); N-3 disposition correct). No test is self-referential — every expectation is an independently-computed literal against hand-built usage entries; the 5f fixture's empty replies give it zero rounding surface.
+
+## Regression
+
+- `node tests/handoff-test.mjs`: 241 OK, 0 FAIL; `node tests/run-all.mjs`: all 15 tests pass.
+- Probe on the three field sessions reproduces the fix-note **fixed** columns exactly (51,525 / 103,171 / 86,058 → 79,525 / 131,171 / 114,058 floors → 157,000 drop 85,475 / 251,616 drop 128,445 / 251,616 drop 145,558). Mutation A reproduces the **shipped** columns exactly (135,141 → refused below-quality-knee; 228,991 → refused window-too-small; 149,636 → drop 81,980 — N-4 correct).
+- 5b injected-block refresh still re-anchors at 52,767 (allowance is 0 in that fixture); first-sample image bound (17,866), predecessor replay (4h, 131,433), compaction invalidation (1d-ter/quater), and context-edit shrink all still pass.
+- Field-shape claims re-counted from the session files: StegoMark exactly 10 image blocks; UniField 145 reasoning>0-with-empty-thinking of 258 assistants (3 more than the note's 255 — the file gained records after the snapshot, as R1 noted); Quantum 95 of 122. All exact.
+
+## Docs / claims
+
+All changed sentences in threshold.ts, docs/handoff.md, CHANGELOG.md, fix-note.md and review-report.md were checked against the code: the `+ allowance` formulas, the 1,200/`ESTIMATED_IMAGE_CHARS/4` derivation (4,800/4 ✓), the residual list (dense-CJK over-credit, assistant-image double credit, huge-reply masking — all real and bounded), and the Quantum 81,980 arithmetic (251,616 − 149,636 − 20,000 ✓). Consumer measurements remain confined to the issue dir — docs/CHANGELOG carry only shape descriptions and the 1,200 constant. Zero-write proof holds: `git status --short` shows only the 6 modified files + the untracked issue dir; no `.agents/memory` drift.
+
+## Adversarial pass
+
+No shape found where the carry applies twice (drop paths are exclusive `continue`s; accepted samples never touch `imageAllowance`), leaks across a split (discarded content cancels across the skipped comparison), or goes negative/overflows (`max(0, …)`; only additions). The only unpinned-but-correct corners are named in N-2 below.
+
+## Findings
+
+- **N-1 (nit)** — `.codestable/issues/.../review-report.md:27` (N-5 disposition): the justification is inverted. The legacy zh closing "从上次中断处继续。" is a *suffix* of the new zh closing, so the new entry does **not** match old zh prompts — empirically, removing the legacy zh entry makes `isHandoffPromptText` return false for a legacy zh prompt, while the whole suite stays green (only legacy **en** is pinned). The legacy zh entry is load-bearing, not self-documentation. The kept-in-list outcome is right; the stated reason is wrong. Fix boundary: correct the disposition sentence and (suggestion) add a legacy-zh recognition fixture mirroring the en one.
+- **N-2 (nit/suggestion)** — `tests/handoff-test.mjs`: two coverage gaps, neither a code defect: (a) removing the density-floor carry alone or the zero-prompt carry alone reddens nothing (only 5e's interval-consistency path is pinned; my probes show both other paths work); (b) `imageAllowance +=` → `=` on the drop paths reddens nothing — a turn with two pending contributions between samples (user image + a dropped record's hidden output) is the shape that would pin accumulation. The fix-note matrix is accurate as stated (it only claims the aggregate); consider one more fixture.
+- **N-3 (nit)** — `tests/handoff-test.mjs:1825`: the 5b comment defines the detector as `prompt_r − prompt_p > 2 × (chars_r − chars_p)` without the allowance term. Accurate for that fixture (allowance 0), stale as a definition post-v0.4.11.
+
+## Learning
+
+- The fix-note mutation matrix matches reality exactly (seven mutations re-run); the field-session shipped/fixed columns reproduce byte-for-byte; the "~26,780"/"~18,768"/"~20,142" fixture comments are exact, not approximate.
+- Extending the carry to the zero-prompt path (beyond R1's two named paths) is consistent semantics and probe-verified.
+
+## Praise
+
+- The I-1 carry is the right unit (tokens vs tokens), one slot per reply, reset at exactly the right sample; the split discard is provably sound, not just tested.
+- The boundary fixtures (1,200/1,201) pin the strict `>` exactly; 5g pins the one leak path that mattered.
+
+## Test And QA Focus
+
+```
+node tests/handoff-test.mjs          → 241 OK, 0 FAIL
+node tests/run-all.mjs               → All 15 tests passed
+probe (3 field sessions, fixed)      → 51,525 / 103,171 / 86,058  (= fix-note exactly)
+probe (mutation A = v0.4.10)         → 135,141 refused / 228,991 refused / 149,636 drop 81,980  (= shipped exactly)
+mutation matrix (copy in /tmp/pc-r2-mut): A→4, B→1(5c), C→3(5d/5e/5f), D→1(5e), E→5d+5f, F→5f, G→5g  (= fix-note exactly)
+adversarial probes: density-floor & zero-prompt carries both flip 19,778↔17,766 when removed; no double-count/leak/negative/overflow found
+field-shape counts: StegoMark 10 images; UniField 145/258; Quantum 95/122  (exact)
+zero-write proof: git status = 6 modified + untracked issue dir only; no .agents drift
+```
+
+VERDICT: PASSED

@@ -82,8 +82,13 @@ E-4000
 - 物理下限 `B + K + 8000` 是**拒绝门**：`T` 低于它就不触发（而不是被抬到它）。`B` 是测出来的：对分支上每条 usage 记录取
   `prompt − chars/8`（`chars` 是该记录之前的**文本**字符数：system 消息与图像块都不计 —— pi 已为 system 算过 sections 与工具 schema，
   而它对每张图固定计 4,800 字符，那是对 provider 成本的估计、不是文本，小图会把上界推到真值之下），再取这些**上界**的最小值。
-  取值由最空的那条记录定下、不随分支增长；它相对的是**设定它的那条记录时刻**的真值：增长可按「新增文本 ≤2 token/字符」判定时（`prompt_r − prompt_p > 2 × (chars_r − chars_p)`）
-  就从该记录重锚（该假设比 band 本身（≤1 token/字符）宽松，故是启发式而非证明），更小的增量则读低其量（残余②）；**最新 compaction 之前计费的记录不作样本**
+  取值由最空的那条记录定下、不随分支增长；它相对的是**设定它的那条记录时刻**的真值：增长可按「新增文本 ≤2 token/字符」判定时
+  （`prompt_r − prompt_p > 2 × (chars_r − chars_p) + allowance`）就从该记录重锚（该假设比 band 本身（≤1 token/字符）宽松，
+  故是启发式而非证明），更小的增量则读低其量（残余②）。`allowance` 是 provider 计费而分支文本没有承载的内容：上一条回复的
+  `max(0, output − estimate(message))`（未落盘的隐藏推理）加上一条记录以来图像块按 pi 自身预算折算的 token（每张 1,200）。
+  没有它，中转站推理路由和截图重的会话会逐轮重锚，每次重锚把整段文本的高读重新计入，baseline 一路抬到拐点或窗口之上、
+  自动交接静默关闭（v0.4.11）。预算内的小图因此不再重锚，其真实成本也不进 baseline —— floor 低读该成本（fail-open，按图有界）；
+  超出预算的图仍重锚，整张图的成本（连同重新计入的文本高读）进 baseline（fail-closed）。**最新 compaction 之前计费的记录不作样本**
   —— 镜像 pi 的 `assistantIsFromBeforeCompaction`，`firstKeptEntryId` 保留的那条 prompt 属压缩前分支、`chars` 属压缩后投影（残余⑥），
   代价是刚 compaction、尚无新记录的窗口退回无样本公式，
   代价是最空记录自身字符数带来的高读。区间一致性：一条记录只有在 prompt 的增长（且 prompt 未缩小）覆盖得住自己的文本增长时才算样本
@@ -113,7 +118,9 @@ E-4000
 
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
 2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`）；
-3. `HANDOFF.md` 与续接提示里的旧 session log 指针，以及一条「缺的细节必须先查该日志、不确定不得凭印象作答」的强指令。
+3. `HANDOFF.md` 与续接提示里的旧 session log 指针，以及一条「缺的细节必须先查该日志、不确定不得凭印象作答」的强指令；
+4. 一条收尾指令：successor 先用一两句话复述上一轮用户的要求与当前进度，再从上次中断处继续（v0.4.11）。旧版以
+   「从上次中断处继续 / Continue the task from where it left off」结尾的 prompt 仍被识别，重放时照旧替换为 omission marker。
 
 较早的部分不再以摘要散文进入 successor，而是留在旧会话日志里按需取回：日志是原文，不会像摘要那样二次压缩。
 

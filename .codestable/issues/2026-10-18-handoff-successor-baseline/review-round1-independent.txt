@@ -1,0 +1,80 @@
+I have completed my review. Here is the report.
+
+---
+
+# Independent Review: handoff re-anchor allowance + successor restatement (v0.4.11)
+
+## Verification summary
+
+- `node tests/handoff-test.mjs` → all checks passed; `node tests/run-all.mjs` → **All 15 tests passed** (hygiene check included).
+- Zero-write proof: `git status --short` after all runs shows only the 6 modified files + the untracked issue dir; no `.agents/memory` drift.
+- Mutation testing in a `/tmp` copy confirmed the fix note's claims **exactly**:
+  - `allowance = 0` (whole allowance removed) → 2 FAIL: `hidden reasoning…`, `an image within pi's budget…`.
+  - only `previous.unreported` removed → 1 FAIL (reasoning fixture); only `imageAllowance` removed → 1 FAIL (image fixture).
+  - Reverting both `closingContinue` strings → 2 FAIL (`zh closing asks for a restatement first`, `en keeps the scaffolding shape`); the prompt-closing assertions are load-bearing.
+- Fixture arithmetic re-derived by hand and by probe: 5c computes 17,767/10 samples (matches); 5d computes 17,766/4 samples (matches); the mutated values are 26,780 and 20,168 — far from the expected values, so both fixtures are mutation-sensitive as claimed.
+- Real-session cross-check (`probe-threshold-on-sessions.mjs` against the three consumer session files, read-only): the "fixed" columns reproduce the fix-note table **exactly** (StegoMark 51,525→auto 157,000/drop 85,475; UniField 103,171→auto 251,616/drop 128,445; Quantum 86,058→auto 251,616/drop 145,558). Re-running with the allowance mutated out reproduces the "shipped" columns exactly (135,141→refused below-quality-knee; 228,991→refused window-too-small; 149,636→drop 81,980).
+- Field counts verified: StegoMark has exactly 10 image blocks; UniField's 255/145 counts are consistent with the session gaining ~3 records after the report was written (file mtime 14:08 > fix-note 13:49).
+- Contract history: design §14's `prompt_r − prompt_p > 2 × (chars_r − chars_p)` and the "false positives only raise the reading" invariant are preserved; the 5b refresh fixture (+30,000) still re-anchors.
+- The legacy closing list is complete: git history shows exactly two continue closings ever shipped ("Continue the task from where it left off." / "从上次中断处继续。") and `closingPaused` never changed.
+- pi type surface: `Usage.output: number` (required) and `reasoning?: number ⊂ output` exist in pi-ai types; `estimateTokens` counts thinking blocks and toolCall markup, so `max(0, output − messageTokens)` correctly isolates the unpersisted part; in the real UniField file 201/202 usage records carry their toolCall blocks in the same entry, so the denominator aligns with the billed reply in the field shape.
+
+## Findings
+
+### Important
+
+**I-1. A record dropped by the interval-consistency rule loses its `unreported` output, and the next accepted record can falsely re-anchor.**
+`extensions/project-context/handoff/threshold.ts:402-403` (drop paths at 394-403; allowance at 421-422)
+
+The allowance credits only `previous.unreported` (the previous *accepted sample*) plus images. A record dropped by the consistency rule (`chars − prev.chars > (prompt − prev.prompt) × 8`, the replay-landing shape of fixture 4c) carries its own billed reply — including hidden output — into every later prompt, but its `unreported` is never stored, so the next accepted record compares `prompt_r − prompt_p` against `2×(chars_r − chars_p)` without credit for that hidden output.
+
+Reproducible probe (frozen code): sample A (17,766), a 200-CJK-char replay lands, record B billed stale at 17,766 with `output: 2,001` (dropped), record C billed at 20,168. Result: **baseline 20,117, sampleIndex 1** (false re-anchor); the control without the dropped record reads **17,766, sampleIndex 0**. The reset re-adds the whole text over-read — the exact ratchet this change fixes, in a bounded, one-shot composite shape (needs a dropped record *and* unreported output on it *and* a tight following interval). Direction is fail-closed (reading raised), bounded by the dropped reply's hidden output; it sits precisely in the handoff-successor first interval this issue is about, but it does not affect the three field sessions (they resolve). The density-floor drop path (394) has the same loss.
+
+Fix boundary: on the two drop paths, carry the dropped record's own `max(0, output − tokens)` into the pending allowance (alongside `entryImages`), e.g. `imageAllowance += entryImages + Math.max(0, (record.output ?? 0) − tokens)`; the compaction-invalidation path needs nothing (split-guarded). Alternatively register the shape as a named residual in the fix note and doc block. Do not touch the sample push or the comparison itself.
+
+**I-2. The doc block inverts the fail-open mechanism.**
+`extensions/project-context/handoff/threshold.ts:280-281`
+
+"its false positives only raise the reading, and an **under-counted** allowance reads the baseline low by that reply's hidden output" — an under-counted (too small) allowance makes the detector fire *more*, and a reset raises the reading (probe: allowance removed → 17,767 → 26,780). It is an **over-counted** allowance — one covering output the next prompt does not actually carry (the non-echoing provider, correctly described in the fix note's residual list) — that misses resets and reads the baseline low. This is the repo's characteristic defect class (a sentence stating the opposite of what the code does), newly introduced here. The magnitude bound ("bounded by the reply") is correct.
+
+Fix boundary: reword the sentence to name the over-allowance/non-echoing shape (the fix note's wording is already right); code unchanged.
+
+### Nit
+
+- **N-1.** `docs/handoff.md:91` and `threshold.ts:256` ("超出部分进 baseline" / "puts the excess in the baseline"): an over-budget image resets the anchor and the bound then admits the **whole** image cost — probe: a 1,500-token image (300 over budget) reads 19,265 = 17,766 + 1,499 — plus the re-added text over-read, not just the excess. Direction (fail-closed) is right; the magnitude is understated.
+- **N-2.** `CHANGELOG.md:12` ("每次重锚都把整段文本的 `chars/8` 高读重新计入"): the re-added over-read is `chars × (1/r − 1/8)`; `chars/8` is the density-floor subtraction, not the over-read. The threshold.ts doc block states it correctly.
+- **N-3.** `tests/handoff-test.mjs:1849`: the mutated value after ten turns is 26,780, not "~27,767" (≈1,000 off; the "~18,768 after two turns" is accurate). The pinned expectation itself is exact and correct.
+- **N-4.** `fix-note.md:21`: the Quantum shipped row's drop is 81,980 (251,616 − 149,636 − 20,000), not 82,180.
+- **N-5.** `language.ts:62`: the legacy zh closing "从上次中断处继续。" is a suffix of the new zh closing, so that list entry is redundant (the new zh entry already matches old zh prompts). Harmless and self-documenting; the en legacy entry is genuinely load-bearing.
+
+### Suggestion
+
+- Add a boundary fixture for the image allowance at exactly 1,200 billed tokens (no reset — the strict `>` boundary) and just above (reset, full cost in the reading); the current 801-token fixture cannot detect a regression that halves `IMAGE_CONTENT_TOKENS` to 800-anything.
+- Add a fixture pinning the split-interval claim (`threshold.ts:331-334`): an image added in a split interval must not be re-credited at the comparison *after* the split sample; the claim is currently verified by code reading only.
+
+### Learning
+
+- The mutation table in the fix note matches reality exactly (three mutations, three predicted reddenings, correct fixture attribution). Same for the real-session shipped/fixed columns — this is a well-evidenced fix note.
+
+### Praise
+
+- Minimal, well-scoped change: the allowance is additive in the right unit (tokens vs tokens), the first sample, shrinking prompt, split and compaction paths all reset/consume the allowance correctly, and `previous.unreported` is the right record for the interval it judges.
+- Docs/CHANGELOG keep consumer measurements out (shape descriptions only); numbers live solely in the issue dir, per the memory invariant.
+- The image trade (fail-open bounded per image under budget, fail-closed above) is implemented exactly as documented in all five probed shapes (over-budget, at-budget, two images, toolResult images, first-sample image).
+
+### Residual-risk
+
+- For dense-text (CJK) replies, `output − chars/4` over-credits the reply's text-estimate gap (real tokens ≈ chars/1.05 vs estimate chars/4), inflating the allowance by up to ~0.7×chars per reply beyond the documented "hidden output"; fail-open, bounded by the reply. The non-echoing-provider residual is named in the fix note, this inflation is not.
+- Assistant-generated images are credited twice (once via `unreported`, once via the 1,200 image allowance); rare shape, bounded per reply.
+- A genuinely huge reply (the Quantum field case: 20,489 hidden tokens in one reply) can mask a real refresh in the following interval; this is the documented "heuristic, bounded by the reply" trade.
+
+## Test And QA Focus
+
+- `cd /tmp/pc-baseline-review && node tests/handoff-test.mjs` → **all checks passed**.
+- `node tests/run-all.mjs` → **All 15 tests passed** (hygiene check green).
+- Mutations in `/tmp/pc-mut`: allowance→0 (2 FAIL: 5c+5d); `previous.unreported` only (1 FAIL: 5c); `imageAllowance` only (1 FAIL: 5d); closing revert (2 FAIL: zh closing + en shape). All restored.
+- Adversarial probes (frozen code, via the harness): over-budget image 1,500 → reset, baseline 19,265 (full cost admitted); exactly 1,200 → no reset; two 800-token images → no reset (2×1,200 allowance); toolResult image → no reset; dropped-record hidden output → false re-anchor 20,117 vs 17,766 control (**I-1**).
+- Real sessions: fixed columns match the fix note exactly; pre-fix (mutated) run matches the shipped columns exactly (Quantum shipped drop differs from the note by 200 — N-4).
+- Zero-write proof held: frozen tree byte-identical to the review start.
+
+VERDICT: CHANGES-REQUESTED

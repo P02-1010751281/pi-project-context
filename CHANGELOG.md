@@ -3,6 +3,21 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.11 — 2026-10-18
+
+### 修复
+
+- **重锚不再把分支文本没有承载的计费内容当成 baseline 增长**：`measureContext` 的 ② 检测
+  （`prompt_r − prompt_p > 2 × (chars_r − chars_p)`）在中转站推理路由上逐轮触发 —— provider 把未落盘的隐藏推理计入下一次 prompt，
+  而持久化消息里只有空 thinking 块；截图重的会话同理，`chars` 按设计排除图像块。每次重锚都把整段文本的 `chars × (1/r − 1/8)` 高读重新计入，
+  baseline 随会话抬升，floor 越过质量拐点或可用窗口后自动交接被静默关闭。现在检测给两类内容一个 allowance：上一条回复的
+  `max(0, usage.output − messageTokens)` 与自上次采样以来图像块按 pi 自身预算折算的 token（每张 1,200）。真实的注入块刷新仍会超过
+  该界并重锚；预算内的小图不再重锚，其真实成本不进 baseline（floor 低读该成本，fail-open、按图有界），超出预算的图仍重锚。
+  状态行的 baseline 说明不变。
+- **交接后的首条回复先复述上一轮**：续接提示的收尾从「从上次中断处继续 / Continue the task from where it left off」改为
+  「先复述上一轮用户的要求和当前进度（一两句话），再…」。successor 不再直接开工而让用户不知道在继续什么；旧版收尾仍被
+  `isHandoffPromptText` 识别，重放时照旧替换为 omission marker。
+
 ## v0.4.10 — 2026-10-14
 
 ### 修复
