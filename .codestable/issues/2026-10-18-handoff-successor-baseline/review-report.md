@@ -6,6 +6,7 @@
 |---|---|---|---|---|---|
 | R1 | v0.4.11 candidate (round-1 sandbox) | CHANGES-REQUESTED | 0 | 2 | correctness: a dropped record's hidden output was lost; docs inverted the fail-open direction |
 | R2 | v0.4.11 candidate after the R1 fixes | PASSED | 0 | 0 | validation: I-1/I-2 fixed, matrix and field columns reproduce; three test/doc nits left as follow-ups |
+| R3 | cleanup batch (legacy-zh, accumulation fixture, 5b comment) | PASSED | 0 | 0 | no production threshold change; all three R2 nits closed and mutation-checked |
 
 ## R1 (transcript: `review-round1-independent.txt`)
 
@@ -41,17 +42,21 @@ columns and the mutated shipped columns match), and adversarial probes of the ze
 self-density carries (each flips 19,778 <-> 17,766 when removed). It confirmed no double-count, no leak
 across a split, and no negative/overflow path.
 
-Post-PASS nits (not fixed, to keep the PASS valid; they are test/doc-only):
+Post-PASS nits (closed in the R3 cleanup; tests/comments only, no production threshold change):
 
-- **N-1**: the R1 N-5 disposition in this report was inverted (corrected above); add a legacy-zh
-  recognition fixture mirroring the legacy-en one.
-- **N-2**: the zero-prompt and self-density carries are code-correct (probed) but not individually pinned
-  by a fixture; and changing `imageAllowance = entryImages` to `+=` on the *drop* paths only is not caught
-  by a fixture (the split-reset mutation is). A fixture with two pending contributions between samples
-  (a user image plus a dropped record's hidden output) would pin accumulation.
-- **N-3**: the 5b comment in `tests/handoff-test.mjs` still states the detector as
-  `prompt_r - prompt_p > 2 * (chars_r - chars_p)` without the allowance term; accurate for that fixture
-  (allowance 0) but stale as a definition post-v0.4.11.
+- **N-1 (fixed)**: a legacy-zh recognition fixture mirrors the legacy-en one, and it is now the only
+  pin proving the legacy zh entry is load-bearing (removing that entry reddens it).
+- **N-2 (fixed)**: a two-pending-contribution fixture (a user image plus a dropped record's hidden
+  output) pins the `+=` accumulation; changing the drop path to `=` reddens exactly that check
+  (mutated baseline 20,965).
+- **N-3 (fixed)**: the 5b comment now states the detector with the allowance term and notes the
+  allowance is 0 in that fixture.
+
+## R3 (transcript: `review-round3-cleanup-independent.txt`)
+
+**VERDICT: PASSED** on the cleanup diff. No production threshold change; the three nits above are
+closed, the legacy-zh suffix subtlety is recorded, and the new accumulation fixture is mutation-
+sensitive. One test-comment number was corrected after the verdict (20,967 -> 20,965, C's bound).
 
 The PASS covers the frozen revision (the current working tree's code/tests); the only changes after it are
 this report and the round transcript, both under the issue dir.

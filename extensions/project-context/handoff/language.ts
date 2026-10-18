@@ -50,14 +50,17 @@ const HANDOFF_PROMPT_PREFIXES = [
 /** Section headings that only generated continuation prompts contain (kept for prompts written before the summary chain was removed, which must still be recognized on replay). */
 const HANDOFF_PROMPT_HEADINGS = ["## Handoff Summary", "## Previous session details", "## 交接摘要", "## 上一会话信息"];
 
-/** Closing lines every generated prompt ends with. The two pre-v0.4.11 closings stay in the list so a
- * prompt written before the restatement line was added is still recognized on replay; without them it
- * would be carried verbatim as a fresh instruction. */
+/** Closing lines every generated prompt ends with. The pre-v0.4.11 closings stay in the list so a
+ * prompt written before the current wording is still recognized on replay; without them it would be
+ * carried verbatim as a fresh instruction. That includes the intermediate 0ca14ba restatement-only
+ * line, which a local build could have written before v0.4.11 shipped. */
 const HANDOFF_PROMPT_CLOSINGS = [
 	SCAFFOLDING.en.closingContinue,
 	SCAFFOLDING.en.closingPaused,
 	SCAFFOLDING.zh.closingContinue,
 	SCAFFOLDING.zh.closingPaused,
+	"First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off.",
+	"先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。",
 	"Continue the task from where it left off.",
 	"从上次中断处继续。",
 ];

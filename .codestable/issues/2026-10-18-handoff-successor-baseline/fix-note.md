@@ -95,6 +95,9 @@ Shape of the prompt accounting in these sessions:
   - dropped-record carry removed from all three drop paths -> 1 FAIL: 5e.
   - `IMAGE_CONTENT_TOKENS` halved -> 5d + 5f; doubled -> 5f (the exact boundary).
   - `imageAllowance = entryImages` changed to `+=` -> 1 FAIL: 5g (the split reset).
+- Cleanup batch (R3): a legacy-zh recognition fixture; a two-pending-contribution fixture (user
+  image + a dropped record's hidden output) pins the `+=` accumulation (mutating the drop path to
+  `=` reddens exactly it, baseline 20,965); the 5b comment now includes the allowance term.
 - Full suite: `node tests/run-all.mjs` → `All 15 tests passed.`
 - Real sessions: the patched module resolves the thresholds in the table above (the same probe loads the
   repo's `threshold.ts`; see `probe-threshold-on-sessions.mjs`).

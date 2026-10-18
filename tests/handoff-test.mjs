@@ -162,9 +162,17 @@ try {
 		"- Previous session id: 01a0a58e-7ef4-7763-95f3-5bcf04fdc388",
 		"Continue the task from where it left off.",
 	].join("\n");
+	const currentZhClosing = "先复述上一轮用户的要求、当前进度，以及仍在生效的技能或模式；如果该技能的说明已被丢弃，先重新读取它的 SKILL.md，再从上次中断处继续。";
+	const currentEnClosing = "First restate in one or two sentences what the user last asked, where the work stands, and any skill or mode still in effect; if its instructions were dropped, re-read its SKILL.md first, then continue from where it left off.";
+	const legacyZh = zh.replace(currentZhClosing, "从上次中断处继续。");
+	const intermediateZh = zh.replace(currentZhClosing, "先复述上一轮用户的要求和当前进度（一两句话），再从上次中断处继续。");
+	const intermediateEn = en.replace(currentEnClosing, "First restate in one or two sentences what the user last asked and where the work stands, then continue from where it left off.");
 	check("recognizes a generated zh prompt", handoff.isHandoffPromptText(zh));
 	check("recognizes a generated en prompt", handoff.isHandoffPromptText(en));
 	check("recognizes a legacy English prompt", handoff.isHandoffPromptText(legacy));
+	check("recognizes a legacy Chinese prompt", legacyZh !== zh && handoff.isHandoffPromptText(legacyZh));
+	check("recognizes the intermediate Chinese restatement closing", intermediateZh !== zh && handoff.isHandoffPromptText(intermediateZh));
+	check("recognizes the intermediate English restatement closing", intermediateEn !== en && handoff.isHandoffPromptText(intermediateEn));
 	check("ordinary user message is not a prompt", !handoff.isHandoffPromptText("那做了呗，统一一下"));
 	check("assistant report is not a prompt", !handoff.isHandoffPromptText("## Goal\n- 收尾。"));
 	check("a quote prefixed by the user is not a prompt", !handoff.isHandoffPromptText(`补，但是当前会话怎么出现了：\n${en}`));
@@ -1891,7 +1899,8 @@ try {
 
 	// 5b. An overhead increase the text cannot account for restarts the minimum: the earlier sample measures the
 	//     old baseline, and keeping it reads the new one low by the increase - the injected block refreshing
-	//     inside a session (design residual ②). The detector is `prompt_r - prompt_p > 2 * (chars_r - chars_p)`,
+	//     inside a session (design residual ②). The detector is
+	//     `prompt_r - prompt_p > 2 * (chars_r - chars_p) + allowance` (the allowance is 0 in this fixture),
 	//     i.e. more growth than two tokens per added character could carry; the shape below is review round 9's
 	//     field fixture (a 40,000-char prefix, a +30,000-token refresh, eight characters of new text), where the
 	//     looser first threshold never fired. a2 bills 17,766 + 30,000 + 10,002 = 57,768 and its prefix is
@@ -1965,6 +1974,23 @@ try {
 	check(
 		"a dropped record's hidden output is carried to the next comparison",
 		droppedHiddenRead.samples === 2 && droppedHiddenRead.sampleIndex === 0 && droppedHiddenRead.baseline === 17_766,
+	);
+
+	// 5e-b. Two pending contributions between samples accumulate: a user image and a dropped record's
+	//      hidden output. The drop path and the image path both add to the same allowance; replacing the
+	//      drop path's `+=` with `=` loses the earlier image and falsely re-anchors at C. Mutation: that
+	//      replacement resets the baseline to C's bound (20,965) instead of keeping 17,766.
+	const pendingAllowance = chain([
+		billed("pa0", "ok", { input: 17_766 }, stamp(0)),
+		contentEntry("pa1", "user", [{ type: "image", data: "aGk=", mimeType: "image/png" }], stamp(1)),
+		messageEntry("pa2", "user", "测", stamp(2)),
+		billed("pa3", "ok", { input: 17_766, output: 2_001 }, stamp(3)),
+		billed("pa4", "", { input: 17_766 + 2_001 + 1_200 }, stamp(4)),
+	]);
+	const pendingAllowanceRead = readOf(measureCtx(pendingAllowance, "sample-pending-allowance", 60_000));
+	check(
+		"an image and a dropped record's hidden output accumulate in the allowance",
+		pendingAllowanceRead.samples === 2 && pendingAllowanceRead.sampleIndex === 0 && pendingAllowanceRead.baseline === 17_766,
 	);
 
 	// 5f. The image allowance is exactly pi's per-image budget: 1,200 billed tokens must not reset, 1,201 must.

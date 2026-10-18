@@ -1,0 +1,63 @@
+All evidence gathered. Writing the review.
+
+---
+
+# Independent Review — R3 cleanup: intermediate 0ca14ba closings + baseline post-PASS nits
+
+**Scope:** uncommitted diff over `3f584ee` (both predecessor slices already PASSED). Two files: `extensions/project-context/handoff/language.ts`, `tests/handoff-test.mjs`. All mutations run in `/tmp` copies; live repo untouched (zero-write verified: `git status` shows only the two intended files, no file in the tree newer than the 16:10 checkout).
+
+## 1. Exactness — PASS
+
+`git show 0ca14ba:extensions/project-context/handoff/prompt.ts` (live repo) vs the two new list entries:
+
+| closing | bytes | byte-identical |
+|---|---|---|
+| en intermediate | 127 | **YES** (hex-compared) |
+| zh intermediate | 99 | **YES** (hex-compared) |
+
+Also verified against 0ca14ba: `closingPaused` (en/zh), both preambles, and all headings are unchanged from the current tree, so a **paused** 0ca14ba prompt is already recognized via the `SCAFFOLDING` entries — the continue closing was the only gap, and it is now covered. The current `SCAFFOLDING` closings still "match" by construction (list entries are `SCAFFOLDING.*` references, first four, unchanged), and the build/prompt tests pin both current closings end-to-end. No CHANGELOG change needed: the v0.4.11 entry already claims old closings are still recognized, and this widens exactly that claim within the same unreleased entry.
+
+## 2. Recognition — PASS, with one honest subtlety
+
+False-positive surface: **no new class added.** The gate is the conjunction preamble + heading + closing. Both new strings are longer and more specific than the legacy pair; a message passing the gate with one of them is definitionally a handoff prompt (correct to replace with the omission marker). All existing negative fixtures (quote-prefixed, appended text, headings-only) stay green.
+
+Suffix interaction, verified by split mutations:
+
+- Removing the intermediate **en** line → **1 FAIL** ("recognizes the intermediate English restatement closing"). The en line is **load-bearing** (legacy en `"Continue the task from where it left off."` is not a suffix of it).
+- Removing the intermediate **zh** line → **0 FAIL**. The intermediate zh closing ends with `"从上次中断处继续。"`, so `endsWith` already accepts it via the legacy zh entry. The zh line is intent-documentation/symmetry today; it would become load-bearing if the legacy zh entry were ever dropped. **This is the honest zh result**: the zh fixture pins the *contract* (such a prompt is recognized), not which entry provides it.
+- Removing legacy **en** → **5 FAILs** (legacy en fixture + 4 replay/omission-marker checks that use the literal legacy prompt). Load-bearing.
+- Removing legacy **zh** → **1 FAIL** (the new legacy zh fixture). Load-bearing — and the new fixture is now the only pin proving it, exactly per the baseline R2 N-1 follow-up. Neither the intermediate nor the current zh entry can recognize a legacy zh prompt (`endsWith` with a longer string fails).
+
+## 3. Tests — PASS
+
+- `node tests/handoff-test.mjs` → all checks passed; `node tests/run-all.mjs` → All 15 tests passed (live tree, twice).
+- **Drop-path mutation** (`imageAllowance +=` → `=` on the interval-consistency path in `threshold.ts`): exactly **1 FAIL** — the new 5e-b fixture. Mutated read: `{samples:2, sampleIndex:1, baseline:20965}` — i.e. the check reddens, and nothing else does (5d's images take the `!record` path; 5e has no prior image, so `=` ≡ `+=` there).
+- **Fixture arithmetic (traced via instrumented threshold.ts)**: pa3 is dropped by the **interval-consistency rule** (prompt 17,766 unchanged, chars grew 8 > 0) — the intended path. Allowance at pa4 = 1,200 (pa1 image, `!record` path) + 2,000 (pa3's `max(0, 2,001 − 1)`) = 3,200. Detector at C: 3,201 > 2×12 + 3,200 = 3,224 → false → no re-anchor; baseline 17,766, samples 2, index 0. ✓ The increase (3,201 = 2,001 hidden + 1,200 image) is isolated from text: the text term is 24; with the image lost the RHS is 2,024 and the detector fires. The 1 token of B's *visible* "ok" text is correctly in `chars` (plain 3 → 12 chars), so the accounting balances.
+- **5b comment**: accurate. In 5b, A's `unreported = max(0, 1 − 1) = 0` and there are no images, so the allowance is really 0; the detector statement now matches `threshold.ts` (line 362: `prompt - previous.prompt > 2 * (chars - previous.chars) + allowance`).
+
+## 4. Regression — PASS
+
+Existing recognition (current en/zh, legacy en, replay markers, omission marker opening), active-skill fixtures, and the whole baseline suite stay green. No production `threshold.ts` change in the diff (the 5b edit is a test comment). The only behavior change is the recognition widening, which is the point of S-1.
+
+## Findings
+
+**Nit 1** — `tests/handoff-test.mjs:1982`: the mutation comment says "resets the baseline to C's bound (20,967)". The actual mutated baseline is **20,965** (C's bound = prompt 20,967 − ⌈12/8⌉ = 20,965); 20,967 is C's *prompt*. Off by two, comment-only — the check itself fails correctly under the mutation. Fix boundary: the parenthetical.
+
+**Nit 2** — issue-record staleness (not in the diff, flagged for commit time): `.codestable/issues/2026-10-18-handoff-active-skills/review-report.md` still says S-1 is "not fixed, no shipped artifact", and the baseline `review-report.md` R2 lists N-1/N-2/N-3 as "not fixed". All four are now implemented by this diff; update those dispositions when committing so the records don't contradict the tree. Docs-only.
+
+**Suggestion 1** — `tests/handoff-test.mjs:165-169`: `legacyZh`, `intermediateZh`, `intermediateEn` are built by `replace()` on the current closing. If the scaffolding closing text ever drifted, the replace would silently no-op and the checks would still pass (they'd re-test the current prompt, which other checks already cover). The checks are live today (mutation-confirmed), but a one-line assertion (e.g. `!intermediateEn.endsWith(currentEnClosing)` or an explicit `endsWith` pin of the replaced closing) would make them self-pinning. Non-blocking.
+
+**Learning** — the intermediate zh entry is recognition-redundant while the legacy zh entry exists (suffix overlap); the en entry is the genuinely new coverage. The comment at `language.ts:53-56` is accurate either way ("a prompt written before the current wording is still recognized" is delivered by the set, not by any single entry). No action required.
+
+**Praise** — byte-level exactness verification (including full-width-paren bytes in zh); the 5e-b fixture is coherent end-to-end (drop path traced, allowance terms isolated from text, 23-token deterministic margin); every mutation reddened exactly its intended fixture; the new legacy zh pin captures the exact subtlety the baseline review called out; zero-write held.
+
+**Residual-risk** — unchanged from the two PASSED slices, and nothing new: the recognition gate remains a heuristic (a user message deliberately reproducing preamble+heading+closing is treated as a prompt — the designed trade, replacement is a harmless marker); the zh coverage will silently survive a future removal of the legacy zh entry (the intermediate line covers it), so no field risk; the fixture's margin is deterministic in the stub, not provider-dependent.
+
+## Test And QA Focus
+
+- Re-run: `node tests/handoff-test.mjs` and `node tests/run-all.mjs` in the live tree — both green now.
+- Re-run the four mutations above in `/tmp` copies: intermediate en removal (1 FAIL), legacy en removal (5 FAILs), legacy zh removal (1 FAIL), drop-path `+=`→`=` (1 FAIL, baseline 20,965).
+- Verify byte-exactness with `git show 0ca14ba:extensions/project-context/handoff/prompt.ts` if the closing text is ever touched again.
+- Spot-check `git status --porcelain` after any review session for the zero-write proof.
+
+VERDICT: PASSED

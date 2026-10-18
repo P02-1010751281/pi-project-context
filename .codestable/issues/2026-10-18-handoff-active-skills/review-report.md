@@ -6,6 +6,7 @@
 |---|---|---|---|---|---|
 | R1 | active-skills slice (pre-ordering fix) | PASSED | 0 | 1 | `collectActiveSkills` claimed "most recent" for alphabetically sorted prompt/compaction lists, so the 8-cap could evict the active skill |
 | R2 | active-skills slice after the ordering fix | PASSED | 0 | 0 | source priority verified, mutation matrix and the live field probe reproduced; wording nits and one follow-up |
+| R3 | cleanup batch (intermediate closing + baseline test nits) | PASSED | 0 | 0 | byte-exact 0ca14ba closing, suffix interaction understood, accumulation fixture mutation-sensitive |
 
 ## R1 (transcript: `review-round1-independent.txt`)
 
@@ -51,12 +52,21 @@ Post-PASS corrections (comments and docs only; no behavior change):
 - **R-B (recorded)**: a draft-mode handoff that stores an edited prompt plus an appended answer
   fails `isHandoffPromptText` at hop 2; only a successor re-read survives. Added to the residuals.
 
-Follow-up (not fixed, no shipped artifact):
+**S-1 (fixed in the R3 cleanup)**: the intermediate 0ca14ba `closingContinue` (the restatement-only
+text, en/zh) is now in `HANDOFF_PROMPT_CLOSINGS`. The R3 reviewer byte-compared both strings against
+`git show 0ca14ba:...`; the English line is load-bearing, while the Chinese line is redundant today
+because the intermediate and current zh closings both end with the legacy `"从上次中断处继续。"`
+suffix. Fixtures pin the legacy zh and both intermediate closings, with an inequality so a future
+wording drift cannot make them re-test the current prompt.
 
-- **S-1**: add the intermediate 0ca14ba `closingContinue` (the restatement-only text) to
-  `HANDOFF_PROMPT_CLOSINGS`. The reviewer swept every stored prompt: 0 end with it; 0ca14ba never
-  shipped. A non-paused handoff from the local 0ca14ba build would create a prompt v0.4.11 cannot
-  recognize, so this is a cheap compatibility guard for a later patch.
+## R3 (transcript: `review-round3-cleanup-independent.txt`)
+
+**VERDICT: PASSED**. Focused on the two-file cleanup diff (intermediate closings plus baseline
+test/comment nits). Byte-level exactness of the 0ca14ba strings, no new false-positive class, the
+legacy-zh suffix interaction, the 5e-b accumulation fixture (drop path traced; `+=` -> `=` reddens
+exactly that check, mutated baseline 20,965), and the 5b comment all verified. One test-comment
+number (20,967 -> 20,965, C's bound) and the issue-record dispositions were corrected after the
+verdict; no production behavior changed.
 
 Residual risks remain as disclosed: a prompt-sourced hop-1 mode can be evicted by eight newer
 reads; a compaction inside the successor drops the stored prompt; `/skill:name` without a read and

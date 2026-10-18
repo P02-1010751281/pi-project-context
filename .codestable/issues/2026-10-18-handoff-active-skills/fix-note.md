@@ -40,7 +40,9 @@ session returns both from the prompt text, so the new continuation would name th
 - `handoff/run.ts`: collects the list from the **whole branch** (not only the dropped prefix) and
   passes it to `buildHandoffPrompt`.
 - Docs and CHANGELOG updated; old closings stay in `HANDOFF_PROMPT_CLOSINGS`, so a v0.4.10 prompt
-  is still recognized and replaced on replay.
+  is still recognized and replaced on replay. The list also carries the intermediate 0ca14ba
+  restatement-only closing (en/zh), so a non-paused handoff written by that local build before
+  v0.4.11 ships is recognized too.
 
 ## Verification
 
@@ -52,6 +54,9 @@ session returns both from the prompt text, so the new continuation would name th
   keep the eight latest and drop the oldest.
 - `buildHandoffPrompt`: zh and en sections carry the name and path and the re-read instruction; no
   list means no section; both closings are recognized by `isHandoffPromptText`.
+- `isHandoffPromptText` recognizes a legacy Chinese prompt, and the intermediate English/Chinese
+  restatement-only closings; each fixture asserts the replacement actually changed the current
+  prompt, so a future wording drift cannot make the check silently re-test the current prompt.
 - Integration: the `runHandoff` pin branch includes a `read` of
   `/home/user/.agents/skills/grilling/SKILL.md`; the sent prompt names it under the zh section.
 - Mutations (each applied to a copy, restored; `node tests/handoff-test.mjs`):
@@ -79,9 +84,13 @@ session returns both from the prompt text, so the new continuation would name th
 - A compaction inside the successor session drops the stored continuation prompt; only a real
   re-read by that successor keeps the skill in its `readFiles`, so a mode ignored at hop 1 is still
   lost at hop 2.
-- A codemode script's `nestedCalls` reads are not scanned (the assistant-content scan matches
-  `collectFileOps`; pi's own `extractFileOpsFromMessage` reads them). Same for a `branch_summary`
-  entry's `details.readFiles`: only `compaction` is scanned, consistent with `collectFileOps`.
+- A codemode script's `nestedCalls` reads are not scanned: that is a script-side file access, not
+  the assistant loading a skill into its own context (the assistant-content scan matches
+  `collectFileOps`; pi's own `extractFileOpsFromMessage` reads them for its file index).
+- A `branch_summary` entry's `details.readFiles` describe the branch that was **left**, not the
+  current branch, so they are not active-skill evidence; scanning them would list skills from an
+  abandoned branch. `collectFileOps` excludes them for the same reason. Only `compaction` is
+  scanned.
 - A draft-mode handoff stores the user's edited text as the opening message; if the user appends
   an answer it fails `isHandoffPromptText` and contributes no skills at hop 2, so only a successor
   re-read survives that shape.
