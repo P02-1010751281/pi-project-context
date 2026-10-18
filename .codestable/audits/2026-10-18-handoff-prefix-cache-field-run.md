@@ -139,6 +139,11 @@ toolResult 正文占据。再跑一个 4 轮 fixture：每轮让模型 `read` �
 每个结果独立限额、只换文本块、保留图片/嵌套调用与配对；默认 `0` 不改变原行为。只裁最近一轮之前、
 按字符还是 token、以及模型回读成本仍是策略取舍，见 docs/handoff.md。
 
+同一 4 轮工具 fixture 走真实 RPC，先 `/handoff budget toolresult 100` 再 `/handoff now`：命令回执出现
+`each carried tool result is capped at ~100 tokens`，handoff 回执出现 `1 tool result trimmed`；successor 首轮
+`input=907`，successor JSONL 的 toolResult 文本 228 字符（总文本 1,933，2 条 toolResult），原 `CAP` 正文未出现。
+这验证的是命令行 → config → `runHandoff` → replay 的真实链路，不证明模型能无成本地回读被裁正文。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
