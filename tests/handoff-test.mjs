@@ -90,6 +90,10 @@ try {
 
 	const zhSummaryOnly = handoff.buildHandoffPrompt({ ...base, language: "zh", keptTokens: 0 });
 	check("zh no-carry line says nothing was carried", zhSummaryOnly.includes("上一会话没有原文带入本会话"));
+	const zhTrimmed = handoff.buildHandoffPrompt({ ...base, language: "zh", trimmedToolResults: 1 });
+	check("zh says oversized tool output was trimmed", zhTrimmed.includes("过大的工具输出已按 toolResult 上限裁剪") && !zhTrimmed.includes("已原文带入"));
+	const enTrimmed = handoff.buildHandoffPrompt({ ...base, language: "en", trimmedToolResults: 1 });
+	check("en says oversized tool output was trimmed", enTrimmed.includes("oversized tool output was trimmed") && !enTrimmed.includes("carried over verbatim"));
 
 	const zhGuarded = handoff.buildHandoffPrompt({ ...base, language: "zh", guardWaiting: true, pendingQuestion: "选 1 还是 2？" });
 	check("zh guarded prompt carries the question", zhGuarded.includes("## 待用户回答的问题") && zhGuarded.includes("选 1 还是 2？"));
@@ -314,6 +318,17 @@ Ask one question at a time.
 	// e1, e3, the tool call and its paired result stay; the two prompts become markers.
 	check("real conversation stays in the slice", kept.filter((message) => message.content?.[0]?.text !== handoff.REPLAY_MARKER).length === 4);
 
+	// The opt-in cap replaces only text blocks: the call/result pairing and an image block survive.
+	const trimEntry = toolResultEntry("trim1", "trim-tc", `TOOL_TRIM_SECRET ${"tool output ".repeat(300)}`, "2026-09-16T00:42:30.000Z");
+	trimEntry.message.content.push({ type: "image", data: "image-data", mimeType: "image/png" });
+	const trimmedTool = handoff.trimToolResultText(trimEntry.message, 100);
+	check("a long tool result is replaced by the trim marker", trimmedTool?.content?.[0]?.text?.startsWith("[tool result trimmed during handoff:"));
+	check("the trim marker names the original character count", trimmedTool?.content?.[0]?.text?.includes("tool output")===false && /\d+ characters/.test(trimmedTool?.content?.[0]?.text ?? ""));
+	check("trimming keeps the toolCallId", trimmedTool?.toolCallId === "trim-tc");
+	check("trimming keeps non-text blocks", trimmedTool?.content?.some((block) => block.type === "image"));
+	check("trimming does not mutate the source message", JSON.stringify(trimEntry.message).includes("TOOL_TRIM_SECRET"));
+	check("a short tool result is left alone", handoff.trimToolResultText(toolResultEntry("trim2", "trim-tc2", "short", "2026-09-16T00:42:31.000Z").message, 100) === undefined);
+
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
 	// it must not make the block open with an assistant message, which some providers reject.
@@ -471,6 +486,15 @@ Ask one question at a time.
 	check("budget recent sets the recent window", (await readConfig())?.handoffBudgetRecentTokens === 12_000);
 	await command.handler("budget recent off", ctx);
 	check("budget recent off carries nothing verbatim", (await readConfig())?.handoffBudgetRecentTokens === 0);
+	await command.handler("budget toolresult 2k", ctx);
+	check("budget toolresult sets the per-result cap", (await readConfig())?.handoffBudgetToolResultTokens === 2_000);
+	await command.handler("budget toolresult off", ctx);
+	check("budget toolresult off disables the cap", (await readConfig())?.handoffBudgetToolResultTokens === 0);
+	await command.handler("budget toolresult 300k", ctx);
+	check(
+		"an over-limit toolresult cap warns and leaves the config",
+		(await readConfig())?.handoffBudgetToolResultTokens === 0 && String(ctx.notifications.at(-1)?.[0] ?? "").includes("Usage: /handoff budget toolresult"),
+	);
 	await command.handler("budget summary 1", ctx);
 	check(
 		"a below-floor summary budget warns and leaves the config",
@@ -1173,6 +1197,61 @@ Ask one question at a time.
 	check(
 		"the archived handoff document points at the log and carries no summary",
 		handoffDoc.includes("session-logs/handoff-pin/session.md") && !handoffDoc.includes("## 交接摘要"),
+	);
+
+	// The opt-in per-result cap is applied to the messages that are actually replayed, not just to the
+	// receipt. The older filler keeps the cut non-empty; the tool result sits in the kept tail.
+	await writeFile(
+		configPath,
+		JSON.stringify({
+			handoffEnabled: true,
+			handoffBudgetRecentTokens: 10_000,
+			handoffBudgetSummaryTokens: 8_000,
+			handoffBudgetToolResultTokens: 100,
+			memoryEnabled: false,
+		}),
+	);
+	const capEntries = [
+		contentEntry("cap1", "user", [{ type: "text", text: `CAP_OLDER ${"older filler ".repeat(5_000)}` }], "2026-09-16T01:40:00.000Z"),
+		contentEntry("cap2", "assistant", [{ type: "text", text: `older reply ${"older filler ".repeat(5_000)}` }], "2026-09-16T01:40:01.000Z", "cap1"),
+		contentEntry("cap3", "user", [{ type: "text", text: "CAP_QUESTION 读大文件。" }], "2026-09-16T01:40:02.000Z", "cap2"),
+		contentEntry(
+			"cap4",
+			"assistant",
+			[{ type: "text", text: "reading" }, { type: "toolCall", id: "cap-tc", name: "bash", arguments: { command: "cat big" } }],
+			"2026-09-16T01:40:03.000Z",
+			"cap3",
+		),
+		toolResultEntry("cap5", "cap-tc", `CAP_TOOL_SECRET ${"tool output ".repeat(1_000)}`, "2026-09-16T01:40:04.000Z", "cap4"),
+		contentEntry("cap6", "assistant", [{ type: "text", text: "done" }], "2026-09-16T01:40:05.000Z", "cap5"),
+	];
+	const capCaptured = { replay: [], prompt: undefined, notifications: [] };
+	const capPi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`))(capPi);
+	const capCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(capEntries, "handoff-tool-cap"),
+		getContextUsage: () => ({ tokens: 200_000, percent: 20, contextWindow: 1_000_000 }),
+	});
+	capCtx.newSession = captureNewSession(capCaptured);
+	await runHandlers(capPi, "session_start", capCtx);
+	await capPi.commands.get("handoff").handler("now", capCtx);
+	check(
+		"the opt-in cap trims the replayed tool result",
+		capCaptured.replay.some((message) => message.role === "toolResult" && message.content?.[0]?.text?.startsWith("[tool result trimmed during handoff:")) &&
+			!JSON.stringify(capCaptured.replay).includes("CAP_TOOL_SECRET"),
+	);
+	check(
+		"the trimmed result keeps its call pairing",
+		capCaptured.replay.some((message) => message.role === "toolResult" && message.toolCallId === "cap-tc") &&
+			capCaptured.replay.some((message) => message.role === "assistant" && JSON.stringify(message.content).includes("cap-tc")),
+	);
+	check(
+		"the continuation says oversized tool output was trimmed",
+		String(capCaptured.prompt).includes("过大的工具输出已按 toolResult 上限裁剪"),
+	);
+	check(
+		"the handoff receipt names the trimmed result",
+		String(capCtx.notifications.map(([message]) => message).join("\n")).includes("1 tool result trimmed"),
 	);
 
 	// An orphan result (its call left in the dropped prefix) cannot be replayed; it leaves the replay and

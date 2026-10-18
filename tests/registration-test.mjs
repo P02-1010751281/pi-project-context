@@ -122,6 +122,14 @@ for (const [name, file] of [
 				console.log("FAIL /handoff budget recent does not complete 'off'");
 				failures += 1;
 			}
+			if (!((await pi.commands.get("handoff").getArgumentCompletions("budget ")) ?? []).some((item) => item.value === "toolresult")) {
+				console.log("FAIL /handoff budget does not complete 'toolresult'");
+				failures += 1;
+			}
+			if (!((await pi.commands.get("handoff").getArgumentCompletions("budget toolresult ")) ?? []).some((item) => item.value === "off")) {
+				console.log("FAIL /handoff budget toolresult does not complete 'off'");
+				failures += 1;
+			}
 		}
 	} catch (error) {
 		console.log(`FAIL ${name}: ${error?.stack ?? error}`);

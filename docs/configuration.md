@@ -48,6 +48,7 @@
 | `forceDedupeMs` | 强制整理的去重窗口 |
 | `handoffThresholdAuto` / `handoffThresholdRatio` | 阈值是自适应还是固定比例 |
 | `handoffBudgetSummaryTokens` / `handoffBudgetRecentTokens` | 交接预算（对应 `/handoff budget summary|recent`）；详见 [handoff 预算与恢复](handoff.md) |
+| `handoffBudgetToolResultTokens` | 每个 carried toolResult 的文本上限；0 = off（对应 `/handoff budget toolresult`） |
 | `handoffMode` | `send` 自动发送 successor continuation，或 `draft` 留在编辑器 |
 | `handoffGuard` | 遇到待回答问题时 `wait`/`draft`/`send`/`skip` |
 | `handoffLang` | `auto`、`zh` 或 `en`（对应 `/handoff lang`） |
@@ -107,11 +108,12 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 |---|---|---|
 | `/project-context` | 跨层 | `status`；`on|off`（**无目标**：一次开关四个特性）；`model <provider>/<id>|off`；`max-tokens <n>|default` |
 | `/memory` | memory | 无参：memory 状态行 ＋ `Context file:` 行；`update`：立即跑 consolidation，重写 `MEMORY.md` 和 `CONTEXT.md`；`on|off`；`max-memory <n>|default` |
-| `/handoff` | handoff | `status`、`on|off`、`threshold <auto|比例>`、`budget summary|recent`、`mode`、`guard`、`lang`、`now`（取值见下） |
+| `/handoff` | handoff | `status`、`on|off`、`threshold <auto|比例>`、`budget summary|recent|toolresult`、`mode`、`guard`、`lang`、`now`（取值见下） |
 | `/autolearn` | autolearn | 立即沉淀；`list`、`approve <name>`、`reject <name>`、`on`、`off`。`approve` 会重新套用与提案路径相同的形状规则（描述/体积上下限、注入检测），不满足则拒绝并点名原因 |
 | `/session-log` | archive | 无参：存档状态行 ＋ `Session index:` 与 `Session logs:` 两行（**只读**）；`write`：立即写当前存档；`import <session.jsonl|目录>…`：导入历史 session；`on|off` |
 
-每个命令都注册了 `getArgumentCompletions`，所以 Tab 会补全参数（`/memory max-memory ` → `default`，`/handoff guard ` → `wait|draft|send|skip`，`/handoff budget recent ` → `off`）。
+每个命令都注册了 `getArgumentCompletions`，所以 Tab 会补全参数（`/memory max-memory ` → `default`，
+`/handoff guard ` → `wait|draft|send|skip`，`/handoff budget recent ` → `off`，`/handoff budget toolresult ` → `off`）。
 `/project-context on|off` 是唯一没有二级补全的命令，因为它不接受目标。
 同名覆盖只对 autolearn **自己生成的**技能开放，且必须**在本轮提示词里展示过它的正文**——模型要先在 `inspectSkill` 里点名（最多 2 条），
 下一轮才拿到正文；没展示过的名字会被拒绝（`body not shown this pass`）。那类技能的 `SKILL.md` 正文带一行 `<!-- autolearn-generated -->` 标记，
@@ -120,7 +122,7 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 **命令改名（破坏性，无过渡期）**：`/memory-learn` → `/memory update`，`/auto-handoff` → `/handoff`，`/context-update` 直接删除（无别名、无提示）。flag 不变。
 **v0.3.0 收束（同样无过渡期）**：`/context` 退役，三行按层归位（context 文件行 → `/memory`，session index 与 session logs → `/session-log`）；
 `max-memory` 与四个特性级 `on|off` 从伞形移到本层命令；`/handoff` 的裸比例、`auto`、`target`、`keep`、`send`、`draft` 六个写法被
-`threshold`、`budget summary|recent`、`mode` 三个动词取代。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
+`threshold`、`budget summary|recent`、`mode` 三个动词取代；`budget toolresult` 是后续新增的可选上限。**总开关不存在**：命令面只能关四个特性，整扩展禁用用 `--no-project-context` flag。
 
 取值：`mode send|draft`、`guard wait|draft|send|skip`、`lang auto|zh|en`。固定比例模式（`handoffThresholdAuto=false`）
 的阈值仍由比例与窗口决定，但低于物理下限时**自动触发会被拒绝**（手动 `/handoff now` 不查阈值）；见
@@ -133,7 +135,8 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 ，`threshold <比例>` 是固定比例模式（`handoffThresholdRatio` 只用于固定模式；`threshold 40`、`threshold 0.4`、`threshold 40%` 等价，都读作 40%），
 两种模式共用一个动词、切换即覆盖一个字段。
 `budget summary <n>` 是手动设定的**触发请求量**（不参与触发公式，被护栏压掉时 `status` 会点名；v0.4.1 起没有任何摘要调用读它），
-`budget recent <n|off>` 是逐字带回新会话的近期窗口（`off` 等价 `0`，即不带原文，只留文件清单与会话日志指针）。`/handoff` 写入时只提交自己拥有的 handoff 键，
+`budget recent <n|off>` 是带回新会话的近期窗口；默认逐字，开启 `budget toolresult` 后超限工具文本会被裁剪（`off` 等价 `0`，即不带原文，只留文件清单与会话日志指针）。
+`budget toolresult <n|off>` 限制每个被携带 toolResult 的文本（默认 `off`），只替换文本块，保留 call/result 配对与图片；完整输出仍在旧会话日志。`/handoff` 写入时只提交自己拥有的 handoff 键，
 因此不会覆盖 `/memory off` 之类的开关、另一个实例的改动或手改的字段。
 
 **入口关系**（v0.3.0 起重排）：一个参数住在**改变它的那一层**。每个特性有自己的 `on|off`（`/memory`、`/session-log`、`/handoff`、`/autolearn`），

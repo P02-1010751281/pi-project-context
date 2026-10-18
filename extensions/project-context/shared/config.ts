@@ -49,8 +49,10 @@ type HandoffSettings = {
 	handoffThresholdRatio: number;
 	/** Trigger request: conversation tokens the pass reports as the droppable prefix; no call reads it. */
 	handoffBudgetSummaryTokens: number;
-	/** Recent raw tokens replayed into the new session; 0 = no verbatim carry-over (file list + log pointer only). */
+	/** Recent raw tokens replayed into the new session; 0 = no carry-over (file list + log pointer only). */
 	handoffBudgetRecentTokens: number;
+	/** Per-carried-toolResult text cap in tokens; 0 = carry tool output verbatim. The marker keeps the call/result pair, and the full output stays in the session log. */
+	handoffBudgetToolResultTokens: number;
 	/** pi-only: "send" dismisses the handoff into a new session, "draft" leaves it in the editor. */
 	handoffMode: "send" | "draft";
 	/** pi-only: behavior when the last assistant message asks the user a question. */
@@ -109,6 +111,7 @@ export const DEFAULT_CONFIG: ProjectContextConfig = {
 	handoffThresholdRatio: 0.4,
 	handoffBudgetSummaryTokens: 64_000,
 	handoffBudgetRecentTokens: 20_000,
+	handoffBudgetToolResultTokens: 0,
 	handoffMode: "send",
 	handoffGuard: "wait",
 	handoffLang: "auto",
@@ -323,6 +326,7 @@ async function parseConfig(projectRoot: string): Promise<ProjectContextConfig> {
 		handoffThresholdRatio: ratio(raw.handoffThresholdRatio) ?? DEFAULT_CONFIG.handoffThresholdRatio,
 		handoffBudgetSummaryTokens: bounded(raw.handoffBudgetSummaryTokens, MIN_DROP_TOKENS, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetSummaryTokens,
 		handoffBudgetRecentTokens: bounded(raw.handoffBudgetRecentTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetRecentTokens,
+		handoffBudgetToolResultTokens: bounded(raw.handoffBudgetToolResultTokens, 0, MAX_KEEP_RECENT_TOKENS) ?? DEFAULT_CONFIG.handoffBudgetToolResultTokens,
 		handoffMode: modeOf(raw.handoffMode) ?? DEFAULT_CONFIG.handoffMode,
 		handoffGuard: guardOf(raw.handoffGuard) ?? DEFAULT_CONFIG.handoffGuard,
 		handoffLang: languageOf(raw.handoffLang) ?? DEFAULT_CONFIG.handoffLang,

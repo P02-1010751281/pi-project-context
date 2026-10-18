@@ -1,8 +1,8 @@
 /**
  * The two texts a handoff emits: the continuation prompt and the archived document, both localized
  * through the scaffolding. Neither carries a generated summary: the replacement session gets the last
- * turns verbatim, the file list, and a pointer to the previous session's log, which holds every detail
- * the dropped prefix had.
+ * turns (with the optional tool-result text cap), the file list, and a pointer to the previous
+ * session's log, which holds every detail the dropped prefix had.
  */
 
 import { type ActiveSkill } from "./file-ops.ts";
@@ -14,6 +14,7 @@ interface HandoffScaffolding {
 	preamble: (percentText: string) => string;
 	percentUnknown: string;
 	carryKept: string;
+	carryTrimmed: string;
 	carryNothing: string;
 	verify: string;
 	detailsHeading: string;
@@ -38,6 +39,7 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		preamble: (percentText) => `This session continues work handed off from a previous session (${percentText} of its context window had been used).`,
 		percentUnknown: "over threshold",
 		carryKept: "The most recent messages of that session were carried over verbatim.",
+		carryTrimmed: "The most recent messages of that session were carried over; oversized tool output was trimmed to the tool-result cap and remains in its session log.",
 		carryNothing: "No message of that session was carried over; every detail is in the session log.",
 		verify: "Verify the current state of files with tools before re-applying changes, and do not redo completed work.",
 		detailsHeading: "## Previous session details",
@@ -60,6 +62,7 @@ export const SCAFFOLDING: Record<HandoffLanguage, HandoffScaffolding> = {
 		preamble: (percentText) => `本会话接手上一会话（其上下文窗口已用 ${percentText}）。`,
 		percentUnknown: "阈值以上",
 		carryKept: "上一会话最近的消息已原文带入本会话。",
+		carryTrimmed: "上一会话最近的消息已带入本会话；过大的工具输出已按 toolResult 上限裁剪，完整内容仍在旧会话日志里。",
 		carryNothing: "上一会话没有原文带入本会话，细节都在它的会话日志里。",
 		verify: "动手前先用工具核对文件当前状态，不要重做已完成的工作。",
 		detailsHeading: "## 上一会话信息",
@@ -84,6 +87,7 @@ export interface HandoffPromptParts {
 	language: HandoffLanguage;
 	percent: number | null;
 	keptTokens: number;
+	trimmedToolResults?: number;
 	guardWaiting: boolean;
 	pendingQuestion?: string;
 	activeSkills?: ActiveSkill[];
@@ -101,9 +105,15 @@ export function buildHandoffPrompt(parts: HandoffPromptParts): string {
 		...(parts.previousSessionFile ? [text.detailTranscript(parts.previousSessionFile)] : []),
 		text.detailLookup,
 	];
+	const carryLine =
+		parts.keptTokens <= 0
+			? text.carryNothing
+			: parts.trimmedToolResults && parts.trimmedToolResults > 0
+				? text.carryTrimmed
+				: text.carryKept;
 	const body = [
 		text.preamble(percentText),
-		parts.keptTokens > 0 ? text.carryKept : text.carryNothing,
+		carryLine,
 		text.verify,
 		"",
 		text.detailsHeading,

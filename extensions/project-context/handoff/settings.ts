@@ -66,6 +66,7 @@ export async function saveConfig(): Promise<void> {
 		handoffThresholdRatio: config.handoffThresholdRatio,
 		handoffBudgetSummaryTokens: config.handoffBudgetSummaryTokens,
 		handoffBudgetRecentTokens: config.handoffBudgetRecentTokens,
+		handoffBudgetToolResultTokens: config.handoffBudgetToolResultTokens,
 		handoffMode: config.handoffMode,
 		handoffGuard: config.handoffGuard,
 		handoffLang: config.handoffLang,

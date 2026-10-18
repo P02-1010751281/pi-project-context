@@ -1,6 +1,6 @@
 /**
  * Message rendering and replay: the role filter, the replay marker pair, and the entry list a
- * continuation is allowed to carry verbatim.
+ * continuation is allowed to carry (verbatim unless the opt-in tool-result text cap is set).
  */
 
 import { type AgentMessage } from "@earendil-works/pi-agent-core";
@@ -19,6 +19,15 @@ export const REPLAY_MARKER = "[handoff prompt omitted]";
  * and the replay block must open with a user message for Anthropic/Gemini routes to accept it.
  */
 export const SPLIT_TURN_MARKER = "[turn prefix dropped during handoff]";
+
+/**
+ * Stand-in for a tool result's text when the opt-in per-result cap is enabled. The call/result
+ * pairing and non-text blocks are kept, so the replay stays parseable; the full output is still in
+ * the predecessor's session log.
+ */
+export function toolResultTrimmedMarker(chars: number): string {
+	return `[tool result trimmed during handoff: ${chars} characters; full output in the previous session log]`;
+}
 
 /**
  * Roles a provider renders as a user message: a replay block may open with one of these.
@@ -99,10 +108,10 @@ function isReplayableRole(role: string): boolean {
 	return role === "user" || role === "assistant" || role === "toolResult" || role === "custom" || role === "bashExecution";
 }
 
-/** Replay the carried-over messages verbatim (stale prompts replaced by a marker). Never throws. */
-export function replayEntries(sessionManager: SessionManager, entries: SessionEntry[]): number {
+/** Append already-rendered replay messages; used when the caller trimmed them before replay. Never throws. */
+export function replayMessageList(sessionManager: SessionManager, messages: AgentMessage[]): number {
 	let appended = 0;
-	for (const message of replayMessagesFor(entries)) {
+	for (const message of messages) {
 		try {
 			sessionManager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
 			appended += 1;
@@ -111,6 +120,39 @@ export function replayEntries(sessionManager: SessionManager, entries: SessionEn
 		}
 	}
 	return appended;
+}
+
+/** Replay the carried-over messages verbatim (stale prompts replaced by a marker). Never throws. */
+export function replayEntries(sessionManager: SessionManager, entries: SessionEntry[]): number {
+	return replayMessageList(sessionManager, replayMessagesFor(entries));
+}
+
+/**
+ * Replace a tool result's text blocks with the trim marker when they exceed `maxChars`. Images and
+ * other non-text blocks stay, as does the toolCallId, so the carried call/result pair remains valid.
+ * Returns undefined when there is nothing to trim (no text, or already within the cap).
+ */
+export function trimToolResultText(message: AgentMessage, maxChars: number): AgentMessage | undefined {
+	const text = messageText(message);
+	if (!text || text.length <= maxChars) return undefined;
+	const marker = toolResultTrimmedMarker(text.length);
+	// A tiny result would grow: never replace it with a longer marker.
+	if (marker.length >= text.length) return undefined;
+	const content = Array.isArray(message.content) ? message.content : [];
+	let replaced = false;
+	const next: unknown[] = [];
+	for (const block of content) {
+		if (block && typeof block === "object" && "type" in block && block.type === "text") {
+			if (!replaced) {
+				next.push({ type: "text", text: marker });
+				replaced = true;
+			}
+			continue;
+		}
+		next.push(block);
+	}
+	if (!replaced) return undefined;
+	return { ...message, content: next } as AgentMessage;
 }
 
 /** Plain text of a message, ignoring tool calls and non-text blocks. */

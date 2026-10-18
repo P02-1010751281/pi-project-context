@@ -14,8 +14,8 @@
 ## 1. 总则
 
 1. **一个事实一个名字**：同一个事实在两个地方出现，必须用同一个名字（命令、帮助、通知、状态行、文档、键名都算）。
-2. **名字说的是那个事实**，不是动作、不是历史、不是实现方式。反例：两个 token 量曾被叫 `target` / `keep`，两个词都说不出量的是什么；
-   现在是 `budget summary` / `budget recent`，各自命名被定量的对象。
+2. **名字说的是那个事实**，不是动作、不是历史、不是实现方式。反例：token 量曾被叫 `target` / `keep`，两个词都说不出量的是什么；
+   现在是 `budget summary` / `budget recent` / `budget toolresult`，各自命名被定量的对象。
 3. **改名必须同轮改齐**：代码 + 提示词 + `docs/` + `CHANGELOG` + MEMORY + 本文件。只改一半 = 未完成
    （2026-10-05 修的 `Auto summarize target` 就是 v0.3.0 只改了命令、没改通知留下的）。
 4. **偏离本文件要写下来**：确有必要偏离时，在本文件 §5 记一条「已决/例外」，并写理由；不要静默偏离。
@@ -28,7 +28,7 @@
 - 动词 = 这一层做的动作；**参数住在改变它的那一层**（v0.3.0 起）。
 - **四层的「立即执行」动词各不相同，这是已决而非残留**（见 §5 D1）：
   `/memory update`、`/session-log write`、`/handoff now`、`/autolearn`（裸调用）。动词描述本层动作，不追求跨层同字。
-- 二级词命名「被定量的对象」（`budget summary` / `budget recent`），不用「动作 + 宾语」（`summarize target`）。
+- 二级词命名「被定量的对象」（`budget summary` / `budget recent` / `budget toolresult`），不用「动作 + 宾语」（`summarize target`）。
 
 ### 2.2 配置键（`.agents/memory/project-context.json`）
 
@@ -128,6 +128,9 @@
 | `handoffSummaryThinking` | `handoffThinking`（**v0.4.2 退役**） | 键与动词一起退役：pi 侧零行为读者，且「stored for the dsh profile」在本仓无证据（跨仓不可复验，见审计 §9.12 R-2），所以没有可迁的现值。这是**硬切不是改名**：v0.4.1 里它仍是已知键（读回+写回，值会持久化），v0.4.2 起旧键被忽略并在下次写回时消失 |
 | `handoffLanguage` | `handoffLang` | 镜射 `/handoff lang` |
 | `handoffAdaptive` | `handoffThresholdAuto` | 镜射 `/handoff threshold auto`（与 `handoffThresholdRatio` 成对） |
+
+新增（v0.4.11）`handoffBudgetToolResultTokens` 镜射 `/handoff budget toolresult`；默认 `0` = off，是可选的
+toolResult 文本上限，不是旧名迁移。
 
 ### P. 通知前缀终态（**已落地 v0.4.0**）
 

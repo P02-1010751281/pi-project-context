@@ -5,6 +5,14 @@
 
 ## v0.4.11 — 2026-10-18
 
+### 新增
+
+- **可选的交接 toolResult 文本上限**：`/handoff budget toolresult <tokens|off>`（默认 `0`/off）为每个被携带的
+  `toolResult` 增加一个独立的 token 上限。超过上限时只把文本块替换成
+  `[tool result trimmed during handoff: N characters; full output in the previous session log]`，保留 `toolCallId`、
+  图片和 `nestedCalls`，完整正文仍留在旧会话日志；successor 的 continuation 会说明工具输出被裁剪。
+  这是为控制 handoff 首轮 payload 的可选杠杆，不改变默认的原文携带行为；状态行与 `/handoff budget recent` 回执会显示该上限。
+
 ### 修复
 
 - **自动 handoff 先于 pi 的自动 compaction**：pi 在 post-run 循环里先跑 `_checkCompaction`、再发 `agent_settled`，单轮涨幅跨过两条线时

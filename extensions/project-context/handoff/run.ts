@@ -18,12 +18,13 @@ import { buildHandoffDocument, buildHandoffPrompt } from "./prompt.ts";
 import { findPendingQuestion } from "./question.ts";
 import { config, getConfigRoot, handoffEnabled, parseRatio, parseTokenCount, saveConfig, setConfigRoot, setFlagEnabled, syncConfig, usageText } from "./settings.ts";
 import { FAILURE_BACKOFF_MS, RETRIGGER_COOLDOWN_MS, armHandoffCooldown, armHandoffFailureBackoff, handoffCooldownUntil, handoffFailureBackoffUntil, handoffInFlight, setHandoffInFlight } from "./state.ts";
-import { replayEntries, replayMessagesFor } from "./text.ts";
+import { replayMessageList, replayMessagesFor, trimToolResultText } from "./text.ts";
 import { type Threshold, baselineSuffix, capSuffix, contextTokensAtRate, measureContext, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function handoffStatusLine(ctx: ExtensionContext): string {
 	const keep = config.handoffBudgetRecentTokens > 0 ? `~${fmtTokens(config.handoffBudgetRecentTokens)} recent carried` : "no recent carry-over";
+	const toolResultCap = config.handoffBudgetToolResultTokens > 0 ? ` · toolResult cap ${fmtTokens(config.handoffBudgetToolResultTokens)}` : "";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffThresholdAuto ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	let threshold: Threshold | undefined;
@@ -55,7 +56,7 @@ export function handoffStatusLine(ctx: ExtensionContext): string {
 	// The baseline is a measurement, so print what it was measured from: a number without its sample count
 	// and rate cannot be argued with, and the refusal above blames it for the floor.
 	const measure = usage && usage.tokens !== null ? measureContext(ctx, usage) : undefined;
-	return `Handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target}${measure ? baselineSuffix(measure) : ""} · ${keep} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
+	return `Handoff ${handoffEnabled() ? "ON" : "OFF"} · threshold ${thresholdLabel}${target}${measure ? baselineSuffix(measure) : ""} · ${keep}${toolResultCap} · mode ${config.handoffMode} · guard ${config.handoffGuard} · lang ${language} · context ${usageText(ctx)}`;
 }
 
 /**
@@ -89,8 +90,8 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			return;
 		}
 
-		// Older context is dropped; the recent tail is carried over verbatim, and the dropped part stays
-		// reachable through the session log the continuation points at.
+		// Older context is dropped; the recent tail is carried over (the optional tool-result cap may
+		// replace oversized text), and the dropped part stays reachable through the session log.
 		let firstKeptIndex = allEntries.length;
 		// pi reports the turn start of a mid-turn cut; the successor cannot do without that message and
 		// nothing carries it as prose, so its opening is anchored into the kept tail below. -1 means the
@@ -135,7 +136,21 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 		// for accounting (usage held it), while `olderTokens` counts the prefix only, so the subtraction
 		// below never double-counts it.
 		const droppedOrphans: AgentMessage[] = [];
-		const keptMessages = replayMessagesFor(keptSlice, droppedOrphans);
+		let keptMessages = replayMessagesFor(keptSlice, droppedOrphans);
+		let trimmedToolResults = 0;
+		if (config.handoffBudgetToolResultTokens > 0) {
+			// Opt-in per-result cap. Keep the call/result pair and non-text blocks (images, nested
+			// calls); the marker points at the session log for the full output. The cap is a token
+			// budget, converted with the same measured rate the receipt uses.
+			const maxChars = Math.max(1, Math.floor(config.handoffBudgetToolResultTokens * rate));
+			keptMessages = keptMessages.map((message) => {
+				if (message.role !== "toolResult") return message;
+				const trimmed = trimToolResultText(message, maxChars);
+				if (!trimmed) return message;
+				trimmedToolResults += 1;
+				return trimmed;
+			});
+		}
 		const olderPrefixMessages = olderEntries.filter((entry) => entry.type !== "compaction").flatMap(sessionEntryToContextMessages);
 		const olderMessages = [...olderPrefixMessages, ...droppedOrphans];
 
@@ -152,6 +167,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 
 		const olderTokens = contextTokensAtRate(olderPrefixMessages, rate);
 		const keptTokens = contextTokensAtRate(keptMessages, rate);
+		const trimmedNote = trimmedToolResults > 0 ? `, ${trimmedToolResults} tool result${trimmedToolResults === 1 ? "" : "s"} trimmed` : "";
 		// The anchor is carried verbatim, so it is not part of what a handoff drops: the receipt measures
 		// the middle alone, or one huge anchored turn start would make a handoff that drops almost nothing
 		// look worthwhile.
@@ -173,7 +189,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 		// the middle and the tail, and neither counts the anchored turn start twice.
 		notify(
 			ctx,
-			`Handoff: dropping ~${fmtTokens(olderTokens - anchorTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent...`,
+			`Handoff: dropping ~${fmtTokens(olderTokens - anchorTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent${trimmedNote}...`,
 			"info",
 		);
 
@@ -199,6 +215,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			language,
 			percent: usage && usage.percent !== null ? usage.percent : null,
 			keptTokens,
+			trimmedToolResults,
 			guardWaiting,
 			pendingQuestion,
 			activeSkills,
@@ -269,7 +286,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			.newSession({
 				parentSession: handoffParent,
 				setup: async (sessionManager) => {
-					replayEntries(sessionManager, keptSlice);
+					replayMessageList(sessionManager, keptMessages);
 				},
 				withSession: async (replacementCtx) => {
 					try {
@@ -288,7 +305,7 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 								replacementCtx,
 								guardWaiting
 									? `Handoff: continued in a fresh session (previous was ${percentText} full); the open question was carried over and the agent will wait for your answer.`
-									: `Handoff: continued in a fresh session (previous was ${percentText} full, kept ~${fmtTokens(keptTokens)} recent; the dropped prefix stays in its session log).`,
+									: `Handoff: continued in a fresh session (previous was ${percentText} full, kept ~${fmtTokens(keptTokens)} recent${trimmedNote}; the dropped prefix stays in its session log).`,
 								"info",
 							);
 						}
@@ -409,8 +426,11 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				const items = completeValues(prefix, head, values);
 				if (items) return items;
 			}
-			// The deepest argument (`budget recent off`) has no second-level table of its own.
-			return completeSubValues(prefix, "budget", "recent", [{ value: "off", description: "carry no recent messages" }]);
+			// The deepest arguments (`budget recent off`, `budget toolresult off`) have no second-level table.
+			return (
+				completeSubValues(prefix, "budget", "recent", [{ value: "off", description: "carry no recent messages" }]) ??
+				completeSubValues(prefix, "budget", "toolresult", [{ value: "off", description: "carry tool output verbatim" }])
+			);
 		},
 		handler: async (args, ctx) => {
 			if (!getConfigRoot()) await syncConfig(await getProjectRoot(pi, ctx.cwd).catch(() => undefined));
@@ -421,8 +441,9 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				return;
 			}
 			if (head === "budget") {
-				// The two token amounts are different quantities: one is the trigger request the pass reports
-				// (no summary call reads it since v0.4.1), the other is the recent window carried over verbatim.
+				// The token amounts are different quantities: the trigger request the pass reports (no
+				// summary call reads it since v0.4.1), the recent window, and an opt-in cap on the text
+				// of each carried tool result.
 				if (value === "summary") {
 					const tokens = parseTokenCount(extra ?? "");
 					if (tokens === undefined || tokens < MIN_DROP_TOKENS || tokens > MAX_KEEP_RECENT_TOKENS) {
@@ -449,12 +470,34 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(
 						ctx,
 						config.handoffBudgetRecentTokens > 0
-							? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens verbatim.`
+							? config.handoffBudgetToolResultTokens > 0
+								? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens; each tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens.`
+								: `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens verbatim.`
 							: "Handoff: no recent carry-over; the file list and the session-log pointer are all that carry.",
 					);
 					return;
 				}
-				notify(ctx, "Usage: /handoff budget summary <tokens> | budget recent <tokens|off>", "warning");
+				if (value === "toolresult") {
+					if (extra === "off") {
+						config.handoffBudgetToolResultTokens = 0;
+					} else {
+						const tokens = parseTokenCount(extra ?? "");
+						if (tokens === undefined || tokens > MAX_KEEP_RECENT_TOKENS) {
+							notify(ctx, "Usage: /handoff budget toolresult <tokens|off> (e.g. budget toolresult 2k)", "warning");
+							return;
+						}
+						config.handoffBudgetToolResultTokens = tokens;
+					}
+					await saveConfig();
+					notify(
+						ctx,
+						config.handoffBudgetToolResultTokens > 0
+							? `Handoff: each carried tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens; the full output stays in the session log.`
+							: "Handoff: tool result text is carried verbatim (no cap).",
+					);
+					return;
+				}
+				notify(ctx, "Usage: /handoff budget summary <tokens> | budget recent <tokens|off> | budget toolresult <tokens|off>", "warning");
 				return;
 			}
 			if (head === "threshold") {
@@ -545,7 +588,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 				await runHandoff(pi, "force-auto", ctx);
 				return;
 			}
-			notify(ctx, `Unknown option "${arg}". Usage: /handoff [status|on|off|threshold <auto|ratio>|budget summary <tokens>|budget recent <tokens|off>|mode <send|draft>|guard <wait|draft|send|skip>|lang <auto|zh|en>|now]`, "warning");
+			notify(ctx, `Unknown option "${arg}". Usage: /handoff [status|on|off|threshold <auto|ratio>|budget summary <tokens>|budget recent <tokens|off>|budget toolresult <tokens|off>|mode <send|draft>|guard <wait|draft|send|skip>|lang <auto|zh|en>|now]`, "warning");
 		},
 	});
 }
@@ -556,7 +599,7 @@ const HANDOFF_VERBS = [
 	{ value: "on" },
 	{ value: "off" },
 	{ value: "threshold", description: "adaptive, or a fixed share of the window" },
-	{ value: "budget", description: "token amounts: the trigger request and the recent window" },
+	{ value: "budget", description: "token amounts: the trigger request, the recent window, and an optional tool-result cap" },
 	{ value: "mode", description: "dismiss the handoff into a new session, or leave it in the editor" },
 	{ value: "guard", description: "what to do while a question is pending" },
 	{ value: "lang", description: "handoff scaffolding language" },
@@ -566,7 +609,7 @@ const HANDOFF_VERBS = [
 /** Second-argument completions, keyed by the verb that takes them. */
 const HANDOFF_VALUE_COMPLETIONS = [
 	{ head: "threshold", values: [{ value: "auto", description: "adaptive threshold (the default)" }] },
-	{ head: "budget", values: [{ value: "summary", description: "the trigger request the pass reports (no model call)" }, { value: "recent", description: "recent tokens carried over verbatim" }] },
+	{ head: "budget", values: [{ value: "summary", description: "the trigger request the pass reports (no model call)" }, { value: "recent", description: "recent tokens carried over" }, { value: "toolresult", description: "cap each carried tool result's text" }] },
 	{ head: "mode", values: [{ value: "send" }, { value: "draft" }] },
 	{ head: "guard", values: [{ value: "wait" }, { value: "draft" }, { value: "send" }, { value: "skip" }] },
 	{ head: "lang", values: [{ value: "auto" }, { value: "zh" }, { value: "en" }] },
