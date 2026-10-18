@@ -17,4 +17,10 @@ I-1 (important): the cancelled-handoff cooldown arm was unpinned. Fixed post-PAS
 `handoff.ts` and `state.ts` through one jiti loader and pinning the shared cooldown clock; removing
 the arm now gives 1 FAIL. Nits fixed: the 272K absolute figures, the cancelled-handoff residual
 wording, the docs/CHANGELOG cooldown sentence, the registration surface, and the `handoffDue`
-clock comment. No behavior changed after the reviewed code.
+clock comment.
+
+Post-PASS correction: the original R1 code cancelled `overflow` even when `willRetry` was true,
+which skips pi's only retry path and turns a recoverable overflow into a dead turn. The handler now
+lets retrying overflow recovery proceed; only completed (`willRetry: false`) overflow is
+preempted. This is a code change after the PASS, so R1 no longer covers the current HEAD; a new
+review round is required before release.

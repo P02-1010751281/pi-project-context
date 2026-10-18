@@ -390,6 +390,10 @@ export function registerHandoff(pi: ExtensionAPI): void {
 	// user choice. A failed handoff arms the failure backoff, so the next compaction proceeds.
 	pi.on("session_before_compact", (event, ctx) => {
 		if (event.reason === "manual") return;
+		// Overflow recovery with `willRetry` is pi's only path back into the interrupted turn. A
+		// settle-time handoff cannot retry that turn, so let pi compact and retry instead of turning
+		// a recoverable overflow into a dead turn.
+		if (event.reason === "overflow" && event.willRetry) return;
 		const now = Date.now();
 		if (now < handoffCooldownUntil() || now < handoffFailureBackoffUntil()) return;
 		if (!handoffDue(ctx, ctx.getContextUsage())) return;

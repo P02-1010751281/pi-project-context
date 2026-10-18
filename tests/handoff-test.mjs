@@ -568,8 +568,10 @@ Ask one question at a time.
 	check("a due handoff cancels threshold compaction", thresholdCompaction.some((result) => result?.cancel === true));
 	const manualCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "manual" });
 	check("manual compaction is not cancelled", manualCompaction.every((result) => result?.cancel !== true));
-	const overflowCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "overflow", willRetry: true, signal: undefined });
-	check("automatic overflow compaction is cancelled for a due handoff", overflowCompaction.some((result) => result?.cancel === true));
+	const overflowCompaction = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "overflow", willRetry: false, signal: undefined });
+	check("completed overflow compaction is cancelled for a due handoff", overflowCompaction.some((result) => result?.cancel === true));
+	const overflowRetry = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "overflow", willRetry: true, signal: undefined });
+	check("overflow recovery with a retry is left to pi", overflowRetry.every((result) => result?.cancel !== true));
 	const belowCtx = makeCtx(tmp, {
 		sessionManager: autoCtx.sessionManager,
 		mode: "tui",

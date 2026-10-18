@@ -17,11 +17,13 @@ line has the same shape.
 
 Register `session_before_compact`. When a handoff is already due — enabled, TUI, usage available,
 the threshold resolves, usage is at/above it, and no in-flight/cooldown/backoff is active — cancel
-automatic `threshold` and `overflow` compaction (`{ cancel: true }`). The existing `agent_settled`
-trigger then runs on the intact branch. Manual `/compact` is left alone: it is an explicit user
-choice. If the handoff fails, the failure backoff makes the next automatic compaction proceed; if it
-skips because there is nothing older than the keep window, the skip's cooldown prevents a cancel
-loop.
+automatic `threshold` and non-retrying `overflow` compaction (`{ cancel: true }`). The existing
+`agent_settled` trigger then runs on the intact branch. Manual `/compact` is left alone: it is an
+explicit user choice. An `overflow` event with `willRetry` is left to pi: that compaction is pi's
+only path back into the interrupted turn, and a settle handoff cannot retry it, so preempting it
+would turn a recoverable overflow into a dead turn. If the handoff fails, the failure backoff makes
+the next automatic compaction proceed; if it skips because there is nothing older than the keep
+window, the skip's cooldown prevents a cancel loop.
 
 ## Residuals
 
@@ -31,5 +33,6 @@ loop.
 - If `getContextUsage()` is unavailable, the guard cannot resolve the threshold and pi compacts.
 - Manual `/compact` is not preempted. A handoff cancelled by another extension arms the retrigger
   cooldown, so the next automatic compaction proceeds.
-- Overflow is preempted too; the failed turn is not retried, but the handoff carries the intact
-  branch. If the handoff fails, the failure backoff lets the next compaction proceed.
+- An `overflow` recovery with `willRetry` is not preempted: pi compacts and retries the interrupted
+  turn, and the handoff sees the compacted branch afterward. This is the deliberate cost of not
+  losing the turn; if the handoff fails, the failure backoff lets the next compaction proceed.

@@ -5,9 +5,9 @@
 - `handoff/run.ts`: extracted `handoffDue(ctx, usage)` from `maybeTrigger` (enabled, TUI, usage,
   `resolveThreshold`, usage at/above it, no in-flight). `maybeTrigger` keeps its idle/cooldown/
   backoff checks and uses the predicate.
-- `handoff/run.ts`: registered `session_before_compact`. For automatic reasons (`threshold`,
-  `overflow`) it checks cooldown/backoff, then `handoffDue`, and returns `{ cancel: true }`.
-  `manual` is ignored.
+- `handoff/run.ts`: registered `session_before_compact`. For automatic reasons (`threshold`, and
+  `overflow` only when `willRetry` is false) it checks cooldown/backoff, then `handoffDue`, and
+  returns `{ cancel: true }`. `manual` is ignored. Retrying overflow recovery is left to pi.
 - `docs/handoff.md`, `CHANGELOG.md`: describe the pre-compaction guard and its manual exception.
 
 ## Verification
@@ -15,7 +15,10 @@
 - `a due handoff cancels threshold compaction`: with usage 190K on a 200K window, the handler
   returns `{ cancel: true }`.
 - `manual compaction is not cancelled`: `reason: "manual"` returns no cancel.
-- `automatic overflow compaction is cancelled for a due handoff`: `reason: "overflow"` cancels.
+- `completed overflow compaction is cancelled for a due handoff`: `reason: "overflow"` with
+  `willRetry: false` cancels.
+- `overflow recovery with a retry is left to pi`: `reason: "overflow"` with `willRetry: true`
+  returns no cancel, so pi can continue the interrupted turn.
 - `compaction proceeds below the handoff threshold`: usage 100K returns no cancel.
 - `compaction proceeds outside the TUI`: print mode returns no cancel.
 - `the pre-compaction guard hands the trigger back to settle`: a canceled compaction followed by
@@ -33,6 +36,7 @@
 - exclude `overflow` (`reason !== "threshold"`) -> 1 FAIL;
 - remove the TUI guard -> 1 FAIL;
 - remove the cooldown/backoff guard -> 1 FAIL;
+- remove the `willRetry` overflow guard -> 1 FAIL;
 - remove the cancelled-handoff cooldown arm -> 1 FAIL.
 
 ## Residuals
@@ -42,4 +46,5 @@
 - Usage unavailable -> no cancel.
 - Manual `/compact` is not preempted; a handoff cancelled by another extension arms the cooldown,
   so the next automatic compaction proceeds.
-- Overflow is preempted; if the handoff fails, the failure backoff lets the next compaction run.
+- Overflow recovery with `willRetry` is not preempted; pi compacts and retries, so the handoff sees
+  the compacted branch after that recovery.
