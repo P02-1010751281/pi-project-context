@@ -100,6 +100,27 @@ predecessor 最后一次 `cacheRead=2048`，后继第一次 `cacheRead=384`：
 - 这是单 provider、单 fixture、单次/少量重复的机制探针；它证明“旧前缀有条件可复用”，不证明
   生产 `keepHead` 旋钮的默认值。
 
+## 追加：recent budget 对照（2026-10-18，12 轮 fixture）
+
+keepHead 之外，另一个直接成本是 `handoffBudgetRecentTokens`。同一 12 轮 fixture（每轮约 1k 字符级
+填充，未带工具），分别设 `0 / 1000 / 2000 / 5000`，每次 `/handoff now` 后读 successor 的实际调用：
+
+| 配置 keep | 实际 carried | successor 第 1 次 input / cacheRead / total | 第 2 次 cacheRead |
+| ---: | ---: | ---: | ---: |
+| 0 | 0 | 360 / **384** / 835 | 640 |
+| 1000 | ~575 | 967 / **384** / 1391 | 1280 |
+| 2000 | ~1.1k | 1538 / **384** / 2092 | 2048 |
+| 5000 | ~2.9k | 3252 / **384** / 3638 | 3584 |
+
+predecessor 最后一次是 `input=678, cacheRead=6656`。四组 successor 首轮 cacheRead **全是 384**：
+recent budget 不改变“旧 conversation 前缀未命中”这件事，只改变新会话自身带多少 recent 原文。
+`keep=5000` 实际只 carried 2.9k，是因为 `findCutPoint` 只能落在回合边界，配置值是上限，不是保证值。
+
+按本机 `deepseek-v4-pro` 注册价（input 1.32 / cacheRead 0.044 USD/M，只算 input+cache）粗算首轮：
+keep=0 约 $0.00049，keep=1k 约 $0.00129，keep=2k 约 $0.00205，keep=5k 约 $0.00431。
+**首轮开销几乎线性随 carried tail 增长，而不是随 cache 命中变化**；tail 是比 cache miss 大一个量级的
+成本项。代价是 carried tail 提供最近工作的原文连续性，砍掉它会让 successor 更多依赖 session log。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
@@ -118,3 +139,8 @@ head=5 1408、head=7 1792；head=6 未单独跑），代价是 successor total �
 system 放到 replay 前面，所以生产路径仍是一次 conversation miss。要减少损失，首要目标仍是保持
 system 块逐字节稳定、不要在 handoff 同刻改 memory render；若要进一步拿回前缀，才考虑带账的
 `keepHead` 实验，而不是直接换成 compaction。
+
+recent budget 的 12 轮对照进一步说明：首轮 cacheRead 不随 keep 变化（始终 384），首轮 input/total
+却随 carried tail 近似线性增长。因此如果目标是成本，**先调 `handoffBudgetRecentTokens` 或裁剪
+toolResult 正文，比加 head 更直接**；代价是 recent 原文连续性下降，必须用“少带多少原文、模型多查
+多少次 session log”来验收，而不是只看 token 数。
