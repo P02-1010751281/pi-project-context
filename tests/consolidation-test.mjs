@@ -587,7 +587,10 @@ try {
 			check(
 				"a refused reply does not overwrite the newer CONTEXT.md",
 				(await readFile(healContext, "utf8")) === racedContext
-					&& raceLog.includes("the refused reply's context section was not published"),
+					&& raceLog.includes("the refused reply's context section was not published")
+					&& raceLog.includes("no CONTEXT.md was written")
+					&& !raceLog.includes("the previous CONTEXT.md stays effective")
+					&& !raceLog.includes("the previous CONTEXT.md is kept"),
 			);
 
 			// A fresh project has no CONTEXT.md: the refusal diagnostics must not claim a previous file,
@@ -625,7 +628,7 @@ try {
 			check("a fresh refusal writes no CONTEXT.md (carried)", !freshCarried.files.includes("CONTEXT.md"));
 			const freshAbsent = await runFreshRefusal("absent", undefined);
 			check(
-				"a fresh refusal without a reply context names the fallback, not a reply section",
+				"a fresh refusal without a reply context blames no reply section",
 				freshAbsent.log.includes("the reply carried no context section") && !freshAbsent.log.includes("the refused reply's context section"),
 			);
 			check("a fresh refusal writes no CONTEXT.md (absent)", !freshAbsent.files.includes("CONTEXT.md"));
@@ -665,7 +668,7 @@ try {
 			check(
 				"a fresh recovered refusal says the object never closed",
 				freshRecoveredRefused.log.includes("never closed")
-					&& !freshRecoveredRefused.log.includes("the reply carried no context section")
+					&& !freshRecoveredRefused.log.includes("carried no context section")
 					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),
 			);
 			const freshRecoveredPublished = await runFreshText("recovered-published", recoveredReply, false);
@@ -674,6 +677,34 @@ try {
 				freshRecoveredPublished.log.includes("never closed")
 					&& freshRecoveredPublished.log.includes("a placeholder context was written")
 					&& freshRecoveredPublished.files.includes("CONTEXT.md"),
+			);
+			const freshAbsentPublished = await runFreshText("absent-published", JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- published without context." }), false);
+			check(
+				"a fresh publish without a reply context writes the placeholder silently",
+				freshAbsentPublished.files.includes("CONTEXT.md")
+					&& !freshAbsentPublished.log.includes("carried no context section"),
+			);
+			// A thrown context write must not leave the round-2 placeholder claim behind: the write is
+			// attempted before the shape diagnostic, so the failure skips it (round-3 S1).
+			const thrownDir = await mkdtemp(path.join(os.tmpdir(), "pc-refusal-thrown-"));
+			freshDirs.push(thrownDir);
+			await mkdir(path.join(thrownDir, ".agents/memory"), { recursive: true });
+			const thrownFactory = await loadDefault(`${PC}/index.ts`);
+			const thrownPi = makePi({ cwd: thrownDir });
+			await thrownFactory(thrownPi);
+			const thrownCtx = makeCtx(thrownDir, {
+				model: { provider: "test", id: "fresh-thrown", maxTokens: 32768 },
+				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "fresh-thrown"),
+			});
+			thrownCtx.modelRegistry.complete = async () => ({
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- thrown context.", context: "not-an-object" }) }],
+			});
+			await mkdir(path.join(thrownDir, ".agents/memory/CONTEXT.md"), { recursive: true });
+			await thrownPi.commands.get("memory").handler("update", thrownCtx);
+			const thrownLog = await readFile(path.join(thrownDir, ".agents/memory/errors.log"), "utf8").catch(() => "");
+			check(
+				"a thrown context write leaves no placeholder claim",
+				thrownLog.includes("EISDIR") && !thrownLog.includes("only a placeholder context was written"),
 			);
 			for (const dir of freshDirs) await rmTemp(dir);
 
@@ -987,7 +1018,7 @@ try {
 			await runPass(absentTmp, JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- no context section." }));
 			const absentLog = await readFile(path.join(absent.dir, "errors.log"), "utf8").catch(() => "");
 			check("a reply without a context section keeps the previous render", (await readFile(path.join(absent.dir, "CONTEXT.md"), "utf8")) === absent.previous);
-			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("stays stale"));
+			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("no CONTEXT.md was written; the file on disk was left untouched"));
 			check("an omission is not reported as an unclosed reply", !absentLog.includes("never closed"));
 
 			// The truncation variant: the memory survives, the context never made it out.

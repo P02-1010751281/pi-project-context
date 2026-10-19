@@ -165,7 +165,7 @@ wroteMemory = snapshot.written;   // :177 —— 语义 = "本次 pass 是否落
 | `:250-282`（原 `:232-259`）| 五个"发布成功"类 notify | **跳**；改为一条诚实 toast（非 silent 时，措辞与命令回复同规则） |
 | `:283-292`（原 `:260-270`）| removal toast | **跳**（判定需提到拒绝旗标之后） |
 | `:169-171` | `backupMemoryBeforeWrite` | **不跳**（写前备份 = 编辑的额外保底，且发生在判据之前） |
-| `:138-153`（原 `:135-151`）| `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状；不可用分支的措辞按 `wroteContext` 说明是否写了占位符，缺失分支按 `existingContext` 说明是否有旧文件）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
+| `:138-153`（原 `:135-151`）| `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状；不可用分支的措辞按 `wroteContext` 说明是否写了占位符，缺失分支按 `wroteContext` + `existingContext` 说明写了占位符 / 无写入）。拒绝态不补缺失分支（整条回复已丢弃）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
 | `:235-245`（原 `:217-226`）| CONTEXT.md 写入 + `contextCapWarned` | **不跳**（既有解耦语义：keep-adoption 也照写） |
 | `:256-259`（原 `:234-237`）| `!memoryChanged` 的 keep 类 notify | **不跳**（今天就不在这扇门内，**绝不能被拖进来**，否则回归 R5-IM-1 保护的既有组合） |
 

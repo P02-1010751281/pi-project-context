@@ -270,14 +270,13 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					// so say what happened to the context. Distinguish a reply-carried section from the
 					// locally generated placeholder, and do not claim a previous file that does not exist.
 					const carriedContext = Boolean(outcome.result.context) || outcome.result.contextUnusable;
-					const kept = existingContext.trim() ? "the previous CONTEXT.md stays effective" : "no CONTEXT.md was written";
 					await logError(
 						projectRoot,
 						"memory",
 						carriedContext
-							? `the refused reply's context section was not published; ${kept}`
+							? "the refused reply's context section was not published; no CONTEXT.md was written"
 							: outcome.result.recovered
-								? `the refused reply's context section was not published (its object never closed, so only memory_markdown could be recovered); ${kept}`
+								? "the refused reply carried no publishable context section (its object never closed, so only memory_markdown could be recovered); no CONTEXT.md was written"
 								: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
 					);
 				} else {
@@ -296,20 +295,21 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// attempt: a placeholder is only claimed once it landed, and a thrown write skips them.
 			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
 				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
-				// days without a trace: nothing failed, so nothing was logged anywhere.
+				// days without a trace: nothing failed, so nothing was logged anywhere. Name the file
+				// state on disk, not the pass's pre-read snapshot (which a race may have replaced).
 				contextShapeWarned.add(projectRoot);
 				const kept = wroteContext
-					? (existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written")
-					: (existingContext.trim() ? "no CONTEXT.md was written; the previous one stays effective" : "no CONTEXT.md was written");
+					? "only a placeholder context was written"
+					: (existingContext.trim() ? "no CONTEXT.md was written; the file on disk was left untouched" : "no CONTEXT.md was written");
 				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
-			} else if (!outcome.result.context && !outcome.result.contextUnusable && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
-				// Same failure class, one step further back: no usable context member at all. The reply was
-				// cut off at the output cap (the memory alone filled it) or simply left the section out;
-				// either way the next writer needs the trace, and a fresh project has no old file to keep.
+			} else if (!outcome.result.context && !outcome.result.contextUnusable && !memoryRefused && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
+				// Same failure class, one step further back: no usable context member at all. A refused
+				// reply is covered by the skip diagnostic above (the whole reply was discarded), so
+				// this branch describes only a published pass.
 				contextShapeWarned.add(projectRoot);
-				const kept = existingContext.trim()
-					? "the previous CONTEXT.md is kept and stays stale until a pass returns one"
-					: (wroteContext ? "a placeholder context was written" : "no CONTEXT.md was written");
+				const kept = wroteContext
+					? "a placeholder context was written"
+					: "no CONTEXT.md was written; the file on disk was left untouched";
 				await logError(
 					projectRoot,
 					"memory",

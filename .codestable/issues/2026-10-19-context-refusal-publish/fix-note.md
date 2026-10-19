@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-19
-commit: 56dda5d
+commit: 69c114f
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -38,8 +38,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与 shape 措辞的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered、磁盘上是否已有文件分支，不声称不存在的旧文件、未写的占位符或未被回复携带的段。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。 |
-| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、且诊断落盘。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）与两个 recovered 夹具（拒绝 / 发布），断言诊断不声称旧文件或占位符、并保留 `object never closed` 记号。 |
+| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与跳过诊断的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered 分支，只说“没有写 CONTEXT.md”，不声称不存在的旧文件、未写的占位符、或 pass 读到的旧快照仍在生效。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；拒绝态不再补 shape 行。删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。 |
+| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、诊断落盘、且日志不声称 pass 读到的旧快照仍在生效。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）、两个 recovered 夹具（拒绝 / 发布）、一个 fresh absent 发布夹具和一个 CONTEXT.md 为目录的写失败夹具（断言没有占位符误报）。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动；带 context 段时另断言"跳过"诊断。 |
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
 | `CHANGELOG.md` | v0.4.13 修复条目。 |
@@ -75,5 +75,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 - **N-H（接受）**：shape 诊断移到 memory 写入之后，若 memory 写抛错，pass 直接进 catch，shape 诊断不再补发；
   失败本身有 errors.log，且 once 标记未消费，后续 pass 可再报。按"不新增机制"接受。
 - **R5（已修）**：recovered 回复的 fresh 拒绝/发布诊断曾把"对象未闭合"说成"没带 context 段"；现按 `recovered` 分支，
-  并给 fresh 发布补了"a placeholder context was written"的告知。
+  并给 fresh 发布补了"a placeholder context was written"的告知；拒绝态不再补 shape 缺失行（避免同一回复两条互相矛盾的
+  记录），recovered 拒绝句改为"carried no publishable context section"。
+- **R6（已修）**：拒绝/形状诊断曾声称 "the previous CONTEXT.md stays effective / is kept and stays stale"，而竞写可能已
+  换掉磁盘上的文件；现只说 "no CONTEXT.md was written" / "the file on disk was left untouched"，不再引用 pass 的旧快照。
 - 拒绝仍是检测器（不阻止其他合法回复发布）；它只决定"这一条回复"两侧都不发布。
