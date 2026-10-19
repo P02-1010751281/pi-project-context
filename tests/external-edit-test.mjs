@@ -184,8 +184,8 @@ try {
 
 	console.log("=== T2: the core timing, through the real pass ===");
 	for (const sub of [
-		{ name: "reply carries a context section", reply: { memory_markdown: REPLY, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }, claimsContext: true },
-		{ name: "reply carries no context section", reply: { memory_markdown: REPLY }, claimsContext: false },
+		{ name: "reply carries a context section", reply: { memory_markdown: REPLY, context: { title: "t", summary: "s", key_points: [], open_tasks: [] } } },
+		{ name: "reply carries no context section", reply: { memory_markdown: REPLY } },
 	]) {
 		const root = await makeProject(FOUR);
 		await recordMemoryDocument(root, FOUR, CAP);
@@ -220,12 +220,14 @@ try {
 		);
 		check(`${sub.name}: the command reply says the reply was discarded`, reply.includes("was discarded"));
 		check(`${sub.name}: the command reply does not claim a cap`, !reply.includes("maxMemoryChars"));
-		check(
-			`${sub.name}: the context claim matches what happened`,
-			sub.claimsContext ? reply.startsWith("Memory: context updated; ") : !reply.includes("context updated"),
-		);
-		if (!sub.claimsContext) {
-			check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);
+		// A refused reply is built from an older snapshot, so neither half is published: the context
+		// claim must be absent even when the reply carried a context section (field: 2026-10-19T08:27:10Z).
+		check(`${sub.name}: the command reply does not claim a context update`, !reply.includes("context updated"));
+		check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);
+		if (sub.reply.context) {
+			check(`${sub.name}: the skipped context write is traced`, log.includes("the refused reply's context section was not published"));
+		} else {
+			check(`${sub.name}: there was no context section to skip`, !log.includes("the refused reply's context section was not published"));
 		}
 	}
 

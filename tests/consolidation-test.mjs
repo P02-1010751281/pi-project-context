@@ -549,14 +549,21 @@ try {
 			}
 			await rm(path.join(healTmp, ".agents/memory/errors.log"), { force: true });
 			const arrived = '# Project Memory\n\n{\n  "memory_markdown": "# Project Memory\\n\\n## Project\\n- arrived during the pass。\\n", "context": {}}\n';
+			// The reply's context section is as stale as its memory: the pass read this file before the
+			// model call, and a writer replaces it while the reply is being built.
+			const healContext = path.join(healTmp, ".agents/memory/CONTEXT.md");
+			const priorContext = "# Project Context\n\n## Open tasks\n- context the pass read.\n";
+			const racedContext = "# Project Context\n\n## Open tasks\n- hand edit during the pass.\n";
+			await writeFile(healContext, priorContext);
 			const ctx3 = makeCtx(healTmp, {
 				model: { provider: "test", id: "heal-race", maxTokens: 32768 },
 				sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], "heal-race"),
 			});
 			ctx3.modelRegistry.complete = async () => {
 				await writeFile(healMemory, arrived);
+				await writeFile(healContext, racedContext);
 				return {
-					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- post-race memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- post-race memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: ["from the refused reply"] } }) }],
 				};
 			};
 			await pi3.commands.get("memory").handler("update", ctx3);
@@ -572,6 +579,15 @@ try {
 					&& (await readFile(healMemory, "utf8")) === arrived
 					&& raceLog.includes("adopted an externally edited MEMORY.md")
 					&& raceLog.includes("the reply was not published"),
+			);
+			// The same refusal must keep the newer CONTEXT.md: publishing the refused reply's context
+			// section reverted a curated open-task list in the field (errors.log 2026-10-19T08:27:10Z).
+			// The normal-path probes earlier in this file are the positive control: the same reply shape
+			// does write CONTEXT.md when nothing raced the pass.
+			check(
+				"a refused reply does not overwrite the newer CONTEXT.md",
+				(await readFile(healContext, "utf8")) === racedContext
+					&& raceLog.includes("the refused reply's context section was not published"),
 			);
 
 			// The backup helper fails closed when the target exists but cannot be read.

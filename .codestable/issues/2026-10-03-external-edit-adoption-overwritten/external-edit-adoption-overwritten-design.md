@@ -167,6 +167,11 @@ wroteMemory = snapshot.written;   // :177 —— 语义 = "本次 pass 是否落
 | `:169-171` | `backupMemoryBeforeWrite` | **不跳**（写前备份 = 编辑的额外保底，且发生在判据之前） |
 | `:138-153`（原 `:135-151`）| `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状，而 CONTEXT 照写 ⇒ 仍成立）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
 | `:235-245`（原 `:217-226`）| CONTEXT.md 写入 + `contextCapWarned` | **不跳**（既有解耦语义：keep-adoption 也照写） |
+
+> **已取代（2026-10-19）**：上表 `:235-245` 的「拒绝态照写 CONTEXT.md」不再成立。现场 2026-10-19T08:27:10Z：
+> 一条被 `basisKey` 拒发的回复同时在同秒写出 `CONTEXT.md`，把手工收敛的 open tasks 覆盖回旧清单——`context` 段与 memory
+> 同出于更旧的快照。现在拒绝态的 memory 与 `context` 都不发布，`CONTEXT.md` 保留磁盘上的较新版本，下一次 pass 重建；
+> 修复提交与 CHANGELOG v0.4.13 记录该行为变化。
 | `:256-259`（原 `:234-237`）| `!memoryChanged` 的 keep 类 notify | **不跳**（今天就不在这扇门内，**绝不能被拖进来**，否则回归 R5-IM-1 保护的既有组合） |
 
 **拒绝态的措辞（R7-IM-A：前缀必须由"context 是否真的写了"决定）**

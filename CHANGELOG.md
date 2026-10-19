@@ -3,6 +3,15 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.13 — 2026-10-19
+
+### 修复
+
+- **被拒绝的 consolidation 回复不再改 `CONTEXT.md`**：当回复因「构建期间存储的 `MEMORY.md` 已变化」被拒时，以前同一回复的
+  `context` 段仍会落盘；它和 memory 同出于更旧的快照，会把更新的 `CONTEXT.md` 覆盖回去（现场 2026-10-19T08:27:10Z：
+  拒发日志与 `CONTEXT.md` 写回同秒，手工收敛的 open tasks 回到旧清单）。现在拒绝态两者都不发布，下一次 pass 从磁盘上的
+  较新 context 重建；`/memory update` 的回执仍按 `contextWritten` 如实说明 context 没有更新。
+
 ## v0.4.12 — 2026-10-19
 
 ### 修复

@@ -257,6 +257,11 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					}
 				}
 			}
+			// A refused reply is built from a snapshot older than the stored memory, so its context
+			// section is just as stale: publishing it can revert a newer CONTEXT.md (field case:
+			// errors.log 2026-10-19T08:27:10Z, where a curated open-task list came back). The refusal
+			// keeps the file the pass raced, and the next pass re-renders from it.
+			const contextWritten = Boolean(update) && !memoryRefused;
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
 			// must not read as "nothing happened" when the context was rewritten.
 			lastWrite.set(projectRoot, {
@@ -265,7 +270,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				capped: cappedMemory,
 				sectionsCapped: cappedSections,
 				...(cappedSections ? { capNote: capSentenceFor(outcome), entriesDropped: outcome.droppedItems > 0 } : {}),
-				contextWritten: Boolean(update),
+				contextWritten,
 				// The reply was not written for whatever reason — kept because it was empty, because it was
 				// too short to be a change, or because the memory moved on while it was being built. Either
 				// way the reply must not claim a write, and it must not claim the wrong reason either: a
@@ -280,13 +285,19 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				...(memoryRefused ? {} : outcome.removed ? { removed: outcome.removed } : {}),
 			});
 			if (update) {
-				const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
-				await writeAtomic(contextFile(projectRoot), contextDocument);
-				const dropped = contextTruncationDropped(contextDocument);
-				if (dropped !== undefined && !contextCapWarned.has(projectRoot)) {
-					// The marker is the durable trace; say it once per project per process, like the memory cap.
-					contextCapWarned.add(projectRoot);
-					await logError(projectRoot, "memory", `CONTEXT.md was clipped (a section budget, the ${MAX_LIST_ITEM_CHARS}-character item cap, or the ${MAX_LIST_ENTRIES}-entry list cap); ${dropped} characters were dropped`);
+				if (!contextWritten) {
+					// Silent no-ops are the failure class this repo keeps closing: the reply was refused,
+					// so say that its context section was not published either.
+					await logError(projectRoot, "memory", "the refused reply's context section was not published; the previous CONTEXT.md stays effective");
+				} else {
+					const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
+					await writeAtomic(contextFile(projectRoot), contextDocument);
+					const dropped = contextTruncationDropped(contextDocument);
+					if (dropped !== undefined && !contextCapWarned.has(projectRoot)) {
+						// The marker is the durable trace; say it once per project per process, like the memory cap.
+						contextCapWarned.add(projectRoot);
+						await logError(projectRoot, "memory", `CONTEXT.md was clipped (a section budget, the ${MAX_LIST_ITEM_CHARS}-character item cap, or the ${MAX_LIST_ENTRIES}-entry list cap); ${dropped} characters were dropped`);
+					}
 				}
 			}
 			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
@@ -299,7 +310,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				if (memoryRefused) {
 					// Nothing was published, so nothing here may claim it was. The command reply carries the
 					// same sentence, so the two can never drift.
-					notify(ctx, staleKeepSentence(Boolean(update)), "warning");
+					notify(ctx, staleKeepSentence(contextWritten), "warning");
 				} else if (!memoryChanged) {
 					// The memory was not written, so nothing here may claim it was — not even the clipped notice,
 					// which describes a rewrite that did not happen. This is decision 6's wording rule.
