@@ -68,11 +68,11 @@ record with a fresh zeroed usage object and drops stopReason/rawStopReason; it v
 installed-pi consumers, the A-2 test against the real classifier, the measured-rate cap fixture, and
 the A-1/B-1/B-2/B-3 fixes. **VERDICT: PASSED**, full suite 15/15.
 
-Post-PASS nits (not fixed, to keep the PASS on `bf22a8a`):
-- The zeroed-record freshness is not pinned by a two-message identity check.
-- The A-2 fixture's stale-usage record lacks the real `cost` field; the zeroed assertions still pin
-  the behavior.
-- `docs/handoff.md` shows only the English marker literal while claiming zh/en.
+Post-PASS nits, fixed after v0.4.12 in `5304b2f` (tests/docs only; the runtime tag stays `bf22a8a`):
+- Two replayed assistants now get distinct zeroed usage/cost records, and mutating one leaves the
+  other and the source untouched.
+- The A-2 fixture's stale-usage record now carries a real `cost` object.
+- `docs/handoff.md` lists both the English and Chinese marker literals.
 
 Residuals: a replayed assistant without `stopReason` counts as the latest successful response for
 virtual-model selection (pre-first-call only); the async `sendUserMessage` rejection remains outside

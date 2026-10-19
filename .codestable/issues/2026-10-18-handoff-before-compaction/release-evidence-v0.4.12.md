@@ -66,6 +66,14 @@ FILES [".gitignore","project-context.json","session-logs"]
 `errors.log` had no lines from the probe. The provider/MCP refresh warnings in the transcript are
 environmental, not extension errors.
 
+## Post-release follow-ups
+
+The three nit-level R5 items were fixed in `5304b2f` after the tag: the test now pins distinct
+zeroed usage/cost records for two replayed assistants (plus mutation isolation), the stale-usage
+fixture carries a real `cost` field, and `docs/handoff.md` lists both marker literals. This is a
+tests/docs-only change; the runtime tag and installed clone remain `bf22a8a` / `v0.4.12`.
+Full suite after the change: 15/15.
+
 ## Restart note
 
 The pi process that produced this session started before the v0.4.12 pin update, so it still runs
