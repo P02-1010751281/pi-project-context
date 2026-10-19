@@ -590,6 +590,54 @@ try {
 					&& raceLog.includes("the refused reply's context section was not published"),
 			);
 
+			// A fresh project has no CONTEXT.md: the refusal diagnostics must not claim a previous file,
+			// and an unusable context section must not claim a placeholder was written when the refusal
+			// skipped it. Three reply shapes: context present, absent, unusable.
+			const freshDirs = [];
+			const runFreshRefusal = async (label, replyContext) => {
+				const dir = await mkdtemp(path.join(os.tmpdir(), `pc-refusal-${label}-`));
+				freshDirs.push(dir);
+				await mkdir(path.join(dir, ".agents/memory"), { recursive: true });
+				const factory = await loadDefault(`${PC}/index.ts`);
+				const pi = makePi({ cwd: dir });
+				await factory(pi);
+				const ctx = makeCtx(dir, {
+					model: { provider: "test", id: `fresh-${label}`, maxTokens: 32768 },
+					sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], `fresh-${label}`),
+				});
+				ctx.modelRegistry.complete = async () => {
+					await writeFile(path.join(dir, ".agents/memory/MEMORY.md"), `# Project Memory\n\n## Project\n- arrived during the ${label} pass.\n`);
+					const reply = replyContext === undefined
+						? { memory_markdown: "# Project Memory\n\n## Project\n- post-race memory." }
+						: { memory_markdown: "# Project Memory\n\n## Project\n- post-race memory.", context: replyContext };
+					return { content: [{ type: "text", text: JSON.stringify(reply) }] };
+				};
+				await pi.commands.get("memory").handler("update", ctx);
+				const log = await readFile(path.join(dir, ".agents/memory/errors.log"), "utf8").catch(() => "");
+				const files = await readdir(path.join(dir, ".agents/memory")).catch(() => []);
+				return { log, files };
+			};
+			const freshCarried = await runFreshRefusal("carried", { title: "t", summary: "s", key_points: [], open_tasks: [] });
+			check(
+				"a fresh refusal with a reply context claims no previous file",
+				freshCarried.log.includes("no CONTEXT.md was written") && !freshCarried.log.includes("the previous CONTEXT.md stays effective"),
+			);
+			check("a fresh refusal writes no CONTEXT.md (carried)", !freshCarried.files.includes("CONTEXT.md"));
+			const freshAbsent = await runFreshRefusal("absent", undefined);
+			check(
+				"a fresh refusal without a reply context names the fallback, not a reply section",
+				freshAbsent.log.includes("the reply carried no context section") && !freshAbsent.log.includes("the refused reply's context section"),
+			);
+			check("a fresh refusal writes no CONTEXT.md (absent)", !freshAbsent.files.includes("CONTEXT.md"));
+			const freshUnusable = await runFreshRefusal("unusable", "not-an-object");
+			check(
+				"a refused unusable context does not claim a placeholder was written",
+				freshUnusable.log.includes("could not be used")
+					&& !freshUnusable.log.includes("only a placeholder context was written")
+					&& freshUnusable.log.includes("no CONTEXT.md was written"),
+			);
+			for (const dir of freshDirs) await rmTemp(dir);
+
 			// The backup helper fails closed when the target exists but cannot be read.
 			const unreadable = path.join(healTmp, ".agents/memory/UNREADABLE.md");
 			await mkdir(unreadable, { recursive: true });

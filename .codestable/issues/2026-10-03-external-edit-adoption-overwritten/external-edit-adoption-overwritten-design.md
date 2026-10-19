@@ -165,14 +165,16 @@ wroteMemory = snapshot.written;   // :177 —— 语义 = "本次 pass 是否落
 | `:250-282`（原 `:232-259`）| 五个"发布成功"类 notify | **跳**；改为一条诚实 toast（非 silent 时，措辞与命令回复同规则） |
 | `:283-292`（原 `:260-270`）| removal toast | **跳**（判定需提到拒绝旗标之后） |
 | `:169-171` | `backupMemoryBeforeWrite` | **不跳**（写前备份 = 编辑的额外保底，且发生在判据之前） |
-| `:138-153`（原 `:135-151`）| `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状，而 CONTEXT 照写 ⇒ 仍成立）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
+| `:138-153`（原 `:135-151`）| `contextShapeWarned` | **不跳**（描述 CONTEXT 回复形状；拒绝态也发，但措辞按 `contextWritten` 说明未写，不再声称写了占位符）。*注：v5 在重跑世界里选"拒绝态不消费"，本版选"留"；R7 判本版正确* |
 | `:235-245`（原 `:217-226`）| CONTEXT.md 写入 + `contextCapWarned` | **不跳**（既有解耦语义：keep-adoption 也照写） |
-
-> **已取代（2026-10-19）**：上表 `:235-245` 的「拒绝态照写 CONTEXT.md」不再成立。现场 2026-10-19T08:27:10Z：
-> 一条被 `basisKey` 拒发的回复同时在同秒写出 `CONTEXT.md`，把手工收敛的 open tasks 覆盖回旧清单——`context` 段与 memory
-> 同出于更旧的快照。现在拒绝态的 memory 与 `context` 都不发布，`CONTEXT.md` 保留磁盘上的较新版本，下一次 pass 重建；
-> 修复提交与 CHANGELOG v0.4.13 记录该行为变化。
 | `:256-259`（原 `:234-237`）| `!memoryChanged` 的 keep 类 notify | **不跳**（今天就不在这扇门内，**绝不能被拖进来**，否则回归 R5-IM-1 保护的既有组合） |
+
+> **已取代（2026-10-19，v0.4.13）**：上表 `:235-245` 的「拒绝态照写 CONTEXT.md」不再成立。现场 2026-10-19T08:27:10Z：
+> 一条被 `basisKey` 拒发的回复同时在同秒写出 `CONTEXT.md`，把手工收敛的 open tasks 覆盖回旧清单——`context` 段与 memory
+> 同出于更旧的快照。现在拒绝态的 memory 与 `context` 都不发布，`CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目则不写），
+> 下一次 pass 重建。§2.4 下方的 `contextWritten: Boolean(update)` 片段与 `staleKeepSentence(true)` 分支同样已取代：
+> `contextWritten = Boolean(update) && !memoryRefused`，`LastWriteInfo.contextWritten` 字段已删除，stale 句不再带 context 前缀；
+> T2 的两个子用例都断言"不声称 context 更新 + `CONTEXT.md` 逐字节未动"。修复提交与 CHANGELOG v0.4.13 记录该行为变化。
 
 **拒绝态的措辞（R7-IM-A：前缀必须由"context 是否真的写了"决定）**
 
@@ -232,7 +234,7 @@ contextWritten?: boolean;
 | # | 场景 | 判据 |
 | --- | --- | --- |
 | T1 | 无外部编辑（四个 fixture：普通 journal / `preserveMarker` / legacy 无 journal / 全新项目） | 与今天 op/text 序列 + `MEMORY.md` 字节**逐字节一致**（实现后"今天"不可再取 ⇒ 落成显式期望序列/字节）；**既有 14 个测试文件保持全绿 + 新增 `external-edit-test.mjs`**（`run-all` 自动发现 ⇒ 15 个）。其中 **`tests/consolidation-test.mjs:546` 的 mid-call-writer check 必须按 R8-IM-1 拆开**：它今天要求日志含 `replaced a stored JSON reply`，而该场景正是 §2.2 的拒绝路径（`MEMORY.md` 是裸 JSON、回复未发布 ⇒ "已替换"是谎报）⇒ 保留"备份数量 1 + 备份字节 === `arrived`"，实现时**另加**一条 `MEMORY.md === arrived`（R9-N-5：比 R8 定的边界多一条良性断言），把 poison 修复断言移到**未发生拒绝**的用例，本用例改断言 `adopted …` + `reply was not published`。**加入 R7 的"来源翻转"变体**：journal 建立/删除前后各读一次 `loadMemory`，断言回复不丢、日志不撒谎（IM-B 的回归线） |
-| T2 | **模型调用期间编辑**（核心） | 编辑保住且进 journal；回复**未成为** render；`errors.log` 含 `adopted …` 与未发布两条 memory 记录、**无** cap/section-cap/poison/`shortened`/removal/claim 类行（不断言“恰两行”：不带 context 的子例还会写一条 `contextShapeWarned` 行，那是既有机制，不是本次发布）——**夹具不得删除任何 Invariants/Pitfalls 条目**（`pass.ts:300-320` 的 `memory regression: …` 在 pass 层写出，report 层拦不住）；`lastWrite` 无 `capped/sectionsCapped/removed`；命令回复 = 丢弃句。**夹具须是四节 document + sectioned 回复 + 不删条目**——`pass.ts:307`（回复未产出 sections）、`:309-311`（存量不是四节文档）、`:318`（`memory regression: …`）三行都在 **pass 层**写出，report 层拦不住。**加两例锁 IM-A**：回复带 context / 不带 context 且既有 `CONTEXT.md` 非空，分别断言前缀 |
+| T2 | **模型调用期间编辑**（核心） | 编辑保住且进 journal；回复**未成为** render；`errors.log` 含 `adopted …` 与未发布两条 memory 记录、**无** cap/section-cap/poison/`shortened`/removal/claim 类行（不断言“恰两行”：不带 context 的子例还会写一条 `contextShapeWarned` 行，那是既有机制，不是本次发布）——**夹具不得删除任何 Invariants/Pitfalls 条目**（`pass.ts:300-320` 的 `memory regression: …` 在 pass 层写出，report 层拦不住）；`lastWrite` 无 `capped/sectionsCapped/removed`；命令回复 = 丢弃句。**夹具须是四节 document + sectioned 回复 + 不删条目**——`pass.ts:307`（回复未产出 sections）、`:309-311`（存量不是四节文档）、`:318`（`memory regression: …`）三行都在 **pass 层**写出，report 层拦不住。**加两例锁 IM-A**：回复带 context / 不带 context 且既有 `CONTEXT.md` 非空，两个子用例都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动（v0.4.13 起；此前带 context 的子例断言相反） |
 | T3 | 编辑早于 pass 读取（`basisKey === current`） | 正常发布，不误报 |
 | T4 | 无 journal + 调用期编辑 | 编辑保住（**按 §2.0 顺序：判据在种子之前**，journal 可为空）；另加"无 journal + 无编辑"legacy 回归 = 与今天一致 |
 | T5 | 不传 `basisKey`（`migrate.ts` / legacy） | 逐字节同今天 |

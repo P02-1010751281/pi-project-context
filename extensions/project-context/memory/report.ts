@@ -45,9 +45,6 @@ type LastWriteInfo = {
 	memoryKept?: boolean;
 	/** Which reason that was: nothing to store, too short to be a change, or a newer memory on disk. */
 	keepReason?: "empty" | "short" | "stale";
-	/** Whether CONTEXT.md was written this pass. Only the stale refusal reads it: a kept memory must
-	 * not claim a context update it did not make. */
-	contextWritten?: boolean;
 	/** Invariants/Pitfalls entries the previous memory had and this one does not. */
 	removed?: RemovedEntries;
 };
@@ -171,23 +168,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			const memoryChanged = !outcome.semanticEmpty && (sectioned || memoryText.length >= OPAQUE_DOCUMENT_MIN_CHARS);
 			const existingContext = await readOptional(contextFile(projectRoot));
 			const update = outcome.result.context ?? (existingContext.trim() ? undefined : fallbackUpdate(ctx));
-			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
-				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
-				// days without a trace: nothing failed, so nothing was logged anywhere.
-				contextShapeWarned.add(projectRoot);
-				const kept = existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written";
-				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
-			} else if (!outcome.result.context && existingContext.trim() && !contextShapeWarned.has(projectRoot)) {
-				// Same failure class, one step further back: no context member at all. The reply was either
-				// cut off at the output cap (the memory alone filled it) or simply left the section out;
-				// either way the kept CONTEXT.md ages silently, which is how it stayed a day behind.
-				contextShapeWarned.add(projectRoot);
-				await logError(
-					projectRoot,
-					"memory",
-					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; the previous CONTEXT.md is kept and stays stale until a pass returns one`,
-				);
-			}
 			let backup: string | undefined;
 			let storedPoisoned = false;
 			let cappedMemory = false;
@@ -262,6 +242,26 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// errors.log 2026-10-19T08:27:10Z, where a curated open-task list came back). The refusal
 			// keeps the file the pass raced, and the next pass re-renders from it.
 			const contextWritten = Boolean(update) && !memoryRefused;
+			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
+				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
+				// days without a trace: nothing failed, so nothing was logged anywhere. The outcome
+				// must describe what this pass actually did: a refusal skips the placeholder too.
+				contextShapeWarned.add(projectRoot);
+				const kept = contextWritten
+					? (existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written")
+					: (existingContext.trim() ? "no CONTEXT.md was written; the previous one stays effective" : "no CONTEXT.md was written");
+				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
+			} else if (!outcome.result.context && existingContext.trim() && !contextShapeWarned.has(projectRoot)) {
+				// Same failure class, one step further back: no context member at all. The reply was either
+				// cut off at the output cap (the memory alone filled it) or simply left the section out;
+				// either way the kept CONTEXT.md ages silently, which is how it stayed a day behind.
+				contextShapeWarned.add(projectRoot);
+				await logError(
+					projectRoot,
+					"memory",
+					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; the previous CONTEXT.md is kept and stays stale until a pass returns one`,
+				);
+			}
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
 			// must not read as "nothing happened" when the context was rewritten.
 			lastWrite.set(projectRoot, {
@@ -270,7 +270,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				capped: cappedMemory,
 				sectionsCapped: cappedSections,
 				...(cappedSections ? { capNote: capSentenceFor(outcome), entriesDropped: outcome.droppedItems > 0 } : {}),
-				contextWritten,
 				// The reply was not written for whatever reason — kept because it was empty, because it was
 				// too short to be a change, or because the memory moved on while it was being built. Either
 				// way the reply must not claim a write, and it must not claim the wrong reason either: a
@@ -287,8 +286,17 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			if (update) {
 				if (!contextWritten) {
 					// Silent no-ops are the failure class this repo keeps closing: the reply was refused,
-					// so say that its context section was not published either.
-					await logError(projectRoot, "memory", "the refused reply's context section was not published; the previous CONTEXT.md stays effective");
+					// so say what happened to the context. Distinguish a reply-carried section from the
+					// locally generated placeholder, and do not claim a previous file that does not exist.
+					const carriedContext = Boolean(outcome.result.context) || outcome.result.contextUnusable;
+					const kept = existingContext.trim() ? "the previous CONTEXT.md stays effective" : "no CONTEXT.md was written";
+					await logError(
+						projectRoot,
+						"memory",
+						carriedContext
+							? `the refused reply's context section was not published; ${kept}`
+							: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
+					);
 				} else {
 					const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
 					await writeAtomic(contextFile(projectRoot), contextDocument);
@@ -310,7 +318,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				if (memoryRefused) {
 					// Nothing was published, so nothing here may claim it was. The command reply carries the
 					// same sentence, so the two can never drift.
-					notify(ctx, staleKeepSentence(contextWritten), "warning");
+					notify(ctx, staleKeepSentence(), "warning");
 				} else if (!memoryChanged) {
 					// The memory was not written, so nothing here may claim it was — not even the clipped notice,
 					// which describes a rewrite that did not happen. This is decision 6's wording rule.
@@ -469,7 +477,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				// is happening before the wait instead of leaving the command looking hung.
 				notify(ctx, "Memory: consolidating… (a reasoning route can take minutes)");
 				const report = await consolidate(ctx, true, true);
-				notify(ctx, consolidateReply(report, lastWrite.get(projectRoot)), report === "failed" || report === "clipped" ? "warning" : "info");
+				const info = lastWrite.get(projectRoot);
+				notify(ctx, consolidateReply(report, info), report === "failed" || report === "clipped" || info?.keepReason === "stale" ? "warning" : "info");
 				return;
 			}
 			if (verb === "on" || verb === "off") {
@@ -569,9 +578,9 @@ function memoryFailureNotice(headline: string): string {
 }
 
 /** The one sentence for a refused publish: the toast and the command reply both use it, so the two
- * cannot drift. `contextWritten` says whether CONTEXT.md was written anyway. */
-function staleKeepSentence(contextWritten: boolean): string {
-	return `${contextWritten ? "Memory: context updated; " : "Memory: "}kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).`;
+ * cannot drift. A refusal publishes neither half, so it never claims a context update. */
+function staleKeepSentence(): string {
+	return "Memory: kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).";
 }
 
 /** Human-readable reply for one pass result; the pass also logs failures to errors.log. */
@@ -585,7 +594,7 @@ export function consolidateReply(report: ConsolidateReport, info?: LastWriteInfo
 	// Decision 6's wording rule, and it outranks the clipped notice: the memory was not written, so
 	// nothing may say it was — including "the rewrite shortened it".
 	if (info?.memoryKept && report !== "unchanged") {
-		if (info.keepReason === "stale") return `${staleKeepSentence(Boolean(info.contextWritten))}${guard}`;
+		if (info.keepReason === "stale") return `${staleKeepSentence()}${guard}`;
 		const clippedNote = report === "clipped" ? " The prompt also had to be shortened to fit the model output budget." : "";
 		const why = info.keepReason === "short" ? "the reply was too short to be a change" : "the reply was not a writable memory document";
 		return `Memory: context updated; memory was kept unchanged (${why}).${clippedNote}${guard}`;

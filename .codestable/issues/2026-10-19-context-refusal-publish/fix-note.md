@@ -30,15 +30,16 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 ## 3. 机制
 
 `memory/report.ts` 的 `consolidate()` 在 `memoryRefused === true` 时仍执行 `if (update) writeAtomic(contextFile ...)`。
-`update` 来自同一个模型回复；`basisKey` 判据只覆盖 memory 侧。被拒回复的 context 段与 memory 一样，
-是从更旧的 prompt 快照生成的，所以要么一起发布、要么一起丢弃；选后者（拒绝态不发布任何一侧）。
+`update` 通常是同一个模型回复的 `context` 段，fresh 项目也可能是 `fallbackUpdate(ctx)` 生成的占位段；`basisKey`
+判据只覆盖 memory 侧。被拒回复的 context 段与 memory 一样，是从更旧的 prompt 快照生成的，所以要么一起发布、
+要么一起丢弃；选后者（拒绝态不发布任何一侧，包括占位段）。
 
 ## 4. 改动
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 `lastWrite.contextWritten`、toast 与写入的唯一门；拒绝态写一条 `the refused reply's context section was not published; the previous CONTEXT.md stays effective` 诊断。 |
-| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、且诊断落盘。 |
+| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为写入与 toast 的唯一门；拒绝态写一条区分三种情形的诊断（回复带 context + 有旧文件 / 无旧文件 / 回复没带 context 的占位段），不再声称不存在的旧文件或未写的占位符。`contextShapeWarned` 的措辞改为按 `contextWritten` 说明未写；删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。 |
+| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、且诊断落盘。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）断言诊断不声称旧文件或占位符。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动；带 context 段时另断言"跳过"诊断。 |
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
 | `CHANGELOG.md` | v0.4.13 修复条目。 |
@@ -47,9 +48,11 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 ## 5. 验证
 
 - `node tests/run-all.mjs`：15/15；`git diff --check` 干净。
-- 变异：把 `contextWritten` 退回 `Boolean(update)`：
-  - `tests/consolidation-test.mjs` 恰红 1 条（`a refused reply does not overwrite the newer CONTEXT.md`）；
-  - `tests/external-edit-test.mjs` 恰红 4 条（两个子用例的 context claim / untouched / skip trace）。
+- 变异（按最终测试）：把 `contextWritten` 退回 `Boolean(update)`：
+  - `tests/consolidation-test.mjs` 红 6 条：mid-call 的 `a refused reply does not overwrite the newer CONTEXT.md`
+    与 5 条 fresh 项目诊断/文件断言（带 context / 不带 context / context 不可用三组）；
+  - `tests/external-edit-test.mjs` 红 2 条：`CONTEXT.md was left untouched` 与 `the skipped context write is traced`
+    （"不声称 context 更新"在变异下仍绿，因为 `staleKeepSentence` 已不再带 context 前缀；这是收窄后的守卫，不是门探针）。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
   `the context section is written from the same reply` 用例全绿），证明红灯来自门而不是夹具。
 
@@ -58,4 +61,12 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 - **不重跑** consolidation：被拒的回复丢弃，下一次 pass 从磁盘上的较新 context 重建。
 - 拒绝态与写入之间的微窗口（无 CAS）保持既有语义，不新增机制。
 - 被拒后 context 最多落后一轮；这是有意的代价，换取绝不覆盖更新的 `CONTEXT.md`。
+- **R1（上下文-only lost update）**：本修复用 memory 的 `basisKey` 拒发作为"回复快照已旧"的代理；如果 `CONTEXT.md`
+  在模型调用期间被改而 `MEMORY.md` 未变（或回复 semantic-empty/short），`memoryRefused` 为 false，仍会用回复的旧
+  context 覆盖新文件。要关掉这一类需要独立的 context basis key（新机制，且与 keep-adoption 的既有测试冲突），
+  本轮不做，登记为残留。独立审查（deepseek/deepseek-flash，2026-10-19）亦以 R1 命名此项。
+- **R2**：`written` claim 在拒绝时也已置位，紧随其后的 `/memory update` 在 `forceDedupeMs` 内返回 "deduped"；
+  这是既有去重行为，不是本修复引入的。（独立审查 R2）
+- **R3**：并发 pass 可能在拒绝 pass 与命令读取 `lastWrite` 之间删除它，命令回复退化为 "updated"；既有设计残留。
+- **R4**：context 写入不在 memory 锁内、无 CAS；本修复缩小了现场窗口，但没有新增 context CAS。
 - 拒绝仍是检测器（不阻止其他合法回复发布）；它只决定"这一条回复"两侧都不发布。

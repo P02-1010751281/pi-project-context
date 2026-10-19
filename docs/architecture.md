@@ -129,7 +129,7 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 - `context` 存在但形状错误：保留旧文件，记录 shape warning。
 - 存储的 `MEMORY.md` 在回复构建期间变化时，整条回复（含 `context` 段）都不发布：memory 由 `basisKey` 判据拒绝，
   同一个回复的 `context` 也来自更旧的快照（2026-10-19 现场：拒发同秒把手工收敛的 open tasks 写回旧清单），所以
-  `CONTEXT.md` 保留磁盘上的较新版本、下一次 pass 再重建，并写一条「context section was not published」诊断。
+  `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建，并写一条「context section was not published」诊断。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的
   JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。该预留有 8192 的上限，而 route
