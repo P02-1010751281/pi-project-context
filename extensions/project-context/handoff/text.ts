@@ -119,7 +119,14 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
  */
 function withoutReplayUsage(message: AgentMessage): AgentMessage {
 	if (message.role !== "assistant") return message;
-	const { usage: _usage, ...rest } = message as AgentMessage & { usage?: unknown };
+	// `stopReason` is not field-neutral either: pi's silent-overflow classifier reads `usage.input`
+	// only when it is "stop"/"length". Keep the message shape coherent by dropping the verdict with
+	// the usage; pi's own char estimate then handles the replay prefix.
+	const { usage: _usage, stopReason: _stopReason, rawStopReason: _rawStopReason, ...rest } = message as AgentMessage & {
+		usage?: unknown;
+		stopReason?: unknown;
+		rawStopReason?: unknown;
+	};
 	return rest as AgentMessage;
 }
 

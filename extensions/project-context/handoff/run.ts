@@ -24,7 +24,7 @@ import { type Threshold, baselineSuffix, capSuffix, contextTokensAtRate, measure
 /** Exported so tests can read the status receipt without going through the command registration. */
 export function handoffStatusLine(ctx: ExtensionContext): string {
 	const keep = config.handoffBudgetRecentTokens > 0 ? `~${fmtTokens(config.handoffBudgetRecentTokens)} recent carried` : "no recent carry-over";
-	const toolResultCap = config.handoffBudgetToolResultTokens > 0 ? ` · toolResult cap ${fmtTokens(config.handoffBudgetToolResultTokens)}` : "";
+	const toolResultCap = config.handoffBudgetToolResultTokens > 0 ? ` · toolResult target ${fmtTokens(config.handoffBudgetToolResultTokens)}` : "";
 	const usage = ctx.getContextUsage();
 	let thresholdLabel = config.handoffThresholdAuto ? "auto" : fmtPct(config.handoffThresholdRatio * 100);
 	let threshold: Threshold | undefined;

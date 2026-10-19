@@ -1,7 +1,8 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { bashExecutionEntry, loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, contextEditEntry, messageEntry, PC, PI, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
+import { pathToFileURL } from "node:url";
+import { bashExecutionEntry, loadDefault, loadNamespace, loadShared, makeCtx, makePi, makeSessionManager, contentEntry, contextEditEntry, messageEntry, PC, PI, PI_AI_DIST, rmTemp, runHandlers, toolResultEntry, waitUntil } from "./harness.mjs";
 
 /**
  * Handoff scaffolding tests: the continuation prompt follows the conversation language
@@ -334,9 +335,21 @@ Ask one question at a time.
 	check("the cap uses the measured chars-per-token rate", handoff.toolResultCharBudget(100, 2.5) === 250 && handoff.toolResultCharBudget(100, 4) === 400);
 	const usageEntry = contentEntry("usage1", "assistant", [{ type: "text", text: "answer" }], "2026-09-16T00:42:33.000Z");
 	usageEntry.message.usage = { input: 1234, cacheRead: 0, cacheWrite: 0, output: 5, totalTokens: 1239 };
+	usageEntry.message.stopReason = "stop";
+	usageEntry.message.rawStopReason = "stop";
 	const replayUsage = handoff.replayMessagesFor([usageEntry]);
-	check("replayed assistant usage is dropped", replayUsage[0]?.usage === undefined);
-	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234);
+	const replayAssistant = replayUsage.find((message) => message.role === "assistant");
+	check("replayed assistant usage is dropped", replayAssistant?.usage === undefined);
+	check("replayed assistant stopReason is dropped with the usage", replayAssistant?.stopReason === undefined && replayAssistant?.rawStopReason === undefined);
+	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234 && usageEntry.message.stopReason === "stop");
+	const { isContextOverflow } = await import(pathToFileURL(`${PI_AI_DIST}/compat.js`).href);
+	let classifierThrows = false;
+	try {
+		isContextOverflow(replayAssistant, 200_000);
+	} catch {
+		classifierThrows = true;
+	}
+	check("pi's overflow classifier accepts the stripped replay", !classifierThrows && isContextOverflow(replayAssistant, 200_000) === false);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
@@ -504,7 +517,7 @@ Ask one question at a time.
 		String(ctx.notifications.at(-1)?.[0] ?? "").includes("oversized tool results are trimmed"),
 	);
 	await command.handler("status", ctx);
-	check("status reports the toolresult cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("toolResult cap 2.0k"));
+	check("status reports the toolresult target", String(ctx.notifications.at(-1)?.[0] ?? "").includes("toolResult target 2.0k"));
 	await command.handler("budget toolresult 1", ctx);
 	check(
 		"a tiny cap receipt names the omission marker instead of promising a hard cap",
@@ -1320,6 +1333,51 @@ Ask one question at a time.
 	check(
 		"the cap still works when usage is unavailable",
 		noUsageCaptured.prompt !== undefined && noUsageCaptured.replay.some((message) => message.role === "toolResult" && message.content?.[0]?.text?.includes("交接时已裁剪")),
+	);
+
+	// The cap converts tokens with `measureContext`'s rate, not a hard-coded 4. The two usage records
+	// produce a rate near 2; a 300-char result is over the 200-char cap at that rate but under the
+	// 400-char cap a rate-4 implementation would use.
+	const rateEntries = [
+		contentEntry("rate1", "user", [{ type: "text", text: `RATE_OLDER ${"filler ".repeat(60)}` }], "2026-09-16T01:50:00.000Z"),
+		contentEntry("rate2", "assistant", [{ type: "text", text: "ok" }], "2026-09-16T01:50:01.000Z", "rate1"),
+		contentEntry("rate3", "user", [{ type: "text", text: `RATE_QUESTION ${"filler ".repeat(60)}` }], "2026-09-16T01:50:02.000Z", "rate2"),
+		contentEntry(
+			"rate4",
+			"assistant",
+			[{ type: "text", text: "reading" }, { type: "toolCall", id: "rate-tc", name: "bash", arguments: { command: "cat big" } }],
+			"2026-09-16T01:50:03.000Z",
+			"rate3",
+		),
+		toolResultEntry("rate5", "rate-tc", `RATE_TOOL_SECRET ${"x".repeat(300)}`, "2026-09-16T01:50:04.000Z", "rate4"),
+		contentEntry("rate6", "assistant", [{ type: "text", text: "done" }], "2026-09-16T01:50:05.000Z", "rate5"),
+	];
+	rateEntries[1].message.usage = { input: 1_000, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: 1_001 };
+	rateEntries[3].message.usage = { input: 1_200, cacheRead: 0, cacheWrite: 0, output: 1, totalTokens: 1_201 };
+	await writeFile(
+		configPath,
+		JSON.stringify({
+			handoffEnabled: true,
+			handoffBudgetRecentTokens: 100,
+			handoffBudgetSummaryTokens: 8_000,
+			handoffBudgetToolResultTokens: 100,
+			memoryEnabled: false,
+		}),
+	);
+	const rateCaptured = { replay: [], prompt: undefined };
+	const ratePi = makePi({ cwd: tmp });
+	await (await loadDefault(`${PC}/index.ts`))(ratePi);
+	const rateCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(rateEntries, "handoff-tool-cap-rate"),
+		getContextUsage: () => ({ tokens: 1_200, percent: 0.12, contextWindow: 1_000_000 }),
+	});
+	rateCtx.newSession = captureNewSession(rateCaptured);
+	await runHandlers(ratePi, "session_start", rateCtx);
+	await ratePi.commands.get("handoff").handler("now", rateCtx);
+	check(
+		"the cap uses the measured rate, not a hard-coded 4",
+		rateCaptured.replay.some((message) => message.role === "toolResult" && /^\[(?:tool result trimmed|交接时已裁剪)/.test(message.content?.[0]?.text ?? "")) &&
+			!JSON.stringify(rateCaptured.replay).includes("RATE_TOOL_SECRET"),
 	);
 
 	// An orphan result (its call left in the dropped prefix) cannot be replayed; it leaves the replay and

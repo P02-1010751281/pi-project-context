@@ -9,9 +9,10 @@
 
 - **触发发送失败也进入 failure backoff**：`maybeTrigger` 的 `sendUserMessage` catch 现在会 arm 失败退避；
   以前它只清 in-flight 并提示，pre-compaction guard 会在同一失败上反复取消后续自动 compaction。
-- **replay 不再携带 predecessor 的 assistant usage**：重放消息只描述旧会话的请求，旧 `usage` 会让 successor
+- **replay 不再携带 predecessor 的 assistant usage/stopReason**：重放消息只描述旧会话的请求，旧 `usage` 会让 successor
   的第一次 `_prepareRun` 把旧 prompt 大小当成当前上下文，`recent` 大于 pi 的 keep 窗口时可能提前压缩 replays；
-  现在重放副本去掉 `usage`，由 successor 自己的第一次调用提供新计数。
+  只删 `usage` 又会让 pi 的 overflow classifier 在 `stopReason: "stop"` 时访问不存在的 `usage.input`，所以两者一起删；
+  由 successor 自己的第一次调用提供新计数。
 - **toolResult cap 回执不再承诺硬上限，裁剪 marker 跟随交接语言**：极小 cap 下 marker 自身可能大于配置值，
   回执改为“目标”并说明可能只留下 omission marker；中文交接的 replay marker 也改为中文，不再夹英文。
 

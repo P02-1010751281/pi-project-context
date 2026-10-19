@@ -16,7 +16,7 @@ handoff 有两种阈值模式：
 pi 的 `_checkCompaction` 在 post-run 循环里先于 `agent_settled` 运行，所以单轮涨幅跨过两条线时 pi 会先压缩，handoff 只能看到压缩后的分支。
 现在 `session_before_compact` 在 handoff 已到阈值时取消这次自动 `threshold` / 无重试的 `overflow` compaction，让 settle 触发器在未压缩的分支上交接；
 手动 `/compact` 不拦（用户显式选择）。带 `willRetry` 的 overflow recovery 仍交给 pi 先压缩并重试，避免把可恢复回合变成死回合；
-handoff 失败（包括触发发送失败）会进入 failure backoff，下一次自动 compaction 照常进行；`nothing older ...` 的 skip 和被其他扩展取消的
+handoff 失败（包括触发发送同步抛错）会进入 failure backoff，下一次自动 compaction 照常进行；异步发送失败由 pi runtime 记录，不在本扩展的 catch 内；`nothing older ...` 的 skip 和被其他扩展取消的
 handoff 也会进入冷却，不会每轮重复取消。
 
 ## 自适应预算公式
@@ -123,11 +123,12 @@ E-4000
 交接**不调用任何模型**（v0.4.1 起）：successor 收到的是机械载荷，没有任何生成物。successor 接收：
 
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
-   若设置了 `handoffBudgetToolResultTokens`（默认 0 = off），每个被携带 toolResult 的文本超过该 token 上限时，
+   若设置了 `handoffBudgetToolResultTokens`（默认 0 = off），每个被携带 toolResult 的文本超过该 token 目标时，
    文本块替换为 `[tool result trimmed during handoff: N characters; full output in the previous session log]`，
    `toolCallId` 和非文本块（如图片）保留，完整输出仍在旧会话日志里；cap 省的是 carried 正文，不保证总成本下降：
-   successor 若需要该正文，必须回读文件或 session log，回读可能比原来直接携带更贵。配置值是目标而非硬上限：
-   当它小于 omission marker 自身时，实际留下的是 marker，体积可能高于配置值；marker 跟随交接语言（zh/en）；
+   successor 若需要该正文，必须回读文件或 session log，回读可能比原来直接携带更贵。配置值是 token 目标而非硬上限：
+   结果超过目标、但替换 marker 不短于结果时保持原文；只有 marker 更短时才替换，因此极小目标下 marker 体积可能高于配置值；
+   marker 跟随交接语言（zh/en）；
 2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`，含扩展工具的嵌套调用）；
 3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块（含 standalone `.md`）、`read` 过 `SKILL.md` 的工具调用（含工具结果上记录的嵌套 `read`）、compaction 的 `readFiles`、以及上一份交接提示的
    `<read-files>` 收集（去重；`/skill:` 最优先，其次真实 `read`，两者内部按最近出现排序；提示/压缩的文件清单最后，
@@ -147,7 +148,7 @@ E-4000
 - keep cut 若落在一个 turn 中，开头插入 `[turn prefix dropped during handoff]`，保证 user-first 形状。
 - 没有对应 assistant tool call 的 orphan `toolResult` 不重放，也不会进入任何载荷；它的内容只留在旧会话日志里。
 - keep budget 是上限，不会为了填满预算回补更旧 prompt；空预算场景是设计上的静默 no-op。
-- toolResult 的文本 cap 是**可选的第二层上限**，默认 off；它只裁文本块，不改变 call/result 配对，也不删除图片或 `nestedCalls`。
+- toolResult 的文本 cap 是**可选的文本目标**，默认 off；它只裁文本块，不改变 call/result 配对，也不删除图片或 `nestedCalls`。
   裁掉的正文不再进入 successor，完整内容通过旧 session log 恢复；因此开启后 continuation 会说明「过大的工具输出已裁剪」。
 
 ## 前缀缓存
