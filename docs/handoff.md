@@ -125,7 +125,8 @@ E-4000
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
    若设置了 `handoffBudgetToolResultTokens`（默认 0 = off），每个被携带 toolResult 的文本超过该 token 上限时，
    文本块替换为 `[tool result trimmed during handoff: N characters; full output in the previous session log]`，
-   `toolCallId` 和非文本块（如图片）保留，完整输出仍在旧会话日志里；
+   `toolCallId` 和非文本块（如图片）保留，完整输出仍在旧会话日志里；cap 省的是 carried 正文，不保证总成本下降：
+   successor 若需要该正文，必须回读文件或 session log，回读可能比原来直接携带更贵；
 2. 旧会话里出现过的文件清单（`<read-files>` / `<modified-files>`，含扩展工具的嵌套调用）；
 3. 上一会话加载过的技能与模式：从用户 `/skill:` 加载的技能块（含 standalone `.md`）、`read` 过 `SKILL.md` 的工具调用（含工具结果上记录的嵌套 `read`）、compaction 的 `readFiles`、以及上一份交接提示的
    `<read-files>` 收集（去重；`/skill:` 最优先，其次真实 `read`，两者内部按最近出现排序；提示/压缩的文件清单最后，

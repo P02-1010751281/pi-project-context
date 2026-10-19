@@ -490,6 +490,7 @@ Ask one question at a time.
 	check("budget recent off carries nothing verbatim", (await readConfig())?.handoffBudgetRecentTokens === 0);
 	await command.handler("budget toolresult 2k", ctx);
 	check("budget toolresult sets the per-result cap", (await readConfig())?.handoffBudgetToolResultTokens === 2_000);
+	check("the toolresult receipt warns about the re-read", String(ctx.notifications.at(-1)?.[0] ?? "").includes("must re-read"));
 	await command.handler("status", ctx);
 	check("status reports the toolresult cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("toolResult cap 2.0k"));
 	await command.handler("budget toolresult off", ctx);

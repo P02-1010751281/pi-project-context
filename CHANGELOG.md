@@ -12,6 +12,7 @@
   `[tool result trimmed during handoff: N characters; full output in the previous session log]`，保留 `toolCallId`、
   图片和 `nestedCalls`，完整正文仍留在旧会话日志；successor 的 continuation 会说明工具输出被裁剪。
   这是为控制 handoff 首轮 payload 的可选杠杆，不改变默认的原文携带行为；状态行与 `/handoff budget recent` 回执会显示该上限。
+  cap 省的是 carried 正文，不保证 successor 总成本下降：successor 需要被裁内容时必须回读文件或 session log，回读可能更贵。
 
 ### 修复
 

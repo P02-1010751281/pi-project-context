@@ -492,7 +492,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(
 						ctx,
 						config.handoffBudgetToolResultTokens > 0
-							? `Handoff: each carried tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens; the full output stays in the session log.`
+							? `Handoff: each carried tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens; the full output stays in the session log, but a successor that needs it must re-read it, so total cost can rise.`
 							: "Handoff: tool result text is carried verbatim (no cap).",
 					);
 					return;

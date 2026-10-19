@@ -162,6 +162,11 @@ output 3.96 USD/M）从 successor 全部调用累加，predecessor 成本单列�
 successor 不需要被裁正文，就不会产生回读；此前的 4 轮 OK fixture 的 input 下降属于这种 best case，
 不能拿来证明 worst case 也省钱。默认 off 因此仍是正确选择。
 
+更重的失败/恢复路径：cap=1000 时在 handoff 后删除 `target.txt`，successor 先读目标文件失败，再读
+predecessor 的原始 session JSONL（两次 `read`），答案仍正确；但 successor 成本从 $0.01079 升到
+$0.02316（约 2.1x），并产生 4 条 toolResult / 53,197 字符工具文本。也就是说 marker 指向的 session log
+恢复路径确实可用，但代价可能远高于“原样携带”。这是单次探针，不是所有文件删除场景的保证。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
