@@ -1,0 +1,55 @@
+All verifications are complete. Here is the independent release-candidate review for v0.4.11 (HEAD `1a71b73`).
+
+---
+
+# Independent review — v0.4.11 release candidate (rev `1a71b73`)
+
+Workspace held zero-write (`git status` clean; all mutations ran on `/tmp/pc-mut-test` copies). `node tests/run-all.mjs` → **All 15 tests passed**. Primary new-review surface: the pre-compaction guard's post-PASS `willRetry` correction and the unreviewed tool-result cap (a27f2fd..1a71b73).
+
+## A. Pre-compaction guard — verified against installed pi 1.3.0 source
+
+- **Event ordering confirmed**: `_handlePostAgentRun()` → `_checkCompaction()` → `_runAutoCompaction()` emits `session_before_compact` (`dist/core/agent-session.js:2514-2516`); `_emitAgentSettled()` runs in the run-loop `finally` (`:1440`), so `agent_settled` fires on the intact branch even after a cancel.
+- **`{ cancel: true }` semantics confirmed**: throws "Compaction cancelled" inside `_runAutoCompaction`, caught → `compaction_end`/`session_compact_failed` with `aborted: true`, returns `false` → no `agent.continue()` for threshold; `_overflowRecoveryAttempted` is only set on the `willRetry` branch (`:2438`), so a cancelled completed-overflow leaves no stale flag.
+- **`willRetry: true` is a real retry path**: `_runAutoCompaction` returns `true` → `_handlePostAgentRun` returns true → loop calls `agent.continue()` (`:1424-1433`). The post-PASS correction (`event.reason === "overflow" && event.willRetry → return`) is therefore correct, and it is mutation-pinned: removing the line yields exactly **1 FAIL** ("overflow recovery with a retry is left to pi").
+- **No cancel loop, no silently lost handoff**: every skip/fail/cancel path arms a clock (failure backoff, nothing-older cooldown, new cancelled-handoff cooldown — each verified mutation-sensitive); the guard fails open toward pi's compaction on manual/overflow-retry/usage-unavailable/print/in-flight; handler exceptions are swallowed by the extension runner (`runner.js:813+`) so a throwing guard degrades to "compaction proceeds", never to "compaction fails".
+- **The command path preserves the intent**: `/handoff force-auto` dispatches through `prompt()` → `_tryExecuteExtensionCommand` before `_startRun`/`_prepareRun` (`agent-session.js:1605-1615`), so no second compaction check runs between the guard's cancel and the handoff — the settle handoff genuinely sees the intact branch.
+- **`handoffDue` clock ownership**: the predicate deliberately excludes the clocks; both call sites (settle trigger and guard) re-check them, and the comment documents the convention. No third caller exists; safe today, and the failure direction if one ever appears is "extra handoff attempt", not a skipped clock.
+
+**Findings (A):**
+
+- **A-1 · nit** — `run.ts:352-358`: the `maybeTrigger` send-failure catch clears `handoffInFlight` and notifies but arms no clock. New interaction: while a trigger keeps failing, the guard also keeps cancelling compaction every turn (recovery valves: next-settle retry, and overflow-with-retry stays exempt). Pre-existing trigger code, transient in practice. Fix boundary: arm the failure backoff in that catch (one line + one pin).
+- **A-2 · residual-risk** — replayed messages carry their old `usage` (the audit notes "带旧 usage"), so a successor arriving from a handoff that ran above pi's reserve line (`W − 16384`) trips `_checkCompaction` in its first `_prepareRun`. `prepareCompaction` makes it a no-op at the default keep ≤ pi's `keepRecentTokens` (20k), but with `handoffBudgetRecentTokens` > 20k the older part of the replay can be summarized on arrival. The guard is inert during that window (`handoffInFlight()` is true until `newSession` resolves). **Pre-existing pi/handoff interaction, unchanged by this diff** — named, not a must-fix.
+- **Praise**: the shared predicate, the willRetry comment, and the fail-safe bias (stuck in-flight disables the guard) are exactly the right shapes.
+
+## B. Tool-result cap (no prior independent review)
+
+- **Config**: `handoffBudgetToolResultTokens` default `0`, bounded `0..200_000` on parse, patched by `saveConfig`. **Truly inert for existing users**: at 0 the status line, receipts, prompt, and replayed bytes are unchanged; the off-path replay is byte-stable by construction (`keptMessages` computed once by the same deterministic `replayMessagesFor`, fed to `replayMessageList`).
+- **Semantics**: only text blocks are replaced (first block gets the marker, remaining text blocks dropped); `toolCallId`, images, `nestedCalls` survive via spread; never mutates the source; never grows a tiny result (marker-shorter guard); non-array content is a safe no-op. Verified by tests and by my mutations (dropping the spread → 2 FAILs incl. pairing; dropping the tiny-cap guard → 1 FAIL; inverting the role gate → 2 FAILs; dropping the re-read warning → 1 FAIL; dropping the status display → 1 FAIL).
+- **Token math**: `maxChars = cap × rate` uses the same measured rate as the receipts — consistent and honestly "~".
+- **Recovery honesty**: the full trimmed text stays in the predecessor JSONL; the prompt carries both the raw transcript path and the INDEX-grep instruction; the audit demonstrated real recovery, including the deleted-file path (2.1× cost, disclosed).
+- **Docs/CHANGELOG**: every claim checks out against the code, including the new "must re-read … total cost can rise" warning; the audits are explicitly scoped as single-provider/single-fixture field measurements and their own data concludes "cap 不是净省钱" — honestly stated, no guarantee-mongering.
+
+**Findings (B):**
+
+- **B-1 · nit** — `run.ts:481`: the receipt "each carried tool result is capped at ~N tokens" overpromises for tiny caps. Probe: cap = 1 token → a 12,000-char result is carried as the 95-char marker ≈ **24 tokens** (24× the cap). Direction is conservative (never exceeds the original text), and docs/CHANGELOG describe replacement semantics accurately — only this one sentence implies a hard cap. Fix boundary: floor the advertised value at the marker size or reword the receipt for caps below it.
+- **B-2 · nit** — the in-replay trim marker is English-only inside zh continuations (the surrounding scaffolding is localized). Cosmetic.
+- **B-3 · suggestion** — not pinned by tests: multiple oversized results (counter), cap with a measured rate ≠ 4, `budget recent` receipt mentioning the cap, and a null-usage guard case. All are trivial by inspection; one or two would close the "green suite ≠ proof" gap.
+- **Praise**: the tiny-cap guard, the `{ cancel: true }`-style defensive trim (`marker never longer than the text it replaces`), and the honest cost warning.
+
+## C. Integration
+
+- `IMAGE_CONTENT_TOKENS = 1_200` matches pi 1.3.0's `ESTIMATED_IMAGE_CHARS = 4800/4` (verified in installed source); `usage.output` exists in pi's `MessageUsage`. No integration regression found in the combined diff; the threshold and skill mechanisms were already independently reviewed (3 and 8 rounds) and their code matches their fix-notes.
+
+## Not tested / not verified
+
+- Live-TUI behavior of a cancelled compaction: inferred silent from pi-tui having no `compaction_end`/`session_compact_failed` handler (so no spurious user-facing failure) — not observed in a live session.
+- Whether `usage.output` is populated on every provider route (missing output safely degrades the allowance to 0).
+- The guard's `_prepareRun`-path cancellation and stale-usage successor behavior are documented residuals, exercised only by code reading here.
+
+## Verdict rationale
+
+The one mechanism change after the last PASS (`willRetry`) is correct against pi 1.3.0's source and mutation-pinned; all loop-escape valves hold; the unreviewed cap feature is default-inert, byte-stable when off, recovery-honest, and its claims are accurately scoped. Nothing found is a user-visible failure; the nits are wording/test-coverage only.
+
+VERDICT: PASSED
+
+Ship v0.4.11 as-is: the pre-compaction guard's `willRetry` correction is verified against the installed pi 1.3.0 run loop and pinned by tests, the tool-result cap is a well-contained opt-in whose off path is byte-identical to v0.4.10, and the docs/audits honestly separate field measurements from guarantees. I recommend fixing B-1 (reword or floor the "capped at ~N tokens" receipt so a 1-token cap cannot be advertised while carrying a ~24-token marker) and A-1 (arm the failure backoff in the `maybeTrigger` catch) in the next patch — both are one-line changes with one test pin each, and neither should block this release.
