@@ -128,9 +128,17 @@ function replayZeroUsage() {
 /**
  * The predecessor's `usage` describes the request that produced that message, not the replacement
  * session's prefix. Replaying it makes pi's first `_prepareRun` read the old prompt size and can
- * summarize a replay that is already small; zero it (the field is required by pi's message shape)
- * and drop the paired stop verdict, so pi's overflow classifier cannot read `usage.input` under
- * `stopReason: "stop"`. The successor's own first call supplies fresh usage.
+ * summarize a replay that is already small; zero it instead of deleting it, because pi's footer,
+ * context accounting and overflow classifier read `usage` unguarded (the zeroed record keeps the
+ * persisted assistant shape valid).
+ *
+ * The paired verdict goes for the same reason: `_checkCompaction(lastAssistant, false)` runs on the
+ * carried tail before the successor's first prompt and acts on `stopReason` regardless of usage —
+ * `explicitOverflow` reads an `error` verdict's message and `isRecoverableLength` fires on a
+ * `length` verdict whose output is below the cap, so either would compact the fresh replay on
+ * arrival. The accepted cost is one pi behavior: `findLatestResponse` counts the carried response
+ * as the latest successful one for virtual-model selection until the successor's own first call
+ * (see the issue's review report). The successor's first call supplies fresh usage.
  */
 export function withoutReplayUsage(message: AgentMessage): AgentMessage {
 	if (message.role !== "assistant") return message;

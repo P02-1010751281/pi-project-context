@@ -338,24 +338,27 @@ Ask one question at a time.
 		input: 1234, cacheRead: 0, cacheWrite: 0, output: 5, totalTokens: 1239,
 		cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
 	};
-	usageEntry.message.stopReason = "stop";
-	usageEntry.message.rawStopReason = "stop";
+	usageEntry.message.stopReason = "length";
+	usageEntry.message.rawStopReason = "length";
 	const usageEntry2 = contentEntry("usage2", "assistant", [{ type: "text", text: "answer 2" }], "2026-09-16T00:42:34.000Z");
 	usageEntry2.message.usage = {
 		input: 777, cacheRead: 0, cacheWrite: 0, output: 2, totalTokens: 779,
 		cost: { input: 0.0007, output: 0.0008, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
 	};
-	usageEntry2.message.stopReason = "stop";
+	// Error tails carry their message text even after the verdict is dropped, so they are the
+	// sharpest fixture for pi's arrival paths.
+	usageEntry2.message.stopReason = "error";
+	usageEntry2.message.errorMessage = "prompt is too long: 213462 tokens > 200000 maximum";
 	const replayUsage = handoff.replayMessagesFor([usageEntry, usageEntry2]);
 	const replayAssistants = replayUsage.filter((message) => message.role === "assistant");
 	const replayAssistant = replayAssistants[0];
 	check("replayed assistant usage is zeroed, not deleted", replayAssistant?.usage?.totalTokens === 0 && replayAssistant?.usage?.input === 0);
 	check("replayed assistant stopReason is dropped with the usage", replayAssistant?.stopReason === undefined && replayAssistant?.rawStopReason === undefined);
-	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234 && usageEntry.message.stopReason === "stop");
+	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234 && usageEntry.message.stopReason === "length");
 	check("each replayed assistant gets a fresh usage and cost record", replayAssistants.length === 2
 		&& replayAssistants[0].usage !== replayAssistants[1].usage
 		&& replayAssistants[0].usage.cost !== replayAssistants[1].usage.cost);
-	const { isContextOverflow } = await import(pathToFileURL(`${PI_AI_DIST}/compat.js`).href);
+	const { isContextOverflow, isRecoverableLength } = await import(pathToFileURL(`${PI_AI_DIST}/utils/overflow.js`).href);
 	const { addUsageToTotals } = await import(pathToFileURL(`${PI}/dist/core/usage-totals.js`).href);
 	const { calculateContextTokens } = await import(pathToFileURL(`${PI}/dist/core/compaction/compaction.js`).href);
 	let classifierThrows = false;
@@ -369,6 +372,12 @@ Ask one question at a time.
 	check("pi's overflow classifier accepts the zeroed replay", !classifierThrows && isContextOverflow(replayAssistant, 200_000) === false);
 	check("pi's footer usage accumulator accepts the zeroed replay", totals.input === 0 && totals.output === 0 && totals.cacheRead === 0 && totals.cacheWrite === 0 && totals.cost === 0);
 	check("pi's context accounting sees zero on the zeroed replay", calculateContextTokens(replayAssistant.usage) === 0);
+	// pi's `_prepareRun` runs `_checkCompaction(lastReplayedAssistant, false)` before the successor's
+	// first prompt; both arms below act on a carried verdict, so the replay must not carry one.
+	check("a carried length verdict cannot re-arm pi's arrival recovery", isRecoverableLength(replayAssistant, 8192) === false);
+	check("the dropped verdict is what keeps that recovery off (positive control)", isRecoverableLength({ ...replayAssistant, stopReason: "length" }, 8192) === true);
+	check("a carried overflow error cannot re-arm pi's explicit-recovery path", isContextOverflow(replayAssistants[1]) === false);
+	check("its errorMessage alone does not re-arm the path (positive control)", isContextOverflow({ ...replayAssistants[1], stopReason: "error" }) === true);
 	replayAssistant.usage.input = 1;
 	check("mutating one replayed usage leaves the other and the source zeroed", replayAssistants[1].usage.input === 0
 		&& usageEntry.message.usage.input === 1234 && usageEntry2.message.usage.input === 777);

@@ -28,11 +28,13 @@ session.jsonl ──► session.md ──► INDEX.md
 交接的切点由 pi 的 `findCutPoint` 选定，它同时给出 `turnStartIndex` 与 `isSplitTurn`：本扩展据此在
 **前缀不超一窗且老侧仍有内容可丢**时吸附到回合起点（整轮原文保留），否则把该回合的起始 user 消息**锚定进重放**、
 其余丢给旧会话日志（裁切 + 既有文件索引），所以「最后问了什么」始终以原文到达 successor。交接不调用模型：
-较早的部分以指针而不是摘要进入 successor，被切回合的悬空 tool 结果只留在旧会话日志里。replay 副本会去掉
-predecessor assistant 消息的 `usage` 与 `stopReason`：它们描述旧会话的请求，不是 successor 的当前前缀；保留 `usage`
-会让 successor 的第一次 `_prepareRun` 误读旧 prompt 大小，而只删 `usage` 又会让 pi 的 overflow classifier、footer
-统计和 compaction 后的 context accounting 读到不存在的 `usage.input` / `totalTokens`。现在 `usage` 归零、`stopReason`
-删除，保留 pi 的 assistant message 字段形状。
+较早的部分以指针而不是摘要进入 successor，被切回合的悬空 tool 结果只留在旧会话日志里。replay 副本会把
+predecessor assistant 消息的 `usage` 归零、`stopReason`/`rawStopReason` 删除：保留 `usage` 会让 successor 的
+第一次 `_prepareRun` 误读旧 prompt 大小，而把字段删掉又会让 pi 的 footer 统计、context accounting 与 overflow
+classifier 读到不存在的 `usage.input`/`totalTokens`；判决必须删，因为 `_prepareRun` 会在首轮前对携带的末条 assistant
+跑 `_checkCompaction(_, false)`，`error`/`length` 判决不看 usage 就会触发 arrival 压缩（`explicitOverflow`/
+`isRecoverableLength`），把刚交接来的 replay 直接压缩。代价是虚拟模型在 successor 首次响应前把携带的响应计为
+最近一次成功（登记在案）。
 
 ## 数据布局
 

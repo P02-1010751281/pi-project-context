@@ -11,9 +11,10 @@
   以前它只清 in-flight 并提示，pre-compaction guard 会在同一失败上反复取消后续自动 compaction。
 - **replay 不再携带 predecessor 的 assistant usage/stopReason**：重放消息只描述旧会话的请求，旧 `usage` 会让 successor
   的第一次 `_prepareRun` 把旧 prompt 大小当成当前上下文，`recent` 大于 pi 的 keep 窗口时可能提前压缩 replays；
-  只删 `usage` 会让 pi 的 overflow classifier、footer 统计和 compaction 后的 context accounting 读到不存在的
-  `usage.input` / `totalTokens`；现在把 `usage` 归零（保留字段形状）并删掉配对的 `stopReason`/`rawStopReason`，
-  由 successor 自己的第一次调用提供新计数。
+  删掉 `usage` 字段又会让 pi 的 footer 统计、compaction 后的 context accounting 和 overflow classifier 读到不存在的
+  `usage.input`/`totalTokens`，所以归零成完整记录。判决同样要删：`_prepareRun` 在 successor 首轮前对携带的末条
+  assistant 跑 `_checkCompaction(_, false)`，不看 usage 就会对 `error` 判决走 `explicitOverflow`、对 `length` 判决走
+  `isRecoverableLength`，把刚交接来的 replay 直接压缩；代价是虚拟模型在 successor 首次响应前把携带的响应计为最近一次成功。
 - **toolResult cap 回执不再承诺硬上限，裁剪 marker 跟随交接语言**：极小 cap 下 marker 自身可能大于配置值，
   回执改为“目标”并说明可能只留下 omission marker；中文交接的 replay marker 也改为中文，不再夹英文。
 
