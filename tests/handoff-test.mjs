@@ -339,17 +339,23 @@ Ask one question at a time.
 	usageEntry.message.rawStopReason = "stop";
 	const replayUsage = handoff.replayMessagesFor([usageEntry]);
 	const replayAssistant = replayUsage.find((message) => message.role === "assistant");
-	check("replayed assistant usage is dropped", replayAssistant?.usage === undefined);
+	check("replayed assistant usage is zeroed, not deleted", replayAssistant?.usage?.totalTokens === 0 && replayAssistant?.usage?.input === 0);
 	check("replayed assistant stopReason is dropped with the usage", replayAssistant?.stopReason === undefined && replayAssistant?.rawStopReason === undefined);
 	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234 && usageEntry.message.stopReason === "stop");
 	const { isContextOverflow } = await import(pathToFileURL(`${PI_AI_DIST}/compat.js`).href);
+	const { addUsageToTotals } = await import(pathToFileURL(`${PI}/dist/core/usage-totals.js`).href);
+	const { calculateContextTokens } = await import(pathToFileURL(`${PI}/dist/core/compaction/compaction.js`).href);
 	let classifierThrows = false;
 	try {
 		isContextOverflow(replayAssistant, 200_000);
 	} catch {
 		classifierThrows = true;
 	}
-	check("pi's overflow classifier accepts the stripped replay", !classifierThrows && isContextOverflow(replayAssistant, 200_000) === false);
+	const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	addUsageToTotals(totals, replayAssistant.usage);
+	check("pi's overflow classifier accepts the zeroed replay", !classifierThrows && isContextOverflow(replayAssistant, 200_000) === false);
+	check("pi's footer usage accumulator accepts the zeroed replay", totals.input === 0 && totals.output === 0 && totals.cacheRead === 0 && totals.cacheWrite === 0 && totals.cost === 0);
+	check("pi's context accounting sees zero on the zeroed replay", calculateContextTokens(replayAssistant.usage) === 0);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing

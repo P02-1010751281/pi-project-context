@@ -112,22 +112,34 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
 	return replayable;
 }
 
+/** A fresh zeroed usage record: assistant messages are persisted with a required `usage`, and pi's
+ * footer, context accounting and cache helpers read it unconditionally after a compaction. */
+function replayZeroUsage() {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
 /**
  * The predecessor's `usage` describes the request that produced that message, not the replacement
  * session's prefix. Replaying it makes pi's first `_prepareRun` read the old prompt size and can
- * summarize a replay that is already small; the successor's own first call supplies fresh usage.
+ * summarize a replay that is already small; zero it (the field is required by pi's message shape)
+ * and drop the paired stop verdict, so pi's overflow classifier cannot read `usage.input` under
+ * `stopReason: "stop"`. The successor's own first call supplies fresh usage.
  */
-function withoutReplayUsage(message: AgentMessage): AgentMessage {
+export function withoutReplayUsage(message: AgentMessage): AgentMessage {
 	if (message.role !== "assistant") return message;
-	// `stopReason` is not field-neutral either: pi's silent-overflow classifier reads `usage.input`
-	// only when it is "stop"/"length". Keep the message shape coherent by dropping the verdict with
-	// the usage; pi's own char estimate then handles the replay prefix.
-	const { usage: _usage, stopReason: _stopReason, rawStopReason: _rawStopReason, ...rest } = message as AgentMessage & {
+	const { stopReason: _stopReason, rawStopReason: _rawStopReason, ...rest } = message as AgentMessage & {
 		usage?: unknown;
 		stopReason?: unknown;
 		rawStopReason?: unknown;
 	};
-	return rest as AgentMessage;
+	return { ...rest, usage: replayZeroUsage() } as AgentMessage;
 }
 
 /** Roles appendMessage() accepts as raw conversation messages. */
