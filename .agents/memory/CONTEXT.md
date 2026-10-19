@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-10-19T01:47:20.089Z
+Last updated: 2026-10-19T07:22:34.743Z
 
 ## Summary
 
@@ -21,14 +21,8 @@ Implementation pass on the handoff-before-compaction issue, followed by a prefix
 
 ## Open tasks
 
-- Finish/close the handoff-before-compaction issue: review round, then release as v0.4.9 or later (tag, both push URLs, pin bump in ~/.pi with pull --rebase, pi update --extensions, installed-clone probe, evidence commit).
-- Decide whether the handoff-before-compaction slice keeps the cancelled-handoff cooldown arm as is or also covers other extensions cancelling mid-flight; the current behavior is: cooldown armed, next automatic compaction proceeds.
-- Decide whether any change follows from the prefix-cache finding (e.g. a note in docs/handoff.md or threshold.ts that the drop costs one conversation-prefix miss) or whether the audit stays the only record.
-- Confirm whether 99c9e74 was released as v0.4.9; if not, complete that release.
-- Land the three round-26 nits as post-PASS follow-ups stating the PASS covers 99c9e74: relabel the 17-red mutation, narrow CHANGELOG's not-load-bearing sentence, add the two fence-indentation unit cases to tests/sections-test.mjs.
-- Decide the baseline residual scope: C alone (exclude system entries from plain) or C plus record-eligibility plus A.
+- Watch pi for an extension-facing send/error signal: the async `sendUserMessage` trigger residual, plus the two other accepted residuals (virtual-model pre-first-call selection, cache-warmer one-turn pause), are registered in `.codestable/issues/2026-10-18-handoff-before-compaction/review-report.md`; only a pi API change can unblock the first.
 - Have the next memory curation pass propose retirements rather than compression, since the render sits near the cap.
 - Sibling consumer repos (their call): test a pi-rendered MEMORY.md against HEAD before committing or merging, merge back UniField's dropped curated block, and decide on their unpushed local commits.
-- Non-code residuals still open: readRenderWithMtime's mtime+size blind spot and the SIGKILL failure path's leftover temp directories.
 
 <!-- latest-session-title: Handoff before compaction: session_before_compact guard, cancelled-handoff cooldown test, prefix-cache field run -->

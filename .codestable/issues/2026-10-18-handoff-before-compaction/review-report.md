@@ -74,7 +74,59 @@ Post-PASS nits, fixed after v0.4.12 in `5304b2f` (tests/docs only; the runtime t
 - The A-2 fixture's stale-usage record now carries a real `cost` object.
 - `docs/handoff.md` lists both the English and Chinese marker literals.
 
-Residuals: a replayed assistant without `stopReason` counts as the latest successful response for
-virtual-model selection (pre-first-call only); the async `sendUserMessage` rejection remains outside
-the extension's catch (pi runtime records it), documented in `docs/handoff.md`; cache-warmer pauses
-one turn on a zeroed replay tail.
+## Residual close-out (2026-10-19)
+
+The three R5 residuals and the stale items in the CONTEXT open-task list were closed in this pass
+(tests/docs/comments only; the runtime tag stays `bf22a8a`).
+
+Accepted residuals, with the evidence that closes them as "not fixable on this side":
+
+- **virtual-model `findLatestResponse` counts a carried response as the latest successful one** —
+  accepted. Keeping `stopReason` would re-arm pi's arrival paths: `_prepareRun` runs
+  `_checkCompaction(lastAssistant, false)` before the successor's first prompt
+  (`dist/core/agent-session.js:1451-1455`); `explicitOverflow` acts on an `error` verdict's message
+  (`:2404`) and `isRecoverableLength` on a `length` verdict below the cap (`:2408`), either
+  compacting the fresh replay. `tests/handoff-test.mjs` pins both arms with positive controls; the
+  keep-stopReason mutation reddens exactly three checks. Cost is pre-first-call virtual-model
+  selection only; non-virtual sessions are unaffected.
+- **async `sendUserMessage` rejection unobservable** — accepted; needs a pi API change.
+  `ExtensionAPI.sendUserMessage` returns `void` (`dist/core/extensions/types.d.ts:1267-1271`); the
+  binding swallows the rejection into `runner.emitError`
+  (`dist/core/agent-session.js:2745-2753`), and `runner.onError` is not extension-facing
+  (`dist/core/extensions/runner.js:493-499`; `ExtensionEvent` has no error event). Failure mode:
+  `handoffInFlight` stays true and auto handoff is dead for that session; pi still shows its own
+  `send_user_message` error.
+- **cache-warmer pauses one turn on the zeroed replay tail** — accepted; unfixable without faking
+  usage. `lastPromptTokens` reads the last assistant's usage
+  (`dist/core/cache-warmer.js:47-53`); zero makes `economicsAvailable` false (`:283-287`). The
+  successor's own first call restores it.
+
+The fix-note's four behavioral residuals (`_prepareRun` growth before settle, no-usage, manual
+`/compact`, `willRetry` overflow) stay scope statements: each is a case the guard deliberately does
+not preempt, unchanged by this pass.
+
+Older open items swept against artifacts:
+
+- **Release/close the handoff-before-compaction issue** — closed; v0.4.12 (`e09a254` / peeled
+  `bf22a8a`) plus `release-evidence-v0.4.12.md`.
+- **`99c9e74` released as v0.4.9?** — closed; `git tag --contains 99c9e74` gives `v0.4.9` ... `v0.4.12`.
+- **Round-26 nits (17-red relabel, CHANGELOG narrowing, two fence cases)** — closed;
+  `CHANGELOG.md:162` carries the narrowed sentence and `tests/sections-test.mjs:245-246` holds both
+  fence-indentation cases.
+- **Cancelled-handoff cooldown arm scope** — owner decision, keep as is; the extension observes only
+  its own cancellation path (`fix-note.md` residual 3), and another extension's cancellation is not
+  observable, so the cooldown arm cannot be generalized.
+- **Follow-up from the prefix-cache finding** — no change; the audit is the record
+  (`.codestable/audits/2026-10-18-handoff-prefix-cache-field-run.md`): only static content is
+  optimizable and it is already byte-stable, and a handoff preamble cannot help the first call.
+- **Baseline residual scope ("C alone" vs C + record eligibility + A)** — stale; decided.
+  `2026-10-09-handoff-baseline-residual/design.md` section 9 records the operator decision C+A,
+  record eligibility landed in `1952178`, and section 14 owns residuals 1-9 plus the two accounting
+  differences.
+- **`readRenderWithMtime` mtime+size blind spot** — stale wording; `renderChangedAcrossRead` is
+  mtime + size + ctime (`memory/store.ts:135-140`), and only ctime-granularity replacement plus the
+  Windows ctime caveat remain (registered as residual 9).
+- **SIGKILL failure path's leftover temp directories** — closed;
+  `tests/consolidation-test.mjs:2210-2254` clears the fixture's own subtree before the signal.
+- **Sibling consumer repos (memory sync, dropped block, local commits)** — sibling ownership; their
+  call, this repo only supplies the render and the skill.
