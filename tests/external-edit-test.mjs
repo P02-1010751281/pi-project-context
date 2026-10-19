@@ -223,6 +223,7 @@ try {
 		// A refused reply is built from an older snapshot, so neither half is published: the context
 		// claim must be absent even when the reply carried a context section (field: 2026-10-19T08:27:10Z).
 		check(`${sub.name}: the command reply does not claim a context update`, !reply.includes("context updated"));
+		check(`${sub.name}: the refusal is shown as a warning`, ctx.notifications.at(-1)?.[1] === "warning");
 		check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);
 		if (sub.reply.context) {
 			check(`${sub.name}: the skipped context write is traced`, log.includes("the refused reply's context section was not published"));

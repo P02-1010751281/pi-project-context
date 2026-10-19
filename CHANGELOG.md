@@ -10,7 +10,17 @@
 - **被拒绝的 consolidation 回复不再改 `CONTEXT.md`**：当回复因「构建期间存储的 `MEMORY.md` 已变化」被拒时，以前同一回复的
   `context` 段仍会落盘；它和 memory 同出于更旧的快照，会把更新的 `CONTEXT.md` 覆盖回去（现场 2026-10-19T08:27:10Z：
   拒发日志与 `CONTEXT.md` 写回同秒，手工收敛的 open tasks 回到旧清单）。现在拒绝态两者都不发布，下一次 pass 从磁盘上的
-  较新 context 重建；拒绝态的回执不再声称 context 更新，并按 warning 级别显示。
+  较新 context 重建；`/memory update` 的回执仍按 `contextWritten` 如实说明 context 没有更新。
+
+## v0.4.14 — 2026-10-19
+
+### 修复
+
+- **拒绝态诊断在 fresh 项目与 recovered 回复上不再说谎**：v0.4.13 的拒发诊断在 fresh 项目（没有 `CONTEXT.md`）上会声称
+  “the previous CONTEXT.md stays effective”，并把本地生成的占位段叫作回复的 context 段；对象未闭合的回复则被说成
+  “carried no context section”。现在按回复是否带 context / 是否不可用 / 是否 recovered、磁盘上是否已有文件分支出措辞，
+  且形状诊断在写入之后才发（写失败时不再先声称写了占位符）。`/memory update` 的拒绝回执改为 warning；删除已不可达的
+  `LastWriteInfo.contextWritten` 与 stale 句的 true 分支。三个 fresh 夹具（带/不带/不可用 context）与 recovered 夹具钉住措辞。
 
 ## v0.4.12 — 2026-10-19
 

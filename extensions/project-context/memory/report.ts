@@ -242,26 +242,6 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// errors.log 2026-10-19T08:27:10Z, where a curated open-task list came back). The refusal
 			// keeps the file the pass raced, and the next pass re-renders from it.
 			const contextWritten = Boolean(update) && !memoryRefused;
-			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
-				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
-				// days without a trace: nothing failed, so nothing was logged anywhere. The outcome
-				// must describe what this pass actually did: a refusal skips the placeholder too.
-				contextShapeWarned.add(projectRoot);
-				const kept = contextWritten
-					? (existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written")
-					: (existingContext.trim() ? "no CONTEXT.md was written; the previous one stays effective" : "no CONTEXT.md was written");
-				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
-			} else if (!outcome.result.context && existingContext.trim() && !contextShapeWarned.has(projectRoot)) {
-				// Same failure class, one step further back: no context member at all. The reply was either
-				// cut off at the output cap (the memory alone filled it) or simply left the section out;
-				// either way the kept CONTEXT.md ages silently, which is how it stayed a day behind.
-				contextShapeWarned.add(projectRoot);
-				await logError(
-					projectRoot,
-					"memory",
-					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; the previous CONTEXT.md is kept and stays stale until a pass returns one`,
-				);
-			}
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
 			// must not read as "nothing happened" when the context was rewritten.
 			lastWrite.set(projectRoot, {
@@ -283,6 +263,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				// Entries only disappeared if the document that dropped them was published.
 				...(memoryRefused ? {} : outcome.removed ? { removed: outcome.removed } : {}),
 			});
+			let wroteContext = false;
 			if (update) {
 				if (!contextWritten) {
 					// Silent no-ops are the failure class this repo keeps closing: the reply was refused,
@@ -295,11 +276,14 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						"memory",
 						carriedContext
 							? `the refused reply's context section was not published; ${kept}`
-							: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
+							: outcome.result.recovered
+								? `the refused reply's context section was not published (its object never closed, so only memory_markdown could be recovered); ${kept}`
+								: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
 					);
 				} else {
 					const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
 					await writeAtomic(contextFile(projectRoot), contextDocument);
+					wroteContext = true;
 					const dropped = contextTruncationDropped(contextDocument);
 					if (dropped !== undefined && !contextCapWarned.has(projectRoot)) {
 						// The marker is the durable trace; say it once per project per process, like the memory cap.
@@ -307,6 +291,30 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						await logError(projectRoot, "memory", `CONTEXT.md was clipped (a section budget, the ${MAX_LIST_ITEM_CHARS}-character item cap, or the ${MAX_LIST_ENTRIES}-entry list cap); ${dropped} characters were dropped`);
 					}
 				}
+			}
+			// The shape diagnostics describe what this pass actually did, so they run after the write
+			// attempt: a placeholder is only claimed once it landed, and a thrown write skips them.
+			if (outcome.result.contextUnusable && !contextShapeWarned.has(projectRoot)) {
+				// A model that answers in another shape would otherwise leave CONTEXT.md stale for
+				// days without a trace: nothing failed, so nothing was logged anywhere.
+				contextShapeWarned.add(projectRoot);
+				const kept = wroteContext
+					? (existingContext.trim() ? "the previous CONTEXT.md is kept" : "only a placeholder context was written")
+					: (existingContext.trim() ? "no CONTEXT.md was written; the previous one stays effective" : "no CONTEXT.md was written");
+				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
+			} else if (!outcome.result.context && !outcome.result.contextUnusable && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
+				// Same failure class, one step further back: no usable context member at all. The reply was
+				// cut off at the output cap (the memory alone filled it) or simply left the section out;
+				// either way the next writer needs the trace, and a fresh project has no old file to keep.
+				contextShapeWarned.add(projectRoot);
+				const kept = existingContext.trim()
+					? "the previous CONTEXT.md is kept and stays stale until a pass returns one"
+					: (wroteContext ? "a placeholder context was written" : "no CONTEXT.md was written");
+				await logError(
+					projectRoot,
+					"memory",
+					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; ${kept}`,
+				);
 			}
 			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
 			if (outcome.clipped && !memoryRefused && (memoryChanged || update)) {

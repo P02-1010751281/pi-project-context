@@ -636,6 +636,45 @@ try {
 					&& !freshUnusable.log.includes("only a placeholder context was written")
 					&& freshUnusable.log.includes("no CONTEXT.md was written"),
 			);
+			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
+			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective"));
+			// A recovered reply never closed its JSON object: the fresh refusal/publish trace must say
+			// that, not "the reply carried no context section" (round-2 I-A).
+			const runFreshText = async (label, replyText, race) => {
+				const dir = await mkdtemp(path.join(os.tmpdir(), `pc-refusal-${label}-`));
+				freshDirs.push(dir);
+				await mkdir(path.join(dir, ".agents/memory"), { recursive: true });
+				const factory = await loadDefault(`${PC}/index.ts`);
+				const pi = makePi({ cwd: dir });
+				await factory(pi);
+				const ctx = makeCtx(dir, {
+					model: { provider: "test", id: `fresh-${label}`, maxTokens: 32768 },
+					sessionManager: makeSessionManager([messageEntry("m1", "user", "hello", "2026-09-12T10:00:00.000Z")], `fresh-${label}`),
+				});
+				ctx.modelRegistry.complete = async () => {
+					if (race) await writeFile(path.join(dir, ".agents/memory/MEMORY.md"), `# Project Memory\n\n## Project\n- arrived during the ${label} pass.\n`);
+					return { content: [{ type: "text", text: replyText }] };
+				};
+				await pi.commands.get("memory").handler("update", ctx);
+				const log = await readFile(path.join(dir, ".agents/memory/errors.log"), "utf8").catch(() => "");
+				const files = await readdir(path.join(dir, ".agents/memory")).catch(() => []);
+				return { log, files };
+			};
+			const recoveredReply = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- recovered memory.","context":{"title":"t","summary":"s"';
+			const freshRecoveredRefused = await runFreshText("recovered-refused", recoveredReply, true);
+			check(
+				"a fresh recovered refusal says the object never closed",
+				freshRecoveredRefused.log.includes("never closed")
+					&& !freshRecoveredRefused.log.includes("the reply carried no context section")
+					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),
+			);
+			const freshRecoveredPublished = await runFreshText("recovered-published", recoveredReply, false);
+			check(
+				"a fresh recovered publish traces the placeholder",
+				freshRecoveredPublished.log.includes("never closed")
+					&& freshRecoveredPublished.log.includes("a placeholder context was written")
+					&& freshRecoveredPublished.files.includes("CONTEXT.md"),
+			);
 			for (const dir of freshDirs) await rmTemp(dir);
 
 			// The backup helper fails closed when the target exists but cannot be read.

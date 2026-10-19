@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-19
-commit: 11bd38a
+commit: 56dda5d
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -38,8 +38,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为写入与 toast 的唯一门；拒绝态写一条区分三种情形的诊断（回复带 context + 有旧文件 / 无旧文件 / 回复没带 context 的占位段），不再声称不存在的旧文件或未写的占位符。`contextShapeWarned` 的措辞改为按 `contextWritten` 说明未写；删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。 |
-| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、且诊断落盘。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）断言诊断不声称旧文件或占位符。 |
+| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与 shape 措辞的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered、磁盘上是否已有文件分支，不声称不存在的旧文件、未写的占位符或未被回复携带的段。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。 |
+| `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、且诊断落盘。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）与两个 recovered 夹具（拒绝 / 发布），断言诊断不声称旧文件或占位符、并保留 `object never closed` 记号。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动；带 context 段时另断言"跳过"诊断。 |
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
 | `CHANGELOG.md` | v0.4.13 修复条目。 |
@@ -49,10 +49,13 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 
 - `node tests/run-all.mjs`：15/15；`git diff --check` 干净。
 - 变异（按最终测试）：把 `contextWritten` 退回 `Boolean(update)`：
-  - `tests/consolidation-test.mjs` 红 6 条：mid-call 的 `a refused reply does not overwrite the newer CONTEXT.md`
-    与 5 条 fresh 项目诊断/文件断言（带 context / 不带 context / context 不可用三组）；
+  - `tests/consolidation-test.mjs` 红 8 条：mid-call 的 `a refused reply does not overwrite the newer CONTEXT.md`、
+    5 条 fresh 诊断/文件断言（带 context / 不带 context / context 不可用）、`a refused unusable context writes no CONTEXT.md`
+    与 `a fresh recovered refusal says the object never closed`；
   - `tests/external-edit-test.mjs` 红 2 条：`CONTEXT.md was left untouched` 与 `the skipped context write is traced`
     （"不声称 context 更新"在变异下仍绿，因为 `staleKeepSentence` 已不再带 context 前缀；这是收窄后的守卫，不是门探针）。
+  - 另两条定点变异：恢复旧的 shape 措辞 → 恰红 `a refused unusable context does not claim a placeholder was written`；
+    恢复旧的 I1 字面诊断 → 红 fresh carried / absent / unusable 三组（unusable 已补 `!files` 与 `!previous-file` 断言）。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
   `the context section is written from the same reply` 用例全绿），证明红灯来自门而不是夹具。
 
@@ -69,4 +72,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   这是既有去重行为，不是本修复引入的。（独立审查 R2）
 - **R3**：并发 pass 可能在拒绝 pass 与命令读取 `lastWrite` 之间删除它，命令回复退化为 "updated"；既有设计残留。
 - **R4**：context 写入不在 memory 锁内、无 CAS；本修复缩小了现场窗口，但没有新增 context CAS。
+- **N-H（接受）**：shape 诊断移到 memory 写入之后，若 memory 写抛错，pass 直接进 catch，shape 诊断不再补发；
+  失败本身有 errors.log，且 once 标记未消费，后续 pass 可再报。按"不新增机制"接受。
+- **R5（已修）**：recovered 回复的 fresh 拒绝/发布诊断曾把"对象未闭合"说成"没带 context 段"；现按 `recovered` 分支，
+  并给 fresh 发布补了"a placeholder context was written"的告知。
 - 拒绝仍是检测器（不阻止其他合法回复发布）；它只决定"这一条回复"两侧都不发布。

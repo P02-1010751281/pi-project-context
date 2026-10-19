@@ -124,12 +124,15 @@ flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不
 
 consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不会用空内容覆盖旧 `CONTEXT.md`：
 
-- 完整 JSON 但没有 `context`：保留旧文件并写缺失诊断。
-- JSON 在 `context` 前截断，但仍恢复出 `memory_markdown`：标记 `recovered` / `object never closed`，保留旧文件并写诊断。
-- `context` 存在但形状错误：保留旧文件，记录 shape warning。
+- 完整 JSON 但没有 `context`：保留旧文件并写缺失诊断；fresh 项目（没有旧文件、回复也不是 recovered）写占位 context 而不报缺失。
+- JSON 在 `context` 前截断，但仍恢复出 `memory_markdown`：标记 `recovered` / `object never closed`；有旧文件时保留旧文件，
+  fresh 项目写占位 context，两者都写诊断。
+- `context` 存在但形状错误：有旧文件时保留旧文件；fresh 项目写占位 context。两者都记录 shape warning。
 - 存储的 `MEMORY.md` 在回复构建期间变化时，整条回复（含 `context` 段）都不发布：memory 由 `basisKey` 判据拒绝，
   同一个回复的 `context` 也来自更旧的快照（2026-10-19 现场：拒发同秒把手工收敛的 open tasks 写回旧清单），所以
-  `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建，并写一条「context section was not published」诊断。
+  `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建；当这条回复有 context 候选
+  （回复带了 context、不可用，或 recovered）时写一条「context section was not published」诊断，没有候选时只由
+  shape warning 记录缺失。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的
   JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。该预留有 8192 的上限，而 route
