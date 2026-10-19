@@ -144,6 +144,24 @@ toolResult 正文占据。再跑一个 4 轮 fixture：每轮让模型 `read` �
 `input=907`，successor JSONL 的 toolResult 文本 228 字符（总文本 1,933，2 条 toolResult），被裁的 `bigN.txt`
 正文未出现。这验证的是命令行 → config → `runHandoff` → replay 的真实链路，不证明模型能无成本地回读被裁正文。
 
+## 追加：质量与成本（3 次/组，2026-10-18）
+
+上面的 cap 探针只证明“少带正文、input 下降”。质量验证改用 `target.txt`（第 200 行是
+`SECRET_CODE=ZEBRA-7421`），predecessor 最后读它，keep=6000；successor 问它这行是什么，并允许先读文件。
+cap=0 与 cap=1000 各跑 3 次，答案都正确；成本按本机 deepseek 直连注册价（input 1.32 / cacheRead 0.044 /
+output 3.96 USD/M）从 successor 全部调用累加，predecessor 成本单列：
+
+| 版本 | 正确 | 真的读 target | successor 首轮 input（均值） | 首轮成本（均值） | successor 总成本（均值） | pred+successor（均值） |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cap=0 | 3/3 | 1/3 | 7,277 | $0.00997 | $0.01079 | $0.02443 |
+| cap=1000 | 3/3 | 3/3 | 3,355 | $0.00464 | $0.01097 | $0.02461 |
+
+结论是**质量在本 fixture 没有退化，但 cap 不是净省钱**：cap 把首轮成本减半（少带 target 正文），
+可 successor 必须回读 target，多出的 4.1k input 加一次工具调用把省下的抵消掉；需要正文时总成本反而
+高约 0.7%–1.6%。cap=0 也出现过 1/3 次主动回读，说明“有正文”不等于模型一定不查。反过来说，若
+successor 不需要被裁正文，就不会产生回读；此前的 4 轮 OK fixture 的 input 下降属于这种 best case，
+不能拿来证明 worst case 也省钱。默认 off 因此仍是正确选择。
+
 ## 噪声与边界
 
 - 有一轮 handoff 后继首轮出现 `cacheRead=0`；重复同一配置后得到 384。本轮不把 0 当作 replay 顺序 bug，按冷/噪声处理；不据此写机制结论。
