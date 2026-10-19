@@ -124,7 +124,8 @@ E-4000
 
 1. 最近 `handoffBudgetRecentTokens` 范围内的可重放原文（被切回合的起始 user 消息也锚定在内）；
    若设置了 `handoffBudgetToolResultTokens`（默认 0 = off），每个被携带 toolResult 的文本超过该 token 目标时，
-   文本块替换为 `[tool result trimmed during handoff: N characters; full output in the previous session log]`，
+   文本块替换为 `[tool result trimmed during handoff: N characters; full output in the previous session log]`
+   （中文交接：`[交接时已裁剪工具输出：原 N 字符；完整内容在上一会话日志]`），
    `toolCallId` 和非文本块（如图片）保留，完整输出仍在旧会话日志里；cap 省的是 carried 正文，不保证总成本下降：
    successor 若需要该正文，必须回读文件或 session log，回读可能比原来直接携带更贵。配置值是 token 目标而非硬上限：
    结果超过目标、但替换 marker 不短于结果时保持原文；只有 marker 更短时才替换，因此极小目标下 marker 体积可能高于配置值；

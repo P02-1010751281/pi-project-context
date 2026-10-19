@@ -334,14 +334,27 @@ Ask one question at a time.
 	check("the trim marker follows the handoff language", handoff.trimToolResultText(trimEntry.message, 100, "zh")?.content?.[0]?.text?.startsWith("[交接时已裁剪工具输出："));
 	check("the cap uses the measured chars-per-token rate", handoff.toolResultCharBudget(100, 2.5) === 250 && handoff.toolResultCharBudget(100, 4) === 400);
 	const usageEntry = contentEntry("usage1", "assistant", [{ type: "text", text: "answer" }], "2026-09-16T00:42:33.000Z");
-	usageEntry.message.usage = { input: 1234, cacheRead: 0, cacheWrite: 0, output: 5, totalTokens: 1239 };
+	usageEntry.message.usage = {
+		input: 1234, cacheRead: 0, cacheWrite: 0, output: 5, totalTokens: 1239,
+		cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+	};
 	usageEntry.message.stopReason = "stop";
 	usageEntry.message.rawStopReason = "stop";
-	const replayUsage = handoff.replayMessagesFor([usageEntry]);
-	const replayAssistant = replayUsage.find((message) => message.role === "assistant");
+	const usageEntry2 = contentEntry("usage2", "assistant", [{ type: "text", text: "answer 2" }], "2026-09-16T00:42:34.000Z");
+	usageEntry2.message.usage = {
+		input: 777, cacheRead: 0, cacheWrite: 0, output: 2, totalTokens: 779,
+		cost: { input: 0.0007, output: 0.0008, cacheRead: 0, cacheWrite: 0, total: 0.0015 },
+	};
+	usageEntry2.message.stopReason = "stop";
+	const replayUsage = handoff.replayMessagesFor([usageEntry, usageEntry2]);
+	const replayAssistants = replayUsage.filter((message) => message.role === "assistant");
+	const replayAssistant = replayAssistants[0];
 	check("replayed assistant usage is zeroed, not deleted", replayAssistant?.usage?.totalTokens === 0 && replayAssistant?.usage?.input === 0);
 	check("replayed assistant stopReason is dropped with the usage", replayAssistant?.stopReason === undefined && replayAssistant?.rawStopReason === undefined);
 	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234 && usageEntry.message.stopReason === "stop");
+	check("each replayed assistant gets a fresh usage and cost record", replayAssistants.length === 2
+		&& replayAssistants[0].usage !== replayAssistants[1].usage
+		&& replayAssistants[0].usage.cost !== replayAssistants[1].usage.cost);
 	const { isContextOverflow } = await import(pathToFileURL(`${PI_AI_DIST}/compat.js`).href);
 	const { addUsageToTotals } = await import(pathToFileURL(`${PI}/dist/core/usage-totals.js`).href);
 	const { calculateContextTokens } = await import(pathToFileURL(`${PI}/dist/core/compaction/compaction.js`).href);
@@ -356,6 +369,9 @@ Ask one question at a time.
 	check("pi's overflow classifier accepts the zeroed replay", !classifierThrows && isContextOverflow(replayAssistant, 200_000) === false);
 	check("pi's footer usage accumulator accepts the zeroed replay", totals.input === 0 && totals.output === 0 && totals.cacheRead === 0 && totals.cacheWrite === 0 && totals.cost === 0);
 	check("pi's context accounting sees zero on the zeroed replay", calculateContextTokens(replayAssistant.usage) === 0);
+	replayAssistant.usage.input = 1;
+	check("mutating one replayed usage leaves the other and the source zeroed", replayAssistants[1].usage.input === 0
+		&& usageEntry.message.usage.input === 1234 && usageEntry2.message.usage.input === 777);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
