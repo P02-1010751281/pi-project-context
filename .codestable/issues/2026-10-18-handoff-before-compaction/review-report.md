@@ -4,6 +4,9 @@
 |---|---|---|---|---|---|
 | R1 | pre-compaction guard | PASSED | 0 | 1 | `session_before_compact` preempts automatic threshold/overflow; I-1 cancelled-cooldown pin was missing |
 | R2 | `1a71b73` (v0.4.11 RC) | PASSED | 0 | 0 | post-PASS `willRetry` correction verified against pi 1.3.0; cap reviewed; nits A-1/B-1/B-2/B-3 and residual A-2 recorded as follow-ups |
+| R3 | `0580b2d` (v0.4.12 RC) | CHANGES-REQUESTED | 1 | 0 | A-2 fix deleted `usage`; pi 1.3.0 `isContextOverflow` crashed on the surviving `stopReason: "stop"` |
+| R4 | `31cfb64` | CHANGES-REQUESTED | 1 | 0 | deleting usage also broke pi's footer/context accounting; zeroing required, plus a non-vacuous test and measured-rate pin |
+| R5 | `bf22a8a` (v0.4.12 RC) | PASSED | 0 | 0 | zeroed usage verified against real pi footer/context/classifier consumers; three post-PASS nits recorded |
 
 ## R1 (transcript: `review-round1-precompact-independent.txt`)
 
@@ -53,3 +56,25 @@ Review nits, intentionally not fixed before the tag (a code change would invalid
 
 The PASS covers `1a71b73` only; the tag points at that exact commit. Release follow-ups are tracked
 in the release evidence and the next patch, not by rewriting the tag.
+
+## R3–R5 (post-v0.4.11 follow-ups)
+
+R3 reviewed `0580b2d` and caught a blocking crash: deleting only `usage` left
+`stopReason: "stop"`, so pi 1.3.0's `isContextOverflow` read `usage.input` of undefined. R4 reviewed
+`31cfb64` (which dropped `stopReason` too) and caught the next shape violation: persisted assistant
+messages without `usage` crash pi's footer accumulator (`addUsageToTotals`) and post-compaction
+context accounting (`calculateContextTokens`). R5 reviewed `bf22a8a`, which replaces the deleted
+record with a fresh zeroed usage object and drops stopReason/rawStopReason; it verified the real
+installed-pi consumers, the A-2 test against the real classifier, the measured-rate cap fixture, and
+the A-1/B-1/B-2/B-3 fixes. **VERDICT: PASSED**, full suite 15/15.
+
+Post-PASS nits (not fixed, to keep the PASS on `bf22a8a`):
+- The zeroed-record freshness is not pinned by a two-message identity check.
+- The A-2 fixture's stale-usage record lacks the real `cost` field; the zeroed assertions still pin
+  the behavior.
+- `docs/handoff.md` shows only the English marker literal while claiming zh/en.
+
+Residuals: a replayed assistant without `stopReason` counts as the latest successful response for
+virtual-model selection (pre-first-call only); the async `sendUserMessage` rejection remains outside
+the extension's catch (pi runtime records it), documented in `docs/handoff.md`; cache-warmer pauses
+one turn on a zeroed replay tail.

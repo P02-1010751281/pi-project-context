@@ -1,0 +1,59 @@
+All checks complete. Here is the review report.
+
+---
+
+# Review: 31cfb64 — `fix(handoff): keep the replayed assistant shape coherent`
+
+Frozen revision 31cfb64, scope `0580b2d..HEAD` plus combined `1a71b73..HEAD` verified. All probes below ran against the **installed pi 1.3.0** (`~/.pi/agent/install/releases/1.3.0`, harness-resolved) and its pi-ai 1.3.0 `compat.js`; mutations were performed on rsync copies under `/tmp` only. Full suite: **All 15 tests passed**, repo hygiene green.
+
+## BLOCKING
+
+**1. The strip shape still crashes real pi — the replay persists assistant messages without `usage`, and pi's own consumers read `.usage` unguarded.**
+`extensions/project-context/handoff/text.ts:125-130` deletes `usage` from replayed assistants. That fixes the R3 classifier crash, but the successor session now contains persisted assistant entries with `usage === undefined`, which violates pi 1.3.0's invariant (`AssistantMessage` declares `usage: Usage` required, pi-ai `types.d.ts:375`). Two crash paths, both reproduced end-to-end against the real pi 1.3.0 modules:
+
+- **TUI footer, every frame, immediately** — `modes/interactive/components/footer.js:104-107` (pi 1.3.0): `addUsageToTotals(usageTotals, entry.message.usage)` then `entry.message.usage.input + …` over all entries ("footer renders on every frame", footer.js:77). Probe with the real `SessionManager` + `appendMessage` + real `usage-totals.js` → `TypeError: Cannot read properties of undefined (reading 'input')` on the successor's first render. No compaction needed.
+- **`getContextUsage` after the successor's first compaction** — `core/agent-session.js:3486-3488`: after any compaction whose keep window retains a replay entry (`buildContextEntries` keeps entries from `firstKeptEntryId` on; defaults make this the common case — `handoffBudgetRecentTokens` 20k ≈ pi `keepRecentTokens` 20000), the projected stripped assistant passes `stopReason !== "aborted"/"error"` and hits `calculateContextTokens(message.usage)` → `TypeError: …(reading 'totalTokens')`, confirmed by probe with real `buildSessionProjection` + `calculateContextTokens`. Trigger: manual `/compact`, threshold compaction on small-window models (there `U <= F` refuses the handoff threshold, so the guard never cancels), or overflow-with-retry (explicitly left to pi). Every subsequent call crashes: the TUI footer (footer.js:118) **and the extension itself** — `handoffDue(ctx, ctx.getContextUsage())` at `run.ts:347` (`agent_settled`, line 400) and `run.ts:419` (`session_before_compact`) → handoff trigger and guard permanently dead, extension error every settle. Same latent shape in `getUsageStats` (agent-session.js:3444-3446) and cache-warmer `lastPromptTokens` (cache-warmer.js:48-53).
+
+This is inherited from 0580b2d (R3 caught only the `isContextOverflow` crash, which this patch does fix); dropping `stopReason` does not touch these paths — they read `usage` itself. **Smallest fix boundary**: in `withoutReplayUsage`, replace the `usage` field with a zeroed usage record (`{ input: 0, cacheRead: 0, cacheWrite: 0, output: 0, totalTokens: 0, cost: {…0} }`) instead of deleting it, while still dropping `stopReason`/`rawStopReason`. That keeps the classifier fix (stopReason absent → `isContextOverflow` never reads usage), keeps `_checkCompaction` on the estimate path (directContextTokens 0), makes footer/getUsageStats/cache-warmer add zeros, and turns the post-compaction `getContextUsage` case into the graceful "tokens unknown" state. Update the A-2 checks to pin the zeroed record and add a regression test that runs the installed pi's real `addUsageToTotals` and `calculateContextTokens` over the replay (import from the pi dist exactly like the existing `isContextOverflow` import at `tests/handoff-test.mjs:344`).
+
+## What verified correctly (required checks)
+
+- **A-2 classifier fix is real and pinned**: `tests/handoff-test.mjs:341-352` uses `.find(role === "assistant")` (index 0 is the SPLIT_TURN_MARKER — the old vacuity is gone) and imports the real pi-ai 1.3.0 `isContextOverflow` (verified same dist the harness resolves, `compat.js` re-exports `utils/overflow.js`). Mutation restoring the usage-only strip (0580b2d behavior) fails both the stopReason check and the classifier check (`classifierThrows = true`). `_checkCompaction`'s stale-usage arrival compaction cannot fire: no usage anywhere → `directContextTokens = 0` → estimate path with `lastUsageIndex === null` → pure size estimate.
+- **A-1 backoff**: `run.ts:366` arms failure backoff on a synchronous `sendUserMessage` throw; mutation removing that line fails both backoff checks (`tests/handoff-test.mjs:676-678`). `docs/handoff.md:19` now scopes the claim to synchronous throws and names the async gap — accurate: pi's `runner.bindCore` (agent-session.js:2745-2751) records async rejections via `emitError("send_user_message")`.
+- **Measured-rate pin**: probe confirms `measureContext` returns **rate 2.2** (2 samples, calibrated) for the fixture → budget 220 chars vs the 317-char result (trimmed); hard-coded-4 mutation fails the new check. `findCutPoint` returns `firstKeptEntryIndex 2`, non-split, with the call/result pair kept — deterministic, not flaky.
+- **B-1/B-2/B-3**: status says "toolResult target" (`run.ts:27`, test updated in lockstep); tiny-cap receipt names the omission marker and rejects "capped at ~1"; trim marker follows continuation language (zh path tested); tiny-result guard keeps the original when the marker isn't shorter (`text.ts:169`), and the docs wording ("结果超过目标、但替换 marker 不短于结果时保持原文；只有 marker 更短时才替换") is precise; multiple results, null-usage fallback, and budget-recent receipt are all tested.
+- **stopReason-drop side effects**: every `.stopReason` reader in pi 1.3.0 dist is an `===` comparison or truthiness-guarded — no error display, retry (`isRetryableAssistantError` bails on `!== "error"`), cache, or JSONL-render misbehavior; the extension's language sampling reads neither field; tool pairing and replay shape untouched. JSONL readers tolerate a missing `stopReason`.
+
+## IMPORTANT
+
+- None beyond the blocking item.
+
+## NIT
+
+- `CHANGELOG.md:13-16` describes "两者一起删" as the fix — once the zeroed-usage shape lands, this wording (and `text.ts:120-124` docblock, `docs/architecture.md:33-36`) must describe "usage 归零、stopReason 删除" instead, or they will document a shape that crashes pi.
+
+## SUGGESTION
+
+- `maybeTrigger`'s async-rejection gap (docs-honest now): an async `sendUserMessage` rejection leaves `handoffInFlight` true with no backoff, silently killing automatic handoff for the session. A `.catch`/`finally` reset (or documenting the stuck-in-flight consequence in `docs/handoff.md`) would close it.
+
+## RESIDUAL RISK
+
+- `virtual-models.js:15` `findLatestResponse`: stripping `stopReason` makes a predecessor's final error/aborted message count as a successful response for model selection on the successor's first run (virtual-model sessions only, pre-first-response window). Also, the stripped assistant violates the declared `AssistantMessage` type (`usage`/`stopReason` required) — runtime-safe today, but any future pi consumer assuming those fields (the two crash sites above are exactly such consumers) will break.
+- cache-warmer `lastPromptTokens` scans backward to the last assistant message — safe only because it runs after the successor's first response; unverified timing.
+
+## PRAISE
+
+- The A-2 test now exercises the real installed pi classifier instead of re-implementing it, and the three assertions jointly pin the whole strip (usage / stopReason / rawStopReason) against any partial regression — verified by mutation.
+- The docs scoping of the async gap matches the actual pi runtime behavior exactly; the measured-rate fixture has a 97-char discrimination margin and a stable cut point.
+
+## LEARNING
+
+- pi's persisted-message contract is stronger than "role + content": `usage` on assistant messages is read unguarded in the footer stats loop and in `getContextUsage`'s post-compaction branch. Shape-reduction of replayed history needs to zero, not delete, fields pi reads unconditionally — the A-2 classifier was only the third consumer of this invariant.
+
+## ADMISSIONS OF UNCERTAINTY
+
+- Whether the TUI wraps footer render in an error boundary is unverified; even if it does, the footer breaks every frame and the `getContextUsage` crash independently kills the extension's settle/pre-compaction hooks (verified by code path, not a live TUI run).
+
+**VERDICT: CHANGES-REQUESTED**
+
+**Release recommendation: do not release.** The classifier crash R3 found is fixed, but the same strip persists assistant messages without `usage` and crashes pi 1.3.0's TUI footer immediately in every successor session, and `getContextUsage` (TUI + this extension's own triggers) after the successor's first compaction. Replace the deleted `usage` with a zeroed record, pin it in the A-2 test, and add a regression check running pi's real `addUsageToTotals`/`calculateContextTokens` over the replay before cutting v0.4.12.

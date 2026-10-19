@@ -1,0 +1,76 @@
+All checks complete. Full evidence gathered: test suite, 5 mutation copies under /tmp, direct inspection of every pi 1.3.0 consumer of `usage`/`stopReason`, and a freshness probe.
+
+# Independent review — bf22a8a ("fix(handoff): zero replayed usage instead of deleting it")
+
+## 1. Zeroed usage record vs installed pi 1.3.0 — verified clean
+
+Verified against `~/.pi/agent/install/releases/1.3.0` (pi 1.3.0, pi-ai 1.3.0):
+
+| Consumer | R4 shape (usage deleted) | This patch (zeroed) |
+|---|---|---|
+| Footer `addUsageToTotals` (`bundle/chunk-66G7ITPS.js`, `footer.js:101-107`) | TypeError at `usage.cost.total` | adds 0s; `latestCacheHitRate` → undefined, no CH shown |
+| `getSessionStats` (`agent-session.js:3445`) | TypeError | 0 contribution |
+| `calculateContextTokens` (`compaction.js:65-67`) | TypeError | `0` |
+| `getAssistantUsage` (`compaction.js:72-82`) | TypeError inside `estimateContextTokens` | skipped (`> 0` guard) → no stale-usage arrival compaction |
+| `getContextUsage` post-compaction (`agent-session.js:3476-3490`) | TypeError in `projectedAssistants` | excluded → `{tokens: null, percent: null}` unknown fallback |
+| `isContextOverflow` (`pi-ai/dist/utils/overflow.js`) | crash iff `stopReason:"stop"` survived | `stopReason` undefined skips all 3 cases → false |
+| `cache-stats.js:15-51` / `cache-warmer.js:51-52` | TypeError | zero → skipped/0 |
+
+Record shape: `replayZeroUsage()` (`text.ts:117-127`) has input/output/cacheRead/cacheWrite/totalTokens + nested `cost{input,output,cacheRead,cacheWrite,total}` — matches pi's persisted shape exactly. Freshness probe (2-assistant fixture): distinct `usage` objects, distinct `cost` objects, mutating one record leaves the other and the source entry untouched. ✓
+
+## 2. Dropped stopReason — acceptable residual, not a shape violation
+
+Consumers treating missing `stopReason` as success: `virtual-models.findLatestResponse` (`virtual-models.js:12-19`), `cache-warmer.js:248`, `bug-report.js:163-175` (optional spread — safe), `export-html` (guards `msg.stopReason &&`). Impact of `findLatestResponse`: before the successor's first call, `routedModel` (footer) and a virtual router's `previous` name the predecessor's model — accurate for successful replays, mildly off for an aborted predecessor tail. No crash, no compaction influence (`_checkCompaction` reads only the fresh response; zeroed replays are filtered out of every accounting path). `rawStopReason` is read only in bug-report.js with an `=== undefined` guard. Acceptable, and exactly what R4 recommended.
+
+## 3. Tests pin real consumers; A-2 non-vacuous; rate fixture works
+
+A-2 (`tests/handoff-test.mjs:341-357`) imports the real `isContextOverflow`, `addUsageToTotals`, `calculateContextTokens` from the installed pi dist. Mutation results on /tmp copies:
+- **R4 shape (delete usage)**: 1 FAIL + crash with the real pi TypeError at `usage-totals.js:15` — the exact R4 crash, red in `run-all.mjs`.
+- **Stale usage kept**: zeroed + stopReason checks red.
+- **stopReason kept**: stopReason check red.
+- **Send-failure backoff arm removed**: both A-1 checks red (and I confirmed non-vacuity: the 190K/200K fixture is over `resolveThreshold`'s 196K knee, so the guard would cancel without the backoff).
+- **Shared mutable zero record (mut4)**: passes green — see nit #1.
+
+Measured-rate fixture (`tests/handoff-test.mjs:1345-1384`): rate2/rate4 usage deltas yield rate ≈ 2.17 → 100-token budget ≈ 184 chars < 316-char result → trimmed; a hard-coded rate 4 would give 400 chars → untrimmed. The check distinguishes the two; suite passes, so the fixture works.
+
+## 4. A-1 / B-1 / B-2 / B-3 — verified
+
+- **A-1**: `run.ts:361-368` arms backoff on sync send throw; docs/handoff.md:19 correctly scopes async failures ("由 pi runtime 记录，不在本扩展的 catch 内") — matches the real API: pi's wrapper (`agent-session.js:2745-2753`) swallows async rejections into `emitError`, so the extension can't observe them. Test ordering comment (shared loader state) is sound.
+- **B-1**: status "toolResult target", both budget receipts, tiny-cap "omission marker" wording, docs/configuration.md + docs/handoff.md all updated consistently.
+- **B-2**: zh/en marker via `resolveLanguage` moved before trimming (`run.ts:145-147`); inputs to language detection unchanged (raw `carriedMessages`); zh marker pinned in the cap fixture and the unit test.
+- **B-3**: two oversized results counted, no-usage path, measured-rate path — all covered and green.
+
+## 5. Suite + adversarial pass
+
+`node tests/run-all.mjs` → **All 15 tests passed** (against installed pi 1.3.0). Adversarial sweep of every `usage`/`stopReason` reader in pi's dist: no consumer requires `stopReason` presence, no reader misinterprets zero (all either guard, skip zeros, or tolerate them). `appendMessage` does no schema validation. Tool pairing, replay block shape, language sampling, and JSONL serialization all unchanged/verified.
+
+---
+
+## Findings
+
+**Praise**
+- `text.ts:117-143` — the zeroed record mirrors pi's persisted usage shape exactly, is fresh per message (probe-verified), and never mutates source entries.
+- `tests/handoff-test.mjs:347-357` — pins the real installed pi consumers; four independent mutations go red exactly as claimed, including reproducing R4's actual TypeError.
+- `run.ts:361-368` + `docs/handoff.md:19` — the async-send boundary is documented precisely against pi's real API behavior, not guessed.
+
+**Nit**
+1. `tests/handoff-test.mjs:341-357` — freshness of the zeroed record is unpinned: a shared-mutable-record mutation passes green. Smallest fix: two-assistant fixture asserting `a.usage !== b.usage && a.usage.cost !== b.usage.cost` plus mutation isolation.
+2. `tests/handoff-test.mjs:340` — the A-2 fixture usage lacks `cost`, unlike real persisted records (so the stale-usage mutation's crash is partly a fixture artifact; the zeroed assertions still pin stale usage independently).
+3. `docs/handoff.md:126` — lists only the English marker literal while claiming zh/en; listing both keeps the doc self-contained.
+
+**Residual-risk (all acceptable, documented)**
+- `text.ts:135-143` → `virtual-models.js:12-19`: replayed assistant counts as "latest successful response" (missing stopReason). Pre-first-call `routedModel`/router `previous` name the predecessor's model; wrong only for an aborted predecessor tail. No crash, no compaction impact.
+- `cache-warmer.js:47-53,284`: `lastPromptTokens` returns 0 on a replay tail → warming pauses one turn in the successor. Heuristic-only, benign.
+- `run.ts:361-368`: async send rejection → `handoffInFlight` stuck true → auto handoff silently dead for the session. Unobservable via the extension API; docs scope it. Watch if pi ever exposes the rejection.
+- Positive side effect worth noting: zeroing also removes a latent R4-era edge — stale usage would have made the successor's `getContextUsage` report a huge percent and immediately re-trigger handoff.
+
+**Learning**
+- Zeroing rides on pi's own "invalid usage" filters (`getAssistantUsage` `> 0` guard; `projectedAssistants` `> 0` guard), which is why zeroed records are simultaneously shape-valid, crash-free, and invisible to stale-usage accounting. The `calculateContextTokens === 0` pin is what indirectly guards the arrival-compaction property.
+
+**Important / blocking**: none.
+
+---
+
+`VERDICT: PASSED`
+
+Release recommendation: proceed with the v0.4.12 tag as changelogged. The three nits are post-PASS follow-ups (test pin for record freshness, fixture `cost` field, doc marker literals) and do not gate the release; the residual risks are pre-existing, bounded, and documented.

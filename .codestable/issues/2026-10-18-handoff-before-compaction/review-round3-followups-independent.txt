@@ -1,0 +1,63 @@
+All checks complete. Here is the independent review of `0580b2d` (`1a71b73..HEAD`).
+
+---
+
+# Independent review: 0580b2d "fix(handoff): close the v0.4.11 review follow-ups"
+
+Scope verified: `extensions/project-context/handoff/{handoff,run,text}.ts`, `tests/handoff-test.mjs`, `CHANGELOG.md`, `docs/{architecture,configuration,handoff}.md` (plus `.agents/*` session bookkeeping, non-functional). Test suite: **15/15 green** (`node tests/run-all.mjs`). Installed pi checked at `/home/user/.pi/agent/install/releases/1.3.0`.
+
+## A-2 verdict on installed pi 1.3.0 — the fix direction is right, the implementation crashes
+
+I traced the real chain: replay appends via `sessionManager.appendMessage` (session-manager.js:827, persisted verbatim) → `agent.state.messages = projection.messages` (agent-session.js:577) → successor's first prompt → `_startRun` → `_prepareRun` → `_checkCompaction(lastAssistant, false)` (agent-session.js:1452-1455). For a replayed assistant message, the guards all pass in the default flow: compaction enabled (settings-defaults.js:9), same model restored by `stageHandoffSessionSettings` → `_modelForMessage` matches on `provider`/`model` → `sameModel = true`; message is projected → `assistantIsProjected = true`; fresh session has no compaction entry → `assistantIsFromBeforeCompaction = false`; no context edits → `assistantUsageMatchesProjection = true`. So line 2407 evaluates `isContextOverflow(assistantMessage, contextWindow)`, and in pi-ai's `overflow.js` case 2 (`contextWindow && message.stopReason === "stop"`) it reads `message.usage.input`.
+
+- Pre-patch (usage kept, 190k): `isContextOverflow` returns false, but `shouldCompact(190000, 200000, {enabled, reserve: 16384})` → **true** → spurious arrival compaction / re-handoff loop. The A-2 premise is empirically correct.
+- Post-patch (usage stripped, `stopReason: "stop"` kept): **`TypeError: Cannot read properties of undefined (reading 'input')`**. Reproduced with the installed `isContextOverflow` directly and with a full harness-level reconstruction using the real `SessionManager` + projection + compaction functions. `stopReason: "length"` crashes identically on `usage.output`; `"toolUse"`/`"aborted"`/`"error"` survive. Persisted assistant messages in real JSONL carry `stopReason` ("stop"/"toolUse") and `provider`/`model`, and `withoutReplayUsage` copies both.
+
+So every handoff whose kept tail ends in a completed assistant response (the common settle-time shape) produces a successor whose **first continuation prompt crashes**, every retry included. The fix trades a spurious compaction for a crash.
+
+---
+
+## Blocking
+
+1. **A-2 crash: stripping `usage` without `stopReason` breaks pi's overflow classifier.** `extensions/project-context/handoff/text.ts:120-123` (used at `:92`). Impact: successor's first run throws out of `_prepareRun`; the fresh session is unusable for its first prompt; the predecessor session is already gone. Smallest fix boundary: `withoutReplayUsage` must also drop `stopReason`/`rawStopReason` (absent stopReason matches none of `"error"`/`"stop"`/`"length"` in `isContextOverflow`/`isRecoverableLength`, and `_checkCompaction`'s threshold path then falls to the pure char estimate — verified safe); pin with a test asserting the stripped message carries neither `usage` nor `stopReason`, plus a harness test running pi's real `isContextOverflow`/`shouldCompact` conditions on the replayed shape (my /tmp reproduction is ready-made).
+2. **The A-2 test is vacuous — it would NOT fail if the strip were removed.** `tests/handoff-test.mjs:338`: `replayUsage[0]?.usage === undefined` — index 0 of a lone-assistant replay is the `SPLIT_TURN_MARKER` user stand-in (user-first rule prepends it), which never has `usage`. Mutation-confirmed: reverting `withoutReplayUsage(message)` → `message` keeps the whole suite green ("OK replayed assistant usage is dropped" still passes). Smallest fix: assert on `replayUsage.find((m) => m.role === "assistant")` instead of `[0]`.
+
+## Important
+
+3. **B-3's "measured rate != 4" is not actually pinned.** `tests/handoff-test.mjs:334` checks the helper's arithmetic (`toolResultCharBudget(100, 2.5) === 250`); `run.ts` could hard-code rate 4 at the call site and every test stays green — the cap integration fixture has no usage records, so `measureContext` falls back to rate 4 (threshold.ts:461). The wiring `toolResultCharBudget(config.handoffBudgetToolResultTokens, rate)` is correct but unpinned. Smallest fix: give the cap fixture a `billed` usage record so the measured rate ≠ 4 and assert the trim threshold uses it.
+4. **A-1 fixes only synchronous send failures (residual of the follow-up).** The extension-facing `pi.sendUserMessage` returns void (extensions/loader.js:306-309) and the runtime swallows async rejections into `emitError` (agent-session.js:2745-2751) — an asynchronous failure never reaches the catch: in-flight stays true, the handoff dies silently for that session, no backoff arms. The patch's docs claim ("handoff 失败（包括触发发送失败）会进入 failure backoff", docs/handoff.md) holds only for sync throws (`assertActive` staleness, etc.). Pre-existing, not a regression, but the claim should be scoped or the gap closed.
+
+## Nit
+
+5. `docs/handoff.md:129`: "当它小于 omission marker 自身时，实际留下的是 marker" — imprecise: when the result sits between cap and marker size, the **full result stays verbatim** (guard at text.ts:158-159); the marker appears only when it is smaller than the result. Units are also mixed (token cap vs char marker).
+6. `docs/handoff.md:150` still calls the cap "可选的第二层上限" a few lines after the same doc now says "目标而非硬上限"; and `:128` shows only the English marker while the new sentence says the marker follows zh/en.
+7. `run.ts:33` status line keeps "toolResult cap 2.0k" while both command receipts were reworded to "target" — a leftover hard-cap-flavored label in the one receipt B-1 aimed at. Borderline; the test at `handoff-test.mjs:508` pins the word "cap".
+
+## Suggestion
+
+8. Adopt my harness reconstruction (real `SessionManager` + `isContextOverflow`/`shouldCompact` on the replayed shape) as a permanent test: "replayed messages are inert to pi's compaction classifier" — it catches both the pre-patch trip and the post-patch crash.
+
+## Learning
+
+9. Stripping one persisted field is not field-neutral: pi's compaction classifier consumes `usage` **and** `stopReason` from the same message. Any replay-shape mutation should be validated against pi's own `_checkCompaction` conditions, not just the extension's mocks.
+
+## Praise
+
+10. A-1 mutation pin is real: removing the backoff line turns two checks red ("arms the failure backoff", "compaction proceeds after a trigger send failure"); backoff-before-notify ordering in the catch is defensive; the `loadShared` state-sharing comment documents a genuinely tricky harness trap.
+11. B-3's multi-result cap test is a genuine integration pin (two markers counted, call pairing kept, receipt count, null-usage path end-to-end); B-1's receipt rewording accurately covers both receipts.
+12. The A-2 premise itself (stale usage → arrival compaction / re-handoff) was confirmed exactly against installed pi 1.3.0; the direction of the fix was right.
+
+## Residual-risk (named, acceptable)
+
+13. A-1 oscillation: a permanently failing trigger still cancels one compaction per 5-minute backoff expiry and re-arms; bounded, matches the documented design, not a loop. 
+14. The A-2 crash requires the successor to run the predecessor's model (`sameModel`); a model switch sidesteps both the crash and the arrival compaction.
+
+## Adversarial pass
+
+The adversarial assumption ("a production bug hides in this patch") proved correct: the patch's own headline A-2 fix (usage stripping) collides with pi's `isContextOverflow` silent-overflow branch and crashes the successor's first prompt in the most common handoff shape. It was invisible to the suite because the pin reads the marker stand-in instead of the assistant message.
+
+---
+
+`VERDICT: CHANGES-REQUESTED`
+
+Release recommendation: **do not release v0.4.12 as-is.** The fix is small and local: drop `stopReason`/`rawStopReason` in `withoutReplayUsage`, repair the vacuous A-2 assertion, and add the pi-condition harness test; then re-run. A-1, B-1, B-2 and the genuinely pinned parts of B-3 can close with it; item 3 (rate≠4 pin) and items 5-7 (docs wording) should ride along.
