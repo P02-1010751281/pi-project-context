@@ -18,7 +18,7 @@ import { buildHandoffDocument, buildHandoffPrompt } from "./prompt.ts";
 import { findPendingQuestion } from "./question.ts";
 import { config, getConfigRoot, handoffEnabled, parseRatio, parseTokenCount, saveConfig, setConfigRoot, setFlagEnabled, syncConfig, usageText } from "./settings.ts";
 import { FAILURE_BACKOFF_MS, RETRIGGER_COOLDOWN_MS, armHandoffCooldown, armHandoffFailureBackoff, handoffCooldownUntil, handoffFailureBackoffUntil, handoffInFlight, setHandoffInFlight } from "./state.ts";
-import { replayMessageList, replayMessagesFor, trimToolResultText } from "./text.ts";
+import { replayMessageList, replayMessagesFor, toolResultCharBudget, trimToolResultText } from "./text.ts";
 import { type Threshold, baselineSuffix, capSuffix, contextTokensAtRate, measureContext, resolveThreshold, thresholdOverrideText, thresholdRefusal, thresholdRefusalText } from "./threshold.ts";
 
 /** Exported so tests can read the status receipt without going through the command registration. */
@@ -137,22 +137,25 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 		// below never double-counts it.
 		const droppedOrphans: AgentMessage[] = [];
 		let keptMessages = replayMessagesFor(keptSlice, droppedOrphans);
+		const olderPrefixMessages = olderEntries.filter((entry) => entry.type !== "compaction").flatMap(sessionEntryToContextMessages);
+		const olderMessages = [...olderPrefixMessages, ...droppedOrphans];
+		// The trim marker follows the continuation language, so the replay does not mix an English
+		// omission note into a zh scaffold.
+		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLang);
 		let trimmedToolResults = 0;
 		if (config.handoffBudgetToolResultTokens > 0) {
 			// Opt-in per-result cap. Keep the call/result pair and non-text blocks (images, nested
 			// calls); the marker points at the session log for the full output. The cap is a token
 			// budget, converted with the same measured rate the receipt uses.
-			const maxChars = Math.max(1, Math.floor(config.handoffBudgetToolResultTokens * rate));
+			const maxChars = toolResultCharBudget(config.handoffBudgetToolResultTokens, rate);
 			keptMessages = keptMessages.map((message) => {
 				if (message.role !== "toolResult") return message;
-				const trimmed = trimToolResultText(message, maxChars);
+				const trimmed = trimToolResultText(message, maxChars, language);
 				if (!trimmed) return message;
 				trimmedToolResults += 1;
 				return trimmed;
 			});
 		}
-		const olderPrefixMessages = olderEntries.filter((entry) => entry.type !== "compaction").flatMap(sessionEntryToContextMessages);
-		const olderMessages = [...olderPrefixMessages, ...droppedOrphans];
 
 		// Skip when there is nothing real to drop (e.g. only a previous compaction entry, or a
 		// session that already fits the keep window). The command path is
@@ -192,8 +195,6 @@ async function runHandoff(pi: ExtensionAPI, args: "force" | "force-auto", ctx: E
 			`Handoff: dropping ~${fmtTokens(olderTokens - anchorTokens)} of context, carrying ~${fmtTokens(keptTokens)} recent${trimmedNote}...`,
 			"info",
 		);
-
-		const language = resolveLanguage(languageMessagesFor(olderMessages, carriedMessages), config.handoffLang);
 
 		const { readFiles, modifiedFiles } = computeFileLists(collectFileOps(olderEntries));
 		const fileOperations = formatFileOperations(readFiles, modifiedFiles);
@@ -360,6 +361,9 @@ function maybeTrigger(pi: ExtensionAPI, ctx: ExtensionContext): void {
 			pi.sendUserMessage("/handoff force-auto", { expandPromptTemplates: true });
 		} catch (error) {
 			setHandoffInFlight(false);
+			// A failed send is a failed automatic attempt too: without the backoff the pre-compaction
+			// guard would cancel every following compaction while no handoff can start.
+			armHandoffFailureBackoff(FAILURE_BACKOFF_MS);
 			notify(ctx, `Handoff: trigger failed — ${errorText(error)}`, "error");
 		}
 	}, 0);
@@ -471,7 +475,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 						ctx,
 						config.handoffBudgetRecentTokens > 0
 							? config.handoffBudgetToolResultTokens > 0
-								? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens; each tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens.`
+								? `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens; oversized tool results are trimmed to a ~${fmtTokens(config.handoffBudgetToolResultTokens)}-token target (a tiny cap may leave only the omission marker).`
 								: `Handoff: will carry ~${fmtTokens(config.handoffBudgetRecentTokens)} recent tokens verbatim.`
 							: "Handoff: no recent carry-over; the file list and the session-log pointer are all that carry.",
 					);
@@ -492,7 +496,7 @@ export function registerHandoff(pi: ExtensionAPI): void {
 					notify(
 						ctx,
 						config.handoffBudgetToolResultTokens > 0
-							? `Handoff: each carried tool result is capped at ~${fmtTokens(config.handoffBudgetToolResultTokens)} tokens; the full output stays in the session log, but a successor that needs it must re-read it, so total cost can rise.`
+							? `Handoff: carried tool results are trimmed to a ~${fmtTokens(config.handoffBudgetToolResultTokens)}-token target (a tiny cap may leave only the omission marker); the full output stays in the session log, but a successor that needs it must re-read it, so total cost can rise.`
 							: "Handoff: tool result text is carried verbatim (no cap).",
 					);
 					return;

@@ -28,7 +28,9 @@ session.jsonl ──► session.md ──► INDEX.md
 交接的切点由 pi 的 `findCutPoint` 选定，它同时给出 `turnStartIndex` 与 `isSplitTurn`：本扩展据此在
 **前缀不超一窗且老侧仍有内容可丢**时吸附到回合起点（整轮原文保留），否则把该回合的起始 user 消息**锚定进重放**、
 其余丢给旧会话日志（裁切 + 既有文件索引），所以「最后问了什么」始终以原文到达 successor。交接不调用模型：
-较早的部分以指针而不是摘要进入 successor，被切回合的悬空 tool 结果只留在旧会话日志里。
+较早的部分以指针而不是摘要进入 successor，被切回合的悬空 tool 结果只留在旧会话日志里。replay 副本会去掉
+predecessor assistant 消息的 `usage`：它描述旧会话的请求，不是 successor 的当前前缀；保留它会让 successor 的
+第一次 `_prepareRun` 误读旧 prompt 大小。
 
 ## 数据布局
 

@@ -25,8 +25,17 @@ export const SPLIT_TURN_MARKER = "[turn prefix dropped during handoff]";
  * pairing and non-text blocks are kept, so the replay stays parseable; the full output is still in
  * the predecessor's session log.
  */
-export function toolResultTrimmedMarker(chars: number): string {
-	return `[tool result trimmed during handoff: ${chars} characters; full output in the previous session log]`;
+export type ToolResultMarkerLanguage = "zh" | "en";
+
+export function toolResultTrimmedMarker(chars: number, language: ToolResultMarkerLanguage = "en"): string {
+	return language === "zh"
+		? `[交接时已裁剪工具输出：原 ${chars} 字符；完整内容在上一会话日志]`
+		: `[tool result trimmed during handoff: ${chars} characters; full output in the previous session log]`;
+}
+
+/** The character budget a token cap buys at the session's measured chars-per-token. */
+export function toolResultCharBudget(tokens: number, rate: number): number {
+	return Math.max(1, Math.floor(tokens * rate));
 }
 
 /**
@@ -80,7 +89,7 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
 			messages.push(
 				message.role === "user" && isHandoffPromptText(messageText(message))
 					? ({ ...message, content: [{ type: "text", text: REPLAY_MARKER }] } as AgentMessage)
-					: message,
+					: withoutReplayUsage(message),
 			);
 		}
 	}
@@ -101,6 +110,17 @@ export function replayMessagesFor(entries: SessionEntry[], droppedOrphans?: Agen
 		replayable.unshift({ role: "user", content: [{ type: "text", text: SPLIT_TURN_MARKER }], timestamp: replayable[0].timestamp } as AgentMessage);
 	}
 	return replayable;
+}
+
+/**
+ * The predecessor's `usage` describes the request that produced that message, not the replacement
+ * session's prefix. Replaying it makes pi's first `_prepareRun` read the old prompt size and can
+ * summarize a replay that is already small; the successor's own first call supplies fresh usage.
+ */
+function withoutReplayUsage(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant") return message;
+	const { usage: _usage, ...rest } = message as AgentMessage & { usage?: unknown };
+	return rest as AgentMessage;
 }
 
 /** Roles appendMessage() accepts as raw conversation messages. */
@@ -132,10 +152,10 @@ export function replayEntries(sessionManager: SessionManager, entries: SessionEn
  * other non-text blocks stay, as does the toolCallId, so the carried call/result pair remains valid.
  * Returns undefined when there is nothing to trim (no text, or already within the cap).
  */
-export function trimToolResultText(message: AgentMessage, maxChars: number): AgentMessage | undefined {
+export function trimToolResultText(message: AgentMessage, maxChars: number, language: ToolResultMarkerLanguage = "en"): AgentMessage | undefined {
 	const text = messageText(message);
 	if (!text || text.length <= maxChars) return undefined;
-	const marker = toolResultTrimmedMarker(text.length);
+	const marker = toolResultTrimmedMarker(text.length, language);
 	// A tiny result would grow: never replace it with a longer marker.
 	if (marker.length >= text.length) return undefined;
 	const content = Array.isArray(message.content) ? message.content : [];

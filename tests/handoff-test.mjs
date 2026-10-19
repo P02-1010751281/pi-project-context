@@ -330,6 +330,13 @@ Ask one question at a time.
 	check("trimming does not mutate the source message", JSON.stringify(trimEntry.message).includes("TOOL_TRIM_SECRET"));
 	check("a short tool result is left alone", handoff.trimToolResultText(toolResultEntry("trim2", "trim-tc2", "short", "2026-09-16T00:42:31.000Z").message, 100) === undefined);
 	check("a cap smaller than the marker does not grow a tiny result", handoff.trimToolResultText(toolResultEntry("trim3", "trim-tc3", "tiny", "2026-09-16T00:42:32.000Z").message, 1) === undefined);
+	check("the trim marker follows the handoff language", handoff.trimToolResultText(trimEntry.message, 100, "zh")?.content?.[0]?.text?.startsWith("[交接时已裁剪工具输出："));
+	check("the cap uses the measured chars-per-token rate", handoff.toolResultCharBudget(100, 2.5) === 250 && handoff.toolResultCharBudget(100, 4) === 400);
+	const usageEntry = contentEntry("usage1", "assistant", [{ type: "text", text: "answer" }], "2026-09-16T00:42:33.000Z");
+	usageEntry.message.usage = { input: 1234, cacheRead: 0, cacheWrite: 0, output: 5, totalTokens: 1239 };
+	const replayUsage = handoff.replayMessagesFor([usageEntry]);
+	check("replayed assistant usage is dropped", replayUsage[0]?.usage === undefined);
+	check("dropping replayed usage does not mutate the entry", usageEntry.message.usage?.input === 1234);
 
 	console.log("\n=== replay block shape ===");
 	// A slice that starts on a carried-over prompt used to be kept as-is (user-first); replacing
@@ -491,8 +498,19 @@ Ask one question at a time.
 	await command.handler("budget toolresult 2k", ctx);
 	check("budget toolresult sets the per-result cap", (await readConfig())?.handoffBudgetToolResultTokens === 2_000);
 	check("the toolresult receipt warns about the re-read", String(ctx.notifications.at(-1)?.[0] ?? "").includes("must re-read"));
+	await command.handler("budget recent 12k", ctx);
+	check(
+		"the budget recent receipt names the tool-result target",
+		String(ctx.notifications.at(-1)?.[0] ?? "").includes("oversized tool results are trimmed"),
+	);
 	await command.handler("status", ctx);
 	check("status reports the toolresult cap", String(ctx.notifications.at(-1)?.[0] ?? "").includes("toolResult cap 2.0k"));
+	await command.handler("budget toolresult 1", ctx);
+	check(
+		"a tiny cap receipt names the omission marker instead of promising a hard cap",
+		String(ctx.notifications.at(-1)?.[0] ?? "").includes("may leave only the omission marker") &&
+			!String(ctx.notifications.at(-1)?.[0] ?? "").includes("capped at ~1"),
+	);
 	await command.handler("budget toolresult off", ctx);
 	check("budget toolresult off disables the cap", (await readConfig())?.handoffBudgetToolResultTokens === 0);
 	await command.handler("budget toolresult 300k", ctx);
@@ -624,6 +642,27 @@ Ask one question at a time.
 	await preemptPi.commands.get("handoff").handler("force-auto", preemptCtx);
 	const afterFailure = await runHandlers(preemptPi, "session_before_compact", preemptCtx, { reason: "threshold" });
 	check("compaction proceeds after a failed handoff", afterFailure.every((result) => result?.cancel !== true));
+	// A trigger whose send throws is a failed automatic attempt: the guard must not keep cancelling
+	// compaction while that failure repeats. Run before the cancel test, which also arms the shared
+	// cooldown clock; a fresh module pair alone does not give the loader a fresh state instance.
+	const [sendFailHandoff, sendFailState] = await loadShared([`${PC}/handoff/handoff.ts`, `${PC}/handoff/state.ts`]);
+	const sendFailPi = makePi({ cwd: tmp });
+	sendFailHandoff.registerHandoff(sendFailPi);
+	const sendFailCtx = makeCtx(tmp, {
+		sessionManager: autoCtx.sessionManager,
+		mode: "tui",
+		getContextUsage: () => ({ tokens: 190_000, percent: 95, contextWindow: 200_000 }),
+	});
+	sendFailPi.sendUserMessage = () => {
+		throw new Error("trigger send exploded");
+	};
+	await runHandlers(sendFailPi, "session_start", sendFailCtx);
+	await runHandlers(sendFailPi, "agent_settled", sendFailCtx);
+	await waitUntil(() => sendFailCtx.notifications.some(([message]) => String(message).includes("trigger failed")));
+	check("a trigger send failure is reported", sendFailCtx.notifications.some(([message]) => String(message).includes("trigger failed")));
+	check("a trigger send failure arms the failure backoff", sendFailState.handoffFailureBackoffUntil() > Date.now());
+	const afterSendFailure = await runHandlers(sendFailPi, "session_before_compact", sendFailCtx, { reason: "threshold" });
+	check("compaction proceeds after a trigger send failure", afterSendFailure.every((result) => result?.cancel !== true));
 	const cancelPreemptPi = makePi({ cwd: tmp });
 	sharedHandoff.registerHandoff(cancelPreemptPi);
 	const cancelEntries = [];
@@ -1228,7 +1267,15 @@ Ask one question at a time.
 			"cap3",
 		),
 		toolResultEntry("cap5", "cap-tc", `CAP_TOOL_SECRET ${"tool output ".repeat(1_000)}`, "2026-09-16T01:40:04.000Z", "cap4"),
-		contentEntry("cap6", "assistant", [{ type: "text", text: "done" }], "2026-09-16T01:40:05.000Z", "cap5"),
+		contentEntry(
+			"cap6",
+			"assistant",
+			[{ type: "text", text: "reading more" }, { type: "toolCall", id: "cap-tc2", name: "bash", arguments: { command: "cat big2" } }],
+			"2026-09-16T01:40:05.000Z",
+			"cap5",
+		),
+		toolResultEntry("cap7", "cap-tc2", `CAP_TOOL_SECRET_TWO ${"more output ".repeat(1_000)}`, "2026-09-16T01:40:06.000Z", "cap6"),
+		contentEntry("cap8", "assistant", [{ type: "text", text: "done" }], "2026-09-16T01:40:07.000Z", "cap7"),
 	];
 	const capCaptured = { replay: [], prompt: undefined, notifications: [] };
 	const capPi = makePi({ cwd: tmp });
@@ -1242,8 +1289,12 @@ Ask one question at a time.
 	await capPi.commands.get("handoff").handler("now", capCtx);
 	check(
 		"the opt-in cap trims the replayed tool result",
-		capCaptured.replay.some((message) => message.role === "toolResult" && message.content?.[0]?.text?.startsWith("[tool result trimmed during handoff:")) &&
+		capCaptured.replay.some((message) => message.role === "toolResult" && message.content?.[0]?.text?.startsWith("[交接时已裁剪工具输出：")) &&
 			!JSON.stringify(capCaptured.replay).includes("CAP_TOOL_SECRET"),
+	);
+	check(
+		"the cap counts every oversized result",
+		capCaptured.replay.filter((message) => message.role === "toolResult" && message.content?.[0]?.text?.includes("交接时已裁剪")).length === 2,
 	);
 	check(
 		"the trimmed result keeps its call pairing",
@@ -1256,7 +1307,19 @@ Ask one question at a time.
 	);
 	check(
 		"the handoff receipt names the trimmed result",
-		String(capCtx.notifications.map(([message]) => message).join("\n")).includes("1 tool result trimmed"),
+		String(capCtx.notifications.map(([message]) => message).join("\n")).includes("2 tool results trimmed"),
+	);
+	const noUsageCaptured = { replay: [], prompt: undefined };
+	const noUsageCtx = makeCtx(tmp, {
+		sessionManager: makeSessionManager(capEntries, "handoff-tool-cap-no-usage"),
+		getContextUsage: () => undefined,
+	});
+	noUsageCtx.newSession = captureNewSession(noUsageCaptured);
+	await runHandlers(capPi, "session_start", noUsageCtx);
+	await capPi.commands.get("handoff").handler("now", noUsageCtx);
+	check(
+		"the cap still works when usage is unavailable",
+		noUsageCaptured.prompt !== undefined && noUsageCaptured.replay.some((message) => message.role === "toolResult" && message.content?.[0]?.text?.includes("交接时已裁剪")),
 	);
 
 	// An orphan result (its call left in the dropped prefix) cannot be replayed; it leaves the replay and

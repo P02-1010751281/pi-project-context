@@ -48,7 +48,7 @@
 | `forceDedupeMs` | 强制整理的去重窗口 |
 | `handoffThresholdAuto` / `handoffThresholdRatio` | 阈值是自适应还是固定比例 |
 | `handoffBudgetSummaryTokens` / `handoffBudgetRecentTokens` | 交接预算（对应 `/handoff budget summary|recent`）；详见 [handoff 预算与恢复](handoff.md) |
-| `handoffBudgetToolResultTokens` | 每个 carried toolResult 的文本上限；0 = off（对应 `/handoff budget toolresult`） |
+| `handoffBudgetToolResultTokens` | 每个 carried toolResult 的文本目标；0 = off（对应 `/handoff budget toolresult`）；极小值可能只留下 omission marker |
 | `handoffMode` | `send` 自动发送 successor continuation，或 `draft` 留在编辑器 |
 | `handoffGuard` | 遇到待回答问题时 `wait`/`draft`/`send`/`skip` |
 | `handoffLang` | `auto`、`zh` 或 `en`（对应 `/handoff lang`） |
@@ -137,7 +137,8 @@ cap 能否装进模型输出上限也做静态校验：稠密（CJK）正文按 
 `budget summary <n>` 是手动设定的**触发请求量**（不参与触发公式，被护栏压掉时 `status` 会点名；v0.4.1 起没有任何摘要调用读它），
 `budget recent <n|off>` 是带回新会话的近期窗口；默认逐字，开启 `budget toolresult` 后超限工具文本会被裁剪（`off` 等价 `0`，即不带原文，只留文件清单与会话日志指针）。
 `budget toolresult <n|off>` 限制每个被携带 toolResult 的文本（默认 `off`），只替换文本块，保留 call/result 配对与图片；
-完整输出仍在旧会话日志；需要该正文时 successor 必须回读，回读可能使总成本上升。`/handoff` 写入时只提交自己拥有的 handoff 键，
+完整输出仍在旧会话日志；需要该正文时 successor 必须回读，回读可能使总成本上升。`n` 是目标值而不是硬上限：
+当 `n` 小于 omission marker 自身时，实际留下的是 marker，体积可能高于配置值。`/handoff` 写入时只提交自己拥有的 handoff 键，
 因此不会覆盖 `/memory off` 之类的开关、另一个实例的改动或手改的字段。
 
 **入口关系**（v0.3.0 起重排）：一个参数住在**改变它的那一层**。每个特性有自己的 `on|off`（`/memory`、`/session-log`、`/handoff`、`/autolearn`），
