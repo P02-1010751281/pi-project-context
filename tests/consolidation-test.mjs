@@ -651,7 +651,7 @@ try {
 					&& freshUnusable.log.includes("this pass wrote no CONTEXT.md")
 					&& noOldContextClaim(freshUnusable.log),
 			);
-			const unusableShapeLine = freshUnusable.log.split("\n").find((line) => line.includes("could not be used"));
+			const unusableShapeLine = freshUnusable.log.split("\n").find((line) => line.includes("the consolidation reply carried a context section that could not be used"));
 			check(
 				"the refused unusable shape line carries the pass-scoped phrase",
 				Boolean(unusableShapeLine?.includes("this pass wrote no CONTEXT.md")),
@@ -2658,6 +2658,37 @@ try {
 			check("the automatic refusal toast carries no retired claim", Boolean(toast) && noOldContextClaim(String(toast?.[0] ?? "")));
 		} finally {
 			await rmTemp(toastTmp);
+		}
+	}
+
+	console.log("\n=== an automatic non-refusal pass does not show the stale toast ===");
+	{
+		// A published pass whose only problem is an unusable context must not notify the refusal
+		// sentence: the toast is gated on the refusal, not on the shape warning.
+		const cleanTmp = await mkdtemp(path.join(os.tmpdir(), "pi-toast-negative-"));
+		try {
+			const cleanMem = path.join(cleanTmp, ".agents/memory");
+			await mkdir(cleanMem, { recursive: true });
+			const cleanFactory = await loadDefault(`${PC}/index.ts`);
+			const cleanPi = makePi({ cwd: cleanTmp });
+			await cleanFactory(cleanPi);
+			const cleanEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`ct${index}`, "user", `clean turn ${index}`, `2026-09-12T13:0${index}:00.000Z`));
+			const cleanCtx = makeCtx(cleanTmp, {
+				sessionManager: makeSessionManager(cleanEntries, "clean-session"),
+			});
+			cleanCtx.modelRegistry.complete = async () => ({
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- clean automatic write.", context: "not-an-object" }) }],
+			});
+			await runHandlers(cleanPi, "agent_settled", cleanCtx);
+			const cleanWritten = await waitUntil(() => cleanCtx.notifications.some(([message]) => String(message).includes("Memory: updated")), 3_000);
+			check("the automatic unusable-context pass publishes its memory", cleanWritten);
+			check(
+				"the automatic unusable-context pass shows no stale refusal toast",
+				!cleanCtx.notifications.some(([message]) => String(message).includes("kept the newer MEMORY.md")),
+			);
+		} finally {
+			await rmTemp(cleanTmp);
 		}
 	}
 

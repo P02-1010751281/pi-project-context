@@ -55,11 +55,11 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   - 去掉缺失分支的 `!memoryRefused`：1 + 1；
   - parser raw-string recovery 退回无条件：2（nested、non-string-with-nested）；
   - 恢复旧 shape 措辞（`no CONTEXT.md was written`）：3；
-  - 恢复旧的 I1 skip ternary：7 + 1（5 个 fixture，fresh unusable 贡献 3 个 check）；
+  - 恢复旧的 I1 skip ternary：6 + 1；skip ternary + 旧 shape-fresh 措辞：7 + 1（5 个 fixture，fresh unusable 贡献 3 个 check）；
   - 在 skip 分支追加 `left untouched`：4 + 1；在 shape 分支追加：3 + 0；
   - 在 kept/stale 家族（shape / missing）追加：3 / 3；
   - 恢复 store 的 `stays effective`：6 + 3（T2 两条 log + T2c）；
-  - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；
+  - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；把 toast 条件扩成 `memoryRefused || contextUnusable`：2（自动 non-refusal 负控）；
   - `noOldContextClaim`（tests/harness.mjs）拒绝 "no CONTEXT.md was written" / "left untouched" / "stays effective" /
     "CONTEXT.md is kept" / "stays stale"。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
