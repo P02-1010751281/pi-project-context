@@ -1,0 +1,51 @@
+Route: deepseek/deepseek-flash
+
+## Important
+
+1. `tests/consolidation-test.mjs:654-657` — The new shape assertion is still not truly source-specific. It selects the first line containing the generic phrase `could not be used`, not the shape diagnostic itself. I reproduced a false pass in a scratch copy: the skip diagnostic was changed to mention `could not be used` plus `this pass wrote no CONTEXT.md`, while the actual shape line was changed to the neutral `the context section was malformed`. Both `consolidation-test.mjs` and `external-edit-test.mjs` stayed green, and the check `the refused unusable shape line carries the pass-scoped phrase` still passed. Impact: round 10's intended guarantee (the shape line, not some other line, carries the pass-scoped wording) is not enforced. Smallest fix boundary: select by the stable shape prefix (`the consolidation reply carried a context section that could not be used`) or assert over lines matching that prefix; no production-code change required.
+
+2. `tests/consolidation-test.mjs:2631-2661` (with the successful settle fixture at `:2586-2628`) — The automatic-toast fixture is positive-only: it proves a true refusal produces a warning, but never proves a non-refusal pass does not produce that toast. In a scratch copy I changed `report.ts:326` from `if (memoryRefused)` to `if (memoryRefused || outcome.result.contextUnusable)`; all 15 tests passed. That mutation would show the false toast `Memory: kept the newer MEMORY.md you edited ...` after a perfectly successful pass whose only problem was an unusable context section. A blanket `if (true)` is caught by `memory-budget-test.mjs`, but this narrower, plausible broadening is not. Impact: a user-facing false refusal notification could ship green. Smallest fix boundary: add a negative control on an automatic non-refusal pass (successful settle and/or published-unusable-context fixture) asserting no notification contains the stale-refusal sentence.
+
+## Nit
+
+3. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:58` — The `old I1 skip ternary: 7 + 1` count is not reproducible as a skip-only mutation after the assertion became line-scoped. Measured: skip-only = consolidation 6 + external 1. The claimed 7 + 1 is reproduced only when the old shape-fresh ternary is also restored. Impact: the verification matrix still has a drifted/mislabeled entry. Smallest fix boundary: change to `6 + 1` or relabel the mutation as old skip ternary plus old shape-fresh wording.
+
+4. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:7` — `commit: fe6ca60` is stale: it is neither the original production fix (`11bd38a`) nor HEAD (`7c64497`). Impact: provenance metadata does not identify the reviewed/final commit before the v0.4.14 tag. Smallest fix boundary: update the commit field when cutting the tag.
+
+## Praise
+
+- `CHANGELOG.md:6-13` matches `git show cdb32e9:CHANGELOG.md` exactly; v0.4.14 is inserted above it and describes post-tag behavior consistent with HEAD's code.
+- The toast fixture does drive the non-silent `agent_settled` path, not `/memory update`. Changing only `report.ts:329` to type `info` reddens 1 check; removing the notify reddens both toast checks.
+- T2c now uses `noOldContextClaim`, and restoring the store's `stays effective` clause reddens exactly 6 consolidation checks plus 3 external checks (T2 two logs + T2c).
+- The parser fail-closed change is pinned by both nested and non-string-with-nested cases.
+- The helper JSDoc now correctly calls `noOldContextClaim` a blocklist rather than a semantic guard.
+
+## Residual-Risk
+
+- `noOldContextClaim` remains a literal blocklist; a new retired-style phrase not on the list passes. The JSDoc now admits this.
+- R1 (context-only lost update when `MEMORY.md` did not change) remains accepted and documented; this review did not re-litigate it.
+- The new shape assertion and toast fixture leave the two test gaps above; neither reflects a current HEAD production bug, but both are regressions the round-10 tests are meant to catch.
+
+## Test And QA Focus
+
+Ran in the sandbox:
+- `node tests/run-all.mjs` → all 15 tests passed, hygiene checks passed.
+- `node tests/consolidation-test.mjs` → 576 `OK`, 0 `FAIL`.
+- `node tests/external-edit-test.mjs` → 80 `OK`, 0 `FAIL`.
+- `git diff --check` → clean; working tree remained clean.
+
+Mutation verification (scratch copies only):
+- `contextWritten = Boolean(update)` → 9 consolidation + 2 external: matches.
+- Old shape fresh ternary → 3: matches.
+- Old I1 skip-only → 6 + 1; old I1 plus old shape-fresh → 7 + 1: fix-note's label/count mismatch.
+- Store `stays effective` restored → 6 + 3: matches.
+- Retired phrase appended to `staleKeepSentence` → 1 + 2: matches.
+- Parser raw-string recovery unconditional → 2: matches.
+- Remove missing-branch `!memoryRefused` → 1 + 1: matches.
+- Skip carried `left untouched` → 4 + 1; shape `left untouched` → 3 + 0; kept/stale family → 3 / 3: all match.
+
+What this proves: the baseline suites and the listed mutation matrix are mostly accurate; the toast call site and T2c/store clause are now exercised; the v0.4.13 changelog section is exact.
+
+What it cannot prove: semantic truth beyond the blocklist, absence of false automatic notifications on non-refusal paths, or that a future duplicate log line will not satisfy the shape assertion. The scratch mutations above show both remaining test gaps concretely.
+
+VERDICT: CHANGES-REQUESTED

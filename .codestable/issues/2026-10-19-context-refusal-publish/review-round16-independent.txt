@@ -1,0 +1,54 @@
+Route: **deepseek/deepseek-flash**. Reviewed HEAD: `d4ff8a3` (`b20c8cf..HEAD`).
+
+**Blocking**
+- None.
+
+**Important**
+- `tests/consolidation-test.mjs:2694-2699`, `tests/consolidation-test.mjs:1261-1265`, `tests/consolidation-test.mjs:2664-2667`, `tests/external-edit-test.mjs:233-239` — the new negative clip-note control is still surface-specific.
+  Impact: the kept fixture correctly rejects an unconditional clip note, but three other non-clipped surfaces do not: the clean/default `Memory: updated` toast, the non-clipped command kept reply, and the stale refusal toast/reply. I verified in a `/tmp` copy that appending “The prompt also had to be shortened…” to the default notify (`report.ts:361`) leaves `consolidation-test.mjs` `ALL OK`; removing the `report === "clipped"` guard at `report.ts:606` leaves it `ALL OK`; appending it to `staleKeepSentence()` (`report.ts:590-591`) leaves both `external-edit-test.mjs` and `consolidation-test.mjs` `ALL OK`. The stale refusal is a no-write surface, so this is exactly the false-clip-claim class round 15 was meant to close. The fix-note mutation “让它无条件出现：1（kept 夹具）” is true only for the automatic kept branch, not for the invariant.
+  Smallest fix: add local negative assertions to those existing fixtures; no production change. Capture the clean toast and assert `!includes("had to be shortened")`; add `consolidateReply("updated", { memoryKept: true, keepReason: "short" })` and assert no clip note; assert the T2 refusal toast/reply contains no clip note.
+
+**Nit**
+- `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:7` — `commit: c352bcf` does not point at the reviewed HEAD `d4ff8a3`; it is one commit behind. The change table at `fix-note.md:42,44,45` also does not mention the round-15 kept/clipped/legacy fixtures or the architecture correction, though section 5 does.
+  Impact: release traceability is ambiguous; the note looks like it covers a revision that predates the round-15 tests/docs.
+  Smallest fix: after committing, set the field to `d4ff8a3` or add `reviewed: d4ff8a3`; if `commit` means “last behavior fix”, rename/document it and add a round-15 row to the change table.
+- `docs/architecture.md:140-145` — the basisKey-vs-recheck mechanism is now correct, and §2.3/T6 plus §5 R-3 are the right citations. However, the paragraph still labels the whole (b) family “已登记的 R1 残留”; the fold-moved-before-§2.2 subcase is a normal basisKey refusal, not an R1 context-only exception. The legacy clause also omits “且无 rotation 归档” (design R-14), where `loadMemory` prefers the archive and the trim guard is not the mechanism.
+  Impact: a reader can over-credit the trim guard or misclassify the refusal case.
+  Smallest fix: scope the R1 label to the publish cases and add “且无 rotation 归档（设计 R-14）” to the legacy clause.
+- `CHANGELOG.md:28` — the last v0.4.14 sentence describes test fixtures, not behavior, contrary to the changelog’s own preamble at `CHANGELOG.md:3` (“只记行为变化”). The behavior claims themselves match HEAD.
+  Impact: release-note scope noise only.
+  Smallest fix: drop that sentence or move it to the fix-note.
+
+**Suggestion**
+- `tests/external-edit-test.mjs:184-194` — the new legacy clear/header fixture asserts only `result.written`; unlike the journal-layout header test at `:181-182`, it does not assert the resulting bytes or effective memory. A write-then-return-false/true regression would pass.
+  Impact: weak effect coverage for the new legacy branch; the named trim-guard mutation does red the clear case, so this is not blocking.
+  Smallest fix: read `MEMORY.md`/`loadMemory` after each legacy call and assert the empty case now holds `REPLY` and the header case still holds `"# Project Memory\n"`.
+
+**Learning**
+- A conditional user-facing phrase needs a negative control on every surface that can emit it; one fixture cannot pin a shared sentence. The clip note is one predicate split across `report.ts:325,333,361,606` and `report.ts:590-591`.
+- Mutation counts should name the invariant and the surfaces, not only the fixture that reddens. “1 (kept fixture)” is accurate for that fixture but reads as complete coverage.
+- Self-referential metadata cannot name its own commit; use a post-commit `reviewed` field or document `commit` as the behavior-fix commit.
+
+**Praise**
+- `tests/consolidation-test.mjs:2727,2768,2695` — kept/clipped now read `CONTEXT.md` and clean reads `MEMORY.md`; the four named mutations red exactly one check each: unconditional kept note, skipped clipped context writes, command rewrite wording, and removed legacy trim guard. The effect, not the toast, is now pinned.
+- `tests/external-edit-test.mjs:184-194` — the legacy no-journal clear/header fixture pins the trim guard; removing the guard reddens the clear case exactly one.
+- `fix-note.md:82-83` — D-R2 is named and clearly distinguished from the dedupe R2 residual; removing the recheck branch indeed leaves `run-all.mjs` at 15/15, confirming the accepted coverage gap.
+- `docs/architecture.md:144-145` — the basisKey refusal versus the recheck empty-key guard is now stated correctly, with the right design citations.
+- `CHANGELOG.md` v0.4.13 is byte-equal to `git show cdb32e9:CHANGELOG.md`; v0.4.14’s behavior claims match HEAD’s `report.ts`/`parse.ts`/`store.ts`.
+- All tests green.
+
+**Residual-risk**
+- D-R2 recheck integration remains untested; accepted, but §2.3/T6 should not be read as integration coverage.
+- R1 context-only lost update, R3/R4 context writes outside the memory lock/no CAS, and R-14 archive priority remain accepted residuals.
+- Tests use synthetic mid-call writers; they do not exercise real multi-process races, lock contention, or provider timing.
+- The v0.4.14 tag and peeled release evidence are not yet cut.
+- `noOldContextClaim` is a blocklist, not a semantic guard; new false phrases, including clip phrases, can slip unless locally asserted.
+
+**Test And QA Focus**
+- Route under review: deepseek/deepseek-flash; sandbox HEAD `d4ff8a3`.
+- Ran on the sandbox: `node tests/run-all.mjs` → **15/15**; `node tests/consolidation-test.mjs` → **ALL OK**; `node tests/external-edit-test.mjs` → **ALL OK**; `git diff --check` → clean.
+- Ran mutations in a copied tree under `/tmp` (no sandbox writes): kept-note unconditional → consolidation `FAILURES: 1`; skip clipped context writes → `FAILURES: 1`; command rewrite wording → `FAILURES: 1`; remove legacy trim guard → external-edit `FAILURES: 1`; remove `nextRenderSupersedes` recheck branch → run-all 15/15; unconditional default-updated note → consolidation `ALL OK`; unconditional command kept note → `ALL OK`; clip note on stale sentence → both suites `ALL OK`.
+- Proves: the four round-15 named mutations red; the legacy trim guard is pinned; the recheck wiring gap is real; the new effect fixtures read files.
+- Cannot prove: actual concurrent-process behavior, lock contention, provider/route behavior, or that no other false-claim surface remains. Mutation testing only proves the assertions that exist.
+
+VERDICT: CHANGES-REQUESTED

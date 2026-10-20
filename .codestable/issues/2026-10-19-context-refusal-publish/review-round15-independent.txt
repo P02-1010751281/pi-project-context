@@ -1,0 +1,91 @@
+Route: `deepseek/deepseek-flash`. Sandbox: `/tmp/pi-context-rev-ctx16`, revision `c352bcf`. Working tree stayed clean; tests only wrote temp dirs.
+
+## Round-14 answers
+
+1. **Yes.** `report === "clipped"` implies `outcome.clipped`; reverting the automatic toast to `${clippedNote}` produces exactly **1 FAIL** in `consolidation-test.mjs`. The prompt wording is also used on the command path (`report.ts:606`), but no test pins that copy.
+2. **No.** The fix-note has no design R-2 citation; the only `R2` is the dedupe residual (`fix-note.md:79`), and the only new design citation is `§5 R-3` in `docs/architecture.md:145`. `commit:` is `97c71cc`, not HEAD `c352bcf`.
+3. **Partly.** The legacy trim guard and journal same-key clauses match the code. The “fold moves then is cleared, recheck refuses” clause is wrong: `nextRenderSupersedes` has `nowKey !== ""`, and design §2.3/T6 explicitly says a clear/delete in the recheck window is **not** blocked. The refusal I could produce is the §2.2 basis-key check, not recheck. The legacy leg is also untested.
+4. **Yes, but only by `includes`.** The kept fixture reads `CONTEXT.md` and requires `"kept summary"`; it does not assert exact bytes and does not assert `MEMORY.md` unchanged.
+5. All three suites pass. Remaining no-write/test gaps are listed below; the main ones are the clipped pass’s context write, the command-path clipped-kept reply, and the legacy clear/blank branch.
+6. No **current runtime** false toast was found; the one-line change branches correctly. The adversarial failures are test-level (mutations survive) and documentation-level (the recheck sentence).
+7. **v0.4.13 is exact.** v0.4.14 describes only post-tag behavior and matches HEAD for what it says, but it omits the round-14 toast behavior.
+
+## Findings
+
+### Blocking
+
+None.
+
+### Important
+
+1. **`/.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:70`** — the design **R-2** gap is still not named. `grep 'R-2'` finds nothing in the fix-note; `:79` is the unrelated dedupe `R2`, and the only new design citation is `§5 R-3` in the architecture. c352bcf’s message says “the R-2 coverage gap is cited by name”, but the diff adds only the clipped-toast mutation line. **Impact:** the explicit round-14 finding is not fixed; the §2.3 recheck-wiring gap remains unlinked to this issue and can be mistaken for closed. **Smallest fix:** add one line under §6 labeled `设计 R-2` / `D-R2` (to avoid colliding with dedupe `R2`), stating the §2.3 recheck wiring still has no integration test and is review-covered.
+
+2. **`/tests/consolidation-test.mjs:2723` and `:2753`** — the round-14 fixtures still prove the toast, not the effect. **Mutation evidence:** making the automatic prompt note unconditional leaves `run-all` **15/15** green, because the kept fixture never asserts the clipped note is absent; skipping context writes for clipped passes (`if (update && !outcome.clipped)`) also leaves **15/15** green, because the clipped fixture never reads `CONTEXT.md` (its summary is only `"s"`). The clean fixture at `:2690` has the same shape: “publishes its memory” only checks a notification. **Impact:** the exact false clip/write-claim class from round 14 remains regression-unprotected on the changed/new paths. **Smallest fix:** add `!keptText.includes("prompt also had to be shortened")`; give the clipped reply a distinctive summary and assert it is in `CONTEXT.md`; read `MEMORY.md` in the clean fixture.
+
+3. **`/docs/architecture.md:144`** — “若 fold 先移动再被清空，recheck 会拒绝” misattributes the mechanism. `store.ts:44-45` returns false for `nowKey === ""`, and design §2.3 (`:140`) says “窗口内清空/删文件 ⇒ 不拦 (T6)”. The refusal I reproduced after a journal fold move is the §2.2 `basisKey` line (`the memory changed while this pass's reply was being built…`), not the §2.3 `recheck` line. If the move+clear lands after the §2.2 read, recheck sees an empty key and publishes. **Impact:** the safety section claims a guard that explicitly does not cover that window. **Smallest fix:** say the §2.2 baseline check refuses when the fold moved before its read, and that §2.3’s recheck has an empty-file guard (design §2.3/T6); cite the right residual.
+
+### Nit
+
+4. **`/.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:7`** — `commit: 97c71cc` is not the final revision `c352bcf`; 97c71cc predates the round-14 `report.ts` change, so `git show 97c71cc` still has the old rewrite wording and lacks the final fixture. **Impact:** traceability; the fix note points at a revision that does not contain the final code change. **Smallest fix:** a metadata-only follow-up after c352bcf setting `commit: c352bcf` (a commit cannot cite itself), or state the field convention and point to the review tip.
+
+5. **`/extensions/project-context/memory/report.ts:606` / `/tests/consolidation-test.mjs:1260`** — the command path uses the prompt wording, but no test pins it. Reverting `consolidateReply`’s `clippedNote` to `"The rewrite also shortened…"` leaves `run-all` **15/15** green. **Impact:** `/memory update` on a clipped kept-memory pass can drift back to the false rewrite claim with no red test; the auto fixture covers only the auto path. **Smallest fix:** assert `consolidateReply("clipped", { repaired: false, memoryKept: true, keepReason: "short" })` includes the prompt phrase and not the rewrite phrase; share a constant with the automatic branch.
+
+6. **`/tests/external-edit-test.mjs:166-171`** — both “cleared memory” cases call `recordMemoryDocument` first, so they exercise the journal layout only; there is no legacy no-journal clear/blank fixture. Removing the legacy `current.text.trim()` guard leaves `run-all` **15/15** green. **Impact:** the architecture’s legacy leg is untested; a regression that refuses a legacy clear would ship. **Smallest fix:** add a legacy fixture seeded only with `MEMORY.md`, assert clear publishes and header-only refuses; it should redden under the trim-guard mutation.
+
+7. **`/CHANGELOG.md:19-27` / `fix-note.md:44`** — v0.4.14 and the fix-note §4 `report.ts` row omit the round-14 behavior change; only §5’s mutation line mentions the toast. **Impact:** release notes do not map HEAD’s post-tag user-visible behavior. **Smallest fix:** add a sentence/bullet in v0.4.14 and a clause to the `report.ts` row: the kept-memory clipped toast now describes the prompt, not a rewrite.
+
+### Suggestion
+
+- Centralize the clipped-prompt sentence used by `report.ts:333` and `:606` (e.g. one exported constant). The command-path mutation shows the two literals can drift independently.
+- If the “fold moved then cleared” sentence stays in the architecture, pin it with a direct `recordMemoryDocument` scenario (append a fold move, then clear the render) and assert the §2.2 log line; otherwise remove the sentence. R-2 accepts the integration gap, but this specific claim should not be untested.
+
+### Learning
+
+- A fixture that asserts a toast is not asserting the effect. The round-14 clipped fixture repeats the pattern the round-14 finding named: it verifies the wording but not the context write that the wording claims.
+- Named guards matter: `recheck` is a specific action with an empty-file guard; using it for a `basisKey` refusal misleads future maintainers into thinking the empty-file window is covered.
+
+### Praise
+
+- The automatic toast fix is correct; reverting it reddens exactly one test, proving the clipped fixture reaches `report === "clipped"` and `outcome.clipped`.
+- The kept fixture now reads `CONTEXT.md` instead of relying only on the toast.
+- v0.4.13’s section is byte-for-byte the released text at `cdb32e9`; the only changelog diff is the added v0.4.14 section.
+- The legacy trim-guard and journal same-key behaviors in the code match the new architecture’s first two clauses (verified with direct store scenarios).
+
+### Residual-risk
+
+- Design R-2 (recheck wiring has no integration test) remains accepted, and is now also uncited in the fix-note.
+- R1 (context-only lost update) remains; the new wording does not change it.
+- No real concurrency test exercises the fold-moved-then-cleared window; my evidence is a direct store scenario, not a race fixture.
+- The suite still has toast-only assertions for several automatic branches, so a false claim can pass without a file-level regression.
+- v0.4.14 is not tagged yet; the release section is incomplete for the round-14 change.
+
+## Test And QA Focus
+
+**Ran on HEAD:**
+- `node tests/run-all.mjs` → **15/15 passed**
+- `node tests/consolidation-test.mjs` → **ALL OK**
+- `node tests/external-edit-test.mjs` → **ALL OK**
+- `git status --short` after tests → empty
+
+**Mutation checks (full `run-all` unless noted):**
+- Revert the automatic toast to `${clippedNote}` → **1 FAIL** in `consolidation-test.mjs`; proves the clipped fixture drives the clipped branch and reddens on the old rewrite wording.
+- Make the prompt note unconditional for every `!memoryChanged` toast → **15/15 passed**; proves the kept fixture lacks a negative clipped-note assertion.
+- Skip context writes when `outcome.clipped` → **15/15 passed**; proves the clipped fixture does not assert `CONTEXT.md`.
+- Revert the command-path `clippedNote` to rewrite wording → **15/15 passed**; proves the command-path copy is unpinned.
+- Remove the legacy `current.text.trim()` guard → **15/15 passed**; proves the legacy clear/blank branch is unpinned.
+
+**Direct store scenarios (scratch, `/tmp`):**
+- Legacy no-journal clear → `written: true`; header-only → `written: false`.
+- Journal clear → `written: true`; journal fold moved via append then clear → `written: false`, but the log line is the §2.2 `the memory changed…` line, not the §2.3 recheck line.
+- `nextRenderSupersedes("A", "", publish) === false` is already pinned at `external-edit-test.mjs:60`; this is the empty guard that contradicts “recheck refuses”.
+
+**Changelog:**
+- Extracted v0.4.13 sections from HEAD and `cdb32e9` → **exact match**.
+- `git diff cdb32e9..HEAD -- CHANGELOG.md` only adds v0.4.14.
+- v0.4.14 section contains no `prompt`, `rewrite`, `clipped`, or `kept unchanged` text, confirming the omission.
+
+**What this proves:** the current code branches correctly; the automatic toast fix works; the suite catches the exact old-wording revert; v0.4.13 release text is preserved.
+
+**What this cannot prove:** real concurrent scheduling, real pi UI behavior, that a future wording change is semantically acceptable, or that the not-yet-cut v0.4.14 tag will contain these fixes. The mutation results show test coverage, not a current runtime defect.
+
+VERDICT: CHANGES-REQUESTED

@@ -1,0 +1,110 @@
+Route: **deepseek/deepseek-flash**
+
+Revision reviewed: **4dd688e** (`git log --oneline b20c8cf..HEAD`). Sandbox left clean; all scratch copies/mutations under `/tmp`.
+
+Baseline: `node tests/run-all.mjs` → **15/15**; `node tests/consolidation-test.mjs` → **ALL OK**; `node tests/external-edit-test.mjs` → **ALL OK**; `git diff --check` clean.
+
+## Findings
+
+### Blocking
+None. No product-behavior regression was found; the shipped `contextWritten`, missing-branch, parser, old-shape, kept/stale, and store-clause gates all redden under mutation.
+
+### Important
+
+**I1. The stale refusal toast is still uncovered — `extensions/project-context/memory/report.ts:329` (test path: `tests/external-edit-test.mjs:206`)**
+- Impact: the commit message says “cover the toast”, but every external-edit T2 fixture enters through `/memory update`, which calls `consolidate(ctx, true, true)` (`report.ts:487`) with `silent=true`. The only non-silent stale toast is `notify(ctx, staleKeepSentence(), "warning")` at `report.ts:329`; no `agent_settled` refusal fixture exists. The command reply and toast share `staleKeepSentence()`, so the *sentence* is pinned, but the *toast call site* is not.
+- Concrete evidence: changing only line 329 to append ` The previous CONTEXT.md stays effective.` leaves **both suites green** (0 FAIL consolidation, 0 FAIL external-edit). The command reply still passes because the shared function is unchanged.
+- Smallest fix boundary: add one non-silent refusal fixture (settle/auto pass whose model writes `MEMORY.md` during the call) and assert `noOldContextClaim(ctx.notifications.at(-1)[0])` plus `"warning"`. No product change.
+
+**I2. The new “source-specific” shape check is a whole-log count — `tests/consolidation-test.mjs:655-657`**
+- Impact: `(freshUnusable.log.match(/this pass wrote no CONTEXT\.md/g) ?? []).length >= 2` does not identify the shape line. It can pass while the shape line has neutral wording, as long as another line repeats the phrase.
+- Concrete evidence: with the shape line changed to `"no context render landed this pass"` and the skip line made to emit the pass-scoped phrase twice, the count check **passes**; only `an unusable context names the file state it left` reddens. Conversely, a neutral wording that drops the exact phrase reddens **2** checks (the count and the published-shape test), so the test is strict about wording but not about source.
+- Smallest fix boundary: extract the line containing `could not be used` and assert that line’s suffix/inclusion, e.g. `const line = freshUnusable.log.split("\n").find((l) => l.includes("could not be used")); check(..., line?.includes("this pass wrote no CONTEXT.md"))`. That directly tests the stated property and removes the count proxy.
+
+**I3. The fix-note mutation matrix no longer matches HEAD — `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:53-64`**
+- Impact: the verification record is the release evidence for v0.4.14; the recorded counts/lists cannot be reproduced after round 9’s new assertions.
+- Measured mismatches:
+  - `contextWritten → Boolean(update)`: recorded **8** consolidation / **2** external; actual **9 / 2**. The extra consolidation check is `the refused unusable shape line carries the pass-scoped phrase`, omitted from the “5 条 fresh 诊断/文件断言” list.
+  - Old shape wording (`no CONTEXT.md was written`): recorded **2** checks; actual **3** — the new count check is the third.
+  - Old I1 literal (my reconstruction: whole skip ternary → `... no CONTEXT.md was written`): recorded **6 checks / 5 fixtures**; actual **7 consolidation checks / 5 fixtures + 1 external-edit check**. `fresh unusable` contributes 3, not 2, because of the count check.
+  - “left untouched” appended to the skip line: recorded “mid-call / fresh unusable”; actual **4 consolidation** (mid-call, fresh carried, fresh unusable ×2) **+ 1 external-edit**. Appending to the shape line gives **3 consolidation** (fresh unusable ×2 + shape fixture).
+- Smallest fix boundary: re-run the listed mutations against HEAD and update the counts/lists; add the new count check and external-edit T2 log helper explicitly. Add store-clause and kept/stale mutations, which the matrix does not currently record.
+
+### Nit
+
+**N1. `tests/external-edit-test.mjs:294-296` — T2c is a no-write fixture but still bypasses the shared predicate.** Restoring the store clause `and the newer content stays effective` reddens T2’s two log checks and consolidation’s six, but T2c stays green because it only asserts `!includes("consolidation shortened")` and `!includes("exceeded")`. The round-9 phrase “external-edit’s no-write fixtures” is therefore only partially fixed. Smallest fix: add `&& noOldContextClaim(refused.log)` to the T2c refusal check (optionally the reply too).
+
+**N2. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:46` — stale/overbroad CHANGELOG attribution.** The change table still says `CHANGELOG.md | v0.4.13 修复条目`, while HEAD’s `CHANGELOG.md:15-26` contains a v0.4.14 section documenting these review-round changes. The table also omits `tests/harness.mjs` (the new shared predicate) and the design row mentions only §2.4, not the §2.2 note changed in round 9. Smallest fix: update the row to “v0.4.13 + v0.4.14 复核轮条目”, add a `tests/harness.mjs` row, and mention §2.2 in the design row.
+
+**N3. `CHANGELOG.md:23-24` — “没有写入的诊断只说 本次 pass 没有写 CONTEXT.md” is overbroad.** The store’s memory-refusal line (`store.ts:248`) is a no-write diagnostic that says only “the reply was not published”; it does not use the quoted phrase. The bullet is context-scoped, so this is an ambiguity rather than a code lie. Smallest fix: qualify it as “context 未写入的诊断…” or explicitly say the memory refusal line speaks separately.
+
+**N4. `tests/harness.mjs:328-334` — the helper is a substring blocklist, not a semantic guard.** It rejects every phrase that appears in repo history: `no CONTEXT.md was written`, `left untouched`, `stays effective`, `CONTEXT.md is kept`, `stays stale` (including “kept and stays stale”). Direct checks confirmed all historical variants return `false`. However, rewordings such as `"CONTEXT.md stays unchanged"` or `"the old CONTEXT.md remains in force"` return `true`, and an unrelated `"the journal was left untouched"` returns `false` (false positive). No current production message triggers either case. Smallest fix: narrow the JSDoc to “the known retired phrases” and keep the positive `"this pass wrote no CONTEXT.md"` assertions as the real source check.
+
+**N5. `tests/consolidation-test.mjs:659,980` — redundant explicit negatives.** `!includes("the previous CONTEXT.md stays effective")` / `!includes("the previous CONTEXT.md is kept")` are now subsumed by `noOldContextClaim`. Harmless, but they create two places to update when the helper changes. Optional cleanup.
+
+### Suggestion
+
+- Add the non-silent refusal toast fixture from I1; this is the only way to pin the second call site of `staleKeepSentence()`.
+- Replace the count check with a line-scoped assertion (I2).
+- Add `noOldContextClaim(refused.log)` to T2c (N1).
+- Add a fixture for the second store refusal at `store.ts:266`; mutating that line to append `the previous CONTEXT.md stays effective` leaves both suites green. The branch currently has no retired phrase, so this is coverage, not a live lie.
+- When cutting v0.4.14, add release evidence pointing at the peeled tag and update the issue record’s `commit:` field (currently `fe6ca60`, the parent/last-code-fix commit) or document that convention. The v0.4.13 release evidence is correctly tied to `cdb32e9`.
+
+### Learning
+
+- An occurrence count is not attribution. If a test name says “the shape line carries X”, assert on the shape line, not on the log’s total count.
+- A shared sentence function does not cover its call sites. The command reply and the non-silent toast share `staleKeepSentence()`, but only the reply surface is exercised.
+- Blocklist predicates need a documented scope plus positive fixtures; otherwise equivalent rewordings pass and unrelated phrases can false-positive.
+- Mutation matrices rot when new assertions are added. Round 9 added several and the recorded counts were not re-derived.
+
+### Praise
+
+- The store refusal line now matches the design §2.2 note exactly: `the memory changed while this pass's reply was being built; the reply was not published`.
+- `noOldContextClaim` now rejects the older “CONTEXT.md is kept” and “stays stale” family, not just “stays effective”.
+- External-edit T2 now checks the predicate on both the log and the reply for both subcases (`tests/external-edit-test.mjs:226-227`); that is a real improvement.
+- The `contextWritten`, missing-branch, parser, old-shape and kept/stale mutations all produce the expected reds; the suite is not broadly vacuous.
+- The v0.4.13 CHANGELOG section is byte-identical to `git show cdb32e9:CHANGELOG.md`; the v0.4.14 section describes post-tag behavior that matches HEAD.
+
+### Residual-risk
+
+- **R1 (documented, not new):** context-only lost update remains open when `CONTEXT.md` changes but `MEMORY.md` does not; the fix-note §6 records it. Round 9 does not address it.
+- **`store.ts:266`:** second refusal line is not integration-tested; a retired phrase reintroduced there would be green. The current line is truthful.
+- **Toast branch:** if I1 is not fixed, a future independent change to the toast wording can reintroduce a retired phrase with no red test.
+- **Helper drift:** future diagnostics containing “left untouched” for another artifact would false-fail the shared predicate; future semantically equivalent global claims can pass.
+- **`contextShapeWarned` once-per-process** can hide a second pass’s shape line; tests use new project roots, so this is not exercised.
+
+## Answers To The Specific Questions
+
+1. **Helper completeness and coverage.** It rejects every retired phrase I could find in the history (`no CONTEXT.md was written`, `left untouched`, `stays effective`, `CONTEXT.md is kept`, `stays stale`, and the combined “kept and stays stale” variant). It is not semantic: equivalent rewordings pass, and an unrelated “left untouched” would false-positive; no current message hits either. No-write branches: refusal skip (carried/unusable/recovered/absent), shape-unusable no-write, shape-missing no-write, thrown write, store refusal line 248, store refusal line 266, stale command reply, and stale toast. Fixtures applying the helper: consolidation mid-call, freshCarried, freshAbsent, freshUnusable, freshRecoveredRefused, freshRecoveredPublished, freshAbsentPublished, thrown, shape, absent, cut; external-edit T2 log and reply. Escaping: the **non-silent toast** (0/0), **T2c** (store clause mutation green there), and **store.ts:266** (0/0); the first two are the round-9-relevant gaps.
+
+2. **External-edit predicate.** Yes for both T2 subcases, on both log and reply (`:226-227`). No for the stale toast: T2 is the command/silent path; the non-silent toast at `report.ts:329` is not covered.
+
+3. **Shape phrase source-specificity.** No. The count is a whole-log occurrence count; a duplicate phrase elsewhere satisfies it while the shape line is neutral (verified). A neutral conditional wording that drops the exact phrase does redden (2 checks), so the test enforces the wording but cannot prove which line carries it. Line-scoped suffix extraction is the fix.
+
+4. **Store/design/CHANGELOG/fix-note consistency.** Store line and design §2.2 note are consistent and accurate; the old string remains only in the historical §2.2 code block, directly marked superseded. §2.4 is consistent. v0.4.13 matches the tag; v0.4.14 matches HEAD behavior. Remaining stale/overbroad items are the fix-note matrix counts, the fix-note’s v0.4.13-only CHANGELOG row, the missing `tests/harness.mjs` row, and the broad “没有写入的诊断只说…” sentence in v0.4.14.
+
+5. **Mutation counts and vacuous assertions.** Full table below. The count check in I2 is the remaining vacuous assertion: it can pass without the shape line carrying the phrase. The toast branch has no assertion at all.
+
+6. **Adversarial result.** No parser regression and no product data-loss regression. The concrete new/remaining defects are test-coverage and evidence defects: toast not covered (mutation 0/0), T2c escapes the helper, store line 266 unpinned, count not source-specific, helper blocklist drift, and stale fix-note counts.
+
+7. **Release.** v0.4.13 section matches `git show cdb32e9:CHANGELOG.md` exactly (the diff contains only the inserted v0.4.14 block). v0.4.14 describes post-tag behavior and matches HEAD’s code; its only overbroad sentence is N3. No v0.4.14 tag/evidence exists yet, as expected.
+
+## Test And QA Focus
+
+Ran: `node tests/run-all.mjs` (15/15), `node tests/consolidation-test.mjs` (ALL OK), `node tests/external-edit-test.mjs` (ALL OK), `git diff --check` (clean). Also ran the helper directly against every historical phrase and several legitimate messages.
+
+Requested mutations, exact results:
+
+- **`contextWritten → Boolean(update)`** — consolidation **9 FAIL**: `a refused reply does not overwrite the newer CONTEXT.md`; `a fresh refusal with a reply context claims no previous file`; `a fresh refusal writes no CONTEXT.md (carried)`; `a fresh refusal without a reply context blames no reply section`; `a fresh refusal writes no CONTEXT.md (absent)`; `a refused unusable context does not claim a placeholder was written`; `the refused unusable shape line carries the pass-scoped phrase`; `a refused unusable context writes no CONTEXT.md`; `a fresh recovered refusal says the reply could not be parsed`. External **2 FAIL**: `reply carries a context section: CONTEXT.md was left untouched`; `reply carries a context section: the skipped context write is traced`.
+- **Remove `!memoryRefused` from the missing branch** — consolidation **1**: `a fresh recovered refusal says the reply could not be parsed`; external **1**: `reply carries no context section: no published-side missing-context line`.
+- **Parser gate reverted to unconditional raw-string recovery** — consolidation **2**: `a nested memory_markdown fails closed`; `a non-string field with a nested string also fails closed`; external **0**.
+- **Restore old shape wording (`no CONTEXT.md was written`)** — consolidation **3**: `a refused unusable context does not claim a placeholder was written`; `the refused unusable shape line carries the pass-scoped phrase`; `a refused unusable context claims no previous file`; external **0**.
+- **Restore “is kept/stays stale” in a branch** — shape line: consolidation **3**: `a refused unusable context does not claim a placeholder was written`; `a refused unusable context claims no previous file`; `an unusable context names the file state it left`. Missing line: consolidation **3**: `a fresh recovered publish traces the placeholder`; `the omitted context section is written to errors.log`; `a cut-off reply says so in errors.log`. External **0** in both.
+- **Append a retired phrase to the stale sentence** — consolidation **0**; external **2**: `reply carries a context section: the reply carries no retired context claim`; `reply carries no context section: the reply carries no retired context claim`. **Appending only at the toast call site (`report.ts:329`) gives 0 / 0 — the gap in I1.**
+- **Restore the store clause (`and the newer content stays effective`)** — consolidation **6**: `a refused reply does not overwrite the newer CONTEXT.md`; `a fresh refusal with a reply context claims no previous file`; `a fresh refusal without a reply context blames no reply section`; `a refused unusable context does not claim a placeholder was written`; `a refused unusable context claims no previous file`; `a fresh recovered refusal says the reply could not be parsed`. External **2**: both `the refusal log carries no retired context claim` checks. T2c remains green.
+
+Extra probes: old I1 literal **7 / 1**; “left untouched” on the skip line **4 / 1**; on the shape line **3 / 0**; neutral shape wording **2 / 0**; neutral shape + duplicated skip phrase **1 / 0** (count passes); retired phrase only on `store.ts:266` **0 / 0**.
+
+What this proves: the advertised gates are live, the suite is green at HEAD, the v0.4.13 section matches the tag, and the v0.4.14 behavior matches HEAD. What it cannot prove: the non-silent toast surface, T2c’s predicate, the second store refusal branch, source attribution for the shape phrase, or the fix-note’s recorded counts. The main remaining vacuous assertion is the whole-log count at `tests/consolidation-test.mjs:655-657`.
+
+VERDICT: CHANGES-REQUESTED

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, open, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noOldContextClaim, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noClipClaim, noOldContextClaim, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * End-to-end test of the settle/shutdown path in one extension: the archive writes session.jsonl /
@@ -1264,7 +1264,7 @@ try {
 				clippedKeptReply.includes("prompt also had to be shortened") && !clippedKeptReply.includes("rewrite also shortened"),
 			);
 			const keptReply = consolidateReply("updated", { repaired: false, memoryKept: true, keepReason: "short" });
-			check("a non-clipped kept-memory command reply has no clip note", !keptReply.includes("had to be shortened"));
+			check("a non-clipped kept-memory command reply has no clip claim", noClipClaim(keptReply));
 			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
 			// the document hitting its cap and point at a drop list that does not exist (review R2).
 			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
@@ -2665,7 +2665,7 @@ try {
 			const toastText = String(toast?.[0] ?? "");
 			check(
 				"the automatic refusal toast claims no write",
-				Boolean(toast) && noOldContextClaim(toastText) && !toastText.includes("context updated") && !toastText.includes("Memory: updated"),
+				Boolean(toast) && noOldContextClaim(toastText) && noClipClaim(toastText) && !toastText.includes("context updated") && !toastText.includes("Memory: updated"),
 			);
 		} finally {
 			await rmTemp(toastTmp);
@@ -2700,7 +2700,7 @@ try {
 				cleanWritten
 					&& (await readFile(path.join(cleanMem, "MEMORY.md"), "utf8").catch(() => "")).includes("clean automatic write")
 					&& Boolean(cleanToast)
-					&& !String(cleanToast?.[0] ?? "").includes("had to be shortened"),
+					&& noClipClaim(String(cleanToast?.[0] ?? "")),
 			);
 			check(
 				"the automatic unusable-context pass shows no stale refusal toast",
@@ -2738,8 +2738,7 @@ try {
 				"the automatic memory-kept toast claims no memory write",
 				Boolean(kept)
 					&& !String(kept?.[0] ?? "").includes("Memory: updated")
-					&& !String(kept?.[0] ?? "").includes("prompt also had to be shortened")
-					&& !String(kept?.[0] ?? "").includes("rewrite also shortened"),
+					&& noClipClaim(String(kept?.[0] ?? "")),
 			);
 		} finally {
 			await rmTemp(keepTmp);

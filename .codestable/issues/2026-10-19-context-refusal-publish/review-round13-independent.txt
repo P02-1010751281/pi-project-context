@@ -1,0 +1,65 @@
+## Review Report — HEAD `0226d43` (range `b20c8cf..HEAD`)
+
+Route: `deepseek/deepseek-flash`. Sandbox used: `/tmp/pi-context-rev-ctx14`; scratch copies and probes stayed under `/tmp`.
+
+### Blocking
+None.
+
+### Important
+
+**1. `tests/consolidation-test.mjs:2654-2694` / `extensions/project-context/memory/report.ts:330-333` — the automatic non-refusal “memory kept” toast is still unpinned against a false `Memory: updated` claim.**
+- The new automatic-toast assertion only covers the `memoryRefused` branch (`:2659-2662`). The second automatic no-memory-write branch is `!memoryChanged` + context update, which emits `Memory: context updated; memory was kept unchanged.` (`report.ts:333`). No test drives that automatic branch; the command-path tests at `:1799`, `:1927`, `:2227` exercise `consolidateReply`, not this `notify`.
+- I mutated only `report.ts:333` to prepend `Memory: updated; ` and ran all 15 tests: **0 failures**. I also confirmed the branch is reachable with a settle probe (`Memory: context updated; memory was kept unchanged.` with MEMORY.md unchanged and CONTEXT.md written).
+- Impact: a regression reintroducing the exact false write prefix on this second no-write toast would ship green. The round-12 guarantee is therefore branch-specific, not surface-complete.
+- Smallest fix boundary: add one settle-driven fixture with a semantic-empty/short reply + context (memoryChanged false), assert the toast contains `Memory: context updated` / `memory was kept unchanged` and does **not** contain `Memory: updated`; then add that mutation count to `fix-note.md` §5. A shared false-write predicate across both automatic no-write toasts would be the cleaner test shape.
+
+**2. `docs/architecture.md:134-142` — the refusal bullet still overpromises for a cleared/blanked `MEMORY.md` (memoryChanged true).**
+- The sentence says that when stored `MEMORY.md` changes during reply building and the reply has a publishable memory change, the whole reply, including context, is not published. But `store.ts:246` has the intentional `current.text.trim()` guard: if the concurrent edit clears/blankes or deletes the effective render, the reply is published. Design `external-edit-adoption-overwritten-design.md:268` registers this clear-wins behavior; architecture does not.
+- Concrete probe: journal + old `MEMORY.md`/`CONTEXT.md`; during the model call an external writer blanks `MEMORY.md` and writes a newer `CONTEXT.md`; reply carries memory + stale context. The pass logs no refusal, publishes the reply, and the newer `CONTEXT.md` is replaced by the reply’s stale context. Command reply: `Memory: updated.` The context lost update is real, though the memory write claim itself is true.
+- The R1 caveat only covers `memoryChanged === false`; it does not cover cleared/blank MEMORY, deletion, or cosmetic edits that normalize to the same comparison key. Also, line 137’s “磁盘上已有的较新版本” describes the field case, not a general guarantee.
+- Impact: architecture still promises a refusal guarantee that the code intentionally does not provide for this branch; the remaining stale-context lost-update path is undocumented as the clear/blank exception.
+- Smallest fix boundary: docs-only — extend the caveat to name the clear/blank/delete (and same-key normalization) exception, and cross-reference design R-3. If the goal were to close the behavior, that requires a context basis key / new mechanism; not required for this release, but the current sentence cannot stand as written.
+
+### Nit
+
+**3. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:53-65` / design `:267` — the second store refusal line’s coverage gap is not newly registered in this round’s artifact.**
+- `store.ts:264-267` (“an external edit landed while this pass’s memory write was being prepared…”) has no integration assertion; only `nextRenderSupersedes` unit cases exist. The gap is registered in the older design §5 R-2 (“recheck 的接线没有集成测试”), but the round-12 fix-note §6 does not repeat or point to it, despite the commit message saying it was registered.
+- Impact: low (the first refusal path and the same `memoryRefused` flag cover report behavior), but the commit-message claim is not visible in the fix-note.
+- Smallest fix boundary: cite design R-2 in fix-note §6 or add a one-line residual entry naming the second recheck line; no new test mechanism required.
+
+### Suggestion
+- Reuse a single helper such as `noFalseMemoryWriteClaim(text)` for both the stale refusal toast/reply and the automatic keep-memory toast. The current inline `includes("Memory: updated")` checks are correct on the covered branches, but the branch list is easy to miss (as finding 1 shows).
+
+### Learning
+- A seeded negative control is materially different from a fresh-only one: with the existing `CONTEXT.md` seed, the conditional gate mutation reddens 2 checks; removing the seed makes the same mutation green. That is the right way to prove the control is not vacuous.
+- Blocklist/string assertions must be applied to every no-write surface, not only the branch named in the review finding; the automatic keep-memory toast was the remaining sibling.
+
+### Praise
+- The new stale toast/reply assertions are source-specific and non-vacuous: I prepended both `Memory: updated;` and `Memory: context updated;` to `staleKeepSentence` and got exactly **1 consolidation FAIL + 2 external-edit FAILs**, matching the fix-note’s `1 + 2`.
+- The toast-gate mutations also match: `memoryRefused || contextUnusable` → 2 FAILs; `memoryRefused || (contextUnusable && existingContext.trim())` → 2 FAILs. With the seed removed, the conditional mutation → 0 FAILs, confirming the seed is what gives the control teeth.
+- v0.4.13’s CHANGELOG section is byte-identical to `git show cdb32e9:CHANGELOG.md`; v0.4.14 describes post-tag code changes (diagnostic wording, write-after-write ordering, dead `contextWritten` removal, recovered/parse behavior), and I found no v0.4.13-era behavior misattributed to v0.4.14.
+
+### Residual-Risk
+- R1 context-only edits and semantic-empty/short replies remain accepted residuals; the new architecture caveat documents the latter correctly.
+- Blank/clear/delete of `MEMORY.md` remains a stale-context lost-update path under design R-3; finding 2 asks for documentation only, not a new mechanism.
+- The second store recheck still has no end-to-end refusal/context-suppression assertion; design R-2 remains the registration.
+- No CAS around context writes and no live-provider/real-filesystem race coverage; these are existing constraints, not introduced here.
+
+## Test And QA Focus
+
+What I ran:
+- `node tests/run-all.mjs` → **15/15 pass**.
+- `node tests/consolidation-test.mjs` → **ALL OK**.
+- `node tests/external-edit-test.mjs` → **ALL OK**.
+- Scratch mutation of `staleKeepSentence` with false `Memory: updated` / `Memory: context updated` prefixes → 1 consolidation + 2 external-edit failures, matching the matrix.
+- Scratch mutation of the toast gate to `memoryRefused || contextUnusable` → 2 failures; to `memoryRefused || (contextUnusable && existingContext.trim())` → 2 failures.
+- Same conditional mutation with the new `CONTEXT.md` seed removed → 0 failures, proving the seed makes the old fresh-only control non-vacuous.
+- Scratch mutation adding `Memory: updated; ` only to the automatic `!memoryChanged` toast (`report.ts:333`) → **0 failures**, exposing the uncovered surface in finding 1.
+- Scratch clear-`MEMORY.md` probe → stale reply context overwrote a newer external `CONTEXT.md`, no refusal log; confirms finding 2.
+- `git diff --check` clean; v0.4.13 section equality checked programmatically.
+
+What this proves: the round-12 matrix counts for the new stale-surface and gate mutations are accurate; the negative control now reddens under the conditional gate; the release-note split is accurate.
+
+What it cannot prove: second-store-recheck integration behavior (no seam/exercise), real provider timing, real filesystem mtime/ctime races, live TUI rendering, or that every future no-write toast branch is covered — finding 1 is exactly such a remaining gap.
+
+VERDICT: CHANGES-REQUESTED

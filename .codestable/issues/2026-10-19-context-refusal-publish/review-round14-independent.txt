@@ -1,0 +1,104 @@
+## Review: pi-project-context @ 97c71cc (range `b20c8cf..HEAD`)
+
+**Route:** deepseek/deepseek-flash. **Read-only:** no writes under `/tmp/pi-context-rev-ctx15` except test temp output; mutations/probes ran in `/tmp` copies.
+
+### Direct answers
+
+1. **Yes, the new fixture drives the right branch and is source-specific.** It goes through `agent_settled` with a heading-only `memory_markdown`, so `memoryChanged` is false and `update` is present (`tests/consolidation-test.mjs:2700-2726`). Mutating `report.ts:333` to prefix `Memory: updated;` reddens **exactly one** check — “the automatic memory-kept toast claims no memory write” — matching the fix-note’s new count `1`. The check finds the notification by `"memory was kept unchanged"`, so it is not satisfied by the refusal/command toasts.
+
+2. **Yes, but with a precision defect.** The architecture bullet now lists both families: (a) semantic-empty/short, (b) clear/blank/delete + same-key normalization (`docs/architecture.md:140-143`), and the refusal promise is still stated and scoped (“不是本段承诺的拒绝面”). However, the clear/blank/delete mechanism is attributed to `store.ts`’s `current.text.trim()` guard alone. With a journal, `current` is the journal fold, so clearing/deleting the render leaves it non-empty; the reply wins via the same-key equality, and if the fold moved first the reply is refused. My probe: journal clear/delete → published; journal write-then-clear → recheck1 refusal; no-journal clear/delete → published via the trim guard.
+
+3. **The matrix includes the new count; the R-2 citation is still missing.** `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:62` now says the `!memoryChanged` toast prefix mutation reddens `1` (confirmed). But the fix-note has no reference to design R-2 for the second store recheck; its only `R2` (`fix-note.md:78`) is the unrelated dedupe residual. The commit message claiming “cited design R-2” is not reflected in the diff.
+
+4. **Tests pass; one assertion is a proxy; the second store line is still uncovered.** See Test And QA Focus.
+
+5. **Adversarial:** a false *shortening* claim is still reachable on the same automatic toast (not a write claim, but the same surface). Details below.
+
+6. **Release sections: OK.** v0.4.13 is byte-identical to `git show cdb32e9:CHANGELOG.md` (checked programmatically); everything from v0.4.12 down is unchanged. v0.4.14 describes only post-tag behavior (fixes in `56dda5d..921ff8f`) and its “after” claims match HEAD’s code (recovered wording, non-string fail-closed, removed `LastWriteInfo.contextWritten`/`staleKeepSentence(true)`, warning receipt, pass-scoped diagnostics).
+
+---
+
+### Blocking
+
+None.
+
+### Important
+
+**1. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:69-95`; `extensions/project-context/memory/store.ts:262-268` — the design R-2 integration-coverage gap is still uncited, and the commit message says it was cited.**
+Impact: the second refusal line (`nextRenderSupersedes` wiring) has zero integration coverage; deleting `store.ts:262-268` entirely leaves `node tests/run-all.mjs` at **15/15**. The only test for that predicate is the unit test of the exported function (`tests/external-edit-test.mjs` T6). Design R-2 (`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md:267`) explicitly registers this as “recheck 的接线没有集成测试”. The round-13 finding was exactly this omission, and 97c71cc’s message asserts it was fixed.
+Smallest fix boundary: add one residual bullet under fix-note §6, e.g. “**设计 R-2（external-edit）**：`recordMemoryDocument` 的第二道 `nextRenderSupersedes` 接线没有集成测试（只测导出的判定函数；变异删除 262–268 全绿）；由代码评审覆盖”, and record/amend the commit-message correction before the v0.4.14 tag. Note the label collision: the fix-note already uses `R2` for the dedupe residual, so naming it “设计 R-2” explicitly avoids ambiguity.
+
+**2. `extensions/project-context/memory/report.ts:325,331-333` — the automatic `!memoryChanged` toast still makes a false “rewrite shortened the content” claim when only the prompt was clipped.**
+Impact: `outcome.clipped` means the *input* (existing memory/context) was clipped (`pass.ts:384`, `input.ts:106`). With `!memoryChanged`, the memory is kept, yet the toast appends `The rewrite also shortened the content to fit the model output budget.` The comment immediately above says “not even the clipped notice, which describes a rewrite that did not happen” — the code contradicts its own comment. Probe: 30 KB `MEMORY.md`, `maxTokens: 500`, heading-only reply + valid context via `agent_settled` produced:
+`Memory: context updated; memory was kept unchanged. The rewrite also shortened the content to fit the model output budget.`
+The new fixture does not cover the clipped shape (it only pins the `Memory: updated` prefix). The command path already has the truthful wording: `The prompt also had to be shortened...` (`report.ts:606`).
+Smallest fix boundary: use the command-path wording on line 333 (or drop `${clippedNote}` there per the comment), and add a clipped variant to the new fixture so `outcome.clipped && !memoryChanged` is pinned.
+
+### Nit
+
+**3. `docs/architecture.md:142-143` — exception (b) misattributes the clear/blank escape and overstates it.**
+Impact: with a journal, `current.text.trim()` is non-empty (the fold), so the cited guard is not the mechanism; the same-key clause is. Also the blanket “这些情况下回复仍会发布” is false when the fold moved before the clear (probe: journal write-then-clear → refused by recheck1). The exception is a residual, so overstating it is conservative, but it is a factual error in the exact sentence added this round.
+Smallest fix boundary: qualify the clear/blank/delete clause to the no-journal (legacy) layout and state that the journal layout needs the same-key equality; optionally cite the design file path for R-3 instead of bare “设计 R-3”.
+
+**4. `tests/consolidation-test.mjs:2722` — “publishes its context” is only a toast assertion.**
+Impact: the check passes if `CONTEXT.md` is never written, as long as the toast says “context updated”. It does not prove the label. The fixture’s purpose is the toast, so this is not blocking.
+Smallest fix boundary: read `keepMem/CONTEXT.md` and assert the summary (`s`), or rename the check to “the automatic memory-kept toast says the context was updated”.
+
+**5. `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:6` — `commit: 76c09af` is stale.**
+Impact: the field points at round 11, while the note now carries round-13 edits and HEAD is 97c71cc (previous round 0226d43). A reader using the note as release evidence lands on a pre-round-13 snapshot.
+Smallest fix boundary: update the field to the commit that carries the final note revision (or HEAD) before tagging.
+
+### Suggestion
+
+- Add a seam/integration fixture for the second `nextRenderSupersedes` recheck, or at minimum make the R-2 residual explicit in the fix-note. The mutation shows code review is the only guard today.
+- Extend the new automatic fixture with a clipped-input variant; it would pin both the `Memory: updated` prefix and the `clippedNote` wording in one place.
+- Give the architecture doc’s “设计 R-3” a path (`.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md`), matching the doc’s existing habit of linking other issue paths (`docs/architecture.md:167`).
+
+### Learning
+
+- The new fixture is the right shape: it drives `agent_settled`, finds the specific notification by its distinctive phrase, and the mutation test measures exactly the documented count. That is a reusable pattern for wording branches.
+- `report.ts:331-332` is a specification in a comment that the code violates; comments like this are often the best oracle for “false claim” bugs.
+- A commit message is not evidence. The diff here did not contain the R-2 citation the message claims; checking the diff (and the mutation) is what caught it.
+
+### Praise
+
+- The new fixture is non-vacuous and source-specific; the `Memory: updated;` prefix mutation reddens exactly one check, and the fix-note’s `1` is accurate.
+- The architecture bullet does add both R1 exception families and keeps the refusal itself intact.
+- v0.4.13’s section is byte-identical to the tagged commit; v0.4.14’s behavior claims match HEAD and stay post-tag.
+
+### Residual-risk
+
+- The second store recheck’s wiring remains untested; a future removal is invisible to the suite.
+- The clipped-note false claim remains reachable on large prompts unless fixed.
+- The docs’ clear/delete exception is not pinned by a fixture in the no-journal layout; only the journal clear and header-only shapes are tested (`tests/external-edit-test.mjs` “cleared memory”).
+- v0.4.14 tag/release evidence not yet cut (expected); the stale fix-note `commit:` field should be resolved before evidence is written.
+
+---
+
+## Test And QA Focus
+
+**Ran**
+- `node tests/run-all.mjs` → `All 15 tests passed.`
+- `node tests/consolidation-test.mjs` → `ALL OK` (including the new memory-kept fixture).
+- `node tests/external-edit-test.mjs` → `ALL OK`.
+- `git diff --check cdb32e9..HEAD` → clean.
+- Mutation A (scratch copy): prefix `Memory: updated;` to `report.ts:333` → consolidation: **1 FAIL**, the new check. Confirms the fixture drives the branch and the fix-note count.
+- Mutation B (scratch copy): delete the entire second store recheck (`store.ts:262-268`) → `run-all` **15/15**. Confirms the R-2 gap.
+- Probe 1: `recordMemoryDocument` with journal/no-journal clear/delete and journal write-then-clear → journal clear/delete published; journal write-then-clear refused (recheck1); no-journal clear/delete published. Confirms the docs mechanism attribution is imprecise.
+- Probe 2: automatic `agent_settled` with 30 KB `MEMORY.md`, `maxTokens: 500`, heading-only reply + valid context → the memory-kept toast with `The rewrite also shortened the content...` while the memory was kept. Confirms the clipped-note false claim.
+- Programmatic CHANGELOG split: v0.4.13 section identical to `cdb32e9`; only v0.4.14 inserted.
+
+**Proves**
+- The round-13 memory-kept fixture is non-vacuous and reddens on a false `Memory: updated` prefix.
+- The architecture bullet now contains both exception families.
+- The v0.4.13 changelog is unchanged; v0.4.14 describes post-tag behavior consistent with HEAD.
+- The second store recheck has no test that fails if it is deleted.
+
+**Cannot prove**
+- The second recheck’s real race/wiring (no test seam; only the pure predicate is tested).
+- The clipped-note path with a real large-memory session; the probe forced clipping with `maxTokens: 500`, though the same code path is reached by large prompts.
+- The docs’ clear/delete claim across all layouts; the suite only pins the journal clear and header-only shapes.
+- The v0.4.14 tag and release evidence, which do not exist yet.
+- That the new toast check remains source-specific if a future change duplicates “memory was kept unchanged” in another notification (the fixture finds by phrase, not by handler identity).
+
+VERDICT: CHANGES-REQUESTED

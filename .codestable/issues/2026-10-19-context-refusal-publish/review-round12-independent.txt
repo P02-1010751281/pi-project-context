@@ -1,0 +1,65 @@
+Route: `deepseek/deepseek-flash`. Reviewed HEAD `76c09af` in `/tmp/pi-context-rev-ctx13`.
+
+## Blocking
+
+None. I found no runtime regression introduced by `76c09af`; the refusal/context gate itself is consistent with the fix note.
+
+## Important
+
+- `docs/architecture.md:134-139` — **Overpromises the refusal guarantee.** The sentence says a mid-pass change to stored `MEMORY.md` means the whole reply, including its `context` section, is never published. That is false when the reply’s memory is semantic-empty or too short: `memoryChanged` is false, the `recordMemoryDocument`/`basisKey` path never runs, `memoryRefused` stays false, and a valid reply `context` is still written. I reproduced this in a scratch probe: `MEMORY.md` was changed during the model call, the reply carried a bare memory skeleton plus a valid context, and `CONTEXT.md` was overwritten with the reply’s stale summary while the notice said “context updated; memory was kept unchanged”. This is the R1 residual already recorded in `fix-note.md:73-76`, but the architecture page states the stronger guarantee without qualification. Smallest fix boundary: qualify the sentence to replies with a publishable memory change (or add the R1 caveat explicitly). No new production mechanism needed.
+
+- `tests/consolidation-test.mjs:2657-2658` — **The automatic refusal toast is still not pinned against false write claims.** The fixture rejects only the retired-phrase blocklist. Prepending `Memory: context updated; ` or `Memory: updated; ` to the automatic notify at `extensions/project-context/memory/report.ts:329` leaves the full `run-all` suite green (measured 15/15, zero `FAIL` lines in both mutations). The same false-memory-update prefix added to the command stale reply (`consolidateReply`) also stays green. Since the original field bug was exactly a false context-update claim, this is an unpinned no-write surface. Smallest fix boundary: add negative assertions to the existing toast/command fixtures, e.g. reject `/context updated/` and `/Memory: updated/`, not just the retired phrases.
+
+## Nit
+
+- `tests/consolidation-test.mjs:2664-2689` — The new negative control uses a fresh project only. A gate broadened conditionally on existing context, e.g. `memoryRefused || (contextUnusable && existingContext.trim())`, leaves the full suite green. I verified this mutation: 15/15 passed. Smallest fix boundary: seed an existing `CONTEXT.md` in the negative fixture, or add a second subcase for the existing-context unusable pass.
+
+- `extensions/project-context/memory/store.ts:266` — The second refusal path (`an external edit landed … the reply was not published`) is not exercised by an integration assertion. Appending the retired `and the newer content stays effective` clause to this second line leaves the full suite green. The decision function `nextRenderSupersedes` has unit coverage, but the durable no-write message does not. Smallest fix boundary: add a targeted refusal fixture/unit assertion for this branch and run `noOldContextClaim` over its log.
+
+- `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:7` — Frontmatter still says `commit: fe6ca60` while HEAD is `76c09af`. This is defensible if `commit` intentionally means the last behavior-changing commit: `fe6ca60` does touch `report.ts`/`store.ts`, while `4dd688e`–`76c09af` are test/docs-only. But it does not identify the reviewed revision and therefore the round-11 “stale metadata” finding is only resolved under that convention. Smallest fix boundary: update the field to the final reviewed revision, or document that it means last code-fix commit.
+
+## Suggestion
+
+- Use the existing refusal fixtures to assert both positive and negative wording, rather than relying on `noOldContextClaim` alone. The helper is a good blocklist, but it cannot catch a newly introduced false claim such as “Memory: updated” or “context updated”.
+
+## Learning
+
+- The round-11 shape assertion is now correctly source-specific: selecting the full stable shape prefix means a duplicate `could not be used` on the skip line no longer satisfies it.
+- The negative control does prove the unconditional `memoryRefused || contextUnusable` broadening fails, but it is fixture-specific to the fresh-project branch; branch-conditioned broadenings remain green.
+- The mutation matrix is generally reproducible, but each count depends on the exact mutation. For example, restoring the old fresh-only shape ternary yields the stated 3 failures; replacing the no-write phrase in both shape branches yields 4.
+
+## Praise
+
+- `tests/consolidation-test.mjs:654` now reddens when I mutate the shape diagnostic to neutral wording and put `could not be used` on the skip line; the old selector stayed green on that assertion. This closes the round-11 selector finding.
+- The automatic-toast negative control at HEAD passes, and the unconditional toast-gate broadening produces exactly 2 failures, as recorded.
+- The fix-note matrix matches the measured counts I reproduced: `contextWritten` 9/2, missing-branch `!memoryRefused` 1+1, parser 2, old shape 3, old I1 skip ternary 6+1 and combined 7+1, skip `left untouched` 4+1, shape append 3+0, kept/stale shape/missing 3/3, store 6+3, staleKeepSentence 1+2, broadened toast 2.
+- `CHANGELOG.md`’s v0.4.13 section is byte-identical to `git show cdb32e9:CHANGELOG.md`. The v0.4.14 section describes post-tag behavior only, and its claims match the HEAD code I inspected.
+
+## Residual-risk
+
+- R1 remains: context-only changes, or a semantic-empty/short reply, can still publish a stale `context` section because `memoryRefused` is a memory-side proxy. This is acknowledged in `fix-note.md`, but is not reflected in `docs/architecture.md`.
+- The store’s second refusal path and the automatic toast’s write-claim wording are not fully mutation-covered.
+- The suite does not exercise real concurrent writers, CAS, Windows path/ctime behavior, or live TUI notification ordering.
+
+## Test And QA Focus
+
+What I ran:
+
+- `node tests/run-all.mjs` at HEAD: **15/15 passed**.
+- `node tests/consolidation-test.mjs` at HEAD: **ALL OK**.
+- `node tests/external-edit-test.mjs` at HEAD: **ALL OK**.
+- `git diff --check`: clean; `git status --short`: clean after tests.
+- Scratch-copy mutation probes under `/tmp`:
+  - shape line neutralized + `could not be used` moved to the skip line: old selector stayed green on the line-scoped check; new selector reddened.
+  - toast gate `memoryRefused || contextUnusable`: 2 failures in the new negative fixture; HEAD green.
+  - full matrix mutations listed above: all reproduced.
+  - docs R1 probe: stale context published after a mid-pass `MEMORY.md` change with a semantic-empty memory reply.
+  - automatic toast prefixed with `Memory: context updated; ` or `Memory: updated; `: full suite green, exposing the missing assertion.
+  - conditional toast gate on `contextUnusable && existingContext.trim()`: full suite green.
+  - second store refusal line given a retired `stays effective` clause: full suite green.
+
+What this proves: the round-11 selector and unconditional toast-gate controls work, and the matrix counts are accurate.
+
+What it cannot prove: exhaustive claims about every notification branch, the second store refusal path, real concurrency, or that all no-write wording is pinned. The docs finding and test-gap mutations above are the remaining concrete gaps.
+
+VERDICT: CHANGES-REQUESTED

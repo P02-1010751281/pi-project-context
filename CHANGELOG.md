@@ -3,6 +3,19 @@
 只记**行为变化**（`feat` / `fix`）。文档、审计与记忆渲染的提交不入此表 —— 它们在 git 历史与 `.codestable/` 里。
 版本号语义近似 semver：`fix` 进 patch，`feat` 或破坏性变更进 minor。
 
+## v0.4.14 — 2026-10-20
+
+### 修复
+
+- **拒绝态诊断在 fresh 项目与 recovered 回复上不再说谎**：v0.4.13 的拒发诊断在 fresh 项目（没有 `CONTEXT.md`）上会声称
+  “the previous CONTEXT.md stays effective”，并把本地生成的占位段叫作回复的 context 段；有旧文件时，不可解析的回复还被说成
+  “carried no context section”（fresh 项目则继续被说成 “the previous CONTEXT.md stays effective”）。现在按回复是否带 context / 是否不可用 / 是否 recovered、磁盘上是否已有文件分支出措辞，
+  且形状诊断在写入之后才发（写失败时不再先声称写了占位符）。`/memory update` 的拒绝回执改为 warning；stale 句不再带 context 前缀。拒绝态不再补缺失分支的 shape 行；context 未写入的诊断只说
+  本次 pass 没有写 CONTEXT.md（memory 拒发行单独说 the reply was not published），不再声称 pass 读到的旧快照仍在生效；
+  写了占位符时就说占位符已写。recovered 回复的发布线改为
+  "no publishable context section"，其解析提示从 "object never closed" 改为 "could not be parsed"；JSON 已解析但 `memory_markdown` 不是顶层字符串时改为 fail closed，不再误走 raw-string recovery。
+  保留 memory 的 clipped toast 现在说 prompt 被缩短，而不是 rewrite 缩写了内容（命令回执与自动 toast 同措辞）。
+
 ## v0.4.13 — 2026-10-19
 
 ### 修复
@@ -11,20 +24,6 @@
   `context` 段仍会落盘；它和 memory 同出于更旧的快照，会把更新的 `CONTEXT.md` 覆盖回去（现场 2026-10-19T08:27:10Z：
   拒发日志与 `CONTEXT.md` 写回同秒，手工收敛的 open tasks 回到旧清单）。现在拒绝态两者都不发布，下一次 pass 从磁盘上的
   较新 context 重建；`/memory update` 的回执仍按 `contextWritten` 如实说明 context 没有更新。
-
-## v0.4.14 — 2026-10-20
-
-### 修复
-
-- **拒绝态诊断在 fresh 项目与 recovered 回复上不再说谎**：v0.4.13 的拒发诊断在 fresh 项目（没有 `CONTEXT.md`）上会声称
-  “the previous CONTEXT.md stays effective”，并把本地生成的占位段叫作回复的 context 段；有旧文件时，不可解析的回复还被说成
-  “carried no context section”（fresh 项目则继续被说成 “the previous CONTEXT.md stays effective”）。现在按回复是否带 context / 是否不可用 / 是否 recovered、磁盘上是否已有文件分支出措辞，
-  且形状诊断在写入之后才发（写失败时不再先声称写了占位符）。`/memory update` 的拒绝回执改为 warning；删除已不可达的
-  `LastWriteInfo.contextWritten` 与 stale 句的 true 分支。拒绝态不再补缺失分支的 shape 行；context 未写入的诊断只说
-  本次 pass 没有写 CONTEXT.md（memory 拒发行单独说 the reply was not published），不再声称 pass 读到的旧快照仍在生效；
-  写了占位符时就说占位符已写。recovered 回复的发布线改为
-  "no publishable context section"，其解析提示从 "object never closed" 改为 "could not be parsed"；JSON 已解析但 `memory_markdown` 不是顶层字符串时改为 fail closed，不再误走 raw-string recovery。
-  保留 memory 的 clipped toast 现在说 prompt 被缩短，而不是 rewrite 缩写了内容（命令回执与自动 toast 同措辞）。
 
 ## v0.4.12 — 2026-10-19
 

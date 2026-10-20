@@ -1,0 +1,66 @@
+Route: `deepseek/deepseek-flash`. Revision reviewed: HEAD `60e11ec` (`b20c8cf..HEAD`).
+
+Sandbox note: `/tmp/pi-context-rev-ctx18` had an empty tracked worktree (`git status` showed all 567 files staged-deleted), so I extracted `git archive HEAD` from that sandbox to `/tmp/pi-ctx18-src.XQ6Hzx` and ran/read tests there. This is the exact `60e11ec` tree.
+
+## Blocking
+
+None.
+
+## Important
+
+- `extensions/project-context/memory/report.ts:326-329`, `tests/consolidation-test.mjs:2666-2669`, `tests/consolidation-test.mjs:2698-2704`, `tests/external-edit-test.mjs:239` — the clip-note controls are still surface- and phrase-specific. Appending the canonical clip note at the automatic stale-toast call site leaves both `consolidation-test.mjs` and `external-edit-test.mjs` fully green. The new negative checks also only reject the literal `"had to be shortened"`; the codebase's other clip wording (`"rewrite also shortened the content"` / `"existing content was shortened"`) passes on the default updated toast and the stale sentence. Impact: a false clip claim can be reintroduced on the automatic stale toast, or with the other existing clip phrase, without reddening the suite. Smallest fix boundary: add a shared “no clip claim” predicate (at minimum `shortened`/`shorten`, or the known clip phrases) and apply it to the automatic stale toast, default updated toast, non-clipped kept command reply, and stale command reply.
+
+- `tests/external-edit-test.mjs:190` — the legacy-clear fixture still does not assert the resulting bytes. `includes("the pass's own reply.")` passes when the file contains the reply plus stale extra content. I mutated the legacy-empty write path to write `REPLY + "stale extra"`; `external-edit-test.mjs` stayed `ALL OK`, including the check labelled “holds the reply bytes.” Impact: the exact round-16 requirement (“assert the resulting bytes”) is only partially closed. Smallest fix: compare the normalized key or exact render, e.g. `key((await shape(legacyClear)).render) === key(REPLY)`. The header-only exact-byte check is fine.
+
+- `docs/architecture.md:140-146` versus `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:80-81` — the architecture now scopes R1 to “(b) 的 publish 情形”, but fix-note R1 also explicitly includes the semantic-empty/short reply case: when `memoryChanged` is false, the `basisKey` path does not run and a stale context can still publish. Impact: (a) is disclosed as an exception but not registered as R1, so the release documents understate the known residual. Smallest fix: label both (a) and (b) publish cases as R1; keep the normal `basisKey` refusal outside R1.
+
+## Nit
+
+- `CHANGELOG.md:6-15` — v0.4.14 is inserted below v0.4.13, while the file is otherwise newest-first (`v0.4.13` above `v0.4.12`). Impact: the v0.4.14 tag will sit behind an older release entry. Smallest fix: move the v0.4.14 block above v0.4.13; the v0.4.13 section bytes remain unchanged.
+
+- `.codestable/issues/2026-10-19-context-refusal-publish/fix-note.md:7` — `commit: d4ff8a3` is one review round behind HEAD (`60e11ec`). The commit message says the fix-note metadata was updated, but the commit field was not. Impact: release metadata points at the wrong commit before the v0.4.14 tag. Smallest fix: update to the actual tag target before release. Also, `release-evidence.md` still records only v0.4.13; that is expected pre-tag, but should be updated when v0.4.14 is cut.
+
+- `CHANGELOG.md:22-23` — the section still includes the internal cleanup clause “删除已不可达的 `LastWriteInfo.contextWritten` 与 stale 句的 true 分支”. That is implementation detail, not user-visible behavior, so it sits awkwardly against the file’s “只记行为变化” rule. Smallest fix: rephrase it as behavior (“stale 句不再带 context 前缀”) or drop the clause. The previous fixtures-only sentence is correctly gone.
+
+## Suggestion
+
+- Add one shared negative helper to `tests/harness.mjs` for clip claims, analogous to `noOldContextClaim`, and use it on every non-clipped/no-write surface. This directly closes the phrase-specific gap above without adding runtime mechanism.
+
+## Learning
+
+- Exact-phrase negative controls are still fixture-specific. The round-16 changes fixed the named mutation, but the stronger assertion is “this surface must not say *shortened* at all,” and the legacy artifact check should compare the resulting document key, not a substring.
+
+## Praise
+
+- The three named mutations do redden as intended: unconditional default-toast clip -> consolidation `FAIL 1`; unconditional command kept-reply clip -> `FAIL 1`; clip note on `staleKeepSentence` -> external `FAIL 2`.
+- Removing the legacy trim guard still reddens the new fixture (`FAIL 2`: written + byte check).
+- The v0.4.13 changelog section remains byte-identical to `git show cdb32e9:CHANGELOG.md` (the whole file differs only because v0.4.14 was added).
+- No runtime code changed in `60e11ec`, and I found no live false write/clip claim in the current refusal branches.
+
+## Residual-risk
+
+- R1 remains open by design: no independent context basis key, so context-only lost updates are still possible, including the semantic-empty/short case and the clear/key-equal publish cases. R-14’s no-journal-plus-rotation-archive path also remains.
+- The v0.4.14 tag, release evidence, and install/pin verification do not exist yet; they must follow this review.
+
+## Test And QA Focus
+
+Ran from the extracted `60e11ec` tree:
+
+- `node tests/run-all.mjs` -> `All 15 tests passed.` The two repo-hygiene checks were skipped because the extracted tree is not a git checkout; `git diff --check b20c8cf..HEAD` in the sandbox was clean.
+- `node tests/consolidation-test.mjs` -> `ALL OK`.
+- `node tests/external-edit-test.mjs` -> `ALL OK`.
+
+Mutation checks on scratch copies:
+
+- Default updated toast + canonical clip note -> consolidation red (`FAIL 1`).
+- Non-clipped kept command reply + canonical clip note -> consolidation red (`FAIL 1`).
+- `staleKeepSentence` + canonical clip note -> external red (`FAIL 2`).
+- Trim guard removed -> external red (`FAIL 2`).
+- Automatic stale toast + canonical clip note at the call site -> both suites green (gap).
+- Default toast + `"rewrite also shortened"` -> consolidation green (gap).
+- Stale sentence + `"rewrite also shortened"` -> external green (gap).
+- Legacy clear write = reply + stale extra text -> external green (gap).
+
+What this proves: the canonical named mutations are covered, and the runtime refusal logic still avoids the false claims I inspected. What it cannot prove: true concurrent race timing, real RPC/provider behavior, Windows ctime behavior, or the future v0.4.14 tag/install state. It also does not prove the negative clip controls catch wording other than the one literal phrase.
+
+VERDICT: CHANGES-REQUESTED

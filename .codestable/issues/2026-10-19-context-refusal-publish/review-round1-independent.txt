@@ -1,0 +1,185 @@
+# Independent review — `11bd38a` plus follow-ups (HEAD `07b77a2`)
+
+**Route serving this round: `deepseek/deepseek-flash`.**
+Scope: the committed HEAD only. Code changes are confined to `11bd38a`; the follow-ups (`cdb32e9`, `ca5a1d9`, `07b77a2`) are session-state/docs/memory only.
+
+## Answers to the six questions
+
+**1. Is `contextWritten = Boolean(update) && !memoryRefused` the right gate?**
+
+Structurally, yes for the state it names. There is exactly one context write (`extensions/project-context/memory/report.ts:294`), and every path to it now passes through `contextWritten` (`:264`, `:287-302`). `memoryRefused` is assigned only inside `if (memoryChanged)` (`:201-214`), and a refusal can only arise from `recordMemoryDocument` (`store.ts:246-249`, `:260-268`), so no path reaches the write with `memoryRefused === true` and `contextWritten === true`.
+
+Path-by-path:
+- memory changed + published + `update` truthy → context written (`:264`, `:294`).
+- memory changed + published + `update` undefined → no write, no claim; report `"updated"` (`:303`).
+- memory changed + refused + `update` truthy (reply context or `fallbackUpdate`) → skipped, diagnostic at `:291`, stale toast/reply (`:313`, `:588`).
+- memory changed + refused + `update` undefined → no write; older “carried no context section” line may fire (`:180-189`); stale toast/reply.
+- memory unchanged (empty/short) → `memoryRefused` stays `false`; context still written (`:264`). This is the keep-adoption path the design protects, and tests `consolidation-test.mjs:1647` / `:2074` pin it. No regression.
+- `fallbackUpdate` on a fresh project (`:173`) is truthy, so a refusal now skips the placeholder as well. That is consistent with “nothing publish-side on refusal”, but it is not the reply’s context section; the log wording is wrong (finding I1).
+- deduped (`:161`) and thrown-error (`:352-366`) paths never reach the write.
+- two concurrent callers of one outcome: `written` is claimed synchronously (`:160-164`), the second returns `"deduped"`; only one reaches the gate. A different pass gets a new outcome/version and a fresh basis. No refused reply’s context is published.
+- The `written` claim is set before the memory write and **stays set on a normal refusal**; a replay of the same outcome is deduped, not re-published. That is safe for context, though an immediate `/memory update` then says “already up to date” (preexisting; see R2).
+
+What the gate does **not** cover is a stale context with **no memory refusal** (context-only race, or keep-adoption/semantic-empty reply). That is not a “refused reply”, but it is the same lost-update class; see R1.
+
+**2. Does the reply/toast tell the truth in every branch?**
+
+Exact strings (probed; the refusal toast and command reply are the same string because both call `staleKeepSentence`):
+
+- (a) memory refused + context carried: `Memory: kept the newer MEMORY.md you edited (this pass's reply was built from an older memory and was discarded).`
+- (b) memory refused + no context: the same string.
+- (c) memory unchanged + context written: toast `Memory: context updated; memory was kept unchanged.` Command reply: `Memory: context updated; memory was kept unchanged (the reply was not a writable memory document).` (or `…(the reply was too short to be a change).`).
+- (d) memory changed + context written: toast `Memory: updated /path/.agents/memory/MEMORY.md`; command reply `Memory: updated.`
+- (e) memory changed + context missing (`update === undefined`): toast `Memory: updated /path/.agents/memory/MEMORY.md`; command reply `Memory: updated.` No context claim.
+
+These are truthful **by omission** for (a)/(b): the new reply no longer claims “context updated”. It does not affirmatively say “context was not updated”, which is what `CHANGELOG.md:13` says it does (N4). `report` remains `"updated"`/`"clipped"` (`:303`), so `/memory update` shows the refusal sentence at **info** severity unless the prompt was clipped (`:472`), while the automatic toast is `"warning"` (`:313`). The content is right; the severity is not (N3).
+
+**3. Is the new diagnostic logged exactly once per refusal?**
+
+It is logged once per `consolidate` call that both refuses and has a truthy `update`: one call site (`:291`), one `if (update)` block (`:287`), and concurrent callers of the same outcome dedupe before it (`:161`). It is not logged when `update` is undefined (reply has no usable context and a previous `CONTEXT.md` exists); the older “carried no context section” line (`:180-189`) handles that.
+
+Two caveats:
+- On a **fresh project with no `CONTEXT.md`**, `update` falls back to `fallbackUpdate(ctx)` (`:173`), so the new line fires even when the reply carried **no** context section — contradicting the external-edit test’s label “there was no context section to skip” (`external-edit-test.mjs:230`). That test passes only because its fixture has an existing `CONTEXT.md`.
+- It **interacts with `contextShapeWarned`**: the shape warning runs before the refusal is known (`:174-179` vs `:214`). If the previous context is empty and the reply’s context is unusable, it says `only a placeholder context was written`; the new gate then skips the placeholder and the new line says the previous file stays effective. Both are false on a fresh project. Probe output:
+  ```
+  ... the consolidation reply carried a context section that could not be used ...; only a placeholder context was written
+  ... the memory changed while this pass's reply was being built; the reply was not published ...
+  ... the refused reply's context section was not published; the previous CONTEXT.md stays effective
+  --- context --- (none)
+  ```
+  The marker is consumed, so the false claim is not corrected later. See I2.
+
+**4. Tests and mutation**
+
+Ran in the sandbox:
+
+- `node tests/consolidation-test.mjs` → `ALL OK`, exit 0.
+- `node tests/external-edit-test.mjs` → `ALL OK`, exit 0.
+- `node tests/run-all.mjs` → `All 15 tests passed.`, exit 0.
+- `git diff --check` (worktree and `b20c8cf..HEAD`) → clean.
+
+Mutated a **copy** (`/tmp/pi-ctx-mutant.*`, never the sandbox) by changing `report.ts:264` to `const contextWritten = Boolean(update);`:
+
+- `tests/consolidation-test.mjs` → exit 1:
+  ```
+  FAIL a refused reply does not overwrite the newer CONTEXT.md
+  FAILURES: 1
+  ```
+- `tests/external-edit-test.mjs` → exit 1, exactly three red:
+  ```
+  FAIL reply carries a context section: the command reply does not claim a context update
+  FAIL reply carries a context section: CONTEXT.md was left untouched
+  FAIL reply carries a context section: the skipped context write is traced
+  FAILURES: 3
+  ```
+  The `reply carries no context section` subcase stays green under the mutation because `update` is undefined there; it is a regression guard, not a fix test.
+
+The fixture is deterministic: both the memory and context replacement happen synchronously inside `modelRegistry.complete` before the reply returns (`consolidation-test.mjs:560-567`), with no sleep/timing dependence. The positive control is genuine: under the mutation, `OK CONTEXT.md has the new summary`, `OK the context section is written from the same reply`, and `OK the settle pass still writes CONTEXT.md` remain green while the new refusal test is red. So the green HEAD result is not trivial.
+
+The fix note’s mutation claim is wrong: `fix-note.md:52` says `external-edit-test.mjs` goes “恰红 4 条”; the actual result is 3, and the no-context subcase cannot go red under this mutation (N2).
+
+The sandbox was left clean (`git status --short` empty at `07b77a2`); the mutation copy is outside it and was not restored in place because the sandbox was never touched.
+
+**5. Documented behavior**
+
+The core architecture sentence (`docs/architecture.md:130-132`) matches the field path: a memory change during the reply build suppresses both halves and logs the skip. The design’s superseded note (`…design.md:171-174`) correctly marks the old “refuse memory, still write CONTEXT” row as superseded.
+
+But the superseded note is **incomplete**:
+- `design.md:168` still says the `contextShapeWarned` row is valid because “CONTEXT 照写 ⇒ 仍成立”. After this change, CONTEXT is not written on refusal; the row’s reason is false and the placeholder clause lies.
+- `design.md:186` still shows `contextWritten: Boolean(update)` and the old “update 为真 ⇒ 必然写” comment; that is the pre-fix code.
+- `design.md:195` still describes the stale-sentence true branch; that branch is now unreachable (N4).
+- `design.md:235` (T2) still says the two subcases “分别断言前缀”; the new test asserts **no** context claim for both, and `CONTEXT.md` untouched for both.
+
+Other doc mismatches:
+- `docs/architecture.md:132` says `CONTEXT.md` keeps “磁盘上的较新版本”; on a fresh project there is no disk version, and the new line still says “the previous CONTEXT.md stays effective” (I1).
+- `CHANGELOG.md:13` says the `/memory update` reply “如实说明 context 没有更新”; the actual reply says only `Memory: kept the newer MEMORY.md…` and never mentions context (N4).
+- `fix-note.md:33` says `update` “来自同一个模型回复”; for a fresh project it can be `fallbackUpdate(ctx)` (`report.ts:173`), which is exactly why the new diagnostic fires with no reply context (N3/I1).
+- `fix-note.md:52` says 4 external-edit failures; actual 3 (N2).
+
+**6. Adversarial pass**
+
+I did not find a path where a **refused** reply still writes `CONTEXT.md`: the write is single-sited and gated, `fallbackUpdate` is also gated, `written`/dedupe prevents a second attempt of the same outcome, and thrown errors skip the write. The keep-adoption path is not dragged into the gate; its tests stay green.
+
+The real remaining lost update is **context-only**: `pass.ts:182` reads `CONTEXT.md` for the prompt; if a human edits it during the model call and `MEMORY.md` does not change (or the reply is semantic-empty/short, or memory was cleared), `memoryRefused` is false, `contextWritten` is true, and `:294` overwrites the newer context with the reply’s stale context. The field incident happened to include a memory race, so this fix covers that incident, but it is a memory-basis proxy, not a context-basis guard. A context basis key would be the direct mechanism; the trade-off is a new normalization/publish-key/CAS surface and a conflict with the deliberately pinned keep-adoption behavior (“the same pass still writes the context” at `consolidation-test.mjs:1647`). The narrow fix is defensible for this commit; the residual should be registered/tested rather than silently assumed closed.
+
+Also, `staleKeepSentence(true)` and `info.contextWritten === true` in the stale branch are now unreachable (`:264` makes `contextWritten` false whenever `memoryRefused`); the parameter is dead but harmless. The test’s “there was no context section to skip” assertion passes for a fixture-specific reason, not as a general property.
+
+## Findings
+
+### Blocking
+
+None. The gate itself does not publish a refused reply’s context.
+
+### Important
+
+**I1. `extensions/project-context/memory/report.ts:291` — the new diagnostic can assert a previous file that does not exist.**
+`update` includes `fallbackUpdate(ctx)` (`:173`). On a fresh project (no `CONTEXT.md`) where `MEMORY.md` appears during the pass, the memory is refused, `contextWritten` is false, and the log says:
+`the refused reply's context section was not published; the previous CONTEXT.md stays effective`
+while there is no `CONTEXT.md` at all. If the reply carried no context section, it also calls the locally generated fallback “the refused reply’s context section”. This is a new false operator-facing statement in the durable trace, and it contradicts `external-edit-test.mjs:230`’s “no context section to skip” label as a general claim.
+**Smallest fix:** compute the diagnostic from `existingContext.trim()`, `outcome.result.context`, and `contextWritten` — e.g. only say “the previous CONTEXT.md stays effective” when one exists, and say “no CONTEXT.md was written” for the fallback case. Do **not** change the gate or start writing the fallback on refusal in this fix.
+
+**I2. `extensions/project-context/memory/report.ts:174-179` vs `:264`/`:291` — the shape warning now contradicts the refusal.**
+The `contextShapeWarned` block runs before `memoryRefused` is known. With an empty previous context it logs `only a placeholder context was written`; the new gate then skips the placeholder and the new line says the reply’s context was not published. `contextShapeWarned` is consumed, so the false line is not corrected later. `design.md:168` still justifies keeping the warning with “CONTEXT 照写 ⇒ 仍成立”, which is exactly what this change removed. Probe reproduced the three-line contradiction with no `CONTEXT.md` on disk.
+**Smallest fix:** move the shape warning after the memory decision (or make its `kept` clause depend on `contextWritten`/`memoryRefused` and `existingContext`) and update the design row. Do **not** change the memory/context gate or the once-per-project marker’s purpose.
+
+### Nit
+
+**N1. Stale docs / incomplete superseded note.**
+- `…external-edit-adoption-overwritten-design.md:168` — reason for keeping `contextShapeWarned` is invalid; update it (see I2).
+- `…design.md:186`, `:195` — old `contextWritten: Boolean(update)` snippet and stale-sentence true branch; mark as superseded, don’t leave them as current design.
+- `…design.md:235` — T2 says “分别断言前缀”; the committed test asserts no context claim for both subcases. Update the acceptance line.
+- `docs/architecture.md:132` — “`CONTEXT.md` 保留磁盘上的较新版本” should say “if one exists”; it is false for a fresh project.
+- `CHANGELOG.md:13` — “如实说明 context 没有更新” overstates; the reply only omits the claim. Say “不再声称 context 更新” or add the explicit sentence if desired.
+- `fix-note.md:33` — `update` is not always from the model reply (`fallbackUpdate`, `report.ts:173`); correct the mechanism sentence.
+**Boundary:** docs only; do not rewrite the design’s historical sections beyond a superseded note.
+
+**N2. `fix-note.md:52` — mutation count is wrong.**
+It says `external-edit-test.mjs` goes “恰红 4 条”; the exact run gives 3 (`command reply does not claim a context update`, `CONTEXT.md was left untouched`, `skipped context write is traced`). The no-context subcase stays green because `update` is undefined. Correct the evidence count; no code change.
+
+**N3. `extensions/project-context/memory/report.ts:472` — refusal replies are shown at info severity.**
+`consolidateReply` is warned only for `report === "failed" || report === "clipped"`; a refusal returns `"updated"` (`:303`), so `/memory update` shows the “kept the newer MEMORY.md…” warning as info unless the prompt was clipped, while the automatic toast uses warning (`:313`). **Fix:** include `lastWrite.get(projectRoot)?.keepReason === "stale"` in the warning condition; do not change `ConsolidateReport` or the message text.
+
+**N4. `extensions/project-context/memory/report.ts:573-575`, `:588` — dead true branch.**
+`staleKeepSentence(true)` and `info.contextWritten === true` in the stale branch cannot be reached: `contextWritten` is false whenever `memoryRefused` (`:264`). Either simplify `staleKeepSentence()` to the refusal form or add a comment that the true branch is retained for a future refusal path; not a correctness bug.
+
+**N5. `…external-edit-adoption-overwritten-design.md:171-175` — the note breaks the table.**
+The blockquote is inserted between the `:169` and `:175` rows. The `:256-259` keep-adoption row is now outside the table and disappears from a rendered view. This directly violates the repo’s own rule at `.agents/memory/MEMORY.md:76` (“a note placed between two rows orphans the row below it”). **Fix:** move the note after the last table row; do not edit the row.
+
+### Suggestion
+
+**S1.** Add refusal fixtures for the two diagnostic gaps: (a) fresh project, no `CONTEXT.md`, reply with no context section, memory race → assert the diagnostic does not claim a previous file; (b) fresh project, unusable context section, memory race → assert the shape warning does not claim a placeholder was written. These are tests for I1/I2, not a new mechanism.
+**S2.** Register the context-only race as a residual and, if the repo wants to close the class, design a context basis key separately; do not bolt it onto this fix.
+
+### Learning
+
+**L1.** The design note placement is a live instance of the MEMORY.md table-contiguity rule; `run-all` checks trailing blank lines and rendered bullet punctuation but not Markdown table contiguity, so that rule still needs a manual check.
+**L2.** A memory-basis refusal is a proxy for “the reply’s context is stale”; it fixes the field race but not the class. When a fix reuses a neighboring guard, state the guard’s actual predicate and the paths it cannot cover.
+**L3.** A “no diagnostic” assertion can pass for a fixture-specific reason: `external-edit-test.mjs:230` passes because the fixture has an existing `CONTEXT.md`, not because the code generally suppresses the line when the reply has no context section.
+
+### Praise
+
+The core gate is placed at the single context write, not sprinkled across branches; the refusal string is shared by toast and command reply; the keep-adoption behavior is preserved and still tested; the store’s `basisKey` refusal is reused rather than duplicated; the new consolidation assertion fails under the exact mutation while the normal-path positive controls stay green; and the refusal no longer claims a context update. The field path is genuinely fixed.
+
+### Residual-risk
+
+**R1. Context-only lost update (main remaining gap).**
+Pass reads `C1` (`pass.ts:182`); a human edits `CONTEXT.md` to `C2` during the model call; the reply carries a `C1`-based context; `MEMORY.md` is unchanged (or the reply is semantic-empty/short, or the owner cleared memory) → `memoryRefused` is false → `contextWritten` is true → `:294` overwrites `C2`. The fix note/docs only promise the memory-refusal case, so this is not a broken promise, but it is the same class of lost update. A context basis key would close it; the trade-off is a new mechanism and a change to the pinned keep-adoption semantics. Do not treat the current gate as a general context CAS.
+
+**R2. Deduped retry after a refusal.**
+The `written` claim is set even on refusal (`:160-164`). An immediate `/memory update` within `forceDedupeMs` returns `"deduped"` and the user sees `Memory: already up to date (deduped recently); nothing was rewritten.` even though the pass was refused and the context is still stale. This is preexisting dedupe behavior, not introduced here, but the fix’s “truthful command reply” claim does not cover it.
+
+**R3. `lastWrite` concurrency.**
+A concurrent pass can `lastWrite.delete(projectRoot)` between a refused pass setting its info and the command reading it, yielding `Memory: updated.` for a refused pass. Known residual in the design review; not addressed here.
+
+**R4. No CAS on the context write.**
+The memory write is under a lock and has a basis check; the context write is outside both. The design accepts the residual window. The fix reduces the field case but does not add a context CAS.
+
+## Test And QA Focus
+
+**Ran:** `node tests/consolidation-test.mjs` (ALL OK), `node tests/external-edit-test.mjs` (ALL OK), `node tests/run-all.mjs` (15/15), `git diff --check` (clean). Mutation in a `/tmp` copy: `contextWritten = Boolean(update)`; exact FAIL lines above; sandbox `git status --short` empty at `07b77a2`.
+
+**What it proves:** the field path is fixed — a refused reply’s `CONTEXT.md` is byte-identical after the pass, the skip is traced, the command reply does not claim a context update, and the normal/keep-adoption paths still write `CONTEXT.md`. The mutation is non-trivial and the positive control is real.
+
+**What it cannot prove:** the context-only race (R1); the fresh-project fallback and unusable-context diagnostic paths (I1/I2); concurrent `lastWrite`/dedupe behavior (R2/R3); the command severity (N3); the rendered table state (N5); the fix-note’s mutation count (N2). The no-context external-edit subcase is a guard, not a fix test.
+
+VERDICT: CHANGES-REQUESTED

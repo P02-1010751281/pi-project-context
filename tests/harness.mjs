@@ -169,6 +169,9 @@ export async function rmTemp(target) {
 	await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 }
 
+/** A surface that did not clip must not claim any shortening; pin the word, not one phrase. */
+export const noClipClaim = (text) => !/shorten/i.test(String(text));
+
 /** Poll until a condition holds (bounded); waits in this suite never sleep a fixed slice.
  * Async predicates are supported so file effects can be awaited without a fixed delay. */
 export async function waitUntil(predicate, timeoutMs = 2_000, stepMs = 10) {

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noOldContextClaim, PC, rmTemp } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noClipClaim, noOldContextClaim, PC, rmTemp } from "./harness.mjs";
 
 /**
  * The external-edit adoption fix. A reply whose baseline changed while the model was writing must
@@ -187,7 +187,7 @@ try {
 		await writeFile(memoryPath(legacyClear), "");
 		const legacyClearResult = await recordMemoryDocument(legacyClear, REPLY, CAP, { basisKey: legacyClearBasis });
 		check("a legacy cleared memory lets the reply win", legacyClearResult.written === true);
-		check("the legacy clear holds the reply bytes", (await readFile(memoryPath(legacyClear), "utf8")).includes("the pass's own reply."));
+		check("the legacy clear holds exactly the reply", key(await readFile(memoryPath(legacyClear), "utf8")) === key(REPLY));
 		const legacyHeader = await makeProject(FOUR);
 		const legacyHeaderBasis = (await loadMemory(legacyHeader, CAP)).text;
 		await writeFile(memoryPath(legacyHeader), "# Project Memory\n");
@@ -236,7 +236,7 @@ try {
 		check(`${sub.name}: the command reply does not claim a cap`, !reply.includes("maxMemoryChars"));
 		// A refused reply is built from an older snapshot, so neither half is published: the context
 		// claim must be absent even when the reply carried a context section (field: 2026-10-19T08:27:10Z).
-		check(`${sub.name}: the command reply does not claim a write`, !reply.includes("context updated") && !reply.includes("Memory: updated") && !reply.includes("had to be shortened"));
+		check(`${sub.name}: the command reply does not claim a write`, !reply.includes("context updated") && !reply.includes("Memory: updated") && noClipClaim(reply));
 		check(`${sub.name}: the refusal log carries no retired context claim`, noOldContextClaim(log));
 		check(`${sub.name}: the reply carries no retired context claim`, noOldContextClaim(reply));
 		check(`${sub.name}: no published-side missing-context line`, !log.includes("the consolidation reply carried no context section"));
