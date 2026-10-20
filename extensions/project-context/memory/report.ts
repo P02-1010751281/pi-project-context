@@ -243,7 +243,8 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 			// keeps the file the pass raced, and the next pass re-renders from it.
 			const contextWritten = Boolean(update) && !memoryRefused;
 			// Set even when the memory was kept: a command words its reply from this, and "no memory write"
-			// must not read as "nothing happened" when the context was rewritten.
+			// must not read as "nothing happened" when the context was rewritten (the write itself is gated
+			// separately by `contextWritten`).
 			lastWrite.set(projectRoot, {
 				backup,
 				repaired: !memoryRefused && storedPoisoned,
@@ -300,7 +301,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				contextShapeWarned.add(projectRoot);
 				const kept = wroteContext
 					? "only a placeholder context was written"
-					: (existingContext.trim() ? "no CONTEXT.md was written; the file on disk was left untouched" : "no CONTEXT.md was written");
+					: (existingContext.trim() ? "this pass wrote no CONTEXT.md" : "no CONTEXT.md was written");
 				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
 			} else if (!outcome.result.context && !outcome.result.contextUnusable && !memoryRefused && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
 				// Same failure class, one step further back: no usable context member at all. A refused
@@ -309,7 +310,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				contextShapeWarned.add(projectRoot);
 				const kept = wroteContext
 					? "a placeholder context was written"
-					: "no CONTEXT.md was written; the file on disk was left untouched";
+					: "this pass wrote no CONTEXT.md";
 				const missing = outcome.result.recovered
 					? "the consolidation reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered)"
 					: "the consolidation reply carried no context section";

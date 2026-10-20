@@ -124,18 +124,18 @@ flush 有三条守卫：journal 不存在时直接返回（裸项目退出后不
 
 consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不会用空内容覆盖旧 `CONTEXT.md`：
 
-- 完整 JSON 但没有 `context`：发布态（未被拒绝时）保留旧文件并写缺失诊断；fresh 项目（没有旧文件、回复也不是 recovered）
-  未被拒绝时写占位 context 而不报缺失，被拒绝时整条回复丢弃、不写占位。
+- 完整 JSON 但没有 `context`：发布态（未被拒绝时）保留旧文件并写缺失诊断；没有可用的旧文件（不存在或为空）、回复也不是
+  recovered 时，未被拒绝时写占位 context 而不报缺失，被拒绝时整条回复丢弃、不写占位。
 - JSON 不可解析，但仍恢复出 `memory_markdown`：标记 `recovered`；有旧文件时保留旧文件，
   fresh 项目未被拒绝时写占位 context；发布态写诊断，拒绝态由拒绝诊断覆盖（不再补缺失分支的 shape 行）。
 - `context` 存在但形状错误：有旧文件时保留旧文件；fresh 项目未被拒绝时写占位 context。发布态记录 shape warning；
-  拒绝态仍记录不可用分支的 shape warning；有 `update` 时另写一条跳过诊断，没有 `update` 时只记录该 shape warning。
+  拒绝态仍记录不可用分支的 shape warning（每个项目每进程首次）；有 `update` 时另写一条跳过诊断，没有 `update` 时只记录该
+  shape warning。
 - 存储的 `MEMORY.md` 在回复构建期间变化时，整条回复（含 `context` 段）都不发布：memory 由 `basisKey` 判据拒绝，
   同一个回复的 `context` 也来自更旧的快照（2026-10-19 现场：拒发同秒把手工收敛的 open tasks 写回旧清单），所以
   `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建。拒绝态在本次 pass 有 `update`
-  （回复带可用的 context，或 fresh 项目的占位段）时写一条「context section was not published；no CONTEXT.md was
-  written」诊断；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
-  时，仍由 shape warning 记录不可用）。没有写入时诊断只说磁盘上的文件未被改动；写了占位符时就说占位符已写。
+  （回复带可用的 context，或 fresh 项目的占位段）时写一条 context 跳过诊断（至少包含 “no CONTEXT.md was written”）；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
+  时，仍由 shape warning 记录不可用）。没有写入时诊断只说本次 pass 没有写 CONTEXT.md；写了占位符时就说占位符已写。
   两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的

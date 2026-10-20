@@ -72,8 +72,10 @@ export function parseConsolidated(text: string): ConsolidatedResult | undefined 
 		const contextUnusable = context === undefined && parsed.context !== undefined && parsed.context !== null;
 		return { memory: parsed.memory_markdown, context, ...(contextUnusable ? { contextUnusable: true } : {}) };
 	}
-	// A reply that failed to parse can still carry the memory field intact.
-	const recovered = jsonStringField(text);
+	// A reply that failed to parse can still carry the memory field intact. A parsed object with a
+	// non-string/nested `memory_markdown` is a wrong shape, not a truncation: fail closed instead of
+	// recovering a nested field and reporting the reply as unparsable.
+	const recovered = parsed === undefined ? jsonStringField(text) : undefined;
 	// The reply did not parse: everything after the memory field — the context among it — was never
 	// readable (truncated or malformed). Either way CONTEXT.md would age silently without a trace.
 	if (recovered) return { memory: recovered, recovered: true };

@@ -108,6 +108,13 @@ try {
 		// An object that never closes means the reply hit the output cap after the memory field; the
 		// context was never emitted. Flagging it is what turns a silently stale CONTEXT.md into a trace.
 		check("a reply whose object never closed is flagged", parseConsolidated(corrupted)?.recovered === true);
+	// A parsed object with a non-string/nested memory_markdown is a wrong shape, not a truncation:
+	// failing closed keeps the stored memory instead of recovering a nested field and claiming the
+	// reply was unparsable (round-6 finding).
+	const nestedMemory = '{"meta":{"memory_markdown":"# Project Memory\\n\\n## Project\\n- nested."},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+	const numericMemory = '{"memory_markdown":17,"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+	check("a nested memory_markdown fails closed", parseConsolidated(nestedMemory) === undefined);
+	check("a non-string memory_markdown fails closed", parseConsolidated(numericMemory) === undefined);
 		check(
 			"a complete reply is not flagged as recovered",
 			parseConsolidated('{"memory_markdown":"# m"}')?.recovered === undefined && parseConsolidated("plain markdown")?.recovered === undefined,
@@ -955,7 +962,7 @@ try {
 			check("an unusable context is written to errors.log", shapeLog.includes("could not be used"));
 			check(
 				"an unusable context names the file state it left",
-				shapeLog.includes("no CONTEXT.md was written; the file on disk was left untouched")
+				shapeLog.includes("this pass wrote no CONTEXT.md")
 					&& !shapeLog.includes("the previous CONTEXT.md is kept"),
 			);
 			await pi.commands.get("memory").handler("update", ctx);
@@ -1030,7 +1037,7 @@ try {
 			await runPass(absentTmp, JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- no context section." }));
 			const absentLog = await readFile(path.join(absent.dir, "errors.log"), "utf8").catch(() => "");
 			check("a reply without a context section keeps the previous render", (await readFile(path.join(absent.dir, "CONTEXT.md"), "utf8")) === absent.previous);
-			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("no CONTEXT.md was written; the file on disk was left untouched"));
+			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("this pass wrote no CONTEXT.md"));
 			check("an omission is not reported as a parse failure", !absentLog.includes("could not be parsed"));
 
 			// The truncation variant: the memory survives, the context never made it out.
@@ -1039,7 +1046,7 @@ try {
 			const cutLog = await readFile(path.join(cut.dir, "errors.log"), "utf8").catch(() => "");
 			const cutMemory = await readFile(path.join(cut.dir, "MEMORY.md"), "utf8");
 			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
-			check("a cut-off reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("could not be parsed"));
+			check("a cut-off reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("could not be parsed") && !cutLog.includes("never closed"));
 		} finally {
 			await rmTemp(absentTmp);
 			await rmTemp(cutTmp);

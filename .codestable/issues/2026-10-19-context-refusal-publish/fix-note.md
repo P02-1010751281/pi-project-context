@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-19
-commit: c855f2e
+commit: 78bad89
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -38,7 +38,7 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与跳过诊断的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered 分支，只说“没有写 CONTEXT.md”，不声称不存在的旧文件、未写的占位符、或 pass 读到的旧快照仍在生效。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；拒绝态不再补 shape 行。删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。recovered 回复的发布线用 "no publishable context section"，不再说"没带 context 段"；拒绝态不再补缺失分支的 shape 行；所有诊断只说磁盘上的文件未被改动，不声称 pass 的快照仍在生效。 |
+| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与跳过诊断的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered 分支，只说“没有写 CONTEXT.md”，不声称不存在的旧文件、未写的占位符、或 pass 读到的旧快照仍在生效。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；拒绝态不再补缺失分支的 shape 行（不可用分支仍记录）。删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。recovered 回复的发布线用 "no publishable context section"，不再说"没带 context 段"；拒绝态不再补缺失分支的 shape 行；没有写入时只说本次 pass 没有写 CONTEXT.md，写了占位符时就说占位符已写，不声称 pass 的快照仍在生效。 |
 | `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、诊断落盘、且日志不声称 pass 读到的旧快照仍在生效。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）、两个 recovered 夹具（拒绝 / 发布）、一个 fresh absent 发布夹具和一个 CONTEXT.md 为目录的写失败夹具（断言没有占位符误报）。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动；带 context 段时另断言"跳过"诊断。 |
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
@@ -51,11 +51,15 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 - 变异（按最终测试）：把 `contextWritten` 退回 `Boolean(update)`：
   - `tests/consolidation-test.mjs` 红 8 条：mid-call 的 `a refused reply does not overwrite the newer CONTEXT.md`、
     5 条 fresh 诊断/文件断言（带 context / 不带 context / context 不可用）、`a refused unusable context writes no CONTEXT.md`
-    与 `a fresh recovered refusal says the object never closed`；
+    与 `a fresh recovered refusal says the reply could not be parsed`；
   - `tests/external-edit-test.mjs` 红 2 条：`CONTEXT.md was left untouched` 与 `the skipped context write is traced`
     （"不声称 context 更新"在变异下仍绿，因为 `staleKeepSentence` 已不再带 context 前缀；这是收窄后的守卫，不是门探针）。
-  - 另两条定点变异：恢复旧的 shape 措辞 → 恰红 `a refused unusable context does not claim a placeholder was written`；
-    恢复旧的 I1 字面诊断 → 红 fresh carried / absent / unusable 三组（unusable 已补 `!files` 与 `!previous-file` 断言）。
+  - 另五条定点变异：恢复旧的 shape 措辞 → 恰红 `a refused unusable context does not claim a placeholder was written`；
+    恢复旧的 I1 字面诊断 → 红 fresh carried / absent / unusable 三组；去掉缺失分支的 `!memoryRefused` →
+    consolidation 红 1 条（`a fresh recovered refusal says the reply could not be parsed`）+ external-edit 红 1 条
+    （`reply carries no context section: no published-side missing-context line`）；把 parser 的 raw-string recovery
+    退回无条件 → 红 `a nested memory_markdown fails closed`；在 recovered 提示后追加 "its object never closed" →
+    红 `a cut-off reply says so in errors.log`。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
   `the context section is written from the same reply` 用例全绿），证明红灯来自门而不是夹具。
 
@@ -78,7 +82,12 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   并给 fresh 发布补了"a placeholder context was written"的告知；拒绝态不再补缺失分支的 shape 行（避免同一回复两条互相
   矛盾的记录），recovered 拒绝句改为"could not be parsed / no publishable context section"。不可用分支的 shape warning 在拒绝态仍保留。
 - **R6（已修）**：拒绝/形状诊断曾声称 "the previous CONTEXT.md stays effective / is kept and stays stale"，而竞写可能已
-  换掉磁盘上的文件；没有写入时只说 "no CONTEXT.md was written" / "the file on disk was left untouched"，写了占位符时就说占位符已写，不再引用 pass 的旧快照。
+  换掉磁盘上的文件；没有写入时只说 "this pass wrote no CONTEXT.md"，写了占位符时就说占位符已写，不再引用 pass 的旧快照。
+- **R8（已修）**：`parseConsolidated` 在 JSON 已解析但 `memory_markdown` 不是顶层字符串时仍走 raw-string recovery，
+  会把 valid JSON 回复报成"不可解析"并丢掉可用的 context；现在只在 `parsed === undefined` 时 recovery，并加两条
+  fail-closed 单测（nested / non-string）。
+- **R9（已修）**："the file on disk was left untouched" 在竞写下不成立（另一个写入者可能已换掉文件）；改说
+  "this pass wrote no CONTEXT.md"。
 - **R7（已修）**：recovered 回复的发布线曾把"对象未闭合"说成"没带 context 段"；现改为 "no publishable context
   section"，refused/published 两侧都钉住；拒绝态不再补缺失分支的 shape 行。
 - 拒绝仍是检测器（不阻止其他合法回复发布）；它只决定"这一条回复"两侧都不发布。
