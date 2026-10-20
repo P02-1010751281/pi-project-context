@@ -1263,6 +1263,8 @@ try {
 				"a clipped kept-memory command reply describes the prompt, not a rewrite",
 				clippedKeptReply.includes("prompt also had to be shortened") && !clippedKeptReply.includes("rewrite also shortened"),
 			);
+			const keptReply = consolidateReply("updated", { repaired: false, memoryKept: true, keepReason: "short" });
+			check("a non-clipped kept-memory command reply has no clip note", !keptReply.includes("had to be shortened"));
 			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
 			// the document hitting its cap and point at a drop list that does not exist (review R2).
 			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
@@ -2692,7 +2694,14 @@ try {
 			});
 			await runHandlers(cleanPi, "agent_settled", cleanCtx);
 			const cleanWritten = await waitUntil(() => cleanCtx.notifications.some(([message]) => String(message).includes("Memory: updated")), 3_000);
-			check("the automatic unusable-context pass publishes its memory", cleanWritten && (await readFile(path.join(cleanMem, "MEMORY.md"), "utf8").catch(() => "")).includes("clean automatic write"));
+			const cleanToast = cleanCtx.notifications.find(([message]) => String(message).includes("Memory: updated"));
+			check(
+				"the automatic unusable-context pass publishes its memory",
+				cleanWritten
+					&& (await readFile(path.join(cleanMem, "MEMORY.md"), "utf8").catch(() => "")).includes("clean automatic write")
+					&& Boolean(cleanToast)
+					&& !String(cleanToast?.[0] ?? "").includes("had to be shortened"),
+			);
 			check(
 				"the automatic unusable-context pass shows no stale refusal toast",
 				!cleanCtx.notifications.some(([message]) => String(message).includes("kept the newer MEMORY.md")),

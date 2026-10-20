@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-20
-commit: c352bcf
+commit: d4ff8a3
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -45,6 +45,9 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
 | `CHANGELOG.md` | v0.4.13 修复条目 + v0.4.14 复核轮条目。 |
 | `tests/harness.mjs` | 共享负断言 `noOldContextClaim`（拒绝已退役的全局措辞；blocklist，不是语义判据）。 |
+| `tests/consolidation-test.mjs`（round 15） | kept/clean/clipped 夹具读效果文件（`MEMORY.md`/`CONTEXT.md`），非 clipped 表面拒绝 clip 说明；命令回执的 clipped/非 clipped 措辞分别钉住；`!memoryChanged` 的 clipped 说明用 prompt 措辞。 |
+| `tests/external-edit-test.mjs`（round 15） | legacy（无 journal）clear/header fixture 钉住 trim guard，并断言落盘字节。 |
+| `docs/architecture.md`（round 15） | 区分 §2.2 basisKey 拒绝与 §2.3 recheck 空 key guard；标出 legacy 仅限无 rotation 归档（R-14）。 |
 | `.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md` | §2.4 的「拒绝态照写 CONTEXT.md」标为已取代；§2.2 的 store 拒发行去掉 `stays effective`。 |
 
 ## 5. 验证
@@ -62,6 +65,7 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；给自动 toast / 共享 stale 句加 "Memory: context updated;"/"Memory: updated;" 前缀：1 + 2；给 `!memoryChanged` 的 "context updated; memory was kept unchanged" toast 加 "Memory: updated;" 前缀：1；
     把该 toast 的 clipped 说明换回 "The rewrite also shortened..."：1（clipped 夹具）；让它无条件出现：1（kept 夹具）；
     在 clipped 时跳过 context 写入：1（clipped 夹具读 CONTEXT.md）；把命令回执的 clipped 说明换回 rewrite：1；删掉 legacy trim 守卫：1（external-edit 的 legacy 清空）；
+    给默认 `Memory: updated` toast / 非 clipped 命令回执 / stale 句加 clip 说明：1 / 1 / 2（external）；
     把 toast 条件扩成 `memoryRefused || contextUnusable`：2；条件化到 `contextUnusable && existingContext.trim()`：2（existing-context 负控）；
   - `noOldContextClaim`（tests/harness.mjs）拒绝 "no CONTEXT.md was written" / "left untouched" / "stays effective" /
     "CONTEXT.md is kept" / "stays stale"。

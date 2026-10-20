@@ -25,7 +25,6 @@
   写了占位符时就说占位符已写。recovered 回复的发布线改为
   "no publishable context section"，其解析提示从 "object never closed" 改为 "could not be parsed"；JSON 已解析但 `memory_markdown` 不是顶层字符串时改为 fail closed，不再误走 raw-string recovery。
   保留 memory 的 clipped toast 现在说 prompt 被缩短，而不是 rewrite 缩写了内容（命令回执与自动 toast 同措辞）。
-  三个 fresh 夹具（带/不带/不可用 context）、两个 recovered 夹具、fresh absent 发布夹具与写失败夹具钉住 pass-scoped 措辞（含旧短语的负断言）。
 
 ## v0.4.12 — 2026-10-19
 

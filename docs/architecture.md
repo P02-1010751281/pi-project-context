@@ -137,12 +137,12 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
   `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建。拒绝态在本次 pass 有 `update`
   （回复带可用的 context，或 fresh 项目的占位段）时写一条 context 跳过诊断（至少包含 “this pass wrote no CONTEXT.md”）；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
   时，仍由 shape warning 记录不可用）。没有写入时诊断只说本次 pass 没有写 CONTEXT.md；写了占位符时就说占位符已写。
-  两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。例外（已登记的 R1 残留，不是本段承诺的
-  拒绝面）：（a）回复的 memory 本身 semantic-empty/过短（`memoryChanged` 为 false），`basisKey` 路径不运行；
-  （b）并发编辑把 `MEMORY.md` 清空/纯空白或删除，或编辑归一化后与 basisKey 相同。无 journal 的 legacy 布局由
-  `store.ts` 的 `current.text.trim()` 空守卫放行；journal 布局下 `current` 是 fold，清空/删除不改变 fold，回复因 key
-  相同而发布；若 fold 在 §2.2 读之前已经移动，§2.2 的 basisKey 检查会拒绝（recheck 对空文件有 guard，
-  移动+清空落在 §2.2 读之后时仍会发布——设计 §2.3/T6）。相关取舍与命名见
+  两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。例外：（a）回复的 memory 本身 semantic-empty/
+  过短（`memoryChanged` 为 false），`basisKey` 路径不运行；（b）并发编辑把 `MEMORY.md` 清空/纯空白或删除，或编辑
+  归一化后与 basisKey 相同。**（b）的 publish 情形同属已登记的 R1 残留**：无 journal（且无 rotation 归档，设计 R-14）
+  的 legacy 布局由 `store.ts` 的 `current.text.trim()` 空守卫放行；journal 布局下 `current` 是 fold，清空/删除不改变
+  fold，回复因 key 相同而发布；若 fold 在 §2.2 读之前已经移动，§2.2 的 basisKey 检查会拒绝（这是普通拒绝，不是 R1），
+  而 recheck 对空文件有 guard（移动+清空落在 §2.2 读之后时仍会发布——设计 §2.3/T6）。相关取舍与命名见
   `.codestable/issues/2026-10-03-external-edit-adoption-overwritten/` 的设计 §5 R-3。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的
