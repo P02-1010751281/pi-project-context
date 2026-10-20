@@ -222,7 +222,7 @@ try {
 		check(`${sub.name}: the command reply does not claim a cap`, !reply.includes("maxMemoryChars"));
 		// A refused reply is built from an older snapshot, so neither half is published: the context
 		// claim must be absent even when the reply carried a context section (field: 2026-10-19T08:27:10Z).
-		check(`${sub.name}: the command reply does not claim a context update`, !reply.includes("context updated"));
+		check(`${sub.name}: the command reply does not claim a write`, !reply.includes("context updated") && !reply.includes("Memory: updated"));
 		check(`${sub.name}: the refusal log carries no retired context claim`, noOldContextClaim(log));
 		check(`${sub.name}: the reply carries no retired context claim`, noOldContextClaim(reply));
 		check(`${sub.name}: no published-side missing-context line`, !log.includes("the consolidation reply carried no context section"));

@@ -2655,7 +2655,11 @@ try {
 			const toastSeen = await waitUntil(() => toastCtx.notifications.some(([message]) => String(message).includes("kept the newer MEMORY.md")), 3_000);
 			const toast = toastCtx.notifications.find(([message]) => String(message).includes("kept the newer MEMORY.md"));
 			check("the automatic refusal toast is a warning", toastSeen && toast?.[1] === "warning");
-			check("the automatic refusal toast carries no retired claim", Boolean(toast) && noOldContextClaim(String(toast?.[0] ?? "")));
+			const toastText = String(toast?.[0] ?? "");
+			check(
+				"the automatic refusal toast claims no write",
+				Boolean(toast) && noOldContextClaim(toastText) && !toastText.includes("context updated") && !toastText.includes("Memory: updated"),
+			);
 		} finally {
 			await rmTemp(toastTmp);
 		}
@@ -2669,6 +2673,7 @@ try {
 		try {
 			const cleanMem = path.join(cleanTmp, ".agents/memory");
 			await mkdir(cleanMem, { recursive: true });
+			await writeFile(path.join(cleanMem, "CONTEXT.md"), "# Project Context\n\n## Summary\n- existing context.\n");
 			const cleanFactory = await loadDefault(`${PC}/index.ts`);
 			const cleanPi = makePi({ cwd: cleanTmp });
 			await cleanFactory(cleanPi);

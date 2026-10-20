@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-20
-commit: fe6ca60
+commit: 76c09af
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -59,7 +59,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   - 在 skip 分支追加 `left untouched`：4 + 1；在 shape 分支追加：3 + 0；
   - 在 kept/stale 家族（shape / missing）追加：3 / 3；
   - 恢复 store 的 `stays effective`：6 + 3（T2 两条 log + T2c）；
-  - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；把 toast 条件扩成 `memoryRefused || contextUnusable`：2（自动 non-refusal 负控）；
+  - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；给自动 toast / 共享 stale 句加 "Memory: context updated;"/"Memory: updated;" 前缀：1 + 2；
+    把 toast 条件扩成 `memoryRefused || contextUnusable`：2；条件化到 `contextUnusable && existingContext.trim()`：2（existing-context 负控）；
   - `noOldContextClaim`（tests/harness.mjs）拒绝 "no CONTEXT.md was written" / "left untouched" / "stays effective" /
     "CONTEXT.md is kept" / "stays stale"。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
