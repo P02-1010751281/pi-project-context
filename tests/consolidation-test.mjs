@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, open, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noOldContextClaim, PC, rmTemp, runHandlers, waitUntil } from "./harness.mjs";
 
 /**
  * End-to-end test of the settle/shutdown path in one extension: the archive writes session.jsonl /
@@ -18,10 +18,6 @@ let failures = 0;
 function check(label, value) {
 	console.log(`${value ? "OK  " : "FAIL"} ${label}`);
 	if (!value) failures += 1;
-}
-/** A no-write diagnostic must not reuse the retired global claims (round 8). */
-function noOldContextClaim(log) {
-	return !log.includes("no CONTEXT.md was written") && !log.includes("left untouched") && !log.includes("stays effective");
 }
 
 /**
@@ -655,6 +651,10 @@ try {
 					&& freshUnusable.log.includes("this pass wrote no CONTEXT.md")
 					&& noOldContextClaim(freshUnusable.log),
 			);
+			check(
+				"the refused unusable shape line carries the pass-scoped phrase",
+				(freshUnusable.log.match(/this pass wrote no CONTEXT\.md/g) ?? []).length >= 2,
+			);
 			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
 			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective") && noOldContextClaim(freshUnusable.log));
 			// A recovered reply could not be parsed: the fresh refusal/publish trace must say
@@ -731,7 +731,8 @@ try {
 				"a thrown context write leaves no placeholder claim",
 				thrownLog.includes("EISDIR")
 					&& !thrownLog.includes("only a placeholder context was written")
-					&& !thrownLog.includes("could not be used"),
+					&& !thrownLog.includes("could not be used")
+					&& noOldContextClaim(thrownLog),
 			);
 			for (const dir of freshDirs) await rmTemp(dir);
 

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, PC, rmTemp } from "./harness.mjs";
+import { loadDefault, loadNamespace, makeCtx, makePi, makeSessionManager, messageEntry, noOldContextClaim, PC, rmTemp } from "./harness.mjs";
 
 /**
  * The external-edit adoption fix. A reply whose baseline changed while the model was writing must
@@ -223,6 +223,8 @@ try {
 		// A refused reply is built from an older snapshot, so neither half is published: the context
 		// claim must be absent even when the reply carried a context section (field: 2026-10-19T08:27:10Z).
 		check(`${sub.name}: the command reply does not claim a context update`, !reply.includes("context updated"));
+		check(`${sub.name}: the refusal log carries no retired context claim`, noOldContextClaim(log));
+		check(`${sub.name}: the reply carries no retired context claim`, noOldContextClaim(reply));
 		check(`${sub.name}: no published-side missing-context line`, !log.includes("the consolidation reply carried no context section"));
 		check(`${sub.name}: the refusal is shown as a warning`, ctx.notifications.at(-1)?.[1] === "warning");
 		check(`${sub.name}: CONTEXT.md was left untouched`, (await readFile(contextPath(root), "utf8")) === contextBefore);

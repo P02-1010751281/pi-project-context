@@ -94,6 +94,9 @@ if (options.basisKey !== undefined && current.text.trim()
 }
 ```
 
+> **已取代（v0.4.14）**：该行现为 `the memory changed while this pass's reply was being built; the reply was not published`
+> ——后续写入者仍可能换掉文件，`stays effective` 是竞写可证伪的全局断言。
+
 - **为什么两侧要过 key（R7-IM-B）**：`loadMemory` 的返回形态随**读取来源**变化——journal 存在时返回 fold
   （`normalizeMemoryDocument` 形态、带尾换行），无 journal 时返回 `clipToLineBoundary(raw.trim())`
   （`store.ts:184-186`，**无**尾换行）。若 pass 读与 store 读之间 journal 被建立/删除（并发进程的首个 pass、

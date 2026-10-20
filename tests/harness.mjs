@@ -323,3 +323,12 @@ export function toolResultEntry(id, toolCallId, text, timestamp, parentId = null
 		message: { role: "toolResult", toolCallId, content: [{ type: "text", text }], timestamp: Date.parse(timestamp) },
 	};
 }
+
+/** A no-write context diagnostic must not reuse any retired global claim (round 9). */
+export function noOldContextClaim(text) {
+	return !text.includes("no CONTEXT.md was written")
+		&& !text.includes("left untouched")
+		&& !text.includes("stays effective")
+		&& !text.includes("CONTEXT.md is kept")
+		&& !text.includes("stays stale");
+}

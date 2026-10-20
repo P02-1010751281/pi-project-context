@@ -17,8 +17,8 @@
 ### 修复
 
 - **拒绝态诊断在 fresh 项目与 recovered 回复上不再说谎**：v0.4.13 的拒发诊断在 fresh 项目（没有 `CONTEXT.md`）上会声称
-  “the previous CONTEXT.md stays effective”，并把本地生成的占位段叫作回复的 context 段；不可解析的回复则被说成
-  “carried no context section”。现在按回复是否带 context / 是否不可用 / 是否 recovered、磁盘上是否已有文件分支出措辞，
+  “the previous CONTEXT.md stays effective”，并把本地生成的占位段叫作回复的 context 段；有旧文件时，不可解析的回复还被说成
+  “carried no context section”（fresh 项目则继续被说成 “the previous CONTEXT.md stays effective”）。现在按回复是否带 context / 是否不可用 / 是否 recovered、磁盘上是否已有文件分支出措辞，
   且形状诊断在写入之后才发（写失败时不再先声称写了占位符）。`/memory update` 的拒绝回执改为 warning；删除已不可达的
   `LastWriteInfo.contextWritten` 与 stale 句的 true 分支。拒绝态不再补缺失分支的 shape 行；没有写入的诊断只说
   本次 pass 没有写 CONTEXT.md，不再声称 pass 读到的旧快照仍在生效；写了占位符时就说占位符已写。recovered 回复的发布线改为
