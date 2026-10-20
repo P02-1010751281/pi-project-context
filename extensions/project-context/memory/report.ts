@@ -330,7 +330,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				} else if (!memoryChanged) {
 					// The memory was not written, so nothing here may claim it was — not even the clipped notice,
 					// which describes a rewrite that did not happen. This is decision 6's wording rule.
-					notify(ctx, `Memory: context updated; memory was kept unchanged.${clippedNote}`);
+					notify(ctx, `Memory: context updated; memory was kept unchanged.${report === "clipped" ? " The prompt also had to be shortened to fit the model output budget." : ""}`);
 				} else if (storedPoisoned) {
 					const capNote = cappedMemory
 						? ` It also hit its ${maxMemoryChars}-character cap; both ends were kept and the middle was dropped on a line boundary.`

@@ -2714,15 +2714,47 @@ try {
 				sessionManager: makeSessionManager(keepEntries, "kept-session"),
 			});
 			keepCtx.modelRegistry.complete = async () => ({
-				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "kept summary", key_points: [], open_tasks: [] } }) }],
 			});
 			await runHandlers(keepPi, "agent_settled", keepCtx);
 			const keptSeen = await waitUntil(() => keepCtx.notifications.some(([message]) => String(message).includes("memory was kept unchanged")), 3_000);
 			const kept = keepCtx.notifications.find(([message]) => String(message).includes("memory was kept unchanged"));
-			check("the automatic memory-kept pass publishes its context", keptSeen && String(kept?.[0] ?? "").includes("context updated"));
+			check("the automatic memory-kept pass publishes its context", keptSeen && (await readFile(path.join(keepMem, "CONTEXT.md"), "utf8")).includes("kept summary"));
 			check("the automatic memory-kept toast claims no memory write", Boolean(kept) && !String(kept?.[0] ?? "").includes("Memory: updated"));
 		} finally {
 			await rmTemp(keepTmp);
+		}
+	}
+
+	console.log("\n=== a clipped memory-kept pass describes the prompt, not a rewrite ===");
+	{
+		const clipTmp = await mkdtemp(path.join(os.tmpdir(), "pi-toast-clipped-"));
+		try {
+			const clipMem = path.join(clipTmp, ".agents/memory");
+			await mkdir(clipMem, { recursive: true });
+			await writeFile(path.join(clipMem, "MEMORY.md"), "# Project Memory\n\n## Project\n" + Array.from({ length: 400 }, (_, index) => `- entry ${index} ${"x".repeat(80)}`).join("\n"));
+			await writeFile(path.join(clipMem, "project-context.json"), JSON.stringify({ memoryEnabled: true, consolidateTurns: 1, consolidateIntervalMs: 0, maxTokens: 500 }));
+			const clipFactory = await loadDefault(`${PC}/index.ts`);
+			const clipPi = makePi({ cwd: clipTmp });
+			await clipFactory(clipPi);
+			const clipEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`cl${index}`, "user", `clip turn ${index}`, `2026-09-12T15:0${index}:00.000Z`));
+			const clipCtx = makeCtx(clipTmp, {
+				model: { provider: "test", id: "clip", maxTokens: 500 },
+				sessionManager: makeSessionManager(clipEntries, "clip-session"),
+			});
+			clipCtx.modelRegistry.complete = async () => ({
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+			});
+			await runHandlers(clipPi, "agent_settled", clipCtx);
+			const clipSeen = await waitUntil(() => clipCtx.notifications.some(([message]) => String(message).includes("The prompt also had to be shortened")), 3_000);
+			const clipToast = clipCtx.notifications.find(([message]) => String(message).includes("The prompt also had to be shortened"));
+			check(
+				"the clipped memory-kept toast describes the prompt, not a rewrite",
+				clipSeen && Boolean(clipToast) && !String(clipToast?.[0] ?? "").includes("rewrite also shortened"),
+			);
+		} finally {
+			await rmTemp(clipTmp);
 		}
 	}
 
