@@ -245,7 +245,7 @@ export async function recordMemoryDocument(
 	const current = await loadMemory(projectRoot, limit);
 	if (options.basisKey !== undefined && current.text.trim()
 		&& memoryComparisonKey(current.text, limit) !== memoryComparisonKey(options.basisKey, limit)) {
-		await logError(projectRoot, "memory", "the memory changed while this pass's reply was being built; the reply was not published and the newer content stays effective");
+		await logError(projectRoot, "memory", "the memory changed while this pass's reply was being built; the reply was not published");
 		return { written: false, kept: current.text };
 	}
 	if (base.entries.length === 0) {

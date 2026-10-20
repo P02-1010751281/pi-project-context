@@ -19,6 +19,10 @@ function check(label, value) {
 	console.log(`${value ? "OK  " : "FAIL"} ${label}`);
 	if (!value) failures += 1;
 }
+/** A no-write diagnostic must not reuse the retired global claims (round 8). */
+function noOldContextClaim(log) {
+	return !log.includes("no CONTEXT.md was written") && !log.includes("left untouched") && !log.includes("stays effective");
+}
 
 /**
  * Drive the memory write path explicitly. Since 2026-10-06 (decision 1) `session_shutdown` only flushes:
@@ -105,18 +109,18 @@ try {
 			"an absent or null context is not flagged",
 			parseConsolidated('{"memory_markdown":"# m"}')?.contextUnusable === undefined && parseConsolidated('{"memory_markdown":"# m","context":null}')?.contextUnusable === undefined,
 		);
-		// An object that never closes means the reply hit the output cap after the memory field; the
-		// context was never emitted. Flagging it is what turns a silently stale CONTEXT.md into a trace.
+		// A reply that fails to parse (cut off or malformed) still recovers an intact memory field;
+		// flagging it is what turns a silently stale CONTEXT.md into a trace.
 		check("a malformed-but-closed reply is flagged", parseConsolidated(corrupted)?.recovered === true);
-	// A parsed object with a non-string/nested memory_markdown is a wrong shape, not a truncation:
-	// failing closed keeps the stored memory instead of recovering a nested field and claiming the
-	// reply was unparsable (round-6 finding).
-	const nestedMemory = '{"meta":{"memory_markdown":"# Project Memory\\n\\n## Project\\n- nested."},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
-	const numericMemory = '{"memory_markdown":17,"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
-	const numericWithNested = '{"memory_markdown":17,"meta":{"memory_markdown":"# nested"},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
-	check("a nested memory_markdown fails closed", parseConsolidated(nestedMemory) === undefined);
-	check("a non-string memory_markdown fails closed", parseConsolidated(numericMemory) === undefined);
-	check("a non-string field with a nested string also fails closed", parseConsolidated(numericWithNested) === undefined);
+		// A parsed object with a non-string/nested memory_markdown is a wrong shape, not a truncation:
+		// failing closed keeps the stored memory instead of recovering a nested field and claiming the
+		// reply was unparsable (round-6 finding).
+		const nestedMemory = '{"meta":{"memory_markdown":"# Project Memory\\n\\n## Project\\n- nested."},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+		const numericMemory = '{"memory_markdown":17,"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+		const numericWithNested = '{"memory_markdown":17,"meta":{"memory_markdown":"# nested"},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+		check("a nested memory_markdown fails closed", parseConsolidated(nestedMemory) === undefined);
+		check("a non-string memory_markdown fails closed", parseConsolidated(numericMemory) === undefined);
+		check("a non-string field with a nested string also fails closed", parseConsolidated(numericWithNested) === undefined);
 		check(
 			"a complete reply is not flagged as recovered",
 			parseConsolidated('{"memory_markdown":"# m"}')?.recovered === undefined && parseConsolidated("plain markdown")?.recovered === undefined,
@@ -598,7 +602,7 @@ try {
 				(await readFile(healContext, "utf8")) === racedContext
 					&& raceLog.includes("the refused reply's context section was not published")
 					&& raceLog.includes("this pass wrote no CONTEXT.md")
-					&& !raceLog.includes("left untouched")
+					&& noOldContextClaim(raceLog)
 					&& !raceLog.includes("the previous CONTEXT.md stays effective")
 					&& !raceLog.includes("the previous CONTEXT.md is kept"),
 			);
@@ -633,13 +637,14 @@ try {
 			const freshCarried = await runFreshRefusal("carried", { title: "t", summary: "s", key_points: [], open_tasks: [] });
 			check(
 				"a fresh refusal with a reply context claims no previous file",
-				freshCarried.log.includes("this pass wrote no CONTEXT.md") && !freshCarried.log.includes("the previous CONTEXT.md stays effective"),
+				freshCarried.log.includes("this pass wrote no CONTEXT.md") && noOldContextClaim(freshCarried.log),
 			);
 			check("a fresh refusal writes no CONTEXT.md (carried)", !freshCarried.files.includes("CONTEXT.md"));
 			const freshAbsent = await runFreshRefusal("absent", undefined);
 			check(
 				"a fresh refusal without a reply context blames no reply section",
-				freshAbsent.log.includes("the reply carried no context section") && !freshAbsent.log.includes("the refused reply's context section"),
+				freshAbsent.log.includes("this pass wrote no CONTEXT.md (the reply carried no context section)")
+					&& noOldContextClaim(freshAbsent.log),
 			);
 			check("a fresh refusal writes no CONTEXT.md (absent)", !freshAbsent.files.includes("CONTEXT.md"));
 			const freshUnusable = await runFreshRefusal("unusable", "not-an-object");
@@ -648,10 +653,10 @@ try {
 				freshUnusable.log.includes("could not be used")
 					&& !freshUnusable.log.includes("only a placeholder context was written")
 					&& freshUnusable.log.includes("this pass wrote no CONTEXT.md")
-					&& !freshUnusable.log.includes("left untouched"),
+					&& noOldContextClaim(freshUnusable.log),
 			);
 			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
-			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective"));
+			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective") && noOldContextClaim(freshUnusable.log));
 			// A recovered reply could not be parsed: the fresh refusal/publish trace must say
 			// that, not "the reply carried no context section" (round-2 I-A).
 			const runFreshText = async (label, replyText, race) => {
@@ -681,6 +686,7 @@ try {
 				freshRecoveredRefused.log.includes("could not be parsed")
 					&& freshRecoveredRefused.log.includes("no publishable context section")
 					&& !freshRecoveredRefused.log.includes("never closed")
+					&& noOldContextClaim(freshRecoveredRefused.log)
 					&& !freshRecoveredRefused.log.includes("the consolidation reply carried no publishable context section")
 					&& !freshRecoveredRefused.log.includes("carried no context section")
 					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),
@@ -692,14 +698,16 @@ try {
 					&& freshRecoveredPublished.log.includes("no publishable context section")
 					&& !freshRecoveredPublished.log.includes("carried no context section")
 					&& freshRecoveredPublished.log.includes("a placeholder context was written")
-					&& freshRecoveredPublished.files.includes("CONTEXT.md"),
+					&& freshRecoveredPublished.files.includes("CONTEXT.md")
+					&& noOldContextClaim(freshRecoveredPublished.log),
 			);
 			const freshAbsentPublished = await runFreshText("absent-published", JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- published without context." }), false);
 			check(
 				"a fresh publish without a reply context writes the placeholder silently",
 				freshAbsentPublished.files.includes("CONTEXT.md")
 					&& !freshAbsentPublished.log.includes("carried no context section")
-					&& !freshAbsentPublished.log.includes("a placeholder context was written"),
+					&& !freshAbsentPublished.log.includes("a placeholder context was written")
+					&& noOldContextClaim(freshAbsentPublished.log),
 			);
 			// A thrown context write must not leave the round-2 placeholder claim behind: the write is
 			// attempted before the shape diagnostic, so the failure skips it (round-3 S1).
@@ -968,7 +976,8 @@ try {
 			check(
 				"an unusable context names the file state it left",
 				shapeLog.includes("this pass wrote no CONTEXT.md")
-					&& !shapeLog.includes("the previous CONTEXT.md is kept"),
+					&& !shapeLog.includes("the previous CONTEXT.md is kept")
+					&& noOldContextClaim(shapeLog),
 			);
 			await pi.commands.get("memory").handler("update", ctx);
 			const repeated = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
@@ -1042,7 +1051,7 @@ try {
 			await runPass(absentTmp, JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- no context section." }));
 			const absentLog = await readFile(path.join(absent.dir, "errors.log"), "utf8").catch(() => "");
 			check("a reply without a context section keeps the previous render", (await readFile(path.join(absent.dir, "CONTEXT.md"), "utf8")) === absent.previous);
-			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("this pass wrote no CONTEXT.md"));
+			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("this pass wrote no CONTEXT.md") && noOldContextClaim(absentLog));
 			check("an omission is not reported as a parse failure", !absentLog.includes("could not be parsed"));
 
 			// The truncation variant: the memory survives, the context never made it out.
@@ -1051,7 +1060,7 @@ try {
 			const cutLog = await readFile(path.join(cut.dir, "errors.log"), "utf8").catch(() => "");
 			const cutMemory = await readFile(path.join(cut.dir, "MEMORY.md"), "utf8");
 			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
-			check("a cut-off reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("could not be parsed") && !cutLog.includes("never closed"));
+			check("a cut-off reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("could not be parsed") && !cutLog.includes("never closed") && noOldContextClaim(cutLog));
 		} finally {
 			await rmTemp(absentTmp);
 			await rmTemp(cutTmp);

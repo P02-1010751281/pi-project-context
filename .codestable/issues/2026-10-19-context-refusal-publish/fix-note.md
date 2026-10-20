@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-19
-commit: fe00482
+commit: 921ff8f
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -54,8 +54,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
     与 `a fresh recovered refusal says the reply could not be parsed`；
   - `tests/external-edit-test.mjs` 红 2 条：`CONTEXT.md was left untouched` 与 `the skipped context write is traced`
     （"不声称 context 更新"在变异下仍绿，因为 `staleKeepSentence` 已不再带 context 前缀；这是收窄后的守卫，不是门探针）。
-  - 另五条定点变异：恢复旧的 shape 措辞 → 恰红 `a refused unusable context does not claim a placeholder was written`；
-    恢复旧的 I1 字面诊断 → 红 fresh carried / absent / unusable 三组；去掉缺失分支的 `!memoryRefused` →
+  - 另六条定点变异：恢复旧的 shape 措辞（`no CONTEXT.md was written`）→ 恰红 `a refused unusable context does not claim a placeholder was written` 与 `a refused unusable context claims no previous file`；
+    恢复旧的 I1 字面诊断（整条 skip ternary）→ 红 5 条（mid-call、fresh carried、fresh absent、fresh unusable、fresh recovered refusal）；去掉缺失分支的 `!memoryRefused` →
     consolidation 红 1 条（`a fresh recovered refusal says the reply could not be parsed`）+ external-edit 红 1 条
     （`reply carries no context section: no published-side missing-context line`）；把 parser 的 raw-string recovery
     退回无条件 → 红 `a nested memory_markdown fails closed` 与 `a non-string field with a nested string also fails closed`；在 recovered 提示后追加 "its object never closed" →

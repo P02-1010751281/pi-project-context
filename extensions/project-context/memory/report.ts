@@ -278,7 +278,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 							? "the refused reply's context section was not published; this pass wrote no CONTEXT.md"
 							: outcome.result.recovered
 								? "the refused reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered); this pass wrote no CONTEXT.md"
-								: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
+								: "this pass wrote no CONTEXT.md (the reply carried no context section)",
 					);
 				} else {
 					const contextDocument = renderContextDocument(update, { updatedAt: new Date().toISOString() });
