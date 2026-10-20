@@ -668,6 +668,7 @@ try {
 			check(
 				"a fresh recovered refusal says the object never closed",
 				freshRecoveredRefused.log.includes("never closed")
+					&& freshRecoveredRefused.log.includes("no publishable context section")
 					&& !freshRecoveredRefused.log.includes("carried no context section")
 					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),
 			);
@@ -675,6 +676,8 @@ try {
 			check(
 				"a fresh recovered publish traces the placeholder",
 				freshRecoveredPublished.log.includes("never closed")
+					&& freshRecoveredPublished.log.includes("no publishable context section")
+					&& !freshRecoveredPublished.log.includes("carried no context section")
 					&& freshRecoveredPublished.log.includes("a placeholder context was written")
 					&& freshRecoveredPublished.files.includes("CONTEXT.md"),
 			);
@@ -682,7 +685,8 @@ try {
 			check(
 				"a fresh publish without a reply context writes the placeholder silently",
 				freshAbsentPublished.files.includes("CONTEXT.md")
-					&& !freshAbsentPublished.log.includes("carried no context section"),
+					&& !freshAbsentPublished.log.includes("carried no context section")
+					&& !freshAbsentPublished.log.includes("a placeholder context was written"),
 			);
 			// A thrown context write must not leave the round-2 placeholder claim behind: the write is
 			// attempted before the shape diagnostic, so the failure skips it (round-3 S1).
@@ -704,7 +708,9 @@ try {
 			const thrownLog = await readFile(path.join(thrownDir, ".agents/memory/errors.log"), "utf8").catch(() => "");
 			check(
 				"a thrown context write leaves no placeholder claim",
-				thrownLog.includes("EISDIR") && !thrownLog.includes("only a placeholder context was written"),
+				thrownLog.includes("EISDIR")
+					&& !thrownLog.includes("only a placeholder context was written")
+					&& !thrownLog.includes("could not be used"),
 			);
 			for (const dir of freshDirs) await rmTemp(dir);
 
@@ -946,6 +952,11 @@ try {
 			const shapeLog = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
 			check("an unusable context leaves the previous render in place", (await readFile(shapeContext, "utf8")) === previous);
 			check("an unusable context is written to errors.log", shapeLog.includes("could not be used"));
+			check(
+				"an unusable context names the file state it left",
+				shapeLog.includes("no CONTEXT.md was written; the file on disk was left untouched")
+					&& !shapeLog.includes("the previous CONTEXT.md is kept"),
+			);
 			await pi.commands.get("memory").handler("update", ctx);
 			const repeated = await readFile(path.join(shapeDir, "errors.log"), "utf8").catch(() => "");
 			check("the pass really ran twice", shapeCalls === 2);
@@ -1027,7 +1038,7 @@ try {
 			const cutLog = await readFile(path.join(cut.dir, "errors.log"), "utf8").catch(() => "");
 			const cutMemory = await readFile(path.join(cut.dir, "MEMORY.md"), "utf8");
 			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
-			check("an unclosed reply says so in errors.log", cutLog.includes("carried no context section") && cutLog.includes("never closed"));
+			check("an unclosed reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("never closed"));
 		} finally {
 			await rmTemp(absentTmp);
 			await rmTemp(cutTmp);

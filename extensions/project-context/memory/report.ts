@@ -304,17 +304,16 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
 			} else if (!outcome.result.context && !outcome.result.contextUnusable && !memoryRefused && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
 				// Same failure class, one step further back: no usable context member at all. A refused
-				// reply is covered by the skip diagnostic above (the whole reply was discarded), so
-				// this branch describes only a published pass.
+				// reply is covered by the store's memory-refusal line and, when there is an update
+				// candidate, by the skip diagnostic above; this branch describes only a published pass.
 				contextShapeWarned.add(projectRoot);
 				const kept = wroteContext
 					? "a placeholder context was written"
 					: "no CONTEXT.md was written; the file on disk was left untouched";
-				await logError(
-					projectRoot,
-					"memory",
-					`the consolidation reply carried no context section${outcome.result.recovered ? " (its object never closed, so only memory_markdown could be recovered)" : ""}; ${kept}`,
-				);
+				const missing = outcome.result.recovered
+					? "the consolidation reply carried no publishable context section (its object never closed, so only memory_markdown could be recovered)"
+					: "the consolidation reply carried no context section";
+				await logError(projectRoot, "memory", `${missing}; ${kept}`);
 			}
 			const report: ConsolidateReport = memoryChanged || update ? (outcome.clipped ? "clipped" : "updated") : "unchanged";
 			if (outcome.clipped && !memoryRefused && (memoryChanged || update)) {
