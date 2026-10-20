@@ -134,7 +134,7 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
 - 存储的 `MEMORY.md` 在回复构建期间变化时，整条回复（含 `context` 段）都不发布：memory 由 `basisKey` 判据拒绝，
   同一个回复的 `context` 也来自更旧的快照（2026-10-19 现场：拒发同秒把手工收敛的 open tasks 写回旧清单），所以
   `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建。拒绝态在本次 pass 有 `update`
-  （回复带可用的 context，或 fresh 项目的占位段）时写一条 context 跳过诊断（至少包含 “no CONTEXT.md was written”）；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
+  （回复带可用的 context，或 fresh 项目的占位段）时写一条 context 跳过诊断（至少包含 “this pass wrote no CONTEXT.md”）；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
   时，仍由 shape warning 记录不可用）。没有写入时诊断只说本次 pass 没有写 CONTEXT.md；写了占位符时就说占位符已写。
   两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。

@@ -107,14 +107,16 @@ try {
 		);
 		// An object that never closes means the reply hit the output cap after the memory field; the
 		// context was never emitted. Flagging it is what turns a silently stale CONTEXT.md into a trace.
-		check("a reply whose object never closed is flagged", parseConsolidated(corrupted)?.recovered === true);
+		check("a malformed-but-closed reply is flagged", parseConsolidated(corrupted)?.recovered === true);
 	// A parsed object with a non-string/nested memory_markdown is a wrong shape, not a truncation:
 	// failing closed keeps the stored memory instead of recovering a nested field and claiming the
 	// reply was unparsable (round-6 finding).
 	const nestedMemory = '{"meta":{"memory_markdown":"# Project Memory\\n\\n## Project\\n- nested."},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
 	const numericMemory = '{"memory_markdown":17,"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
+	const numericWithNested = '{"memory_markdown":17,"meta":{"memory_markdown":"# nested"},"context":{"title":"t","summary":"s","key_points":[],"open_tasks":[]}}';
 	check("a nested memory_markdown fails closed", parseConsolidated(nestedMemory) === undefined);
 	check("a non-string memory_markdown fails closed", parseConsolidated(numericMemory) === undefined);
+	check("a non-string field with a nested string also fails closed", parseConsolidated(numericWithNested) === undefined);
 		check(
 			"a complete reply is not flagged as recovered",
 			parseConsolidated('{"memory_markdown":"# m"}')?.recovered === undefined && parseConsolidated("plain markdown")?.recovered === undefined,
@@ -595,7 +597,8 @@ try {
 				"a refused reply does not overwrite the newer CONTEXT.md",
 				(await readFile(healContext, "utf8")) === racedContext
 					&& raceLog.includes("the refused reply's context section was not published")
-					&& raceLog.includes("no CONTEXT.md was written")
+					&& raceLog.includes("this pass wrote no CONTEXT.md")
+					&& !raceLog.includes("left untouched")
 					&& !raceLog.includes("the previous CONTEXT.md stays effective")
 					&& !raceLog.includes("the previous CONTEXT.md is kept"),
 			);
@@ -630,7 +633,7 @@ try {
 			const freshCarried = await runFreshRefusal("carried", { title: "t", summary: "s", key_points: [], open_tasks: [] });
 			check(
 				"a fresh refusal with a reply context claims no previous file",
-				freshCarried.log.includes("no CONTEXT.md was written") && !freshCarried.log.includes("the previous CONTEXT.md stays effective"),
+				freshCarried.log.includes("this pass wrote no CONTEXT.md") && !freshCarried.log.includes("the previous CONTEXT.md stays effective"),
 			);
 			check("a fresh refusal writes no CONTEXT.md (carried)", !freshCarried.files.includes("CONTEXT.md"));
 			const freshAbsent = await runFreshRefusal("absent", undefined);
@@ -644,7 +647,8 @@ try {
 				"a refused unusable context does not claim a placeholder was written",
 				freshUnusable.log.includes("could not be used")
 					&& !freshUnusable.log.includes("only a placeholder context was written")
-					&& freshUnusable.log.includes("no CONTEXT.md was written"),
+					&& freshUnusable.log.includes("this pass wrote no CONTEXT.md")
+					&& !freshUnusable.log.includes("left untouched"),
 			);
 			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
 			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective"));
@@ -676,6 +680,7 @@ try {
 				"a fresh recovered refusal says the reply could not be parsed",
 				freshRecoveredRefused.log.includes("could not be parsed")
 					&& freshRecoveredRefused.log.includes("no publishable context section")
+					&& !freshRecoveredRefused.log.includes("never closed")
 					&& !freshRecoveredRefused.log.includes("the consolidation reply carried no publishable context section")
 					&& !freshRecoveredRefused.log.includes("carried no context section")
 					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),

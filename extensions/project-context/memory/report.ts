@@ -275,9 +275,9 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						projectRoot,
 						"memory",
 						carriedContext
-							? "the refused reply's context section was not published; no CONTEXT.md was written"
+							? "the refused reply's context section was not published; this pass wrote no CONTEXT.md"
 							: outcome.result.recovered
-								? "the refused reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered); no CONTEXT.md was written"
+								? "the refused reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered); this pass wrote no CONTEXT.md"
 								: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
 					);
 				} else {
@@ -301,7 +301,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 				contextShapeWarned.add(projectRoot);
 				const kept = wroteContext
 					? "only a placeholder context was written"
-					: (existingContext.trim() ? "this pass wrote no CONTEXT.md" : "no CONTEXT.md was written");
+					: "this pass wrote no CONTEXT.md";
 				await logError(projectRoot, "memory", `the consolidation reply carried a context section that could not be used (expected an object with title/summary/key_points/open_tasks); ${kept}`);
 			} else if (!outcome.result.context && !outcome.result.contextUnusable && !memoryRefused && (existingContext.trim() || outcome.result.recovered) && !contextShapeWarned.has(projectRoot)) {
 				// Same failure class, one step further back: no usable context member at all. A refused

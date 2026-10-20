@@ -76,8 +76,8 @@ export function parseConsolidated(text: string): ConsolidatedResult | undefined 
 	// non-string/nested `memory_markdown` is a wrong shape, not a truncation: fail closed instead of
 	// recovering a nested field and reporting the reply as unparsable.
 	const recovered = parsed === undefined ? jsonStringField(text) : undefined;
-	// The reply did not parse: everything after the memory field — the context among it — was never
-	// readable (truncated or malformed). Either way CONTEXT.md would age silently without a trace.
+	// The reply could not be parsed as a JSON object: everything after the memory field — the context
+	// among it — was never readable (truncated or malformed). Either way CONTEXT.md would age silently.
 	if (recovered) return { memory: recovered, recovered: true };
 	// Older or less capable models may still return Markdown directly.
 	if (!looksLikeJsonReply(text)) return { memory: text };
