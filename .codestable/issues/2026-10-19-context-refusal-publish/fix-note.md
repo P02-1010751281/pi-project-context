@@ -43,25 +43,25 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 | `memory/store.ts` | 拒发行去掉 `and the newer content stays effective`：只保留 `the reply was not published`（后续写入者仍可能换掉文件）。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动、log 与回复都不含已退役短语；带 context 段时另断言"跳过"诊断。 |
 | `docs/architecture.md` | 「consolidation 的安全语义」新增一条：拒绝覆盖整条回复，含 context 段。 |
-| `CHANGELOG.md` | v0.4.13 修复条目。 |
-| `.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md` | §2.4 的「拒绝态照写 CONTEXT.md」标为已取代，注明现场事实。 |
+| `CHANGELOG.md` | v0.4.13 修复条目 + v0.4.14 复核轮条目。 |
+| `tests/harness.mjs` | 共享负断言 `noOldContextClaim`（拒绝已退役的全局措辞；blocklist，不是语义判据）。 |
+| `.codestable/issues/2026-10-03-external-edit-adoption-overwritten/external-edit-adoption-overwritten-design.md` | §2.4 的「拒绝态照写 CONTEXT.md」标为已取代；§2.2 的 store 拒发行去掉 `stays effective`。 |
 
 ## 5. 验证
 
 - `node tests/run-all.mjs`：15/15；`git diff --check` 干净。
-- 变异（按最终测试）：把 `contextWritten` 退回 `Boolean(update)`：
-  - `tests/consolidation-test.mjs` 红 8 条：mid-call 的 `a refused reply does not overwrite the newer CONTEXT.md`、
-    5 条 fresh 诊断/文件断言（带 context / 不带 context / context 不可用）、`a refused unusable context writes no CONTEXT.md`
-    与 `a fresh recovered refusal says the reply could not be parsed`；
-  - `tests/external-edit-test.mjs` 红 2 条：`CONTEXT.md was left untouched` 与 `the skipped context write is traced`
-    （"不声称 context 更新"在变异下仍绿，因为 `staleKeepSentence` 已不再带 context 前缀；这是收窄后的守卫，不是门探针）。
-  - 另六条定点变异：恢复旧的 shape 措辞（`no CONTEXT.md was written`）→ 恰红 `a refused unusable context does not claim a placeholder was written` 与 `a refused unusable context claims no previous file`；
-    恢复旧的 I1 字面诊断（整条 skip ternary）→ 红 6 个 check / 5 个 fixture（mid-call、fresh carried、fresh absent、fresh unusable ×2、fresh recovered refusal）；去掉缺失分支的 `!memoryRefused` →
-    consolidation 红 1 条（`a fresh recovered refusal says the reply could not be parsed`）+ external-edit 红 1 条
-    （`reply carries no context section: no published-side missing-context line`）；把 parser 的 raw-string recovery
-    退回无条件 → 红 `a nested memory_markdown fails closed` 与 `a non-string field with a nested string also fails closed`；在 recovered 提示后追加 "its object never closed" →
-    红 `a cut-off reply says so in errors.log`（发布侧）与 `a fresh recovered refusal says the reply could not be parsed`（拒绝侧）；
-    在跳过/形状诊断后追加 "left untouched" → 红 mid-call / fresh unusable 的负断言。
+- 变异（按最终测试，精确计数）：
+  - `contextWritten = Boolean(update)`：consolidation 9、external-edit 2；
+  - 去掉缺失分支的 `!memoryRefused`：1 + 1；
+  - parser raw-string recovery 退回无条件：2（nested、non-string-with-nested）；
+  - 恢复旧 shape 措辞（`no CONTEXT.md was written`）：3；
+  - 恢复旧的 I1 skip ternary：7 + 1（5 个 fixture，fresh unusable 贡献 3 个 check）；
+  - 在 skip 分支追加 `left untouched`：4 + 1；在 shape 分支追加：3 + 0；
+  - 在 kept/stale 家族（shape / missing）追加：3 / 3；
+  - 恢复 store 的 `stays effective`：6 + 3（T2 两条 log + T2c）；
+  - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；
+  - `noOldContextClaim`（tests/harness.mjs）拒绝 "no CONTEXT.md was written" / "left untouched" / "stays effective" /
+    "CONTEXT.md is kept" / "stays stale"。
 - 正控：同一 fixture 的未竞写路径仍写 `CONTEXT.md`（既有 `CONTEXT.md has the new summary`、
   `the context section is written from the same reply` 用例全绿），证明红灯来自门而不是夹具。
 

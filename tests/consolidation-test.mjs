@@ -651,9 +651,10 @@ try {
 					&& freshUnusable.log.includes("this pass wrote no CONTEXT.md")
 					&& noOldContextClaim(freshUnusable.log),
 			);
+			const unusableShapeLine = freshUnusable.log.split("\n").find((line) => line.includes("could not be used"));
 			check(
 				"the refused unusable shape line carries the pass-scoped phrase",
-				(freshUnusable.log.match(/this pass wrote no CONTEXT\.md/g) ?? []).length >= 2,
+				Boolean(unusableShapeLine?.includes("this pass wrote no CONTEXT.md")),
 			);
 			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
 			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective") && noOldContextClaim(freshUnusable.log));
@@ -2624,6 +2625,39 @@ try {
 			check("the settle pass still writes CONTEXT.md", settleContext);
 		} finally {
 			await rmTemp(settleTmp);
+		}
+	}
+
+	console.log("\n=== the automatic refusal toast is a warning and carries no retired claim ===");
+	{
+		// The command path is silent; the automatic pass is the second caller of the shared stale
+		// sentence. A mid-call writer forces a refusal and the toast must stay warning + retired-free.
+		const toastTmp = await mkdtemp(path.join(os.tmpdir(), "pi-refusal-toast-"));
+		try {
+			const toastMem = path.join(toastTmp, ".agents/memory");
+			await mkdir(toastMem, { recursive: true });
+			await writeFile(path.join(toastMem, "MEMORY.md"), "# Project Memory\n\n## Project\n- before the toast pass.\n");
+			const toastFactory = await loadDefault(`${PC}/index.ts`);
+			const toastPi = makePi({ cwd: toastTmp });
+			await toastFactory(toastPi);
+			const toastEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`tt${index}`, "user", `toast turn ${index}`, `2026-09-12T12:0${index}:00.000Z`));
+			const toastCtx = makeCtx(toastTmp, {
+				sessionManager: makeSessionManager(toastEntries, "toast-session"),
+			});
+			toastCtx.modelRegistry.complete = async () => {
+				await writeFile(path.join(toastMem, "MEMORY.md"), "# Project Memory\n\n## Project\n- arrived during the toast pass.\n");
+				return {
+					content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project\n- post-toast memory.", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+				};
+			};
+			await runHandlers(toastPi, "agent_settled", toastCtx);
+			const toastSeen = await waitUntil(() => toastCtx.notifications.some(([message]) => String(message).includes("kept the newer MEMORY.md")), 3_000);
+			const toast = toastCtx.notifications.find(([message]) => String(message).includes("kept the newer MEMORY.md"));
+			check("the automatic refusal toast is a warning", toastSeen && toast?.[1] === "warning");
+			check("the automatic refusal toast carries no retired claim", Boolean(toast) && noOldContextClaim(String(toast?.[0] ?? "")));
+		} finally {
+			await rmTemp(toastTmp);
 		}
 	}
 

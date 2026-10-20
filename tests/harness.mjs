@@ -324,7 +324,7 @@ export function toolResultEntry(id, toolCallId, text, timestamp, parentId = null
 	};
 }
 
-/** A no-write context diagnostic must not reuse any retired global claim (round 9). */
+/** True when a message avoids the known retired global claims (a blocklist, not a semantic guard). */
 export function noOldContextClaim(text) {
 	return !text.includes("no CONTEXT.md was written")
 		&& !text.includes("left untouched")

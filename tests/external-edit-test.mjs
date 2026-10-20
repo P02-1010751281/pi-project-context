@@ -292,7 +292,7 @@ try {
 		check("the fixture clips the input (control run logs the shortening)", control.log.includes("consolidation shortened"));
 		const refused = await runPass(true);
 		check("the refusal is logged", refused.log.includes("the reply was not published"));
-		check("and it claims no shortening", !refused.log.includes("consolidation shortened"));
+		check("and it claims no shortening", !refused.log.includes("consolidation shortened") && noOldContextClaim(refused.log));
 		check("and it claims no cap", !refused.log.includes("exceeded"));
 		check("the edit is still the effective memory", (await readFile(memoryPath(refused.root), "utf8")) === HAND);
 	}
