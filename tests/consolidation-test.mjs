@@ -1258,6 +1258,11 @@ try {
 
 			const { consolidateReply } = await loadNamespace(`${PC}/memory/report.ts`);
 			check("a clipped reply is visible to explicit commands", consolidateReply("clipped").includes("output budget"));
+			const clippedKeptReply = consolidateReply("clipped", { repaired: false, memoryKept: true, keepReason: "short" });
+			check(
+				"a clipped kept-memory command reply describes the prompt, not a rewrite",
+				clippedKeptReply.includes("prompt also had to be shortened") && !clippedKeptReply.includes("rewrite also shortened"),
+			);
 			// The command reply is a third surface for the cap sentence, and it used to tell a per-item cut as
 			// the document hitting its cap and point at a drop list that does not exist (review R2).
 			const cutOnly = consolidateReply("updated", { repaired: false, sectionsCapped: true, entriesDropped: false, capNote: "1 entry(ies) were cut to their section's per-item cap (a cut entry may also be dropped)" });
@@ -2687,7 +2692,7 @@ try {
 			});
 			await runHandlers(cleanPi, "agent_settled", cleanCtx);
 			const cleanWritten = await waitUntil(() => cleanCtx.notifications.some(([message]) => String(message).includes("Memory: updated")), 3_000);
-			check("the automatic unusable-context pass publishes its memory", cleanWritten);
+			check("the automatic unusable-context pass publishes its memory", cleanWritten && (await readFile(path.join(cleanMem, "MEMORY.md"), "utf8").catch(() => "")).includes("clean automatic write"));
 			check(
 				"the automatic unusable-context pass shows no stale refusal toast",
 				!cleanCtx.notifications.some(([message]) => String(message).includes("kept the newer MEMORY.md")),
@@ -2719,8 +2724,14 @@ try {
 			await runHandlers(keepPi, "agent_settled", keepCtx);
 			const keptSeen = await waitUntil(() => keepCtx.notifications.some(([message]) => String(message).includes("memory was kept unchanged")), 3_000);
 			const kept = keepCtx.notifications.find(([message]) => String(message).includes("memory was kept unchanged"));
-			check("the automatic memory-kept pass publishes its context", keptSeen && (await readFile(path.join(keepMem, "CONTEXT.md"), "utf8")).includes("kept summary"));
-			check("the automatic memory-kept toast claims no memory write", Boolean(kept) && !String(kept?.[0] ?? "").includes("Memory: updated"));
+			check("the automatic memory-kept pass publishes its context", keptSeen && (await readFile(path.join(keepMem, "CONTEXT.md"), "utf8").catch(() => "")).includes("kept summary"));
+			check(
+				"the automatic memory-kept toast claims no memory write",
+				Boolean(kept)
+					&& !String(kept?.[0] ?? "").includes("Memory: updated")
+					&& !String(kept?.[0] ?? "").includes("prompt also had to be shortened")
+					&& !String(kept?.[0] ?? "").includes("rewrite also shortened"),
+			);
 		} finally {
 			await rmTemp(keepTmp);
 		}
@@ -2744,14 +2755,17 @@ try {
 				sessionManager: makeSessionManager(clipEntries, "clip-session"),
 			});
 			clipCtx.modelRegistry.complete = async () => ({
-				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "clipped summary", key_points: [], open_tasks: [] } }) }],
 			});
 			await runHandlers(clipPi, "agent_settled", clipCtx);
 			const clipSeen = await waitUntil(() => clipCtx.notifications.some(([message]) => String(message).includes("The prompt also had to be shortened")), 3_000);
 			const clipToast = clipCtx.notifications.find(([message]) => String(message).includes("The prompt also had to be shortened"));
 			check(
 				"the clipped memory-kept toast describes the prompt, not a rewrite",
-				clipSeen && Boolean(clipToast) && !String(clipToast?.[0] ?? "").includes("rewrite also shortened"),
+				clipSeen
+					&& Boolean(clipToast)
+					&& !String(clipToast?.[0] ?? "").includes("rewrite also shortened")
+					&& (await readFile(path.join(clipMem, "CONTEXT.md"), "utf8").catch(() => "")).includes("clipped summary"),
 			);
 		} finally {
 			await rmTemp(clipTmp);

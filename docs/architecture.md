@@ -141,7 +141,8 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
   拒绝面）：（a）回复的 memory 本身 semantic-empty/过短（`memoryChanged` 为 false），`basisKey` 路径不运行；
   （b）并发编辑把 `MEMORY.md` 清空/纯空白或删除，或编辑归一化后与 basisKey 相同。无 journal 的 legacy 布局由
   `store.ts` 的 `current.text.trim()` 空守卫放行；journal 布局下 `current` 是 fold，清空/删除不改变 fold，回复因 key
-  相同而发布；若 fold 先移动再被清空，recheck 会拒绝。相关取舍与命名见
+  相同而发布；若 fold 在 §2.2 读之前已经移动，§2.2 的 basisKey 检查会拒绝（recheck 对空文件有 guard，
+  移动+清空落在 §2.2 读之后时仍会发布——设计 §2.3/T6）。相关取舍与命名见
   `.codestable/issues/2026-10-03-external-edit-adoption-overwritten/` 的设计 §5 R-3。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的

@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-20
-commit: 97c71cc
+commit: c352bcf
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -38,7 +38,7 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 
 | 文件 | 改动 |
 | --- | --- |
-| `extensions/project-context/memory/report.ts` | 新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与跳过诊断的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered 分支，只说“没有写 CONTEXT.md”，不声称不存在的旧文件、未写的占位符、或 pass 读到的旧快照仍在生效。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；拒绝态不再补缺失分支的 shape 行（不可用分支仍记录）。删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。recovered 回复的发布线用 "no publishable context section"，不再说"没带 context 段"；没有写入时只说 "this pass wrote no CONTEXT.md"，写了占位符时就说占位符已写，不声称 pass 的快照仍在生效。 |
+| `extensions/project-context/memory/report.ts` | 保留 memory 的 clipped toast 现在说 prompt 被缩短（不是 rewrite 缩写了内容），命令回执与自动 toast 同一措辞。新增 `contextWritten = Boolean(update) && !memoryRefused`，作为 context 写入与跳过诊断的门（toast 由 `memoryRefused` 决定）；拒绝态诊断按回复是否带 context / 不可用 / recovered 分支，只说“没有写 CONTEXT.md”，不声称不存在的旧文件、未写的占位符、或 pass 读到的旧快照仍在生效。shape 诊断移到写入之后，用 `wroteContext` 证明占位符已落地；拒绝态不再补缺失分支的 shape 行（不可用分支仍记录）。删除已不可达的 `LastWriteInfo.contextWritten` 与 `staleKeepSentence(true)` 分支；`/memory update` 的拒绝回执改为 warning。recovered 回复的发布线用 "no publishable context section"，不再说"没带 context 段"；没有写入时只说 "this pass wrote no CONTEXT.md"，写了占位符时就说占位符已写，不声称 pass 的快照仍在生效。 |
 | `tests/consolidation-test.mjs` | 在既有 mid-call writer 夹具里同时替换 `CONTEXT.md`；断言文件保留竞写者的字节、诊断落盘、且日志不声称 pass 读到的旧快照仍在生效。新增三个 fresh 项目夹具（回复带 context / 不带 context / context 不可用）、两个 recovered 夹具（拒绝 / 发布）、一个 fresh absent 发布夹具和一个 CONTEXT.md 为目录的写失败夹具（断言没有占位符误报）。 |
 | `memory/store.ts` | 拒发行去掉 `and the newer content stays effective`：只保留 `the reply was not published`（后续写入者仍可能换掉文件）。 |
 | `tests/external-edit-test.mjs` | 两个 T2 子用例（带/不带 context 段）都断言命令回复不声称 context 更新、`CONTEXT.md` 逐字节未动、log 与回复都不含已退役短语；带 context 段时另断言"跳过"诊断。 |
@@ -60,7 +60,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   - 在 kept/stale 家族（shape / missing）追加：3 / 3；
   - 恢复 store 的 `stays effective`：6 + 3（T2 两条 log + T2c）；
   - 在 `staleKeepSentence` 追加退役短语：1 + 2（自动 toast + 两条命令回复）；给自动 toast / 共享 stale 句加 "Memory: context updated;"/"Memory: updated;" 前缀：1 + 2；给 `!memoryChanged` 的 "context updated; memory was kept unchanged" toast 加 "Memory: updated;" 前缀：1；
-    把该 toast 的 clipped 说明换回 "The rewrite also shortened..."：1（clipped 夹具）；
+    把该 toast 的 clipped 说明换回 "The rewrite also shortened..."：1（clipped 夹具）；让它无条件出现：1（kept 夹具）；
+    在 clipped 时跳过 context 写入：1（clipped 夹具读 CONTEXT.md）；把命令回执的 clipped 说明换回 rewrite：1；删掉 legacy trim 守卫：1（external-edit 的 legacy 清空）；
     把 toast 条件扩成 `memoryRefused || contextUnusable`：2；条件化到 `contextUnusable && existingContext.trim()`：2（existing-context 负控）；
   - `noOldContextClaim`（tests/harness.mjs）拒绝 "no CONTEXT.md was written" / "left untouched" / "stays effective" /
     "CONTEXT.md is kept" / "stays stale"。
@@ -78,6 +79,8 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
   本轮不做，登记为残留。独立审查（deepseek/deepseek-flash，2026-10-19）亦以 R1 命名此项。
 - **R2**：`written` claim 在拒绝时也已置位，紧随其后的 `/memory update` 在 `forceDedupeMs` 内返回 "deduped"；
   这是既有去重行为，不是本修复引入的。（独立审查 R2）
+- **设计 R-2（D-R2，覆盖缺口，接受）**：external-edit 设计的「`nextRenderSupersedes` recheck 接线没有集成测试」与
+  `store.ts` 第二条拒发行是同一缺口；删除该分支仍 15/15，该行当前不含退役措辞。用此标签区别于上面的 R2 dedupe 残留。
 - **R3**：并发 pass 可能在拒绝 pass 与命令读取 `lastWrite` 之间删除它，命令回复退化为 "updated"；既有设计残留。
 - **R4**：context 写入不在 memory 锁内、无 CAS；本修复缩小了现场窗口，但没有新增 context CAS。
 - **N-H（接受）**：shape 诊断移到 memory 写入之后，若 memory 写抛错，pass 直接进 catch，shape 诊断不再补发；

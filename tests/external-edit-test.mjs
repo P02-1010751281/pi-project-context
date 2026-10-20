@@ -180,6 +180,18 @@ try {
 		const headerResult = await recordMemoryDocument(header, REPLY, CAP, { basisKey: headerBasis });
 		check("a header-only rewrite refuses the reply", headerResult.written === false);
 		check("and its bytes stay on disk", (await readFile(memoryPath(header), "utf8")) === "# Project Memory\n");
+
+		// Legacy (no journal) layout: the trim guard lets a cleared file through; header-only refuses.
+		const legacyClear = await makeProject(FOUR);
+		const legacyClearBasis = (await loadMemory(legacyClear, CAP)).text;
+		await writeFile(memoryPath(legacyClear), "");
+		const legacyClearResult = await recordMemoryDocument(legacyClear, REPLY, CAP, { basisKey: legacyClearBasis });
+		check("a legacy cleared memory lets the reply win", legacyClearResult.written === true);
+		const legacyHeader = await makeProject(FOUR);
+		const legacyHeaderBasis = (await loadMemory(legacyHeader, CAP)).text;
+		await writeFile(memoryPath(legacyHeader), "# Project Memory\n");
+		const legacyHeaderResult = await recordMemoryDocument(legacyHeader, REPLY, CAP, { basisKey: legacyHeaderBasis });
+		check("a legacy header-only memory refuses the reply", legacyHeaderResult.written === false);
 	}
 
 	console.log("=== T2: the core timing, through the real pass ===");
