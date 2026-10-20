@@ -2697,6 +2697,35 @@ try {
 		}
 	}
 
+	console.log("\n=== an automatic memory-kept pass does not claim a memory write ===");
+	{
+		// The other automatic no-write branch: semantic-empty/short memory + a valid context. The
+		// toast must say "context updated; memory was kept unchanged", never "Memory: updated".
+		const keepTmp = await mkdtemp(path.join(os.tmpdir(), "pi-toast-kept-"));
+		try {
+			const keepMem = path.join(keepTmp, ".agents/memory");
+			await mkdir(keepMem, { recursive: true });
+			const keepFactory = await loadDefault(`${PC}/index.ts`);
+			const keepPi = makePi({ cwd: keepTmp });
+			await keepFactory(keepPi);
+			const keepEntries = Array.from({ length: 6 }, (_, index) =>
+				messageEntry(`kt${index}`, "user", `kept turn ${index}`, `2026-09-12T14:0${index}:00.000Z`));
+			const keepCtx = makeCtx(keepTmp, {
+				sessionManager: makeSessionManager(keepEntries, "kept-session"),
+			});
+			keepCtx.modelRegistry.complete = async () => ({
+				content: [{ type: "text", text: JSON.stringify({ memory_markdown: "# Project Memory\n\n## Project", context: { title: "t", summary: "s", key_points: [], open_tasks: [] } }) }],
+			});
+			await runHandlers(keepPi, "agent_settled", keepCtx);
+			const keptSeen = await waitUntil(() => keepCtx.notifications.some(([message]) => String(message).includes("memory was kept unchanged")), 3_000);
+			const kept = keepCtx.notifications.find(([message]) => String(message).includes("memory was kept unchanged"));
+			check("the automatic memory-kept pass publishes its context", keptSeen && String(kept?.[0] ?? "").includes("context updated"));
+			check("the automatic memory-kept toast claims no memory write", Boolean(kept) && !String(kept?.[0] ?? "").includes("Memory: updated"));
+		} finally {
+			await rmTemp(keepTmp);
+		}
+	}
+
 } finally {
 	await rmTemp(tmp);
 }

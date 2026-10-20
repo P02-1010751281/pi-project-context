@@ -137,9 +137,10 @@ consolidation 回复必须提供可用的 memory 对象；`context` 缺失时不
   `CONTEXT.md` 保留磁盘上已有的较新版本（fresh 项目不写占位符）、下一次 pass 再重建。拒绝态在本次 pass 有 `update`
   （回复带可用的 context，或 fresh 项目的占位段）时写一条 context 跳过诊断（至少包含 “this pass wrote no CONTEXT.md”）；没有 `update` 时整条回复已丢弃，不再补缺失分支的 shape 行（回复的 context 不可用且磁盘上已有旧文件
   时，仍由 shape warning 记录不可用）。没有写入时诊断只说本次 pass 没有写 CONTEXT.md；写了占位符时就说占位符已写。
-  两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。若回复的 memory 本身是 semantic-empty/过短
-  （`memoryChanged` 为 false），`basisKey` 路径不运行，回复的 context 仍可能写入——这是已登记的 R1 残留，
-  不是本段承诺的拒绝面。
+  两种措辞都不声称 pass 读到的旧快照仍在生效（竞写可能已经换掉它）。例外（已登记的 R1 残留，不是本段承诺的
+  拒绝面）：（a）回复的 memory 本身 semantic-empty/过短（`memoryChanged` 为 false），`basisKey` 路径不运行；
+  （b）并发编辑把 `MEMORY.md` 清空/纯空白或删除（`store.ts` 的 `current.text.trim()` 空守卫），或编辑归一化后与
+  basisKey 相同（设计 R-3）。这些情况下回复仍会发布，其旧 context 仍可能覆盖更新的 `CONTEXT.md`。
 - provider 报错（`stopReason: error/aborted`）直接作为失败抛出并记录真实错误信息，不把空回复当 Markdown 记忆、也不做解析重试。
 - 输出预算为 reasoning 模型预留隐藏思考：`reasoning: true` 时按正文 token 的 35% 预留（1024–8192），另加 1024 token 的
   JSON scaffolding 余量。模型上限不足时按各 artifact 的 token 率裁剪正文，并保留正文地板。该预留有 8192 的上限，而 route
