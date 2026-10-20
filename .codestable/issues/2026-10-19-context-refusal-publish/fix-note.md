@@ -4,7 +4,7 @@ issue: 2026-10-19-context-refusal-publish
 status: fixed
 path: quick
 fix_date: 2026-10-19
-commit: a5e70f1
+commit: c855f2e
 tags: [memory, context, refusal, lost-update]
 ---
 
@@ -74,11 +74,11 @@ on refusal」，context 写入也应被拒；本次把它纳入拒绝面。
 - **R4**：context 写入不在 memory 锁内、无 CAS；本修复缩小了现场窗口，但没有新增 context CAS。
 - **N-H（接受）**：shape 诊断移到 memory 写入之后，若 memory 写抛错，pass 直接进 catch，shape 诊断不再补发；
   失败本身有 errors.log，且 once 标记未消费，后续 pass 可再报。按"不新增机制"接受。
-- **R5（已修）**：recovered 回复的 fresh 拒绝/发布诊断曾把"对象未闭合"说成"没带 context 段"；现按 `recovered` 分支，
-  并给 fresh 发布补了"a placeholder context was written"的告知；拒绝态不再补 shape 缺失行（避免同一回复两条互相矛盾的
-  记录），recovered 拒绝句改为"carried no publishable context section"。
+- **R5（已修）**：recovered 回复的 fresh 拒绝/发布诊断曾把"不可解析"说成"没带 context 段"；现按 `recovered` 分支，
+  并给 fresh 发布补了"a placeholder context was written"的告知；拒绝态不再补缺失分支的 shape 行（避免同一回复两条互相
+  矛盾的记录），recovered 拒绝句改为"could not be parsed / no publishable context section"。不可用分支的 shape warning 在拒绝态仍保留。
 - **R6（已修）**：拒绝/形状诊断曾声称 "the previous CONTEXT.md stays effective / is kept and stays stale"，而竞写可能已
-  换掉磁盘上的文件；现只说 "no CONTEXT.md was written" / "the file on disk was left untouched"，不再引用 pass 的旧快照。
+  换掉磁盘上的文件；没有写入时只说 "no CONTEXT.md was written" / "the file on disk was left untouched"，写了占位符时就说占位符已写，不再引用 pass 的旧快照。
 - **R7（已修）**：recovered 回复的发布线曾把"对象未闭合"说成"没带 context 段"；现改为 "no publishable context
   section"，refused/published 两侧都钉住；拒绝态不再补缺失分支的 shape 行。
 - 拒绝仍是检测器（不阻止其他合法回复发布）；它只决定"这一条回复"两侧都不发布。

@@ -641,7 +641,7 @@ try {
 			);
 			check("a refused unusable context writes no CONTEXT.md", !freshUnusable.files.includes("CONTEXT.md"));
 			check("a refused unusable context claims no previous file", !freshUnusable.log.includes("the previous CONTEXT.md stays effective"));
-			// A recovered reply never closed its JSON object: the fresh refusal/publish trace must say
+			// A recovered reply could not be parsed: the fresh refusal/publish trace must say
 			// that, not "the reply carried no context section" (round-2 I-A).
 			const runFreshText = async (label, replyText, race) => {
 				const dir = await mkdtemp(path.join(os.tmpdir(), `pc-refusal-${label}-`));
@@ -666,16 +666,17 @@ try {
 			const recoveredReply = '{"memory_markdown":"# Project Memory\\n\\n## Project\\n- recovered memory.","context":{"title":"t","summary":"s"';
 			const freshRecoveredRefused = await runFreshText("recovered-refused", recoveredReply, true);
 			check(
-				"a fresh recovered refusal says the object never closed",
-				freshRecoveredRefused.log.includes("never closed")
+				"a fresh recovered refusal says the reply could not be parsed",
+				freshRecoveredRefused.log.includes("could not be parsed")
 					&& freshRecoveredRefused.log.includes("no publishable context section")
+					&& !freshRecoveredRefused.log.includes("the consolidation reply carried no publishable context section")
 					&& !freshRecoveredRefused.log.includes("carried no context section")
 					&& !freshRecoveredRefused.files.includes("CONTEXT.md"),
 			);
 			const freshRecoveredPublished = await runFreshText("recovered-published", recoveredReply, false);
 			check(
 				"a fresh recovered publish traces the placeholder",
-				freshRecoveredPublished.log.includes("never closed")
+				freshRecoveredPublished.log.includes("could not be parsed")
 					&& freshRecoveredPublished.log.includes("no publishable context section")
 					&& !freshRecoveredPublished.log.includes("carried no context section")
 					&& freshRecoveredPublished.log.includes("a placeholder context was written")
@@ -1030,7 +1031,7 @@ try {
 			const absentLog = await readFile(path.join(absent.dir, "errors.log"), "utf8").catch(() => "");
 			check("a reply without a context section keeps the previous render", (await readFile(path.join(absent.dir, "CONTEXT.md"), "utf8")) === absent.previous);
 			check("the omitted context section is written to errors.log", absentLog.includes("carried no context section") && absentLog.includes("no CONTEXT.md was written; the file on disk was left untouched"));
-			check("an omission is not reported as an unclosed reply", !absentLog.includes("never closed"));
+			check("an omission is not reported as a parse failure", !absentLog.includes("could not be parsed"));
 
 			// The truncation variant: the memory survives, the context never made it out.
 			const cut = await setup(cutTmp);
@@ -1038,7 +1039,7 @@ try {
 			const cutLog = await readFile(path.join(cut.dir, "errors.log"), "utf8").catch(() => "");
 			const cutMemory = await readFile(path.join(cut.dir, "MEMORY.md"), "utf8");
 			check("the recovered memory of a cut-off reply still lands", cutMemory.includes("- recovered from a cut-off reply."));
-			check("an unclosed reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("never closed"));
+			check("a cut-off reply says so in errors.log", cutLog.includes("no publishable context section") && cutLog.includes("could not be parsed"));
 		} finally {
 			await rmTemp(absentTmp);
 			await rmTemp(cutTmp);

@@ -18,7 +18,7 @@ export type ConsolidatedResult = {
 	context?: ContextUpdate;
 	/** The reply carried a `context` member that could not be used (wrong shape), rather than none. */
 	contextUnusable?: boolean;
-	/** The reply carried no usable context (its object never closed), so only the memory field was recovered. */
+	/** The reply could not be parsed as JSON, so only the memory field was recovered. */
 	recovered?: boolean;
 };
 
@@ -74,8 +74,8 @@ export function parseConsolidated(text: string): ConsolidatedResult | undefined 
 	}
 	// A reply that failed to parse can still carry the memory field intact.
 	const recovered = jsonStringField(text);
-	// The object never closed: everything after the memory field — the context among it — was never
-	// emitted (or the reply is malformed). Either way CONTEXT.md would age silently without a trace.
+	// The reply did not parse: everything after the memory field — the context among it — was never
+	// readable (truncated or malformed). Either way CONTEXT.md would age silently without a trace.
 	if (recovered) return { memory: recovered, recovered: true };
 	// Older or less capable models may still return Markdown directly.
 	if (!looksLikeJsonReply(text)) return { memory: text };

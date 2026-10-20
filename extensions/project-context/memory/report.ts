@@ -276,7 +276,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 						carriedContext
 							? "the refused reply's context section was not published; no CONTEXT.md was written"
 							: outcome.result.recovered
-								? "the refused reply carried no publishable context section (its object never closed, so only memory_markdown could be recovered); no CONTEXT.md was written"
+								? "the refused reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered); no CONTEXT.md was written"
 								: "the refused pass wrote no CONTEXT.md (the reply carried no context section)",
 					);
 				} else {
@@ -311,7 +311,7 @@ export function registerConsolidation(pi: ExtensionAPI): void {
 					? "a placeholder context was written"
 					: "no CONTEXT.md was written; the file on disk was left untouched";
 				const missing = outcome.result.recovered
-					? "the consolidation reply carried no publishable context section (its object never closed, so only memory_markdown could be recovered)"
+					? "the consolidation reply carried no publishable context section (its reply could not be parsed, so only memory_markdown could be recovered)"
 					: "the consolidation reply carried no context section";
 				await logError(projectRoot, "memory", `${missing}; ${kept}`);
 			}
